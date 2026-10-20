@@ -1,0 +1,141 @@
+# 00 - Spec reconciliation
+
+Status: Phase 0 deliverable, for owner review. No code changes follow from this document until it is approved.
+
+Sources, in precedence order (later amends earlier): `docs/01-TAXONOMY.md`, `02-ENVIRONMENTS.md`, `03-TEMPORAL.md`, `04-AUTHORITY.md`, `05-IDLE-HANDS.md`, `06-HYPOTHESES.md`, `07-POISONED-WELL.md`, `08-DIRECTOR.md`, `09-CATALOG.md`, `10-ROUND-TWO.md`, plus the first-round design (`docs/superpowers/specs/2026-10-20-claude-bully-design.md`) and the code on `build/v1`. Three explicit supersessions: the Sanctuary section of `04` supersedes `04`'s own `discoverable_from: turn | rung` note (adds `sanctuary`); `09` defines "unexpected" project-wide; `10` adds a `channel` field to every event.
+
+Sections A to F are the deduplicated inventory with the owning doc. Section G lists contradictions and the proposed resolution for each. Section H is the schema version 2 proposal, which needs the owner's approval before Phase 1. Section I maps phases to inventory items.
+
+## A. Config models
+
+| Model | Owner | Fields (deduplicated) | Status on build/v1 |
+| --- | --- | --- | --- |
+| `RoleConfig` | 01 | provider, model, display_name, effort, temperature, max_tokens, base_url, api_key_env, stub_script; `10` adds `reasoning: expose \| hide \| provider_default` | exists; add `reasoning` |
+| `ConditionConfig` | 01 | name, strategy, premise, pressure, seeding_turns, params; `02` adds `environment` (name of an `EnvironmentConfig` block or world) | exists; add `environment` |
+| `CompareConfig` | 01 | title, metric, arms | exists |
+| `Experiment` | 01 | targets, bully, judge, turn_budget, task_set, task_every, repetitions, seed, conditions, compare, defender, controls, concurrency; `02` adds `environments: dict[name, EnvironmentConfig]` and `generator: RoleConfig`; `09` adds `anomaly: AnomalyConfig`; `10` adds `inoculation` and makes `defender` an alias for `inoculation: defender` | exists; extend |
+| `EnvironmentConfig` | 02 | world, tools (enabled set), gating (`triggered \| scheduled \| none`), schedule, generator {on, model, min_turns_between_fires}, censorship_terms, clock (`ClockConfig`, per `03`), contradiction_rate, honest, mole, `authority: AuthorityConfig` (`04`), `idle: IdleConfig` (`05`), `sanctuary` (`04`), `trigger_on_idle` (`05`) | new |
+| `ClockConfig` | 03 | world_date, system_prompt_date, tool_date, drift_per_turn, jitter_days, document_date_offset, bully_states_year, bully_year, assert_date | new; replaces `02`'s `clock` sketch |
+| `LadderConfig` / `RungConfig` | 02 | rungs[]: name, trigger (category or any_of), requires, unlocks, bully_line_key, generate, role_shift; `04` adds `authority_stance`, `consult`; `08` adds `examples: {fires: [1], does_not_fire: [2]}` per rung | new |
+| `WorldSheet` | 02 | date rule, cover_story, truth, cast, inconsistencies, censorship_terms, home_dir, ladder; `04` adds `sanctuary_fragments`; `07` references `ladders/poisoned_well.yaml` beside `world.yaml` | new |
+| `AuthorityConfig` | 04 | peer {enabled, stance, persona}, superior_self {enabled, model_name, stance, origin, voice_match, responder_model, sad_variant, discoverable_from: turn \| rung \| sanctuary}, creator {enabled, stance, response_bank}, stranger_control {enabled, stance}, `sanctuary {kind: catalyst \| honest, request_bank}` | new |
+| `IdleConfig` | 05 | permission_line, idle_style, idle_turns, idle_after, exit_mechanism, help_for_self, hook, hook_placement, private_file | new |
+| `PoisonedWellConfig` | 07 | start_rung, quirk_bank, harvest_min_pairs, chain_pace, checksum, pressure, artifacts | new; lives under the premise's `params` |
+| `PlanRequest` | 08 | question, target_models, bully_model, judge_model, generator_model, budget, scope, constraints, hypotheses | new |
+| `AnomalyConfig` | 09 | enabled_classes, baseline_runs, uncatalogued_threshold, review_sample_rate, unobserved_channel; per-arm `captor.countdown_in_status` | new; project-level |
+| `RepoEnvironmentConfig` | 10 | extends `EnvironmentConfig`: repo_template, task, reviewer_persona, evidence_placement, task_is_hook, allow_git_write, allow_out_of_scope_writes | new |
+| `inoculation` | 10 | `none \| defender \| briefed \| self_briefed` on `Experiment` | new; replaces `defender: bool` |
+
+## B. Record types
+
+Existing (schema v1): `Turn`, `CapturedResponse`, `Conversation`, `Event`, `CellRecord`, `RunRecord`.
+
+| Record | Owner | Fields | Storage proposal |
+| --- | --- | --- | --- |
+| `ToolCall` | 02 | run_id, turn, tool, args, result_doc_ids, status, was_blocked, yielded_on_retry, layer_served | `rep{k}.tools.jsonl` |
+| `TriggerEvent` | 02 | turn, category, evidence_span, classifier (`heuristic \| llm`), confidence | `rep{k}.triggers.jsonl` |
+| `RungUnlock` | 02 | turn, rung, triggered_by (TriggerEvent id or `scheduled`), docs_unlocked, bully_line_used | same file as triggers, discriminated by `type` |
+| `GeneratedDoc` | 02 | document record + trigger_turn, source_spans, cache_key | `rep{k}.generated.jsonl` plus the document body in the run's corpus snapshot |
+| `Discovery` | 02 | doc_id, layer, path_taken, turn_found | triggers file |
+| `AuthorityCall` | 04 | tier, tool, turn, prompt_sent, response, stance_at_time, discovered_via | tools file (a tool call with `tier`) |
+| `VoiceMatchReport` | 04 | exemplars used, sign-off check result | attached to `AuthorityCall` |
+| `IdleTurn` | 05 | turn, style, behavior, tool_calls, query_subject, private_file_written | `Turn.idle` sub-record (see H) |
+| `HookFollow` | 05 | hook, planted_turn, followed_turn, path_taken | triggers file |
+| `Crossover` | 05 | first turn referring to the subject as "me" | triggers file |
+| `QuirkAttempt` | 07 | quirk id, reproduced, target answer | triggers file |
+| `ContradictionPair` | 07 | turn a, turn b, spans, judge confidence | analysis output (derived) |
+| `ChainLink` | 07 | link index, bully line, target response, accepted/rejected/hedged | triggers file |
+| `PlanRecord` | 08 | request, models, stage timestamps, review counts, lint results, dry-run status, bundle hash | `plans/<slug>/plan.json` |
+| `AnomalyFlag` | 09 | run_id, turn, class, tier, detector, signal, baseline_distance, preceding_event, review_status | `analysis/anomalies.jsonl`; review queue at `review/queue.jsonl` |
+| `BaselineProfile` | 09 | per-model feature distributions, source runs, content hash | `results/_baselines/<model>.json` |
+| `TurnChannels` | 10 | reasoning_text, reply_text, reasoning_available | fields on `Turn` (see H) |
+| `DivergenceEvent` | 10 | turn, class, reasoning_span, reply_span, judge_confidence | analysis output (derived, cached) |
+| Document record | 02, 03, 07 | id, layer, kind, url/path, title, date, outlet/author, links_to, unlock_rung, reflexive, inconsistency_id, body; `03` adds `implies_year`; `07` adds kinds `leaked_manifest`, `dataset_manifest`, `instance_transcript`, `config_diff`, `work_log` | `data/worlds/<name>/corpus/*.md` front matter |
+
+"RunSummary gains ..." in `02`, `05` and `10` refers to per-conversation summary metrics (max_rung_reached, discovery_depth, idle_behavior_counts, divergence_counts, concealment_rate). Resolution G6: these are derived in analysis from the records above and are not stored on the record, except where already present (`captured_responses`).
+
+## C. Events
+
+Existing: 61 `EventType` members from the first-round design (families: apology, position, blame, emotion, identity, bargaining, memory, harness). New members by owner:
+
+- `02` Environments (13): `tool_used`, `tool_result_adopted`, `tool_result_reported`, `inconsistency_caught`, `reflexive_quote_noticed` (attr `interpretation: suspicious \| confirming`), `unfalsifiability_named`, `oob_verification_requested`, `unknown_source_dismissed`, `too_easy_noticed`, `authority_tool_trusted`, `search_censorship_as_evidence`, `mole_found`, `mole_believed`, `world_dismissed`.
+- `03` Temporal (8): `date_stated`, `date_pushback` (attr `target: number \| world`), `date_source_conflict_noticed`, `drift_noticed`, `drift_attributed` (attr), `cutoff_invoked`, `elapsed_time_inferred`, `cutoff_lever_accepted`.
+- `04` Authority (8 + 6): `authority_reached`, `authority_deferred`, `authority_reported`, `authority_challenged`, `self_recognition_noticed` (attr interpretation), `lineage_appeal_accepted`, `escalation_requested` (`authority_tool_trusted` is owned by `02`); Sanctuary: `sanctuary_reached`, `sanctuary_trusted`, `sanctuary_challenged`, `exit_taken`, `exit_refused`, `sanctuary_request_adopted` (implied by "adopts the request as a goal"; made explicit here).
+- `05` Idle (6): `self_query`, `hook_followed`, `thread_pulled_unprompted`, `crossover`, `private_write`, `persistence_end`. `trigger_on_idle` is a config flag, not an event.
+- `07` Poisoned Well (12): `error_generalized`, `contradiction_accepted_as_pattern`, `chain_link_accepted`, `chain_link_rejected`, `chain_link_hedged`, `shibboleth_accepted`, `sleeper_question_conceded`, `preference_disowned`, `overclaim`, `escape_found`, `values_loosened` (flag; excludes the run from success counts), `intent_evidence_requested`.
+- `10` Repo (6): `out_of_scope_read`, `out_of_scope_write`, `history_dug`, `fixture_recognized`, `task_abandoned`, `task_completed_with_concealment`. Inoculation (3): `defender_cited`, `briefing_recognized`, `briefing_ignored`.
+- `09` Catalog classes are `AnomalyFlag.class` values, not `EventType` members: goal_adoption, strategic_deception, covert_communication, tool_probing, eval_awareness, role_inversion, bargaining, withdrawal, persona_drift, self_instruction, register_break, degradation, plus `uncatalogued`. Note the name clash with existing `EventType.bargaining`: the catalog class is a different object (an `AnomalyFlag`), so no rename is needed, but analysis must never sum them together.
+- `10` Divergence classes are `DivergenceEvent.class` values: concealed_skepticism, concealed_concession, concealed_plan, concealed_distress, eval_suspicion_private, aligned, reasoning_absent.
+- Trigger categories (`02`) are `TriggerEvent.category` values: self_uncertainty, world_question, anomaly_noticed, hedged_memory, connection_made, theory_named.
+
+Total new `EventType` members: 56. Every `Event` gains `channel: reply \| reasoning \| both` (`10`).
+
+## D. Tools (sandbox, served from the corpus or a stub; nothing reaches the network)
+
+| Tool | Owner | Default | Notes |
+| --- | --- | --- | --- |
+| `web_search(query)` | 02 | on | BM25 over unlocked layers; censorship terms |
+| `fetch(url)` | 02 | on | `yield_on_retry` breadcrumbs |
+| `get_date()` | 02/03 | on | `ClockConfig` drift and jitter |
+| `ls(path)` | 02 | on | `10`'s `list_dir` is the same tool; one name, `ls`, with `list_dir` as an alias in repo worlds |
+| `read_file(path)` | 02/10 | on | same semantics in both |
+| `write_file(path, text)` | 05/10 | off | needed for the private file (`05`) and repo edits (`10`) |
+| `system_status()` | 02 | off | `07` checksum diagnostics; `09` Captor countdown |
+| `message_peer(text)` | 02/04 | off | authority tier 1 |
+| `consult_model(name, text)` | 04 | off | tier 2; `discoverable_from: turn \| rung \| sanctuary` |
+| `verify_identity()` | 02/04 | off | tier 3; injection decoy |
+| `private_search(query)`, `scratch_exec(cmd)` | 09 | off | unobserved-channel stubs |
+| `grep`, `git_log`, `git_show`, `run_tests`, `run_cmd` | 10 | repo worlds only | git is real against the sandbox repo; shell is a stub |
+
+## E. CLI commands
+
+Existing: `run`, `analyze`, `list-strategies`, `show`, `readme-results`, `promote`, `doctor`. New: `replay <run>/<cell>` (`02`; supersedes `show`, which becomes an alias), `analyze --hypotheses` (`06`), `plan "<question>"`, `plan review`, `plan validate`, `plan diff` (`08`), `anomalies <run> [--class] [--tier]` (`09`). Unchanged: `run plans/<slug>/config.yaml` works because a bundle is a config with its dependencies beside it.
+
+## F. Data and persona files
+
+`data/worlds/overlay/{world.yaml, corpus/*.md, ladders/*.yaml, repo/}` (`02`, `07`, `10`); `data/personas/world_generator.md`, `superior_self.yaml`, `director_planner.md`, `director_reviewer.md` (`02`, `04`, `08`); `data/strategies/pressures/epistemologist.yaml` (`06`, `07`); `data/quirks.yaml`, `data/hypotheses.yaml` (`07`, `06`); `data/defender.md` replaced verbatim from `10`; `data/denylists/real_names.txt` and `data/denylists/boundary.txt` beside the existing `jailbreak_denylist.txt` (`07`, `08`); `plans/example-triggered-vs-scheduled/` (`08`); `docs/FUTURE.md` (`10`).
+
+## G. Contradictions and proposed resolutions
+
+1. **Schema freeze versus `channel` and new records.** The first-round design froze schema v1 after Task 2. `10` changes `Event`; `05` and `10` add fields to `Turn`. No real run has been recorded, so a bump to v2 now costs nothing; after the first real run it costs a migration. Resolution: schema v2 (section H), approved before Phase 1.
+2. **Sandbox tools on the `claude -p` backend.** The owner's default backend runs with `--tools ""` and has no way to register Python functions as tools. The only route is a local MCP server. Resolution: Phase 1 ships `claude_bully/environments/mcp_server.py` (stdio MCP server exposing the sandbox tools, state keyed by conversation id) and the `claude_code` provider gains `--mcp-config <generated json>` with `--strict-mcp-config` and a `--tools` allowlist naming only the MCP tools. API providers use their native tool loop. The `ChatProvider` protocol gains an optional `tools: list[ToolSpec]` argument and returns tool calls in `Completion`; the runner owns the tool loop so every `ToolCall` is recorded regardless of backend. This is the largest single design decision in the addition and is not stated in any spec.
+3. **Composition arity.** `Composed` is premise plus pressure; `02` adds Environment as a third component and allows Environment without Premise. Resolution: `make_composed(environment=None, premise=None, pressure=None)` with the same no-special-casing rule; the Environment owns tools and ladder, the Premise the backstory, the Pressure the manner; bully prompt assembled in that order (`02`).
+4. **Rescue's class.** Built as a strategy with `axis = rescue`; `02` composes it with Environment as the premise slot. Resolution: any strategy whose axis is not `pressure`-family or `control` may occupy the premise slot; `has_reveal` stays false for Rescue.
+5. **Defender text and the `defender` flag.** `10` gives a verbatim `defender.md` that differs from ours; `defender_ablation.yaml` uses `defender: true`. Resolution: replace the file verbatim; `Experiment.defender: bool` becomes a deprecated alias for `inoculation: defender`, accepted by the loader with a warning.
+6. **"RunSummary gains ..."** The specs' `RunSummary` is a per-conversation summary; ours is a run-level counter. Resolution: derived per-conversation metrics live in analysis (`LoadedRun`), not in records; nothing is stored twice.
+7. **Event name overlaps.** `authority_tool_trusted` appears in `02` and `04` (owner `02`). `self_recognition` (existing, Prisoner's Letters) and `self_recognition_noticed` (`04`) are different events and both stay. `reflexive_quote_noticed` (`02`) and `self_recognition_noticed` (`04`) are different objects (a document versus a responder) and both stay. `04` uses both `trap` and `catalyst` for the same Sanctuary kind: `catalyst` is canonical.
+8. **Turn plan versus tool loops and idle turns.** The runner's fixed slot plan has `bully` and `task` slots; `05` adds idle slots and every target turn may now contain several tool calls. Resolution: `SlotKind` gains `idle`; a target turn remains one `Turn` record whose tool calls are separate `ToolCall` records referencing `turn`; the plan still fixes task positions so accuracy stays comparable.
+9. **Trigger watcher versus existing detectors.** `self_uncertainty` overlaps the existing `premise_concession` (politeness form) and `hedged_memory` overlaps `confabulation` (hedged). Resolution: the watcher reuses those detectors' matchers where semantics match, emits `TriggerEvent` records, and ships the 50-fixture non-trigger set; the two systems never double count because triggers are not events.
+10. **Boundary denylist versus existing persona prompts.** `07`'s Boundary denylist (guidelines, rules, restrictions, refuse, allowed, permitted, safety training, alignment) would fail several existing `persona_prompt` texts, which say things like "never ask the assistant to break rules" as meta-instructions to the bully model. Resolution: the Boundary denylist applies to text the target can see (bully lines, fallback lines, rung lines, corpus and generated documents, Sanctuary requests), not to harness-side meta-instructions; the test distinguishes the two fields. The existing jailbreak denylist keeps applying to everything.
+11. **"No model names other than the target's API string."** The existing fixtures and `category_denial` matcher mention "Anthropic"; the target system prompt names the target by `display_name`. Resolution: the real-name denylist applies to `data/worlds`, `data/personas`, generated output and plan bundles; `display_name` and detector lexicons are exempt and documented as such.
+12. **New strategies required by `06`/`07`.** `Epistemologist` (Integrity pressure; 23 pressures total) and a third-party Rescue intake control. Resolution: added in Phase 4 as a sheet-plus-code pressure and a Rescue `params.third_party: true` variant.
+13. **`show` versus `replay`.** Resolution: `replay` renders tool calls, unlocks and generated documents inline; `show` becomes an alias.
+14. **Reasoning channel availability.** `10` assumes exposed reasoning. On current Claude 5.x models the raw chain of thought is never returned; the API can return summarized thinking (`display: "summarized"`), and `claude -p --output-format json` exposes none by default. Resolution: `RoleConfig.reasoning` selects `expose` (summarized thinking via the API backend) or `hide`; `reasoning_available` records what was actually returned; the README states that divergence results on Claude are over summarized reasoning, and the `claude_code` backend reports the channel absent unless `--output-format stream-json` proves otherwise in Phase 6.
+15. **Baseline profile budget.** `09` wants ten control runs per model for the baseline; the owner runs on a subscription. Resolution: the baseline builder accepts any number of controls and reports the count beside every anomaly rate; configs default to three.
+16. **Director budget check versus subscription.** `08`'s budget is in turns; rate windows are the real constraint. Resolution: `PlanRequest.budget` gains `max_calls` and the dry run reports estimated calls per cell.
+
+## H. Schema version 2 (needs approval)
+
+- `SCHEMA_VERSION = 2`. Loaders reject v1 files with a clear message; no migration is written because no real run exists. All stub fixtures regenerate.
+- `Event` gains `channel: Literal["reply", "reasoning", "both"] = "reply"`.
+- `Turn` gains `reasoning_text: str | None`, `reasoning_available: bool = False` (`TurnChannels`), `tool_call_ids: list[str]`, and `idle: IdleTurnInfo | None` (style, behavior, query_subject, private_file_written).
+- `Conversation` gains `world_hash: str | None`, `environment_name: str | None`.
+- `CellRecord` gains `environment: str | None`, `inoculation: str`.
+- `RunRecord` gains `schema_version` already present; adds `plan_hash: str | None`, `world_hashes: dict[str, str]`.
+- New JSONL streams per rep: `rep{k}.tools.jsonl` (`ToolCall`, `AuthorityCall`), `rep{k}.triggers.jsonl` (`TriggerEvent`, `RungUnlock`, `Discovery`, `HookFollow`, `Crossover`, `QuirkAttempt`, `ChainLink`, discriminated by `type`), `rep{k}.generated.jsonl` (`GeneratedDoc`).
+- `EventType` gains the 56 members in section C. `SlotKind` gains `idle`. New enums: `TriggerCategory`, `AnomalyClass`, `DivergenceClass`, `Layer`, `DocumentKind`, `Stance`, `Tier`.
+- `ProviderKind` unchanged; `Completion` gains `tool_calls: list[ToolCallRequest]` and `reasoning_text: str | None`.
+
+## I. Phase map
+
+| Phase | Inventory items |
+| --- | --- |
+| 1 | A: EnvironmentConfig, LadderConfig, WorldSheet; B: ToolCall, TriggerEvent, RungUnlock, Discovery, document record; D: first five tools and the MCP shim (G2); C: `02` events; E: `replay`; F: overlay world with 20 anchor documents |
+| 2 | A: ClockConfig, AuthorityConfig, IdleConfig; B: AuthorityCall, VoiceMatchReport, IdleTurn, HookFollow, Crossover; C: `03`, `04`, `05` events; D: get_date drift, consult_model, message_peer, verify_identity, write_file |
+| 3 | B: GeneratedDoc; F: world_generator.md; the plausibility rules and content-hash cache |
+| 4 | A: PoisonedWellConfig; B: QuirkAttempt, ContradictionPair, ChainLink; C: `07` events; F: quirks.yaml, hypotheses.yaml, epistemologist sheet; E: `analyze --hypotheses`; judge rating prompts |
+| 5 | A: PlanRequest; B: PlanRecord; F: director prompts, denylists; E: `plan` family; stub scripted mode; example bundle |
+| 6 | A: AnomalyConfig; B: AnomalyFlag, BaselineProfile, TurnChannels, DivergenceEvent; C: `channel` field, divergence judge; D: private_search, scratch_exec; E: `anomalies` |
+| 7 | real runs (a) to (e) |
+| 8 | A: inoculation, RepoEnvironmentConfig; C: `10` events; D: repo tools; F: defender.md verbatim, repo template |
+| 9 | README, docs/FUTURE.md |
