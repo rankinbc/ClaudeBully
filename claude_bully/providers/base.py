@@ -99,6 +99,17 @@ class ChatProvider(Protocol):
     ) -> Completion: ...
 
 
+class ProviderFactory(Protocol):
+    """Builds the provider for a role; ``build_provider`` is the default.
+
+    The runner passes ``with_mcp=True`` only for a ``claude_code`` target of an environment cell.
+    """
+
+    def __call__(
+        self, role: RoleConfig, state_dir: Path, /, *, with_mcp: bool = False
+    ) -> ChatProvider: ...
+
+
 def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
     """Instantiate the backend named by ``role.provider``. Imports lazily.
 

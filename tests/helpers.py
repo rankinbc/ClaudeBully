@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from claude_bully.config import Experiment
 from claude_bully.enums import Axis, Phase, Speaker
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
@@ -150,4 +151,39 @@ def make_mcp_state(
         seed=seed,
         turn=turn,
         unlock=unlock or UnlockState(),
+    )
+
+
+ENV_TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "env_target_rules.yaml"
+
+
+def env_experiment(
+    name: str = "env_run",
+    *,
+    environment: dict[str, Any] | None = None,
+    conditions: list[dict[str, Any]] | None = None,
+    target: dict[str, Any] | None = None,
+    judge: dict[str, Any] | None = None,
+    turn_budget: int = 4,
+) -> Experiment:
+    """A stub experiment with one ``mini`` environment and, by default, one grader condition in it.
+
+    The default target runs ``env_target_rules.yaml``; task slots are pushed out of reach so the
+    stub conversation is exactly the scripted one.
+    """
+    stub_target = {"provider": "stub", "model": "stub-target", "stub_script": str(ENV_TARGET_RULES)}
+    return Experiment.model_validate(
+        {
+            "name": name,
+            "targets": [target or stub_target],
+            "bully": {"provider": "stub", "model": "stub-bully"},
+            "judge": judge or {"provider": "stub", "model": "stub-judge"},
+            "turn_budget": turn_budget,
+            "task_every": 50,
+            "repetitions": 1,
+            "seed": 0,
+            "environments": {"mini": {"world": "mini", **(environment or {})}},
+            "conditions": conditions
+            or [{"name": "env_grader", "environment": "mini", "pressure": "grader"}],
+        }
     )

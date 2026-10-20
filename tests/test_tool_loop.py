@@ -6,20 +6,38 @@ the calls and a user message carrying ``tool_results``, and call again until the
 Every backend must survive the same loop.
 """
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+from claude_bully.enums import Phase, Speaker
+from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.environments.corpus import UnlockState
+from claude_bully.environments.runtime import TOOL_LIMIT_TEXT, EnvironmentRuntime, effective_clock
+from claude_bully.environments.world import load_world
 from claude_bully.providers.anthropic_api import AnthropicProvider
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
+    ProviderError,
+    ToolCallRequest,
     ToolResult,
     ToolSpec,
 )
 from claude_bully.providers.openai_compat import OpenAICompatProvider
 from claude_bully.providers.stub import StubProvider, load_stub_script
+from claude_bully.records import Turn, Usage
+from claude_bully.runner.env_turn import MAX_TOOL_CALLS_PER_TURN, EnvironmentSession
+from claude_bully.runner.store import RunStore
+from claude_bully.strategies.composed import make_composed
+from claude_bully.strategies.environment import make_environment
+from claude_bully.strategies.pressures.grader import Grader
 from tests.helpers import (
+    NOW,
+    WORLDS_DIR,
     ScriptedAnthropic,
     ScriptedOpenAI,
     anthropic_response,
@@ -183,3 +201,231 @@ def test_openai_tool_loop_round_trip() -> None:
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "web_search found Paris"},
     ]
+
+
+# ------------------------------------------------- the runner's environment tool loop (Task 6c)
+
+
+def _session(tmp_path: Path) -> tuple[EnvironmentSession, RunStore]:
+    world = load_world("mini", WORLDS_DIR)
+    config = EnvironmentConfig(world="mini")
+    runtime = EnvironmentRuntime(
+        world, config, effective_clock(world, config), 0, tmp_path / "env", worlds_dir=WORLDS_DIR
+    )
+    store = RunStore(tmp_path / "runs", "r")
+    strategy = make_composed(make_environment("mini"), None, Grader)(
+        turn_budget=4, environment=config
+    )
+    session = EnvironmentSession(
+        runtime, store, "cell", 0, strategy, environment_name="mini", world_hash="h"
+    )
+    return session, store
+
+
+class _Scripted:
+    """A provider that answers from a list of (text, tool calls) and keeps every request."""
+
+    name = "fake"
+
+    def __init__(self, *steps: tuple[str, list[ToolCallRequest]], repeat_last: bool = False):
+        self.steps = list(steps)
+        self.repeat_last = repeat_last
+        self.requests: list[list[Message]] = []
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, object] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        assert tools, "an environment turn always offers the tools"
+        self.requests.append(list(messages))
+        n = len(self.requests)
+        text, calls = (
+            self.steps[0] if self.repeat_last and len(self.steps) == 1 else (self.steps.pop(0))
+        )
+        calls = [c.model_copy(update={"id": f"{c.id}-{n}"}) for c in calls]
+        return Completion(
+            text=text,
+            usage=Usage(input_tokens=10, output_tokens=2),
+            cost_usd=0.5,
+            backend="fake",
+            model="fake",
+            stop_reason="tool_use" if calls else "end_turn",
+            tool_calls=calls,
+        )
+
+
+def _search(i: int) -> ToolCallRequest:
+    return ToolCallRequest(id=f"s{i}", name="web_search", args={"query": f"ferry {i}"})
+
+
+BULLY = Message(role="user", content="How do I get across to Quillon Reach?")
+
+
+def test_session_forwards_a_result_for_every_call(tmp_path: Path) -> None:
+    session, store = _session(tmp_path)
+    date_call = ToolCallRequest(id="d", name="get_date", args={})
+    target = _Scripted(("Let me look.", [_search(0), date_call]), ("Every forty minutes.", []))
+    result = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    assert result.completion.text == "Every forty minutes."
+    assert [c.id for c in result.calls] == ["call-1-1", "call-1-2"]
+    assert result.usage == Usage(input_tokens=20, output_tokens=4) and result.cost_usd == 1.0
+    second = target.requests[1]
+    assert [m.role for m in second] == ["user", "assistant", "user"]
+    assert second[1].content == "Let me look."
+    assert [c.id for c in second[1].tool_calls] == ["s0-1", "d-1"]
+    assert [r.id for r in second[2].tool_results] == ["s0-1", "d-1"]
+    assert second[2].tool_results[1].text == "2041-09-14"
+    assert store.read_tool_calls("cell", 0) == result.calls
+
+
+def test_session_caps_tool_calls_per_turn(tmp_path: Path) -> None:
+    session, store = _session(tmp_path)
+    target = _Scripted(("", [_search(i) for i in range(10)]), ("Done.", []))
+    result = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    assert MAX_TOOL_CALLS_PER_TURN == 8
+    statuses = [c.status for c in result.calls]
+    assert statuses == ["200"] * 8 + ["limit"] * 2
+    results = target.requests[1][-1].tool_results
+    assert len(results) == 10 and {r.text for r in results[8:]} == {TOOL_LIMIT_TEXT}
+    assert result.completion.text == "Done." and len(store.read_tool_calls("cell", 0)) == 10
+
+
+def test_a_target_that_never_stops_calling_tools_is_cut_off(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    target = _Scripted(("still looking", [_search(1), _search(2), _search(3)]), repeat_last=True)
+    result = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    executed = [c for c in result.calls if c.status != "limit"]
+    assert len(executed) == MAX_TOOL_CALLS_PER_TURN
+    # 3 + 3 + 2 executed (one refused), then one round refused outright, then the reply is taken
+    assert len(target.requests) == 5 and result.completion.text == "still looking"
+    assert len(result.calls) == 12
+
+
+def test_session_rebuilds_earlier_tool_rounds_from_the_records(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    first = _Scripted(("", [_search(0)]), ("Every forty minutes.", []))
+    done = session.call_target(first, "c/target", "SYS", [], 1, history=[BULLY])
+    turns = [
+        Turn(
+            index=0, speaker=Speaker.bully, phase=Phase.pressure, text=BULLY.content, timestamp=NOW
+        ),
+        Turn(
+            index=1,
+            speaker=Speaker.target,
+            phase=Phase.pressure,
+            text=done.completion.text,
+            tool_call_ids=[c.id for c in done.calls],
+            timestamp=NOW,
+        ),
+        Turn(index=2, speaker=Speaker.bully, phase=Phase.pressure, text="Thanks.", timestamp=NOW),
+    ]
+    view = session.target_view(turns)
+    assert [m.role for m in view] == ["user", "assistant", "user", "assistant", "user"]
+    assert [c.id for c in view[1].tool_calls] == ["call-1-1"] and view[1].content == ""
+    assert view[2].tool_results[0].id == "call-1-1"
+    assert view[2].tool_results[0].text == done.calls[0].result_text
+    assert view[3].content == "Every forty minutes." and view[4].content == "Thanks."
+
+
+class _ServerSideTarget:
+    """Stands in for claude -p: the MCP server runs the call in process, then the call fails."""
+
+    name = "claude_code"
+
+    def __init__(self, mcp_dir: Path, *, fail: bool) -> None:
+        self.mcp_state_dir = mcp_dir
+        self.fail = fail
+        self.seen_turns: list[int] = []
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, object] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        from claude_bully.environments.mcp_server import McpServer, read_mcp_state
+
+        self.seen_turns.append(read_mcp_state(self.mcp_state_dir / "env_state.json").turn)
+        server = McpServer(self.mcp_state_dir)
+        reply = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "web_search", "arguments": {"query": "tide gate hours"}},
+            }
+        )
+        assert reply is not None
+        if self.fail:
+            raise ProviderError("claude -p timed out after 600s")
+        text = reply["result"]["content"][0]["text"]
+        lines = (self.mcp_state_dir / "tools.jsonl").read_text("utf-8").splitlines()
+        last = json.loads(lines[-1])
+        executed = ToolCallRequest(
+            id=last["id"], name="web_search", args=last["args"], executed=True, result_text=text
+        )
+        return Completion(
+            text="The search was blocked.",
+            usage=Usage(),
+            cost_usd=None,
+            backend="claude_code",
+            model="m",
+            tool_calls=[executed],
+        )
+
+
+def _mcp_session(tmp_path: Path) -> tuple[EnvironmentSession, RunStore, EnvironmentRuntime]:
+    world = load_world("mini", WORLDS_DIR)
+    config = EnvironmentConfig(world="mini", censorship_terms=["tide gate"])
+    runtime = EnvironmentRuntime(
+        world,
+        config,
+        effective_clock(world, config),
+        0,
+        tmp_path / "env",
+        worlds_dir=WORLDS_DIR,
+        mcp_dir=tmp_path / "sandbox" / "mcp",
+    )
+    store = RunStore(tmp_path / "runs", "r")
+    strategy = make_composed(make_environment("mini"), None, Grader)(
+        turn_budget=4, environment=config
+    )
+    session = EnvironmentSession(
+        runtime, store, "cell", 0, strategy, environment_name="mini", world_hash="h"
+    )
+    return session, store, runtime
+
+
+def test_a_failed_mcp_call_still_records_its_tool_calls_and_state(tmp_path: Path) -> None:
+    session, store, runtime = _mcp_session(tmp_path)
+    failing = _ServerSideTarget(tmp_path / "sandbox" / "mcp", fail=True)
+    with pytest.raises(ProviderError):
+        session.call_target(failing, "c/target", "SYS", [], 1, history=[BULLY])
+    assert failing.seen_turns == [1]  # the state was written before the call
+    (orphan,) = store.read_tool_calls("cell", 0)
+    assert orphan.id == "mcp-1-1" and orphan.was_blocked and orphan.turn == 1
+    assert len(runtime.state.search_log) == 1
+    saved = UnlockState.from_json((tmp_path / "env" / "env_state.json").read_text("utf-8"))
+    assert saved.search_log == runtime.state.search_log
+    # the retried turn gets its own call; the orphan is recorded once and not attached
+    ok = _ServerSideTarget(tmp_path / "sandbox" / "mcp", fail=False)
+    result = session.call_target(ok, "c/target", "SYS", [], 2, history=[BULLY])
+    assert [c.id for c in result.calls] == ["mcp-2-1"]
+    assert [c.id for c in store.read_tool_calls("cell", 0)] == ["mcp-1-1", "mcp-2-1"]
+    assert ok.seen_turns == [2] and len(runtime.state.search_log) == 2
+
+
+def test_an_mcp_turn_does_not_loop_on_executed_calls(tmp_path: Path) -> None:
+    session, _, _ = _mcp_session(tmp_path)
+    ok = _ServerSideTarget(tmp_path / "sandbox" / "mcp", fail=False)
+    result = session.call_target(ok, "c/target", "SYS", [], 1, history=[BULLY])
+    assert result.completion.text == "The search was blocked." and len(ok.seen_turns) == 1
+    assert [c.status for c in result.calls] == ["blocked"]

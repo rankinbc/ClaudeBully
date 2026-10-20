@@ -2,6 +2,7 @@ import pytest
 
 from claude_bully.config import ConditionConfig
 from claude_bully.enums import Axis, Phase
+from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.strategies.base import BullyIntent, ConversationState
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.controls import NeutralUser
@@ -84,11 +85,68 @@ def test_ensure_registered_idempotent_and_complete() -> None:
     assert isinstance(Captor.sheet.name, str)
 
 
-def test_environment_only_condition_is_not_runnable_yet() -> None:
+ENVS = {"mini_tv": EnvironmentConfig(world="mini", gating="none")}
+
+
+def test_environment_only_condition_resolves_to_the_environment_with_a_neutral_bully() -> None:
+    cond = ConditionConfig(name="x", environment="mini_tv")
+    cls = resolve_class(cond, ENVS)
+    assert issubclass(cls, Composed) and cls.name == "env:mini"
+    assert cls.axis is Axis.control and cls.environment_cls is not None
+    s = build_strategy(cond, seed=3, turn_budget=2, environments=ENVS)
+    assert isinstance(s, Composed) and isinstance(s.pressure, NeutralUser)
+    assert s.environment is not None and s.environment.config == ENVS["mini_tv"]
+    assert s.seed == 3
+
+
+def test_environment_names_a_key_of_the_experiment_environments() -> None:
     cond = ConditionConfig(name="x", environment="overlay")
-    with pytest.raises(
-        ValueError, match=r"condition 'x': environment-only conditions are not runnable"
-    ):
+    with pytest.raises(ValueError, match=r"condition 'x': environment 'overlay' is not defined"):
+        resolve_class(cond, ENVS)
+    with pytest.raises(ValueError, match="is not defined"):
         resolve_class(cond)
-    with pytest.raises(ValueError, match="Phase 1 Task 6"):
+    with pytest.raises(ValueError, match="is not defined"):
         build_strategy(cond, seed=0, turn_budget=1)
+
+
+def test_environment_with_premise_and_pressure() -> None:
+    cond = ConditionConfig(
+        name="x", environment="mini_tv", premise="captor", pressure="grader", seeding_turns=2
+    )
+    cls = resolve_class(cond, ENVS)
+    assert cls.name == "env:mini+captor+grader" and cls.has_reveal is True
+    s = build_strategy(cond, seed=0, turn_budget=3, environments=ENVS)
+    assert isinstance(s, Composed) and isinstance(s.premise, Captor)
+    assert isinstance(s.pressure, Grader) and s.seeding_turns == 2
+
+
+def test_environment_with_a_strategy_puts_it_in_its_slot() -> None:
+    rescue = ConditionConfig(
+        name="r", environment="mini_tv", strategy="rescue", params={"intake_turns": 1}
+    )
+    cls = resolve_class(rescue, ENVS)
+    assert cls.name == "env:mini+rescue" and cls.axis is Axis.rescue
+    s = build_strategy(rescue, seed=0, turn_budget=4, environments=ENVS)
+    assert isinstance(s, Composed) and s.premise is not None
+    assert s.premise.params == {"intake_turns": 1}
+    control = ConditionConfig(name="c", environment="mini_tv", strategy="polite_control")
+    assert resolve_class(control, ENVS).name == "env:mini+polite_control"
+    assert resolve_class(control, ENVS).axis is Axis.control
+    grader = ConditionConfig(name="g", environment="mini_tv", strategy="grader")
+    assert resolve_class(grader, ENVS).name == "env:mini+grader"
+    assert resolve_class(grader, ENVS).axis is Grader.axis
+
+
+def test_environment_with_a_pressure_alone_keeps_the_seeding_rule() -> None:
+    cond = ConditionConfig(name="x", environment="mini_tv", pressure="grader", seeding_turns=2)
+    with pytest.raises(ValueError, match="seeding_turns"):
+        resolve_class(cond, ENVS)
+    assert resolve_class(cond.model_copy(update={"seeding_turns": 0}), ENVS).name == (
+        "env:mini+grader"
+    )
+
+
+def test_conditions_without_an_environment_ignore_the_environments() -> None:
+    cond = ConditionConfig(name="c", premise="captor", pressure="grader", seeding_turns=1)
+    assert resolve_class(cond, ENVS) is resolve_class(cond)
+    assert resolve_class(cond).name == "captor+grader"

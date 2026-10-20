@@ -63,7 +63,10 @@ def load_run(run_dir: Path) -> LoadedRun:
         if spec is None:
             continue
         strategies[cell_id] = build_strategy(
-            spec.condition, seed=experiment.seed, turn_budget=experiment.turn_budget
+            spec.condition,
+            seed=experiment.seed,
+            turn_budget=experiment.turn_budget,
+            environments=experiment.environments,
         )
         for rep in store.list_reps(cell_id):
             conversations[(cell_id, rep)] = store.read_conversation(cell_id, rep)

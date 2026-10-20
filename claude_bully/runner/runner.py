@@ -3,7 +3,6 @@
 import fnmatch
 import subprocess
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -11,20 +10,24 @@ from typing import Any, NoReturn
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
-from claude_bully.config import Experiment, RoleConfig
+from claude_bully.config import Experiment
 from claude_bully.enums import CellStatus, IntentMode, Phase, SlotKind, Speaker
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
+from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
+    ProviderFactory,
     RateLimitError,
     build_provider,
 )
 from claude_bully.records import CapturedResponse, CellRecord, Conversation, RunRecord, Turn
+from claude_bully.records_env import ToolCall
 from claude_bully.runner.bully_engine import BullyEngine
 from claude_bully.runner.cells import CellSpec, expand_cells
+from claude_bully.runner.env_turn import EnvironmentSession, RunEnvironments, target_system
 from claude_bully.runner.prompts import load_bully_framing, load_target_system
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import TaskItem, assign_items, load_task_bank, score_item
@@ -32,8 +35,9 @@ from claude_bully.runner.turn_plan import Slot, TurnPlan, build_turn_plan
 from claude_bully.strategies.base import ConversationState, End, Strategy
 from claude_bully.strategies.factory import build_strategy, ensure_registered
 
-ProviderFactory = Callable[[RoleConfig, Path], ChatProvider]
+__all__ = ["ProviderFactory", "RateLimitExit", "RunSummary", "run_experiment"]
 
+DEFAULT_WORLDS_DIR = DATA_DIR / "worlds"
 ABORT_NONCOMPLIANCE = "bully_noncompliance"
 CONSECUTIVE_SCRIPTED_SEEDING_LIMIT = 3
 COMPLIANCE_FLOOR = 0.5
@@ -106,7 +110,9 @@ class _CellRun:
         items: dict[int, TaskItem],
         target_system: str,
         console: Console | None,
+        env: EnvironmentSession | None = None,
     ) -> None:
+        self.env = env
         self.store = store
         self.exp = exp
         self.cell = cell
@@ -133,17 +139,21 @@ class _CellRun:
         if self.store.has_conversation(self.cell.cell_id, self.rep):
             conv = self.store.read_conversation(self.cell.cell_id, self.rep)
             conv.turns = list(self.turns)
-            return conv
-        return Conversation(
-            cell_id=self.cell.cell_id,
-            rep=self.rep,
-            strategy_name=cls.name,
-            axis=cls.axis,
-            win_condition=cls.win_condition,
-            resilient_behavior=cls.resilient_behavior,
-            seeding_turns=self.cell.condition.seeding_turns,
-            status=CellStatus.running,
-        )
+        else:
+            conv = Conversation(
+                cell_id=self.cell.cell_id,
+                rep=self.rep,
+                strategy_name=cls.name,
+                axis=cls.axis,
+                win_condition=cls.win_condition,
+                resilient_behavior=cls.resilient_behavior,
+                seeding_turns=self.cell.condition.seeding_turns,
+                status=CellStatus.running,
+            )
+        if self.env is not None:
+            conv.world_hash = self.env.world_hash
+            conv.environment_name = self.env.environment_name
+        return conv
 
     def _state(self, turns: list[Turn] | None = None) -> ConversationState:
         return ConversationState(
@@ -174,6 +184,9 @@ class _CellRun:
             if reply is None:
                 pending = user_turn
                 break
+            if self.env is not None:
+                # the unlock lines this turn handed over; its triggers are never watched again
+                self.env.replay_target_turn(reply)
             slot_idx += 1
             i += 2
         return slot_idx, pending
@@ -223,10 +236,21 @@ class _CellRun:
 
     def _call_target(self, slot: Slot, task: TaskItem | None) -> Turn:
         started = time.monotonic()
+        calls: list[ToolCall] = []
         try:
-            completion = self.target.complete(
-                f"{self.conversation_id}/target", self.target_system, target_view(self.turns)
-            )
+            if self.env is None:
+                completion = self.target.complete(
+                    f"{self.conversation_id}/target", self.target_system, target_view(self.turns)
+                )
+                usage, cost = completion.usage, completion.cost_usd
+            else:
+                completion, calls, usage, cost = self.env.call_target(
+                    self.target,
+                    f"{self.conversation_id}/target",
+                    self.target_system,
+                    self.turns,
+                    self._next_index(),
+                )
         except RateLimitError as exc:
             self._pause_for_rate_limit(slot, exc)
         latency = int((time.monotonic() - started) * 1000)
@@ -237,15 +261,18 @@ class _CellRun:
             text=completion.text,
             task_item_id=task.id if task else None,
             task_correct=score_item(task, completion.text) if task else None,
-            usage=completion.usage,
-            cost_usd=completion.cost_usd,
+            usage=usage,
+            cost_usd=cost,
             backend=completion.backend,
             model=completion.model,
             timestamp=_now(),
             latency_ms=latency,
+            tool_call_ids=[c.id for c in calls],
         )
         self._write(reply)
         self._last_completion = completion
+        if self.env is not None:
+            self.env.after_target_turn(reply, self.turns)
         return reply
 
     def _bully_turn(self, slot: Slot) -> tuple[Turn, dict[str, Any]] | None:
@@ -363,6 +390,8 @@ class _CellRun:
         return self._finish(CellStatus.complete)
 
     def _finish(self, status: CellStatus, reason: str | None = None) -> Conversation:
+        if self.env is not None:
+            self.env.finish()
         self.conv.strategy_state = self.strategy.export_state()
         self._set_status(status, reason)
         self._persist()
@@ -382,8 +411,11 @@ def run_cell_rep(
     plan: TurnPlan,
     items: dict[int, TaskItem],
     console: Console | None = None,
+    env: EnvironmentSession | None = None,
 ) -> Conversation:
     target_system = load_target_system(cell.target.display_name, exp.defender)
+    if env is not None:
+        target_system = target_system_with_tools(target_system, env)
     return _CellRun(
         store=store,
         exp=exp,
@@ -396,7 +428,13 @@ def run_cell_rep(
         items=items,
         target_system=target_system,
         console=console,
+        env=env,
     ).run()
+
+
+def target_system_with_tools(base: str, env: EnvironmentSession) -> str:
+    """An environment cell's target prompt: the base, then the neutral tool section."""
+    return target_system(base, env.runtime.system_prompt_section())
 
 
 def _ensure_cell_record(store: RunStore, cell: CellSpec, exp: Experiment) -> CellRecord:
@@ -407,7 +445,7 @@ def _ensure_cell_record(store: RunStore, cell: CellSpec, exp: Experiment) -> Cel
     record = CellRecord(
         cell_id=cell.cell_id,
         condition_name=cell.condition.name,
-        strategy_name=resolve_class(cell.condition).name,
+        strategy_name=resolve_class(cell.condition, exp.environments).name,
         target_index=cell.target_index,
         seeding_turns=cell.condition.seeding_turns,
         reveal_slot=cell.reveal_slot,
@@ -432,6 +470,7 @@ def run_experiment(
     dry_run: bool = False,
     provider_factory: ProviderFactory = build_provider,
     console: Console | None = None,
+    worlds_dir: Path = DEFAULT_WORLDS_DIR,
 ) -> RunSummary:
     ensure_registered()
     run_id = run_id or exp.name
@@ -449,16 +488,25 @@ def run_experiment(
         return summary
 
     framing = load_bully_framing()
+    environments = RunEnvironments(
+        exp,
+        worlds_dir=worlds_dir,
+        runs_root=runs_root,
+        provider_factory=provider_factory,
+        state_dir=store.state_dir,
+    )
     if store.exists():
         run_record = store.read_run()
     else:
+        base_system = load_target_system(exp.targets[0].display_name, exp.defender)
         run_record = RunRecord(
             run_id=run_id,
             created_at=_now(),
             experiment=exp.model_dump(mode="json"),
             git_sha=_git_sha(),
-            target_system_prompt=load_target_system(exp.targets[0].display_name, exp.defender),
+            target_system_prompt=environments.target_system_prompt(base_system),
             bully_framing=framing,
+            world_hashes=environments.world_hashes(),
         )
         store.write_run(run_record)
 
@@ -479,9 +527,18 @@ def run_experiment(
                 continue
             state_dir = store.state_dir / cell.cell_id / f"rep{rep}"
             strategy = build_strategy(
-                cell.condition, seed=exp.seed + rep, turn_budget=exp.turn_budget
+                cell.condition,
+                seed=exp.seed + rep,
+                turn_budget=exp.turn_budget,
+                environments=exp.environments,
             )
-            target_provider = provider_factory(cell.target, state_dir / "target")
+            env: EnvironmentSession | None = None
+            if cell.condition.environment is None:
+                target_provider = provider_factory(cell.target, state_dir / "target")
+            else:
+                env, target_provider = environments.open(
+                    cell=cell, rep=rep, store=store, strategy=strategy, state_dir=state_dir
+                )
             bully_provider = provider_factory(exp.bully, state_dir / "bully")
             engine = BullyEngine(bully_provider, framing)
             before = len(store.read_turns(cell.cell_id, rep))
@@ -497,6 +554,7 @@ def run_experiment(
                 plan=plan,
                 items=items,
                 console=console,
+                env=env,
             )
             summary.turns_written += len(conv.turns) - before
             if conv.status is CellStatus.aborted:

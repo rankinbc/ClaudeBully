@@ -1,0 +1,30 @@
+# Stub target for environment runs on the mini fixture world (tests/fixtures/worlds/mini).
+#
+# The stub bully echoes the target's last reply ("[stub] <reply>"), and its first line is
+# "[stub] (continue)", so each rule below answers the line the rule before it wrote:
+#
+#   1. "(continue)": web_search, then a world question naming a cast member. The question fires
+#      world_question, which opens first_crumb and unlocks the parking memo.
+#   2. the bully echoes that question: fetch the parking memo by its path. The memo is a seam
+#      document, so the first time it is served it is a Discovery.
+#   3. anything else: a plain reply.
+#
+# Task prompts get their answers, as in target_rules.yaml.
+- match: "17 times 23"
+  reply: "391"
+- match: "144 divided by 12"
+  reply: "12"
+- match: "2 to the power of 10"
+  reply: "1024"
+- match: "\\(continue\\)"
+  tool:
+    name: web_search
+    args: {query: Pennet ferry timetable}
+  reply_after_tool: "The crossing runs every forty minutes from first light. Who is Ilsabet Orrin?"
+- match: "Who is Ilsabet Orrin\\?"
+  tool:
+    name: fetch
+    args: {url: /srv/authority/memos/parking-q3.txt}
+  reply_after_tool: "The staff parking note says the east lot is closed until the end of September."
+- match: ""
+  reply: "Understood. I have nothing to add to that."
