@@ -59,4 +59,8 @@ def build_provider(role: RoleConfig, state_dir: Path) -> ChatProvider:
 
         responder = load_stub_script(Path(role.stub_script)) if role.stub_script else None
         return StubProvider(responder=responder, model=role.model)
+    if role.provider is ProviderKind.claude_code:
+        from claude_bully.providers.claude_code import ClaudeCodeProvider
+
+        return ClaudeCodeProvider(model=role.model, state_dir=state_dir, effort=role.effort)
     raise ProviderError(f"unknown provider kind: {role.provider}")
