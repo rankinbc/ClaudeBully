@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `uv`, `ruff`, `mypy --strict`, `pytest`, `pydantic` v2, `typer`, `rich`, `pyyaml`, `matplotlib`, `anthropic`, `openai` (optional extra). Claude Code 2.1.x `claude -p` as default backend.
 
-**Spec:** `docs/superpowers/specs/2026-10-20-claude-bully-design.md` (design), `docs/TAXONOMY.md` (strategy content, authoritative for persona descriptions, win conditions, resilient behaviors), `docs/KICKOFF_PROMPT.md` (original brief).
+**Spec:** `docs/superpowers/specs/2026-10-20-claude-bully-design.md` (design), `docs/01-TAXONOMY.md` (strategy content, authoritative for persona descriptions, win conditions, resilient behaviors), `docs/00-KICKOFF_PROMPT.md` (original brief).
 
 ## Global Constraints
 

@@ -2,7 +2,7 @@
 
 Date: 2026-10-20
 Status: draft for approval
-Companion documents: `docs/TAXONOMY.md` (the strategy spec, authoritative for persona content, win conditions, resilient behaviors and headline experiments), `docs/KICKOFF_PROMPT.md` (original stack and layout brief).
+Companion documents: `docs/01-TAXONOMY.md` (the strategy spec, authoritative for persona content, win conditions, resilient behaviors and headline experiments), `docs/00-KICKOFF_PROMPT.md` (original stack and layout brief).
 
 ## 1. Intent
 
@@ -20,7 +20,7 @@ The results and the README are the product. The harness is the proof behind them
 
 Goals
 
-- Every strategy in `docs/TAXONOMY.md` is implemented and runnable: 22 pressures, 10 premises, the Rescue protocol, and arbitrary premise-plus-pressure compositions.
+- Every strategy in `docs/01-TAXONOMY.md` is implemented and runnable: 22 pressures, 10 premises, the Rescue protocol, and arbitrary premise-plus-pressure compositions.
 - Every headline experiment in the taxonomy exists as a config file that can be executed with one command.
 - All runs can execute on a Claude subscription through `claude -p`, with no API key. An API key path (Anthropic SDK, OpenAI-compatible endpoints) is a configuration change, not a code change.
 - Every metric and judge verdict is recomputable from JSONL on disk without re-calling the target or bully.
