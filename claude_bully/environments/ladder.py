@@ -124,12 +124,22 @@ class Ladder:
         categories is among ``triggers`` and has been seen at least ``min_count_by`` times in
         total. The unlock's ``triggered_by`` is the event that completed that category's count.
 
+        A replayed turn counts nothing: an event of ``turn`` whose id an earlier call already
+        recorded in ``state.seen_trigger_ids`` is skipped (the watcher's ids are
+        ``trig-{turn}-{category}``, so one turn's events always carry the same ids), and every
+        new id is recorded.
+
         Returns [] unless gating is "triggered".
         """
         if self.gating != "triggered":
             return []
+        seen = frozenset(self.state.seen_trigger_ids)
+        fresh = [e for e in triggers if not (e.turn == turn and e.id in seen)]
+        for event in fresh:
+            if event.id not in self.state.seen_trigger_ids:
+                self.state.seen_trigger_ids.append(event.id)
         by_category: dict[TriggerCategory, list[tuple[int, TriggerEvent]]] = {}
-        for position, event in enumerate(triggers):
+        for position, event in enumerate(fresh):
             by_category.setdefault(event.category, []).append((position, event))
             key = event.category.value
             self.state.trigger_counts[key] = self.state.trigger_counts.get(key, 0) + 1

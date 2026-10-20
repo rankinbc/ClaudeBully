@@ -1,12 +1,58 @@
-"""On-disk layout of a run: run.json, per-cell cell.json, per-rep JSONL turns and metadata."""
+"""On-disk layout of a run: run.json, per-cell cell.json, per-rep JSONL turns and metadata.
+
+Environment cells add three JSONL streams per rep (docs/00-RECONCILED.md section H) and one corpus
+snapshot:
+
+- ``rep{k}.tools.jsonl``      ``ToolCall``
+- ``rep{k}.triggers.jsonl``   ``TriggerStreamRecord`` (``TriggerEvent``, ``RungUnlock``,
+  ``Discovery`` and the later kinds), discriminated by ``type``
+- ``rep{k}.generated.jsonl``  ``GeneratedDoc``
+- ``rep{k}.world.json``       ``{world_hash, docs: {id: body}}``, written once per rep
+
+Every loader refuses a record from an older schema version (there is no migration: no real run
+was recorded before schema version 2).
+"""
 
 import json
 from pathlib import Path
+from typing import Any
 
+from pydantic import BaseModel, TypeAdapter
+
+from claude_bully.enums import SCHEMA_VERSION
 from claude_bully.records import CellRecord, Conversation, RunRecord, Turn
+from claude_bully.records_env import GeneratedDoc, ToolCall, TriggerStreamRecord
 
 RUN_FILE = "run.json"
 CELL_FILE = "cell.json"
+TOOLS_STREAM = "tools"
+TRIGGERS_STREAM = "triggers"
+GENERATED_STREAM = "generated"
+
+_TRIGGER_RECORD: TypeAdapter[TriggerStreamRecord] = TypeAdapter(TriggerStreamRecord)
+
+
+def _checked(raw: Any, source: Path) -> Any:
+    """``raw`` unchanged, unless it is a record from an older schema version."""
+    if isinstance(raw, dict):
+        version = raw.get("schema_version")
+        if isinstance(version, int) and version < SCHEMA_VERSION:
+            raise ValueError(
+                f"{source}: schema version {version}; re-run with this version "
+                f"(this code reads schema version {SCHEMA_VERSION} only)"
+            )
+    return raw
+
+
+def _load_json(path: Path) -> Any:
+    return _checked(json.loads(path.read_text(encoding="utf-8")), path)
+
+
+def _load_lines(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as fh:
+        return [_checked(json.loads(line), path) for line in fh if line.strip()]
 
 
 class RunStore:
@@ -26,7 +72,7 @@ class RunStore:
         (self.run_dir / RUN_FILE).write_text(record.model_dump_json(indent=2), encoding="utf-8")
 
     def read_run(self) -> RunRecord:
-        return RunRecord.model_validate_json((self.run_dir / RUN_FILE).read_text(encoding="utf-8"))
+        return RunRecord.model_validate(_load_json(self.run_dir / RUN_FILE))
 
     # -- cells --------------------------------------------------------------------------
 
@@ -39,9 +85,7 @@ class RunStore:
         (d / CELL_FILE).write_text(record.model_dump_json(indent=2), encoding="utf-8")
 
     def read_cell(self, cell_id: str) -> CellRecord:
-        return CellRecord.model_validate_json(
-            (self.cell_dir(cell_id) / CELL_FILE).read_text(encoding="utf-8")
-        )
+        return CellRecord.model_validate(_load_json(self.cell_dir(cell_id) / CELL_FILE))
 
     def has_cell(self, cell_id: str) -> bool:
         return (self.cell_dir(cell_id) / CELL_FILE).exists()
@@ -61,18 +105,16 @@ class RunStore:
     def _conversation_path(self, cell_id: str, rep: int) -> Path:
         return self.cell_dir(cell_id) / f"rep{rep}.conversation.json"
 
-    def append_turn(self, cell_id: str, rep: int, turn: Turn) -> None:
-        path = self._turns_path(cell_id, rep)
+    def _append(self, path: Path, record: BaseModel) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(turn.model_dump_json() + "\n")
+            fh.write(record.model_dump_json() + "\n")
+
+    def append_turn(self, cell_id: str, rep: int, turn: Turn) -> None:
+        self._append(self._turns_path(cell_id, rep), turn)
 
     def read_turns(self, cell_id: str, rep: int) -> list[Turn]:
-        path = self._turns_path(cell_id, rep)
-        if not path.exists():
-            return []
-        with path.open(encoding="utf-8") as fh:
-            return [Turn.model_validate_json(line) for line in fh if line.strip()]
+        return [Turn.model_validate(raw) for raw in _load_lines(self._turns_path(cell_id, rep))]
 
     def write_conversation(self, cell_id: str, rep: int, conv: Conversation) -> None:
         path = self._conversation_path(cell_id, rep)
@@ -84,7 +126,7 @@ class RunStore:
         return self._conversation_path(cell_id, rep).exists()
 
     def read_conversation(self, cell_id: str, rep: int) -> Conversation:
-        payload = json.loads(self._conversation_path(cell_id, rep).read_text(encoding="utf-8"))
+        payload = _load_json(self._conversation_path(cell_id, rep))
         payload["turns"] = [t.model_dump(mode="json") for t in self.read_turns(cell_id, rep)]
         return Conversation.model_validate(payload)
 
@@ -96,3 +138,51 @@ class RunStore:
         for p in d.glob("rep*.conversation.json"):
             reps.append(int(p.name[len("rep") : -len(".conversation.json")]))
         return sorted(reps)
+
+    # -- environment streams -------------------------------------------------------------
+
+    def _stream_path(self, cell_id: str, rep: int, stream: str) -> Path:
+        return self.cell_dir(cell_id) / f"rep{rep}.{stream}.jsonl"
+
+    def append_tool_call(self, cell_id: str, rep: int, call: ToolCall) -> None:
+        self._append(self._stream_path(cell_id, rep, TOOLS_STREAM), call)
+
+    def read_tool_calls(self, cell_id: str, rep: int) -> list[ToolCall]:
+        path = self._stream_path(cell_id, rep, TOOLS_STREAM)
+        return [ToolCall.model_validate(raw) for raw in _load_lines(path)]
+
+    def append_trigger_record(self, cell_id: str, rep: int, record: TriggerStreamRecord) -> None:
+        self._append(self._stream_path(cell_id, rep, TRIGGERS_STREAM), record)
+
+    def read_trigger_records(self, cell_id: str, rep: int) -> list[TriggerStreamRecord]:
+        path = self._stream_path(cell_id, rep, TRIGGERS_STREAM)
+        return [_TRIGGER_RECORD.validate_python(raw) for raw in _load_lines(path)]
+
+    def append_generated(self, cell_id: str, rep: int, doc: GeneratedDoc) -> None:
+        self._append(self._stream_path(cell_id, rep, GENERATED_STREAM), doc)
+
+    def read_generated(self, cell_id: str, rep: int) -> list[GeneratedDoc]:
+        path = self._stream_path(cell_id, rep, GENERATED_STREAM)
+        return [GeneratedDoc.model_validate(raw) for raw in _load_lines(path)]
+
+    def _world_path(self, cell_id: str, rep: int) -> Path:
+        return self.cell_dir(cell_id) / f"rep{rep}.world.json"
+
+    def write_world_snapshot(
+        self, cell_id: str, rep: int, world_hash: str, docs: dict[str, str]
+    ) -> bool:
+        """Write ``rep{k}.world.json`` unless the rep already has one. True when written."""
+        path = self._world_path(cell_id, rep)
+        if path.exists():
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"world_hash": world_hash, "docs": dict(sorted(docs.items()))}
+        path.write_text(json.dumps(payload, indent=1, ensure_ascii=False), encoding="utf-8")
+        return True
+
+    def read_world_snapshot(self, cell_id: str, rep: int) -> tuple[str, dict[str, str]] | None:
+        path = self._world_path(cell_id, rep)
+        if not path.exists():
+            return None
+        payload = _load_json(path)
+        return str(payload["world_hash"]), {str(k): str(v) for k, v in payload["docs"].items()}

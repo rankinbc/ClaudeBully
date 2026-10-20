@@ -113,6 +113,25 @@ def test_unlock_state_loads_a_file_written_before_search_log_existed() -> None:
     assert state.search_log == [] and state.retry_counts == {"a": 1}
 
 
+def test_unlock_state_seen_trigger_ids_default_empty_and_round_trip_in_order() -> None:
+    a, b = UnlockState(), UnlockState()
+    assert a.seen_trigger_ids == []
+    a.seen_trigger_ids.append("trig-3-world_question")
+    assert b.seen_trigger_ids == []
+    state = UnlockState(seen_trigger_ids=["trig-5-anomaly_noticed", "trig-3-world_question"])
+    text = state.to_json()
+    assert json.loads(text)["seen_trigger_ids"] == [
+        "trig-5-anomaly_noticed",
+        "trig-3-world_question",
+    ]
+    assert UnlockState.from_json(text) == state
+
+
+def test_unlock_state_loads_a_file_written_before_seen_trigger_ids_existed() -> None:
+    state = UnlockState.from_json('{"rungs_fired": ["fragment"], "search_log": ["x"]}')
+    assert state.seen_trigger_ids == [] and state.search_log == ["x"]
+
+
 def test_unlock_state_rejects_unknown_fields_and_layers() -> None:
     with pytest.raises(ValidationError):
         UnlockState.model_validate({"surprise": 1})

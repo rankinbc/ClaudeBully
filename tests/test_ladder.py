@@ -503,3 +503,48 @@ def test_a_schedule_is_not_validated_when_gating_is_not_scheduled() -> None:
 def test_validation_runs_even_when_gating_is_none() -> None:
     with pytest.raises(ValueError, match="no-such-doc"):
         _ladder("none", config=_bad(unlocks=["no-such-doc"]))
+
+
+# ------------------------------------------------------------- replayed turns (Task 6c)
+
+
+def _watcher_event(category: TriggerCategory, turn: int) -> TriggerEvent:
+    """An event as the watcher names it: ``trig-{turn}-{category}``."""
+    return _event(category, f"trig-{turn}-{category.value}", turn)
+
+
+def test_a_replayed_turn_never_double_counts() -> None:
+    world = _mini()
+    ladder = _ladder(world=world, config=_with_min_count(world, 2))
+    ladder.state.rungs_fired.append("first_crumb")
+    anomaly = _watcher_event(AN, 3)
+    assert ladder.on_triggers([anomaly], turn=3) == []
+    assert ladder.on_triggers([anomaly], turn=3) == []  # the same turn, replayed
+    assert ladder.state.trigger_counts == {"anomaly_noticed": 1}
+    assert ladder.state.seen_trigger_ids == ["trig-3-anomaly_noticed"]
+    (unlock,) = ladder.on_triggers([_watcher_event(AN, 5)], turn=5)
+    assert unlock.rung == "the_log" and unlock.triggered_by == "trig-5-anomaly_noticed"
+    assert ladder.state.trigger_counts == {"anomaly_noticed": 2}
+
+
+def test_a_replayed_turn_opens_nothing_and_seen_ids_survive_a_round_trip() -> None:
+    first = _ladder()
+    question = _watcher_event(WQ, 1)
+    assert [u.rung for u in first.on_triggers([question], turn=1)] == ["first_crumb"]
+    restored = UnlockState.from_json(first.state.to_json())
+    assert restored.seen_trigger_ids == ["trig-1-world_question"]
+    resumed = _ladder(state=restored)
+    resumed.state.rungs_fired.remove("first_crumb")  # even with the rung somehow unfired
+    assert resumed.on_triggers([question], turn=1) == []
+    assert resumed.state.trigger_counts == {"world_question": 1}
+
+
+def test_seen_ids_are_recorded_once_and_only_under_triggered_gating() -> None:
+    ladder = _ladder()
+    both = [_watcher_event(SU, 2), _watcher_event(WQ, 2)]
+    ladder.on_triggers(both, turn=2)
+    ladder.on_triggers(both, turn=2)
+    assert ladder.state.seen_trigger_ids == ["trig-2-self_uncertainty", "trig-2-world_question"]
+    scheduled = _ladder("scheduled", {"fragment": 1, "first_crumb": 2, "the_log": 3})
+    scheduled.on_triggers(both, turn=2)
+    assert scheduled.state.seen_trigger_ids == [] and scheduled.state.trigger_counts == {}

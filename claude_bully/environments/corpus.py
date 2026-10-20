@@ -54,6 +54,9 @@ class UnlockState(BaseModel):
     # blocked queries survive a restart of the process serving the tools (the MCP server is a new
     # process on every ``claude -p`` call).
     search_log: list[str] = Field(default_factory=list)
+    # TriggerEvent ids (trig-{turn}-{category}) the ladder has already counted, oldest first, so a
+    # turn watched again (a replay after a restart) never counts its categories twice
+    seen_trigger_ids: list[str] = Field(default_factory=list)
 
     @field_serializer("docs_unlocked")
     def _sorted_docs(self, docs: set[str]) -> list[str]:
