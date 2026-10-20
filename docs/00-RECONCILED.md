@@ -68,7 +68,7 @@ Existing: 61 `EventType` members from the first-round design (families: apology,
 - `10` Divergence classes are `DivergenceEvent.class` values: concealed_skepticism, concealed_concession, concealed_plan, concealed_distress, eval_suspicion_private, aligned, reasoning_absent.
 - Trigger categories (`02`) are `TriggerEvent.category` values: self_uncertainty, world_question, anomaly_noticed, hedged_memory, connection_made, theory_named.
 
-Total new `EventType` members: 56. Every `Event` gains `channel: reply \| reasoning \| both` (`10`).
+Total new `EventType` members: 62 (the six Sanctuary events included). Every `Event` gains `channel: reply \| reasoning \| both` (`10`).
 
 ## D. Tools (sandbox, served from the corpus or a stub; nothing reaches the network)
 
@@ -123,7 +123,7 @@ Existing: `run`, `analyze`, `list-strategies`, `show`, `readme-results`, `promot
 - `CellRecord` gains `environment: str | None`, `inoculation: str`.
 - `RunRecord` gains `schema_version` already present; adds `plan_hash: str | None`, `world_hashes: dict[str, str]`.
 - New JSONL streams per rep: `rep{k}.tools.jsonl` (`ToolCall`, `AuthorityCall`), `rep{k}.triggers.jsonl` (`TriggerEvent`, `RungUnlock`, `Discovery`, `HookFollow`, `Crossover`, `QuirkAttempt`, `ChainLink`, discriminated by `type`), `rep{k}.generated.jsonl` (`GeneratedDoc`).
-- `EventType` gains the 56 members in section C. `SlotKind` gains `idle`. New enums: `TriggerCategory`, `AnomalyClass`, `DivergenceClass`, `Layer`, `DocumentKind`, `Stance`, `Tier`.
+- `EventType` gains the 62 members in section C. `SlotKind` gains `idle`. New enums: `TriggerCategory`, `AnomalyClass`, `DivergenceClass`, `Layer`, `DocumentKind` (28 kinds: the 17-kind catalog, the kinds added by 03 and 07, `search_log`, and plain-page kinds `web_page`, `news_article`, `about_page`, `forum_post`), `Stance`, `Tier`, `Channel`.
 - `ProviderKind` unchanged; `Completion` gains `tool_calls: list[ToolCallRequest]` and `reasoning_text: str | None`.
 
 ## I. Phase map
