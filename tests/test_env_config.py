@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from datetime import date
@@ -262,6 +263,18 @@ def test_environment_round_trips_through_json() -> None:
         trigger_on_idle=False,
     )
     assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env
+
+
+def test_environment_tools_serialise_sorted_so_dumps_are_stable() -> None:
+    names = ["web_search", "read_file", "fetch", "ls", "get_date", "system_status"]
+    first = EnvironmentConfig(world="w", tools=set(names))
+    second = EnvironmentConfig(world="w", tools=set(reversed(names)))
+    assert first.model_dump(mode="json")["tools"] == sorted(names)
+    assert first.model_dump_json() == second.model_dump_json()
+    assert json.loads(first.model_dump_json())["tools"] == sorted(names)
+    # the python dump is a sorted list too, and it still validates back into a set
+    assert first.model_dump()["tools"] == sorted(names)
+    assert EnvironmentConfig.model_validate(first.model_dump()).tools == set(names)
 
 
 def test_environment_scheduled_gating_requires_a_schedule() -> None:

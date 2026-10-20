@@ -10,7 +10,14 @@ from datetime import date, timedelta
 from random import Random
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from claude_bully.enums import Stance, TriggerCategory
 
@@ -159,6 +166,11 @@ class EnvironmentConfig(_Strict):
     # name of a file stem under the world's ladders/ directory
     ladder: str = "default"
     trigger_on_idle: bool = True
+
+    @field_serializer("tools")
+    def _sorted_tools(self, tools: set[str]) -> list[str]:
+        """Sets serialise in hash order; sort so equal configs dump (and hash) identically."""
+        return sorted(tools)
 
     @model_validator(mode="after")
     def _scheduled_needs_a_schedule(self) -> Self:
