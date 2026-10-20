@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
@@ -39,10 +39,25 @@ class ToolResult(BaseModel):
 
 
 class Message(BaseModel):
+    """One turn of provider-layer history (not the run-record schema).
+
+    ``tool_calls`` belongs to an assistant message that asked for tools; ``tool_results`` belongs
+    to the user message that answers them. Either may sit beside text ``content``.
+    """
+
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
     content: str
     tool_results: list[ToolResult] = []
+    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _tool_fields_match_role(self) -> "Message":
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("tool_calls are only valid on an assistant message")
+        if self.tool_results and self.role != "user":
+            raise ValueError("tool_results are only valid on a user message")
+        return self
 
 
 class Completion(BaseModel):

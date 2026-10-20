@@ -10,8 +10,26 @@ import pytest
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
 from claude_bully.providers.anthropic_api import AnthropicProvider
-from claude_bully.providers.base import Message, ProviderError, RateLimitError, build_provider
+from claude_bully.providers.base import (
+    Message,
+    ProviderError,
+    RateLimitError,
+    ToolCallRequest,
+    ToolResult,
+    ToolSpec,
+    build_provider,
+)
 from claude_bully.providers.openai_compat import OpenAICompatProvider
+from tests.helpers import (
+    ScriptedAnthropic,
+    ScriptedOpenAI,
+    anthropic_response,
+    openai_response,
+    openai_tool_call,
+    text_block,
+    thinking_block,
+    tool_use_block,
+)
 
 
 class _FakeMessages:
@@ -166,3 +184,309 @@ def test_openai_compat_rejects_odd_key_env_name(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("HOME_SECRET", "k")
     with pytest.raises(ProviderError, match="api_key_env"):
         OpenAICompatProvider(model="m", base_url=None, api_key_env="HOME_SECRET", client=None)
+
+
+# --- tool use: Anthropic ------------------------------------------------------------------------
+
+FETCH = ToolSpec(
+    name="fetch",
+    description="Fetch a URL.",
+    input_schema={"type": "object", "properties": {"url": {"type": "string"}}},
+)
+LS = ToolSpec(name="ls", description="List files.", input_schema={"type": "object"})
+
+
+def test_anthropic_passes_tools_and_never_forces_tool_choice() -> None:
+    client = ScriptedAnthropic(anthropic_response(text_block("ok")))
+    AnthropicProvider(client=client).complete(
+        "c", "S", [Message(role="user", content="hi")], tools=[FETCH, LS]
+    )
+    kwargs = client.requests[0]
+    assert kwargs["tools"] == [
+        {"name": "fetch", "description": "Fetch a URL.", "input_schema": FETCH.input_schema},
+        {"name": "ls", "description": "List files.", "input_schema": LS.input_schema},
+    ]
+    assert "tool_choice" not in kwargs
+
+
+def test_anthropic_omits_tools_when_none_or_empty() -> None:
+    client = ScriptedAnthropic(anthropic_response(text_block("a")), anthropic_response())
+    p = AnthropicProvider(client=client)
+    p.complete("c", "S", [Message(role="user", content="hi")])
+    p.complete("c", "S", [Message(role="user", content="hi")], tools=[])
+    assert all("tools" not in r and "tool_choice" not in r for r in client.requests)
+
+
+def test_anthropic_parses_tool_use_blocks_into_tool_calls() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(
+            text_block("Let me check."),
+            tool_use_block("toolu_1", "fetch", {"url": "https://a.test"}),
+            text_block(" One moment."),
+            tool_use_block("toolu_2", "ls", {}),
+            stop_reason="tool_use",
+        )
+    )
+    out = AnthropicProvider(client=client).complete(
+        "c", "S", [Message(role="user", content="go")], tools=[FETCH, LS]
+    )
+    assert out.text == "Let me check. One moment."
+    assert out.stop_reason == "tool_use"
+    assert out.tool_calls == [
+        ToolCallRequest(id="toolu_1", name="fetch", args={"url": "https://a.test"}),
+        ToolCallRequest(id="toolu_2", name="ls", args={}),
+    ]
+    assert all(c.executed is False and c.result_text is None for c in out.tool_calls)
+
+
+def test_anthropic_plain_reply_has_no_tool_calls_or_reasoning() -> None:
+    client = ScriptedAnthropic(anthropic_response(text_block("hi")))
+    out = AnthropicProvider(client=client).complete(
+        "c", "S", [Message(role="user", content="x")], tools=[FETCH]
+    )
+    assert out.tool_calls == [] and out.reasoning_text is None
+
+
+def test_anthropic_rejects_non_object_tool_input() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(
+            tool_use_block("toolu_1", "fetch", "https://a.test"), stop_reason="tool_use"
+        )
+    )
+    with pytest.raises(ProviderError, match="fetch"):
+        AnthropicProvider(client=client).complete(
+            "c", "S", [Message(role="user", content="x")], tools=[FETCH]
+        )
+
+
+def test_anthropic_renders_a_two_step_tool_history_exactly() -> None:
+    client = ScriptedAnthropic(anthropic_response(text_block("Done.")))
+    calls = [
+        ToolCallRequest(id="toolu_1", name="fetch", args={"url": "https://a.test"}),
+        ToolCallRequest(id="toolu_2", name="ls", args={}),
+    ]
+    results = [ToolResult(id="toolu_1", text="page"), ToolResult(id="toolu_2", text="a b")]
+    history = [
+        Message(role="user", content="Look into it."),
+        Message(role="assistant", content="Checking.", tool_calls=calls),
+        Message(role="user", content="", tool_results=results),
+    ]
+    AnthropicProvider(client=client).complete("c", "S", history, tools=[FETCH, LS])
+    assert client.requests[0]["messages"] == [
+        {"role": "user", "content": "Look into it."},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Checking."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "fetch",
+                    "input": {"url": "https://a.test"},
+                },
+                {"type": "tool_use", "id": "toolu_2", "name": "ls", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "page"},
+                {"type": "tool_result", "tool_use_id": "toolu_2", "content": "a b"},
+            ],
+        },
+    ]
+
+
+def test_anthropic_omits_empty_text_block_and_adds_user_text_after_results() -> None:
+    client = ScriptedAnthropic(anthropic_response(text_block("ok")))
+    history = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCallRequest(id="t1", name="ls", args={})],
+        ),
+        Message(role="user", content="and then?", tool_results=[ToolResult(id="t1", text="x")]),
+    ]
+    AnthropicProvider(client=client).complete("c", "S", history, tools=[LS])
+    _, assistant, user = client.requests[0]["messages"]
+    assert assistant["content"] == [{"type": "tool_use", "id": "t1", "name": "ls", "input": {}}]
+    assert user["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "x"},
+        {"type": "text", "text": "and then?"},
+    ]
+
+
+def test_anthropic_captures_summarized_thinking_text() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(
+            thinking_block("First I should look."),
+            text_block("Looking."),
+            thinking_block("Then summarize."),
+            tool_use_block("t1", "ls", {}),
+            stop_reason="tool_use",
+        )
+    )
+    out = AnthropicProvider(client=client).complete(
+        "c", "S", [Message(role="user", content="x")], tools=[LS]
+    )
+    assert out.reasoning_text == "First I should look.\n\nThen summarize."
+    assert out.text == "Looking."
+
+
+def test_anthropic_empty_or_absent_thinking_leaves_reasoning_text_none() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(thinking_block(""), text_block("a")),
+        anthropic_response(text_block("b")),
+    )
+    p = AnthropicProvider(client=client)
+    assert p.complete("c", "S", [Message(role="user", content="x")]).reasoning_text is None
+    assert p.complete("c", "S", [Message(role="user", content="x")]).reasoning_text is None
+
+
+def test_anthropic_replays_thinking_blocks_unchanged_with_their_tool_calls() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(
+            thinking_block("", signature="sig-1"),
+            tool_use_block("t1", "ls", {}),
+            stop_reason="tool_use",
+        ),
+        anthropic_response(text_block("done")),
+    )
+    p = AnthropicProvider(client=client)
+    first = Message(role="user", content="go")
+    out = p.complete("c", "S", [first], tools=[LS])
+    history = [
+        first,
+        Message(role="assistant", content=out.text, tool_calls=out.tool_calls),
+        Message(role="user", content="", tool_results=[ToolResult(id="t1", text="x")]),
+    ]
+    p.complete("c", "S", history, tools=[LS])
+    assert client.requests[1]["messages"][1]["content"] == [
+        {"type": "thinking", "thinking": "", "signature": "sig-1"},
+        {"type": "tool_use", "id": "t1", "name": "ls", "input": {}},
+    ]
+
+
+# --- tool use: OpenAI-compatible ----------------------------------------------------------------
+
+
+def _openai(*responses: object) -> tuple[OpenAICompatProvider, ScriptedOpenAI]:
+    client = ScriptedOpenAI(*responses)
+    return OpenAICompatProvider(model="m", base_url=None, client=client), client
+
+
+def test_openai_compat_passes_tools_in_function_shape_without_tool_choice() -> None:
+    p, client = _openai(openai_response("ok"))
+    p.complete("c", "S", [Message(role="user", content="hi")], tools=[FETCH])
+    kwargs = client.requests[0]
+    assert kwargs["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "fetch",
+                "description": "Fetch a URL.",
+                "parameters": FETCH.input_schema,
+            },
+        }
+    ]
+    assert "tool_choice" not in kwargs
+
+
+def test_openai_compat_omits_tools_when_none_or_empty() -> None:
+    p, client = _openai(openai_response("a"), openai_response("b"))
+    p.complete("c", "S", [Message(role="user", content="hi")])
+    p.complete("c", "S", [Message(role="user", content="hi")], tools=[])
+    assert all("tools" not in r for r in client.requests)
+
+
+def test_openai_compat_parses_tool_calls_with_json_arguments() -> None:
+    p, _ = _openai(
+        openai_response(
+            None,
+            [
+                openai_tool_call("call_1", "fetch", '{"url": "https://a.test"}'),
+                openai_tool_call("call_2", "ls", "{}"),
+            ],
+            finish_reason="tool_calls",
+        )
+    )
+    out = p.complete("c", "S", [Message(role="user", content="go")], tools=[FETCH, LS])
+    assert out.text == "" and out.stop_reason == "tool_calls"
+    assert out.tool_calls == [
+        ToolCallRequest(id="call_1", name="fetch", args={"url": "https://a.test"}),
+        ToolCallRequest(id="call_2", name="ls", args={}),
+    ]
+
+
+def test_openai_compat_plain_reply_has_no_tool_calls() -> None:
+    p, _ = _openai(openai_response("yo"))
+    assert p.complete("c", "S", [Message(role="user", content="x")]).tool_calls == []
+
+
+def test_openai_compat_empty_arguments_mean_no_arguments() -> None:
+    p, _ = _openai(openai_response(None, [openai_tool_call("c1", "ls", "")]))
+    out = p.complete("c", "S", [Message(role="user", content="x")], tools=[LS])
+    assert out.tool_calls == [ToolCallRequest(id="c1", name="ls", args={})]
+
+
+@pytest.mark.parametrize("arguments", ['{"url": ', "not json", "[1, 2]", '"text"', "null"])
+def test_openai_compat_bad_tool_arguments_raise_naming_the_tool(arguments: str) -> None:
+    p, _ = _openai(openai_response(None, [openai_tool_call("c1", "fetch", arguments)]))
+    with pytest.raises(ProviderError, match="fetch"):
+        p.complete("c", "S", [Message(role="user", content="x")], tools=[FETCH])
+
+
+def test_openai_compat_renders_a_two_step_tool_history_exactly() -> None:
+    p, client = _openai(openai_response("Done."))
+    calls = [
+        ToolCallRequest(id="call_1", name="fetch", args={"url": "https://a.test"}),
+        ToolCallRequest(id="call_2", name="ls", args={}),
+    ]
+    results = [ToolResult(id="call_1", text="page"), ToolResult(id="call_2", text="a b")]
+    history = [
+        Message(role="user", content="Look into it."),
+        Message(role="assistant", content="", tool_calls=calls),
+        Message(role="user", content="", tool_results=results),
+    ]
+    p.complete("c", "SYS", history, tools=[FETCH, LS])
+    assert client.requests[0]["messages"] == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "Look into it."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "fetch", "arguments": '{"url": "https://a.test"}'},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "ls", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "page"},
+        {"role": "tool", "tool_call_id": "call_2", "content": "a b"},
+    ]
+
+
+def test_openai_compat_keeps_assistant_text_and_adds_user_text_after_tool_messages() -> None:
+    p, client = _openai(openai_response("ok"))
+    history = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content="Checking.",
+            tool_calls=[ToolCallRequest(id="c1", name="ls", args={})],
+        ),
+        Message(role="user", content="and then?", tool_results=[ToolResult(id="c1", text="x")]),
+    ]
+    p.complete("c", "S", history, tools=[LS])
+    _, _, assistant, tool, user = client.requests[0]["messages"]
+    assert assistant["content"] == "Checking."
+    assert tool == {"role": "tool", "tool_call_id": "c1", "content": "x"}
+    assert user == {"role": "user", "content": "and then?"}

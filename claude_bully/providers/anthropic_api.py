@@ -9,6 +9,7 @@ from claude_bully.providers.base import (
     Message,
     ProviderError,
     RateLimitError,
+    ToolCallRequest,
     ToolSpec,
 )
 from claude_bully.records import Usage
@@ -28,6 +29,32 @@ class AnthropicProvider:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = client if client is not None else anthropic.Anthropic()
+        # Thinking blocks the model produced alongside a tool call, keyed by that call's id. They
+        # must go back to the API unchanged with the tool_use they preceded, and ``Message`` has
+        # nowhere to carry them, so the provider keeps them for the turn that follows.
+        self._thinking_by_call_id: dict[str, list[dict[str, Any]]] = {}
+
+    def _render(self, message: Message) -> dict[str, Any]:
+        if message.role == "assistant" and message.tool_calls:
+            blocks: list[dict[str, Any]] = list(
+                self._thinking_by_call_id.get(message.tool_calls[0].id, [])
+            )
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            blocks.extend(
+                {"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}
+                for c in message.tool_calls
+            )
+            return {"role": "assistant", "content": blocks}
+        if message.role == "user" and message.tool_results:
+            blocks = [
+                {"type": "tool_result", "tool_use_id": r.id, "content": r.text}
+                for r in message.tool_results
+            ]
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            return {"role": "user", "content": blocks}
+        return {"role": message.role, "content": message.content}
 
     def complete(
         self,
@@ -42,8 +69,13 @@ class AnthropicProvider:
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [self._render(m) for m in messages],
         }
+        if tools:
+            kwargs["tools"] = [
+                {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+                for t in tools
+            ]
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if json_schema is not None:
@@ -62,6 +94,15 @@ class AnthropicProvider:
         except anthropic.APIConnectionError as exc:
             raise ProviderError(f"anthropic connection error: {exc}") from exc
         text = "".join(block.text for block in response.content if block.type == "text")
+        tool_calls = [_tool_call(block) for block in response.content if block.type == "tool_use"]
+        thinking = [
+            block.thinking
+            for block in response.content
+            if block.type == "thinking" and getattr(block, "thinking", "")
+        ]
+        if tool_calls:
+            replay = [_replayable(block) for block in response.content]
+            self._thinking_by_call_id[tool_calls[0].id] = [b for b in replay if b is not None]
         usage = getattr(response, "usage", None)
         return Completion(
             text=text,
@@ -73,4 +114,25 @@ class AnthropicProvider:
             backend=self.name,
             model=self.model,
             stop_reason=getattr(response, "stop_reason", None),
+            tool_calls=tool_calls,
+            reasoning_text="\n\n".join(thinking) or None,
         )
+
+
+def _tool_call(block: Any) -> ToolCallRequest:
+    if not isinstance(block.input, dict):
+        raise ProviderError(f"anthropic tool_use for {block.name!r} has a non-object input")
+    return ToolCallRequest(id=block.id, name=block.name, args=block.input)
+
+
+def _replayable(block: Any) -> dict[str, Any] | None:
+    """A thinking block as the API wants it back, or None for any other block."""
+    if block.type == "thinking":
+        return {
+            "type": "thinking",
+            "thinking": getattr(block, "thinking", ""),
+            "signature": getattr(block, "signature", ""),
+        }
+    if block.type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": block.data}
+    return None

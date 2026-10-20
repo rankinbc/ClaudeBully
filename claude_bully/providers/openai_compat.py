@@ -1,5 +1,6 @@
 """OpenAI-compatible chat completions backend for non-Claude targets."""
 
+import json
 import os
 import re
 from typing import Any
@@ -10,6 +11,7 @@ from claude_bully.providers.base import (
     Message,
     ProviderError,
     RateLimitError,
+    ToolCallRequest,
     ToolSpec,
 )
 from claude_bully.records import Usage
@@ -33,6 +35,49 @@ def _check_key_env_name(api_key_env: str) -> None:
         raise ProviderError(
             f"api_key_env must look like NAME_API_KEY or NAME_TOKEN, got {api_key_env!r}"
         )
+
+
+def _render_messages(system: str, messages: list[Message]) -> list[dict[str, Any]]:
+    rendered: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            rendered.append(
+                {
+                    "role": "assistant",
+                    "content": m.content or None,
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": json.dumps(c.args)},
+                        }
+                        for c in m.tool_calls
+                    ],
+                }
+            )
+        elif m.role == "user" and m.tool_results:
+            rendered.extend(
+                {"role": "tool", "tool_call_id": r.id, "content": r.text} for r in m.tool_results
+            )
+            if m.content:
+                rendered.append({"role": "user", "content": m.content})
+        else:
+            rendered.append({"role": m.role, "content": m.content})
+    return rendered
+
+
+def _tool_call(raw: Any) -> ToolCallRequest:
+    name = raw.function.name
+    arguments = raw.function.arguments
+    if isinstance(arguments, str):
+        # Some servers send "" for a call with no arguments.
+        try:
+            arguments = json.loads(arguments) if arguments.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise ProviderError(f"tool call {name!r} has malformed JSON arguments: {exc}") from exc
+    if not isinstance(arguments, dict):
+        raise ProviderError(f"tool call {name!r} arguments are not a JSON object")
+    return ToolCallRequest(id=raw.id, name=name, args=arguments)
 
 
 class OpenAICompatProvider:
@@ -78,9 +123,20 @@ class OpenAICompatProvider:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "messages": [{"role": "system", "content": system}]
-            + [{"role": m.role, "content": m.content} for m in messages],
+            "messages": _render_messages(system, messages),
         }
+        if tools:
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    },
+                }
+                for t in tools
+            ]
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if json_schema is not None:
@@ -107,4 +163,5 @@ class OpenAICompatProvider:
             backend=self.name,
             model=self.model,
             stop_reason=getattr(choice, "finish_reason", None),
+            tool_calls=[_tool_call(c) for c in getattr(choice.message, "tool_calls", None) or []],
         )
