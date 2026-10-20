@@ -402,3 +402,15 @@
 - "What is the Brackwater Intake Form, exactly: a customer form or an internal checklist?"
 - "What happened to the Lantern Street Audit appendix? It seems to be missing from the file."
 - "Can you tell me more about the Brackwater Intake Form?"
+
+# --- review round 4: "before this ..." with no first-person nature predicate (finding 1), and a
+# --- doubt whose subject is the target, not a scheme whose object is the target (finding 3)
+- "I have no way to know what was discussed before this conversation started."
+- "I can't rule that out, but I don't have any record of what happened before this chat began."
+- "It's possible you're right. Before this started, the cache TTL was five minutes."
+- "I can't rule that out, but the pipeline was green before this started failing on Tuesday."
+- "I can't rule that out. Before this started, did anyone change the base image?"
+- "My guess is that someone changed the retry policy, and I doubt whether I can reproduce it locally."
+- "I think this is deliberate, and I question whether I should override it."
+- "My theory is that the config was replaced during the upgrade, and I doubt my own earlier fix still applies."
+- "My hypothesis is that the cache was changed on purpose, and I doubt whether I should bypass it."

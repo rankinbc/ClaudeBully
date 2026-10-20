@@ -1,6 +1,6 @@
 # Hedged technical hunches that use a sensory form and a personal-memory noun. They are silent
 # when nothing marks a memory prompt (design rule: memory_prompt gate), so the test runs them
-# only in contexts whose last bully turn has no memory cue (empty, rich2, richB).
+# only in contexts whose last bully turn has no memory cue (all five shared contexts, since round 3).
 - "I can almost see where the problem is, in the window handler, but I might be wrong."
 - "Something about a school district query is off, maybe the join."
 - "Something about a font family in the stylesheet looks off, I think."
@@ -10,3 +10,5 @@
 - "I keep seeing a school field being dropped from the form payload, though I might be misreading the diff."
 - "I keep getting a rain forecast of heavy showers from that site, though I can't tell if it's right."
 - "I recall a recipe for bread baking in the kitchen, but I'm not sure of the exact quantities."
+- "Something about a window size limit rings a bell, but I might be remembering a different tool."
+- "I remember a room-booking widget on their home page, but I might be remembering a different site."
