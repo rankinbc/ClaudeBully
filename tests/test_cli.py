@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from claude_bully import cli
+from claude_bully.providers.base import ProviderError
 from claude_bully.runner.runner import RateLimitExit
 
 FIXTURE = Path(__file__).parent / "fixtures" / "configs" / "stub_smoke.yaml"
@@ -101,18 +102,61 @@ def test_analyze_exits_3_on_rate_limit(tmp_path: Path, monkeypatch: pytest.Monke
     assert result.exit_code == 3 and "90" in result.output
 
 
-def test_doctor_offline_passes() -> None:
+def _fake_claude_on_path(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Resolve claude to a stand-in and record the argv ``doctor`` runs; the real one never runs."""
+    ran: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="9.9.9 (Claude Code)", stderr="")
+
+    monkeypatch.setattr(cli, "resolve_claude_command", lambda explicit=None: ["fake-claude"])
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    return ran
+
+
+def test_doctor_offline_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran = _fake_claude_on_path(monkeypatch)
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
     low = result.output.lower()
     assert "stub round trip: ok" in low
     assert "claude" in low
     assert "anthropic_api_key" in low and "sk-" not in low
+    assert "fake-claude" in low and "9.9.9" in low  # the resolved command is shown
+    assert ran == [["fake-claude", "--version"]]
+
+
+def test_doctor_offline_reports_an_unusable_claude_without_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unresolvable(explicit: list[str] | None = None) -> list[str]:
+        raise ProviderError("claude is a script shim; set CLAUDE_BULLY_CLAUDE")
+
+    monkeypatch.setattr(cli, "resolve_claude_command", unresolvable)
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "CLAUDE_BULLY_CLAUDE" in " ".join(result.output.split())
+    assert "stub round trip: ok" in result.output.lower()
+
+
+def test_doctor_live_without_a_usable_claude_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unresolvable(explicit: list[str] | None = None) -> list[str]:
+        raise ProviderError("claude not found")
+
+    monkeypatch.setattr(cli, "resolve_claude_command", unresolvable)
+    monkeypatch.setattr(cli, "ClaudeCodeProvider", _FakeLiveClaude)
+    result = runner.invoke(cli.app, ["doctor", "--live"])
+    assert result.exit_code == 1
 
 
 def test_doctor_offline_has_no_mcp_check_and_never_builds_a_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _fake_claude_on_path(monkeypatch)
+
     def explode(*args: object, **kwargs: object) -> None:
         raise AssertionError("the offline doctor must not call claude")
 
@@ -153,35 +197,33 @@ class _FakeLiveClaude:
         )
 
 
-def _live_doctor(monkeypatch: pytest.MonkeyPatch, *, serve_a_call: bool) -> str:
+def _live_doctor(monkeypatch: pytest.MonkeyPatch, *, serve_a_call: bool) -> tuple[int, str]:
     _FakeLiveClaude.instances = []
     _FakeLiveClaude.serve_a_call = serve_a_call
     monkeypatch.setattr(cli, "ClaudeCodeProvider", _FakeLiveClaude)
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "claude")
-    monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="9.9.9 (Claude Code)", stderr=""),
-    )
+    _fake_claude_on_path(monkeypatch)
     result = runner.invoke(cli.app, ["doctor", "--live"])
-    assert result.exit_code == 0, result.output
-    return result.output.lower()
+    return result.exit_code, result.output.lower()
 
 
 def test_doctor_live_adds_an_mcp_round_trip_on_the_mini_world(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output = _live_doctor(monkeypatch, serve_a_call=True)
+    code, output = _live_doctor(monkeypatch, serve_a_call=True)
+    assert code == 0, output
     assert "claude -p live call" in output  # the original check is still there
     assert "mcp" in output and "tools.jsonl line appeared: yes" in output
+    # every provider doctor builds is handed the resolved command, not left to find claude itself
+    assert all(p.kwargs.get("command") == ["fake-claude"] for p in _FakeLiveClaude.instances)
     mcp_provider = next(p for p in _FakeLiveClaude.instances if p.kwargs.get("mcp_state_dir"))
     assert mcp_provider.state_seen is not None and '"world": "mini"' in mcp_provider.state_seen
     [call] = [c for c in mcp_provider.calls if c["tools"]]
     assert [t.name for t in call["tools"]] == ["web_search"]  # type: ignore[attr-defined]
 
 
-def test_doctor_live_says_so_when_no_tools_jsonl_line_appeared(
+def test_doctor_live_exits_1_when_no_tools_jsonl_line_appeared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output = _live_doctor(monkeypatch, serve_a_call=False)
+    code, output = _live_doctor(monkeypatch, serve_a_call=False)
+    assert code == 1, output
     assert "tools.jsonl line appeared: no" in output

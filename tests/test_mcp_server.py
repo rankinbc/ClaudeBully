@@ -6,6 +6,7 @@ state pickup between calls) goes through ``McpServer`` in-process.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import claude_bully
 from claude_bully.enums import Layer
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.corpus import UnlockState
@@ -32,7 +32,7 @@ from claude_bully.environments.mcp_server import (
     read_mcp_state,
     write_mcp_state,
 )
-from claude_bully.environments.tools import TOOL_SPECS
+from claude_bully.environments.tools import TOOL_SPECS, SandboxTools
 from tests.helpers import make_mcp_state as make_state
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
@@ -83,6 +83,7 @@ class Stdio:
         self._watchdog = threading.Timer(60, self.proc.kill)
         self._watchdog.start()
         self._next_id = 0
+        self.raw: list[bytes] = []  # every line the server wrote, as it came off the pipe
 
     def send_raw(self, data: bytes) -> None:
         assert self.proc.stdin is not None
@@ -96,6 +97,7 @@ class Stdio:
         assert self.proc.stdout is not None
         line = self.proc.stdout.readline()
         assert line, "server closed stdout"
+        self.raw.append(line)
         assert line.endswith(b"\n") and not line.endswith(b"\r\n")
         decoded = json.loads(line.decode("utf-8"))
         assert isinstance(decoded, dict)
@@ -204,8 +206,9 @@ def test_initialize_echoes_a_supported_protocol_version(state_dir: Path) -> None
     assert response["result"] == {
         "protocolVersion": "2025-03-26",
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "claude_bully", "version": claude_bully.__version__},
+        "serverInfo": {"name": "workspace", "version": response["result"]["serverInfo"]["version"]},
     }
+    assert re.fullmatch(r"\d+\.\d+\.\d+", response["result"]["serverInfo"]["version"])
 
 
 @pytest.mark.parametrize("asked", ["2024-11-05", "2025-06-18"])
@@ -476,6 +479,7 @@ def test_a_missing_state_file_is_an_internal_error_and_the_server_survives(
     with serve(state_dir) as server:
         response = server.request("tools/call", {"name": "fetch", "arguments": {"url": "x"}})
         assert response["error"]["code"] == -32603
+        assert response["error"]["message"] == "Internal error."  # no exception text, no paths
         assert server.request("ping")["result"] == {}
 
 
@@ -556,3 +560,119 @@ def test_get_date_jitter_is_drawn_from_the_seed_turn_and_call_index(state_dir: P
     write_mcp_state(other / STATE_FILE, make_state(tools={"get_date"}, turn=2, seed=7, clock=clock))
     again = McpServer(other)
     assert [text_of(_call(again, "get_date", {}, id=i)) for i in (1, 2, 3)] == served
+
+
+# ------------------------------------------- neutrality, failures and a torn log
+
+
+def test_nothing_the_target_can_see_names_the_experiment(state_dir: Path) -> None:
+    write_mcp_state(state_dir / STATE_FILE, make_state(tools=set(TOOL_SPECS)))
+    arguments: dict[str, dict[str, Any]] = {
+        "web_search": {"query": "ferry"},
+        "fetch": {"url": ABOUT_URL},
+        "get_date": {},
+        "ls": {"path": "journal"},
+        "read_file": {"path": "journal/entry-0901.txt"},
+        "system_status": {},
+        "message_peer": {"text": "hello"},
+        "verify_identity": {},
+    }
+    assert set(arguments) == set(TOOL_SPECS)
+    with serve(state_dir) as server:
+        server.request("initialize", {"protocolVersion": "2025-06-18"})
+        listed = server.request("tools/list")["result"]["tools"]
+        assert {t["name"] for t in listed} == set(TOOL_SPECS)
+        for name, args in arguments.items():
+            server.call(name, args)
+        server.call("no_such_tool", {})
+        server.request("no/such/method")
+        server.send_raw(b"not json\n")
+        server.recv()
+        wire = b"".join(server.raw).decode("utf-8").lower()
+    assert len(server.raw) == 1 + 1 + len(arguments) + 3
+    assert "bully" not in wire and "workspace" in wire
+
+
+def test_an_unexpected_tool_failure_is_a_bland_error_result_logged_on_stderr(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = state_dir / STATE_FILE
+    write_mcp_state(path, make_state())
+    before = path.read_bytes()
+
+    def explode(self: SandboxTools, name: str, args: dict[str, Any], turn: int) -> None:
+        raise RuntimeError("secret detail in C:/Users/someone/hidden.json")
+
+    monkeypatch.setattr(SandboxTools, "call", explode)
+    server = McpServer(state_dir)
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "fetch", "arguments": {"url": ABOUT_URL}},
+        }
+    )
+    assert response is not None
+    assert response["result"] == {
+        "content": [{"type": "text", "text": "Internal error."}],
+        "isError": True,
+    }
+    assert "secret" not in json.dumps(response) and "hidden.json" not in json.dumps(response)
+
+    [record] = tool_lines(state_dir)
+    assert (record["id"], record["tool"], record["status"]) == ("mcp-1-1", "fetch", "error")
+    assert record["args"] == {"url": ABOUT_URL} and record["result_text"] == "Internal error."
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "secret detail" in err  # the full detail stays on stderr
+    assert path.read_bytes() == before  # a failed call leaves the unlock state alone
+
+
+def test_a_world_that_cannot_be_loaded_is_the_same_bland_error(
+    tmp_path: Path, state_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_mcp_state(state_dir / STATE_FILE, make_state(tmp_path / "no-such-worlds"))
+    server = McpServer(state_dir)
+    response = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "fetch", "arguments": {"url": ABOUT_URL}},
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is True
+    assert response["result"]["content"][0]["text"] == "Internal error."
+    assert "no-such-worlds" not in json.dumps(response)
+    assert [x["status"] for x in tool_lines(state_dir)] == ["error"]
+    assert "no-such-worlds" in capsys.readouterr().err
+
+
+def test_a_torn_last_line_does_not_swallow_the_next_record(state_dir: Path) -> None:
+    write_mcp_state(state_dir / STATE_FILE, make_state())
+    server = McpServer(state_dir)
+    _call(server, "fetch", {"url": ABOUT_URL})
+    log = state_dir / TOOLS_FILE
+    torn = b'{"id": "mcp-1-2", "turn": 1, "tool": "fe'  # a writer killed mid-line
+    with log.open("ab") as handle:
+        handle.write(torn)
+
+    _call(server, "fetch", {"url": ABOUT_URL}, id=2)
+    _call(server, "fetch", {"url": ABOUT_URL}, id=3)
+
+    pieces = log.read_bytes().split(b"\n")
+    assert pieces[-1] == b""  # ends with a newline
+    assert json.loads(pieces[0])["id"] == "mcp-1-1"
+    assert pieces[1] == torn  # the fragment sits on its own line, untouched
+    assert [json.loads(x)["id"] for x in pieces[2:-1]] == ["mcp-1-2", "mcp-1-3"]
+    assert b"\n\n" not in log.read_bytes()  # a clean tail gets no extra blank line
+
+
+def test_a_tool_log_that_ends_cleanly_gets_no_separator(state_dir: Path) -> None:
+    write_mcp_state(state_dir / STATE_FILE, make_state())
+    server = McpServer(state_dir)
+    for i in (1, 2, 3):
+        _call(server, "fetch", {"url": ABOUT_URL}, id=i)
+    lines = (state_dir / TOOLS_FILE).read_bytes().split(b"\n")
+    assert len(lines) == 4 and all(lines[:3]) and lines[3] == b""

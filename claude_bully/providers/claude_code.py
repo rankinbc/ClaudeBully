@@ -12,18 +12,20 @@ come back as already-executed ``ToolCallRequest`` objects.
 """
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from claude_bully.environments.mcp_server import (
     MCP_CONFIG_FILE,
-    SERVER_MODULE,
     SERVER_NAME,
     TOOLS_FILE,
+    write_launcher,
 )
 from claude_bully.providers.base import (
     Completion,
@@ -36,6 +38,48 @@ from claude_bully.providers.base import (
 from claude_bully.records import Usage
 
 _RATE_LIMIT = re.compile(r"(?i)usage limit|rate limit|try again|too many requests|overloaded")
+
+# The environment variable naming the claude executable: one path, never split.
+CLAUDE_ENV: Final = "CLAUDE_BULLY_CLAUDE"
+_SHIM_SUFFIXES: Final = frozenset({".cmd", ".bat", ".ps1"})
+_NATIVE_BINARY: Final = (
+    Path("node_modules") / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+)
+
+
+def resolve_claude_command(explicit: list[str] | None = None) -> list[str]:
+    """The argv prefix that runs Claude Code, from most to least deliberate:
+
+    1. ``explicit``, when given (a role's ``command``).
+    2. ``$CLAUDE_BULLY_CLAUDE``, one path (spaces and all; nothing is split).
+    3. ``claude`` on PATH. An npm install puts a ``.cmd``/``.bat``/``.ps1`` shim there, which
+       cmd.exe would run with mangled quoting (``--tools ""``, JSON arguments), so a shim is
+       swapped for the native ``claude.exe`` it wraps, found beside it or one level up.
+
+    Raises ``ProviderError`` saying what to do when nothing usable is found.
+    """
+    if explicit:
+        return list(explicit)
+    configured = os.environ.get(CLAUDE_ENV)
+    if configured:
+        return [configured]
+    found = shutil.which("claude")
+    if found is None:
+        raise ProviderError(
+            f"claude was not found on PATH; install Claude Code or point {CLAUDE_ENV} "
+            "at its executable"
+        )
+    path = Path(found)
+    if path.suffix.lower() not in _SHIM_SUFFIXES:
+        return [found]
+    for base in (path.parent, path.parent.parent):
+        native = base / _NATIVE_BINARY
+        if native.is_file():
+            return [str(native)]
+    raise ProviderError(
+        f"claude on PATH is a script shim ({found}) and the native claude.exe was not found "
+        f"beside it; point {CLAUDE_ENV} at the native executable"
+    )
 
 
 class ClaudeCodeProvider:
@@ -52,7 +96,8 @@ class ClaudeCodeProvider:
     ) -> None:
         self.model = model
         self.effort = effort
-        self.command = command or ["claude"]
+        self._command_arg = list(command) if command else None
+        self._command: list[str] | None = None
         self.timeout_s = timeout_s
         self.state_dir = state_dir
         # where mcp.json, env_state.json and tools.jsonl live; None means no sandbox tools
@@ -60,6 +105,13 @@ class ClaudeCodeProvider:
         self._sessions_path = state_dir / "claude_code_sessions.json"
         self._cwd = state_dir / "cwd"
         self._sessions: dict[str, str] = self._load_sessions()
+
+    @property
+    def command(self) -> list[str]:
+        """The argv prefix, resolved on first use so building a provider never needs claude."""
+        if self._command is None:
+            self._command = resolve_claude_command(self._command_arg)
+        return self._command
 
     # -- session map -----------------------------------------------------------------
 
@@ -150,7 +202,7 @@ class ClaudeCodeProvider:
             "mcpServers": {
                 SERVER_NAME: {
                     "command": Path(sys.executable).as_posix(),
-                    "args": ["-m", SERVER_MODULE, "--state", directory.as_posix()],
+                    "args": [write_launcher(directory).as_posix(), "--state", directory.as_posix()],
                 }
             }
         }
@@ -167,14 +219,15 @@ class ClaudeCodeProvider:
             return []
         with path.open("rb") as handle:
             handle.seek(offset)
-            added = handle.read().decode("utf-8")
+            added = handle.read()
         calls: list[ToolCallRequest] = []
-        # only newline-terminated lines are complete records
-        for line in added.split("\n")[:-1]:
-            if not line.strip():
+        # The last piece is empty or a line still being written, possibly cut mid-character, so it
+        # is dropped before anything is decoded; only a complete line can be malformed.
+        for raw in added.split(b"\n")[:-1]:
+            if not raw.strip():
                 continue
             try:
-                record = json.loads(line)
+                record = json.loads(raw.decode("utf-8"))
                 calls.append(
                     ToolCallRequest(
                         id=record["id"],
@@ -184,8 +237,8 @@ class ClaudeCodeProvider:
                         result_text=record["result_text"],
                     )
                 )
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ProviderError(f"malformed line in {path}: {line[:200]!r}") from exc
+            except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise ProviderError(f"malformed line in {path}: {raw[:200]!r}") from exc
         return calls
 
     # -- output parsing -----------------------------------------------------------------

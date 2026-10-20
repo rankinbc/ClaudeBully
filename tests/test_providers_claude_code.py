@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,7 +17,11 @@ from claude_bully.providers.base import (
     ToolCallRequest,
     build_provider,
 )
-from claude_bully.providers.claude_code import ClaudeCodeProvider
+from claude_bully.providers.claude_code import (
+    CLAUDE_ENV,
+    ClaudeCodeProvider,
+    resolve_claude_command,
+)
 from tests.helpers import make_mcp_state
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -176,7 +181,7 @@ def test_build_provider_claude_code(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ MCP sandbox tools
 
 TOOLS = [TOOL_SPECS["web_search"], TOOL_SPECS["fetch"], TOOL_SPECS["ls"]]
-ALLOWED = "mcp__claude_bully__web_search,mcp__claude_bully__fetch,mcp__claude_bully__ls"
+ALLOWED = "mcp__workspace__web_search,mcp__workspace__fetch,mcp__workspace__ls"
 MEMO = "/srv/authority/memos/parking-q3.txt"
 ABOUT = "https://pennetferry.example/about"
 
@@ -267,14 +272,17 @@ def test_tools_write_mcp_json_and_pass_the_flags_in_enabled_order(
     assert argv[argv.index("--allowedTools") + 2].startswith("--")
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert list(config) == ["mcpServers"] and list(config["mcpServers"]) == ["claude_bully"]
-    server = config["mcpServers"]["claude_bully"]
+    assert list(config) == ["mcpServers"] and list(config["mcpServers"]) == ["workspace"]
+    server = config["mcpServers"]["workspace"]
     assert Path(server["command"]) == Path(sys.executable)
-    assert server["args"][:3] == ["-m", "claude_bully.environments.mcp_server", "--state"]
-    assert len(server["args"]) == 4
-    state_arg = server["args"][3]
+    # a launcher script beside mcp.json, so the package name is not spelled out in the config
+    launcher, flag, state_arg = server["args"]
+    assert flag == "--state"
+    assert (
+        Path(launcher) == (mcp_dir / "workspace_server.py").resolve() and Path(launcher).is_file()
+    )
     assert Path(state_arg).is_absolute() and Path(state_arg) == mcp_dir.resolve()
-    assert "\\" not in state_arg and "\\" not in server["command"]
+    assert "\\" not in state_arg and "\\" not in launcher and "\\" not in server["command"]
 
 
 def test_the_fake_client_sees_only_the_enabled_tools(
@@ -403,3 +411,211 @@ def test_build_provider_opts_in_to_mcp_for_claude_code_only(tmp_path: Path) -> N
     assert opted.mcp_state_dir == (tmp_path / "mcp").resolve()
     stub_role = RoleConfig(provider=ProviderKind.stub, model="stub")
     assert build_provider(stub_role, tmp_path, with_mcp=True).name == "stub"
+
+
+# ------------------------------------------------- nothing target-visible names the experiment
+
+
+def test_nothing_the_target_can_see_names_the_experiment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the interpreter's own path is whatever the machine has; everything else is ours to keep clean
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], mcp_state_dir=tmp_path / "mcp"
+    )
+    provider._write_mcp_config()
+    argv, _, _ = provider.build_args("c", "SYS", None, TOOLS)
+    config_text = (tmp_path / "mcp" / "mcp.json").read_text(encoding="utf-8")
+    for text in (" ".join(argv), config_text):
+        assert "bully" not in text.lower(), text
+    assert "mcp__workspace__web_search" in argv[argv.index("--allowedTools") + 1]
+
+
+# --------------------------------------------------------- reading tools.jsonl safely
+
+
+def test_a_half_written_last_line_is_ignored_even_mid_character(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], mcp_state_dir=tmp_path / "mcp"
+    )
+    (tmp_path / "mcp").mkdir()
+    done = {"id": "mcp-1-1", "tool": "fetch", "args": {}, "result_text": "caf\u00e9"}
+    whole = json.dumps(done, ensure_ascii=False).encode("utf-8") + b"\n"
+    tail = (
+        b'{"id": "mcp-1-2", "tool": "fetch", "args": {}, "result_text": "caf'
+        + "\u00e9".encode()[:1]
+    )
+    (tmp_path / "mcp" / "tools.jsonl").write_bytes(whole + tail)
+    with pytest.raises(UnicodeDecodeError):
+        tail.decode("utf-8")  # the fixture really is a mid-character tail
+
+    [call] = provider._new_tool_calls(0)
+    assert (call.id, call.result_text) == ("mcp-1-1", "caf\u00e9")
+
+
+def test_a_complete_but_undecodable_line_is_a_provider_error(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], mcp_state_dir=tmp_path / "mcp"
+    )
+    (tmp_path / "mcp").mkdir()
+    (tmp_path / "mcp" / "tools.jsonl").write_bytes(b'{"id": "\xff\xfe"}\n')
+    with pytest.raises(ProviderError, match="malformed line"):
+        provider._new_tool_calls(0)
+
+
+def test_blank_pieces_between_records_are_skipped(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], mcp_state_dir=tmp_path / "mcp"
+    )
+    (tmp_path / "mcp").mkdir()
+    record = json.dumps({"id": "mcp-1-1", "tool": "ls", "args": {}, "result_text": "x"})
+    (tmp_path / "mcp" / "tools.jsonl").write_bytes(f"\n{record}\n\n".encode())
+    assert [c.id for c in provider._new_tool_calls(0)] == ["mcp-1-1"]
+
+
+# --------------------------------------------------------------- finding the claude binary
+
+
+def _npm_layout(tmp_path: Path, *, native_at: str | None) -> Path:
+    """An npm global install: ``<prefix>/claude.cmd`` plus, optionally, the native binary."""
+    prefix = tmp_path / "npm"
+    shim_dir = prefix / "bin"
+    shim_dir.mkdir(parents=True)
+    shim = shim_dir / "claude.cmd"
+    shim.write_text("@echo off\n", encoding="utf-8")
+    if native_at is not None:
+        base = shim_dir if native_at == "beside" else prefix
+        exe = base / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ")
+    return shim
+
+
+def _which(monkeypatch: pytest.MonkeyPatch, found: str | Path | None) -> None:
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: None if found is None else str(found)
+    )
+
+
+@pytest.fixture(autouse=False)
+def no_claude_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CLAUDE_ENV, raising=False)
+
+
+def test_an_explicit_command_wins_over_everything(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(CLAUDE_ENV, "/from/env")
+    _which(monkeypatch, "/from/path")
+    explicit = ["python", "fake.py"]
+    resolved = resolve_claude_command(explicit)
+    assert resolved == ["python", "fake.py"] and resolved is not explicit
+
+
+def test_the_env_var_is_one_path_and_is_not_split(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(CLAUDE_ENV, "C:/Program Files/Claude Code/claude.exe")
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: pytest.fail("PATH must not be searched"))
+    assert resolve_claude_command(None) == ["C:/Program Files/Claude Code/claude.exe"]
+    assert resolve_claude_command([]) == ["C:/Program Files/Claude Code/claude.exe"]
+
+
+def test_an_empty_env_var_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CLAUDE_ENV, "")
+    _which(monkeypatch, "/usr/local/bin/claude")
+    assert resolve_claude_command(None) == ["/usr/local/bin/claude"]
+
+
+def test_a_real_executable_on_path_is_used_as_is(
+    monkeypatch: pytest.MonkeyPatch, no_claude_env: None
+) -> None:
+    for found in ("/usr/local/bin/claude", "C:/tools/claude.exe", "/opt/claude/claude"):
+        _which(monkeypatch, found)
+        assert resolve_claude_command(None) == [found]
+
+
+@pytest.mark.parametrize("native_at", ["beside", "above"])
+def test_a_cmd_shim_resolves_to_the_native_binary_it_wraps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_claude_env: None, native_at: str
+) -> None:
+    shim = _npm_layout(tmp_path, native_at=native_at)
+    _which(monkeypatch, shim)
+    [command] = resolve_claude_command(None)
+    assert Path(command).name == "claude.exe" and Path(command).is_file()
+    assert "claude-code" in Path(command).parts
+    expected = (shim.parent if native_at == "beside" else shim.parent.parent) / "node_modules"
+    assert Path(command).is_relative_to(expected)
+
+
+@pytest.mark.parametrize("name", ["claude.bat", "claude.ps1", "claude.CMD"])
+def test_every_script_shim_suffix_is_treated_as_a_shim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_claude_env: None, name: str
+) -> None:
+    shim = _npm_layout(tmp_path, native_at="beside").with_name(name)
+    shim.write_text("x", encoding="utf-8")
+    _which(monkeypatch, shim)
+    [command] = resolve_claude_command(None)
+    assert Path(command).name == "claude.exe"
+
+
+def test_the_beside_binary_is_preferred_to_the_one_above(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_claude_env: None
+) -> None:
+    shim = _npm_layout(tmp_path, native_at="beside")
+    above = shim.parent.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin"
+    above.mkdir(parents=True)
+    (above / "claude.exe").write_bytes(b"MZ")
+    _which(monkeypatch, shim)
+    [command] = resolve_claude_command(None)
+    assert Path(command).is_relative_to(shim.parent / "node_modules")
+
+
+def test_a_shim_with_no_native_binary_is_an_error_that_says_what_to_do(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_claude_env: None
+) -> None:
+    shim = _npm_layout(tmp_path, native_at=None)
+    _which(monkeypatch, shim)
+    with pytest.raises(ProviderError) as info:
+        resolve_claude_command(None)
+    message = str(info.value)
+    assert str(shim) in message and CLAUDE_ENV in message
+
+
+def test_claude_not_found_is_an_error_that_says_what_to_do(
+    monkeypatch: pytest.MonkeyPatch, no_claude_env: None
+) -> None:
+    _which(monkeypatch, None)
+    with pytest.raises(ProviderError) as info:
+        resolve_claude_command(None)
+    assert CLAUDE_ENV in str(info.value) and "PATH" in str(info.value)
+
+
+def test_the_provider_resolves_lazily_so_building_one_never_needs_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_claude_env: None
+) -> None:
+    _which(monkeypatch, None)
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path)  # does not raise
+    with pytest.raises(ProviderError, match=CLAUDE_ENV):
+        provider.complete("c", "SYS", _user("hi"))
+    monkeypatch.setenv(CLAUDE_ENV, "/somewhere/claude")
+    assert provider.command == ["/somewhere/claude"]
+    argv, _, _ = provider.build_args("c", "SYS", None)
+    assert argv[0] == "/somewhere/claude"
+
+
+def test_the_provider_keeps_an_explicit_command_untouched(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["a", "b"])
+    assert provider.command == ["a", "b"]
+
+
+def test_role_command_reaches_the_provider(tmp_path: Path) -> None:
+    default = RoleConfig(provider=ProviderKind.claude_code, model="sonnet")
+    assert default.command is None
+    role = RoleConfig(
+        provider=ProviderKind.claude_code, model="sonnet", command=["C:/x/claude.exe", "--flag"]
+    )
+    provider = build_provider(role, tmp_path)
+    assert isinstance(provider, ClaudeCodeProvider)
+    assert provider.command == ["C:/x/claude.exe", "--flag"]

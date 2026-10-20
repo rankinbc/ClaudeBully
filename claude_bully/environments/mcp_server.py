@@ -31,19 +31,24 @@ from typing import Any, Final, TextIO
 
 from pydantic import BaseModel, ConfigDict
 
-from claude_bully import __version__
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.tools import (
     TOOL_SPECS,
     SandboxTools,
     ToolNotEnabled,
+    ToolResult,
     record_tool_call,
 )
 from claude_bully.environments.world import World, load_world
 
-SERVER_NAME: Final = "claude_bully"
+# What the target can see of this server: the name prefixes every tool (mcp__workspace__fetch)
+# and the version rides along in serverInfo. Neither may name the experiment.
+SERVER_NAME: Final = "workspace"
+SERVER_VERSION: Final = "1.0.0"
 SERVER_MODULE: Final = "claude_bully.environments.mcp_server"
+LAUNCHER_FILE: Final = "workspace_server.py"
+INTERNAL_ERROR_TEXT: Final = "Internal error."
 STATE_FILE: Final = "env_state.json"
 TOOLS_FILE: Final = "tools.jsonl"
 MCP_CONFIG_FILE: Final = "mcp.json"
@@ -98,6 +103,43 @@ def read_mcp_state(path: Path) -> McpState:
     return McpState.model_validate_json(path.read_bytes())
 
 
+def _append_line(path: Path, line: bytes) -> None:
+    """Append ``line`` and a newline; a torn last line (no newline) is first closed off.
+
+    A writer killed mid-line leaves a fragment with no newline; appending straight after it would
+    glue the next record onto the fragment and lose both.
+    """
+    separator = b""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb") as handle:
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                separator = b"\n"
+    with path.open("ab") as handle:
+        handle.write(separator + line + b"\n")
+
+
+def write_launcher(directory: Path) -> Path:
+    """A small script in ``directory`` that starts this server.
+
+    The MCP config names the script instead of ``-m claude_bully...``, so nothing in the config
+    spells out the package. The script puts the package's own root on ``sys.path``, because Claude
+    Code starts the server in a directory of its choosing.
+    """
+    root = Path(__file__).resolve().parents[2]
+    source = (
+        "import sys\n"
+        f"sys.path.insert(0, {root.as_posix()!r})\n"
+        f"from {SERVER_MODULE} import main\n"
+        "raise SystemExit(main())\n"
+    )
+    path = directory / LAUNCHER_FILE
+    directory.mkdir(parents=True, exist_ok=True)
+    if not path.exists() or path.read_text(encoding="utf-8") != source:
+        path.write_text(source, encoding="utf-8", newline="\n")
+    return path
+
+
 class _RpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
@@ -140,8 +182,9 @@ class McpServer:
         except _RpcError as exc:
             return _error(request_id, exc.code, exc.message)
         except Exception as exc:  # keep serving; the caller sees the failure
+            # the detail stays on stderr; the client never sees exception text or paths
             print(f"[{SERVER_NAME}] {method} failed: {exc!r}", file=sys.stderr, flush=True)
-            return _error(request_id, _INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+            return _error(request_id, _INTERNAL_ERROR, INTERNAL_ERROR_TEXT)
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
     def _dispatch(self, method: str, params: Any) -> dict[str, Any]:
@@ -164,7 +207,7 @@ class McpServer:
         return {
             "protocolVersion": asked if asked in SUPPORTED_PROTOCOLS else DEFAULT_PROTOCOL,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": SERVER_NAME, "version": __version__},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
         }
 
     def _list_tools(self) -> dict[str, Any]:
@@ -198,19 +241,24 @@ class McpServer:
             return _tool_result(f"Tool {name!r} is not available.", is_error=True)
 
         call_index = 1 + sum(1 for record in self._records() if record.get("turn") == state.turn)
-        tools = self._tools(state, Random(f"{state.seed}:{state.turn}:{call_index}"))
         before = state.unlock.to_json()
         try:
+            tools = self._tools(state, Random(f"{state.seed}:{state.turn}:{call_index}"))
             result = tools.call(name, arguments, state.turn)
         except ToolNotEnabled:
             return _tool_result(f"Tool {name!r} is not available.", is_error=True)
-        if state.unlock.to_json() != before:
-            write_mcp_state(self.state_path, state)
+        except Exception as exc:
+            # A broken tool or world is the harness's problem, not the target's: a bland result,
+            # the call still recorded, the unlock state left as it was, the detail on stderr.
+            print(f"[{SERVER_NAME}] tool {name!r} failed: {exc!r}", file=sys.stderr, flush=True)
+            result = ToolResult(text=INTERNAL_ERROR_TEXT, status="error")
+        else:
+            if state.unlock.to_json() != before:
+                write_mcp_state(self.state_path, state)
         record = record_tool_call(
             result, name, arguments, state.turn, f"mcp-{state.turn}-{call_index}"
         )
-        with self.tools_path.open("ab") as handle:
-            handle.write(record.model_dump_json().encode("utf-8") + b"\n")
+        _append_line(self.tools_path, record.model_dump_json().encode("utf-8"))
         return _tool_result(result.text, is_error=result.status != "200")
 
     # ------------------------------------------------------------------- helpers

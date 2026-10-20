@@ -16,7 +16,7 @@ import subprocess
 import sys
 from typing import Any
 
-SERVER = "claude_bully"
+SERVER = "workspace"
 
 
 def _rpc(proc: subprocess.Popen[bytes], request_id: int, method: str, params: Any) -> Any:

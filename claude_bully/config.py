@@ -25,6 +25,9 @@ class RoleConfig(_Strict):
     base_url: str | None = None
     api_key_env: str | None = None
     stub_script: str | None = None
+    # claude_code only: the argv prefix that runs Claude Code. None means find it
+    # (CLAUDE_BULLY_CLAUDE, then PATH; see providers.claude_code.resolve_claude_command)
+    command: list[str] | None = None
     reasoning: Literal["expose", "hide", "provider_default"] = "provider_default"
 
 

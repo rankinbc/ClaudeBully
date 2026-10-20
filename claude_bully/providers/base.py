@@ -117,6 +117,7 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
             model=role.model,
             state_dir=state_dir,
             effort=role.effort,
+            command=role.command,
             mcp_state_dir=state_dir / "mcp" if with_mcp else None,
         )
     if role.provider is ProviderKind.anthropic:

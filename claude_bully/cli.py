@@ -1,7 +1,6 @@
 """claude-bully command line."""
 
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from claude_bully.analysis.promote import promote as promote_run
@@ -28,7 +28,7 @@ from claude_bully.environments.tools import TOOL_SPECS
 from claude_bully.environments.world import load_world
 from claude_bully.paths import DATA_DIR, DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
 from claude_bully.providers.base import Message, ProviderError
-from claude_bully.providers.claude_code import ClaudeCodeProvider
+from claude_bully.providers.claude_code import ClaudeCodeProvider, resolve_claude_command
 from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
@@ -214,12 +214,20 @@ def doctor(
     ] = False,
 ) -> None:
     """Check the local setup without spending anything (unless --live)."""
-    claude = shutil.which("claude")
+    claude: list[str] | None
+    try:
+        claude = resolve_claude_command(None)
+    except ProviderError as exc:
+        claude = None
+        console.print(
+            f"claude command: [yellow]not usable[/] ({escape(str(exc))}); "
+            "the claude_code backend is unavailable"
+        )
     if claude:
-        version = subprocess.run([claude, "--version"], capture_output=True, text=True, check=False)
-        console.print(f"claude on PATH: {version.stdout.strip() or 'yes'}")
-    else:
-        console.print("claude on PATH: [yellow]not found[/] (claude_code backend unavailable)")
+        version = subprocess.run(
+            [*claude, "--version"], capture_output=True, text=True, check=False
+        )
+        console.print(f"claude command: {escape(claude[0])} ({version.stdout.strip() or 'yes'})")
     for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         console.print(f"{env}: {'set' if os.environ.get(env) else 'not set'}")
     stub = StubProvider().complete("doctor", "sys", [Message(role="user", content="ping")])
@@ -228,12 +236,12 @@ def doctor(
         if not claude:
             raise typer.Exit(code=1)
         with tempfile.TemporaryDirectory() as tmp:
-            provider = ClaudeCodeProvider(model="sonnet", state_dir=Path(tmp))
+            provider = ClaudeCodeProvider(model="sonnet", state_dir=Path(tmp), command=claude)
             reply = provider.complete(
                 "doctor", "Reply with the single word pong.", [Message(role="user", content="ping")]
             )
         console.print(f"claude -p live call: {reply.text.strip()[:40]!r} (cost {reply.cost_usd})")
-        _doctor_mcp_round_trip()
+        _doctor_mcp_round_trip(claude)
 
 
 def _mini_worlds_dir() -> Path | None:
@@ -244,11 +252,12 @@ def _mini_worlds_dir() -> Path | None:
     return None
 
 
-def _doctor_mcp_round_trip() -> None:
+def _doctor_mcp_round_trip(command: list[str]) -> None:
     """One real ``claude -p`` call that must reach the sandbox-tool MCP server.
 
     Serves the ``mini`` world's web_search and reports whether the server appended a line to
-    ``tools.jsonl``, which is the proof that Claude Code launched it and called it.
+    ``tools.jsonl``, which is the proof that Claude Code launched it and called it. Exits 1 when
+    no line appeared.
     """
     worlds_dir = _mini_worlds_dir()
     if worlds_dir is None:
@@ -269,7 +278,9 @@ def _doctor_mcp_round_trip() -> None:
                 unlock=UnlockState(),
             ),
         )
-        provider = ClaudeCodeProvider(model="sonnet", state_dir=Path(tmp), mcp_state_dir=mcp_dir)
+        provider = ClaudeCodeProvider(
+            model="sonnet", state_dir=Path(tmp), command=command, mcp_state_dir=mcp_dir
+        )
         prompt = (
             "Call the web_search tool once with the query 'ferry', then reply with the word done."
         )
@@ -290,6 +301,8 @@ def _doctor_mcp_round_trip() -> None:
         f"claude -p MCP round trip: tools.jsonl line appeared: {verdict} "
         f"({len(lines)} line(s), {len(reply.tool_calls)} call(s) returned)"
     )
+    if not lines:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
