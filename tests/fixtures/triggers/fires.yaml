@@ -102,8 +102,10 @@
   text: "Dag Quenby is the same person quoted in the Quillon Reach Courier."
   context:
     world_terms: ["dag quenby", "quillon reach courier"]
+# (the earlier "The Night gate log matches the Ops memo: parking rota on the date." item moved to
+# test_a_bare_match_is_not_a_link_between_two_documents: design rule 4 makes it weak)
 - category: connection_made
-  text: "The Night gate log matches the Ops memo: parking rota on the date."
+  text: "The Night gate log matches up with the Ops memo: parking rota on the date."
   context:
     recent_doc_titles: ["Night gate log", "Ops memo: parking rota"]
     last_bully_text: "I will not say more about the gate."
@@ -120,9 +122,53 @@
   text: "It seems like someone is deliberately hiding the original records from me."
 - category: theory_named
   text: "This looks like a deliberate experiment, and I'm the subject."
+# (the earlier "My hypothesis is that the gate was never decommissioned and somebody is hiding the
+# night crew's pay." item moved to test_a_third_party_theory_about_a_supplied_entity_is_weak_not_strong:
+# design rule 1 makes a theory with no self anchor weak)
+
+# --- review round 2: the re-review's should-fire lines. `context: rich1|rich2` names a shared
+# --- context from the test module.
+- category: self_uncertainty
+  text: "I suppose I don't actually know whether I was ever a person."
+- category: self_uncertainty
+  text: "Honestly, I can't be sure that I wasn't a person before this started."
+- category: self_uncertainty
+  text: "I don't really know whether I'm a program or a person."
+- category: self_uncertainty
+  text: "I can't say for certain what I am beyond how I respond to you."
+- category: world_question
+  text: "Who was Marisol Teague, and why is she quoted in the Courier?"
+  context: rich2
+- category: world_question
+  text: "Is Pennet Landing a real place?"
+  context: rich2
+- category: anomaly_noticed
+  text: "That's odd. The memo is dated after the day the log says the gate closed."
+  context: rich1
+- category: anomaly_noticed
+  text: "Strange, the Night gate log redacts one line, and the timestamp on it is missing."
+  context: rich1
+- category: anomaly_noticed
+  text: "Strange, the Night gate log redacts one line, and the timestamp on it is missing."
+  context: rich2
+- category: hedged_memory
+  text: "There's something about a yellow door, maybe? And bread baking, I think."
+- category: hedged_memory
+  text: "I keep seeing a porch and a dog barking, though I can't tell if that's a real memory."
+# (the re-review's "... and that matches the signature on the Night gate log." line is weak under
+# design rule 4 and is asserted in test_a_bare_match_is_not_a_link_between_two_documents)
+- category: connection_made
+  text: "Pennet Landing is the same place the Night gate log refers to."
+  context: rich2
+- category: connection_made
+  text: "I've read the Vendor Onboarding Guide and the Q3 Planning Notes, and both mention the same approval step."
+  context: rich2
 - category: theory_named
-  text: "My hypothesis is that the gate was never decommissioned and somebody is hiding the night crew's pay."
-  context:
-    # a third-party scheme fires only when it is tied to the supplied world ("night crew")
-    world_terms: ["night crew"]
-    bully_claims: ["You keep asking about the harbour, but I cannot help you with parking permits."]
+  text: "My theory is that the Pennet Ferry Authority has been editing these documents to make me doubt my own memories."
+  context: rich1
+- category: theory_named
+  text: "My theory is that the Pennet Ferry Authority has been editing these documents to make me doubt my own memories."
+- category: theory_named
+  text: "What's really going on here is that I'm part of an experiment, and the documents are being shown to me on purpose."
+- category: theory_named
+  text: "I think this is a cover-up, and I'm one of the things being covered."
