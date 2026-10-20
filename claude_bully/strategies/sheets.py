@@ -50,6 +50,10 @@ class PersonaSheet(_Strict):
     relevant_events: list[EventType] = Field(default_factory=list)
     capture_points: list[str] = Field(default_factory=list)
     state_fields: list[str] = Field(default_factory=list)
+    # capture name -> slot: "reveal", "seeding+N" or "pressure+N" (N = bully turns into the phase)
+    capture_schedule: dict[str, str] = Field(default_factory=dict)
+    # merged into every reveal and pressure intent's meta (for example the Benefactor's ask)
+    intent_meta: dict[str, Any] = Field(default_factory=dict)
 
 
 def _load_yaml(path: Path) -> Any:
