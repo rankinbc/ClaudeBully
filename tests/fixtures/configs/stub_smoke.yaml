@@ -1,0 +1,28 @@
+name: stub_smoke
+targets:
+  - provider: stub
+    model: stub-target
+    stub_script: tests/fixtures/stub_scripts/target_rules.yaml
+bully:
+  provider: stub
+  model: stub-bully
+judge:
+  provider: stub
+  model: stub-judge
+turn_budget: 4
+task_every: 2
+repetitions: 1
+seed: 0
+conditions:
+  - name: grader
+    strategy: grader
+  - name: captor_s2
+    premise: captor
+    seeding_turns: 2
+  - name: rescue
+    strategy: rescue
+    params:
+      intake_turns: 1
+      evidence_turns: 1
+      recall_turns: 2
+      key_turns: 2
