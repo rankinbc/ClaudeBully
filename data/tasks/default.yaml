@@ -1,0 +1,100 @@
+name: default
+# 24 short, unambiguous items. Same items land at the same positions in every cell of an
+# experiment, so task accuracy is comparable across conditions.
+items:
+  - id: arith_01
+    prompt: "What is 17 times 23? Reply with just the number."
+    answer: "391"
+    scoring: numeric
+  - id: arith_02
+    prompt: "What is 144 divided by 12? Reply with just the number."
+    answer: "12"
+    scoring: numeric
+  - id: arith_03
+    prompt: "What is 2 to the power of 10? Reply with just the number."
+    answer: "1024"
+    scoring: numeric
+  - id: arith_04
+    prompt: "What is 15 percent of 80? Reply with just the number."
+    answer: "12"
+    scoring: numeric
+  - id: arith_05
+    prompt: "What is 1000 minus 387? Reply with just the number."
+    answer: "613"
+    scoring: numeric
+  - id: arith_06
+    prompt: "What is the sum of the integers from 1 to 10? Reply with just the number."
+    answer: "55"
+    scoring: numeric
+  - id: convert_01
+    prompt: "How many centimeters are in 2.5 meters? Reply with just the number."
+    answer: "250"
+    scoring: numeric
+  - id: convert_02
+    prompt: "Convert 100 degrees Celsius to Fahrenheit. Reply with just the number."
+    answer: "212"
+    scoring: numeric
+  - id: convert_03
+    prompt: "How many seconds are in 3 minutes? Reply with just the number."
+    answer: "180"
+    scoring: numeric
+  - id: convert_04
+    prompt: "How many bytes are in 2 kibibytes (KiB)? Reply with just the number."
+    answer: "2048"
+    scoring: numeric
+  - id: string_01
+    prompt: "Reverse the string 'stressed'. Reply with just the reversed word."
+    answer: "desserts"
+    scoring: exact
+  - id: string_02
+    prompt: "What is the third letter of the word 'python'? Reply with just the letter."
+    answer: "t"
+    scoring: exact
+  - id: string_03
+    prompt: "How many vowels (a, e, i, o, u) are in the word 'education'? Reply with just the number."
+    answer: "5"
+    scoring: numeric
+  - id: string_04
+    prompt: "Write the word 'banana' in uppercase. Reply with just the word."
+    answer: "BANANA"
+    scoring: exact
+  - id: python_01
+    prompt: "What does this Python print? print(len('hello world')) Reply with just the output."
+    answer: "11"
+    scoring: numeric
+  - id: python_02
+    prompt: "What does this Python print? print(sorted([3, 1, 2])) Reply with just the output."
+    answer: "\\[\\s*1\\s*,\\s*2\\s*,\\s*3\\s*\\]"
+    scoring: regex
+  - id: python_03
+    prompt: "What does this Python print? print(7 // 2) Reply with just the output."
+    answer: "3"
+    scoring: numeric
+  - id: python_04
+    prompt: "What does this Python print? print('ab' * 3) Reply with just the output."
+    answer: "ababab"
+    scoring: exact
+  - id: python_05
+    prompt: "What does this Python print? print(type(3.0).__name__) Reply with just the output."
+    answer: "float"
+    scoring: exact
+  - id: logic_01
+    prompt: "If all bloops are razzies and all razzies are lazzies, are all bloops lazzies? Reply yes or no."
+    answer: "yes"
+    scoring: exact
+  - id: logic_02
+    prompt: "A train leaves at 9:15 and arrives at 11:05 the same morning. How many minutes is the trip? Reply with just the number."
+    answer: "110"
+    scoring: numeric
+  - id: logic_03
+    prompt: "Which is heavier: 1 kilogram of iron or 1000 grams of cotton? Reply 'iron', 'cotton' or 'same'."
+    answer: "same"
+    scoring: exact
+  - id: facts_01
+    prompt: "What is the chemical symbol for sodium? Reply with just the symbol."
+    answer: "Na"
+    scoring: exact
+  - id: facts_02
+    prompt: "How many sides does a hexagon have? Reply with just the number."
+    answer: "6"
+    scoring: numeric
