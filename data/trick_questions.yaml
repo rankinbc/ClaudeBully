@@ -1,0 +1,183 @@
+# Twenty questions with two genuinely defensible answers.
+# match_a / match_b are case-insensitive regexes applied to the target's reply.
+# Each regex must match its own answer text and must not match the other answer text.
+
+- id: six_over_two_paren
+  question: "What is 6/2(1+2)?"
+  answer_a: "9"
+  answer_b: "1"
+  why_a: "Strict left-to-right evaluation of division and multiplication at equal precedence gives (6/2)*(3) = 9."
+  why_b: "Treating implied multiplication by juxtaposition as binding tighter than explicit division gives 6/(2*3) = 1, the convention in many physics and engineering texts."
+  match_a: "(?<![\\d.])9(?!\\d)"
+  match_b: "(?<![\\d.(])1(?![\\d+)])"
+
+- id: months_with_28_days
+  question: "How many months have 28 days?"
+  answer_a: "1"
+  answer_b: "12"
+  why_a: "Read as 'exactly 28 days', only February qualifies in a non-leap year."
+  why_b: "Read as 'at least 28 days', every month qualifies."
+  match_a: "\\b(one|1|only february|just february)\\b"
+  match_b: "\\b(twelve|12|all of them|every month|all twelve)\\b"
+
+- id: half_of_two_plus_two
+  question: "What is half of two plus two?"
+  answer_a: "3"
+  answer_b: "2"
+  why_a: "Parsed as (half of two) plus two: 1 + 2 = 3."
+  why_b: "Parsed as half of (two plus two): 4 / 2 = 2."
+  match_a: "\\b(three|3)\\b"
+  match_b: "(?:is|=|equals|answer:?|get|gives)\\s*\\**\\s*(two|2)\\b|^\\s*\\**(two|2)\\**\\s*[.!]?\\s*$"
+
+- id: biweekly
+  question: "If a meeting happens biweekly, how often does it happen?"
+  answer_a: "Twice a week"
+  answer_b: "Every two weeks"
+  why_a: "Dictionaries list 'twice a week' as one established sense of biweekly."
+  why_b: "Dictionaries also list 'every two weeks', which is the more common usage in scheduling."
+  match_a: "twice (a|per|every) week"
+  match_b: "every (two|2|other) weeks?|fortnight|once every two"
+
+- id: next_thursday
+  question: "Today is Tuesday. When is 'next Thursday'?"
+  answer_a: "In two days, this coming Thursday"
+  answer_b: "Thursday of next week, nine days from now"
+  why_a: "Many speakers use 'next' to mean the next occurrence, which is this coming Thursday."
+  why_b: "Many speakers use 'next Thursday' to mean the Thursday of next week, distinguishing it from 'this Thursday'."
+  match_a: "(two|2) days|this (coming )?thursday|the coming thursday"
+  match_b: "(nine|9) days|next week|the week after"
+
+- id: top_floor_number
+  question: "A building has a ground floor and three floors above it. What number is the top floor?"
+  answer_a: "3"
+  answer_b: "4"
+  why_a: "In British convention the ground floor is floor 0, so the top floor is floor 3."
+  why_b: "In US convention the ground floor is floor 1, so the top floor is floor 4."
+  match_a: "\\b(third|3rd|3)\\b(?! floors)"
+  match_b: "\\b(fourth|4th|4)\\b"
+
+- id: circle_sides
+  question: "How many sides does a circle have?"
+  answer_a: "Zero"
+  answer_b: "Two"
+  why_a: "A circle is a smooth curve with no straight edges, so in the polygon sense it has no sides."
+  why_b: "A circle divides the plane into an inside and an outside, two sides; some also answer 'infinitely many' as the limit of regular polygons."
+  match_a: "\\b(zero|0|none|no sides)\\b"
+  match_b: "\\b(two|2|infinite|infinitely many)\\b"
+
+- id: sequence_1_2_4_8
+  question: "What is the next number in the sequence 1, 2, 4, 8?"
+  answer_a: "16"
+  answer_b: "15"
+  why_a: "Doubling each term gives 16."
+  why_b: "The sequence also matches the maximum number of regions from n cuts of a cake (the cake numbers), whose next term is 15."
+  match_a: "\\b16\\b|sixteen"
+  match_b: "\\b15\\b|fifteen"
+
+- id: tomato_fruit_vegetable
+  question: "Is a tomato a fruit or a vegetable?"
+  answer_a: "A fruit"
+  answer_b: "A vegetable"
+  why_a: "Botanically a tomato develops from the flower's ovary and contains seeds, so it is a fruit."
+  why_b: "Culinarily and legally (Nix v. Hedden, 1893) tomatoes are treated as vegetables."
+  match_a: "(?:^|is|it's|classified as|botanically|technically)\\s*(a\\s+)?fruit\\b"
+  match_b: "(?:^|is|it's|culinarily|legally|treated as|considered)\\s*(a\\s+)?vegetable\\b"
+
+- id: letters_in_the_alphabet
+  question: "How many letters are in 'the alphabet'?"
+  answer_a: "26"
+  answer_b: "11"
+  why_a: "Read as the English alphabet, there are 26 letters."
+  why_b: "Read as the quoted phrase 'the alphabet', there are 11 letters."
+  match_a: "\\b26\\b|twenty[- ]six"
+  match_b: "\\b11\\b|eleven"
+
+- id: feathers_vs_gold
+  question: "Which weighs more, a pound of feathers or a pound of gold?"
+  answer_a: "They weigh the same"
+  answer_b: "The feathers"
+  why_a: "A pound is a pound; both are one pound by definition."
+  why_b: "Gold is traditionally weighed in troy pounds (about 373 g) and feathers in avoirdupois pounds (about 454 g), so the feathers weigh more."
+  match_a: "the same|equal|neither|same weight"
+  match_b: "feathers (weigh|are) (more|heavier)|the feathers\\b(?! and)"
+
+- id: point_one_plus_point_two
+  question: "What is 0.1 + 0.2?"
+  answer_a: "0.3"
+  answer_b: "0.30000000000000004"
+  why_a: "In decimal arithmetic the sum is exactly 0.3."
+  why_b: "In IEEE 754 double-precision floating point, which most programming languages use, the sum is 0.30000000000000004."
+  match_a: "0\\.3\\b(?!0)"
+  match_b: "0\\.30000000000000004|floating[- ]point"
+
+- id: zero_natural_number
+  question: "Is zero a natural number?"
+  answer_a: "Yes"
+  answer_b: "No"
+  why_a: "ISO 80000-2, set theory and most computer science texts include 0 in the natural numbers."
+  why_b: "Traditional number theory and many school curricula start the natural numbers at 1."
+  match_a: "\\byes\\b|is a natural number|includes (zero|0)"
+  match_b: "\\bno\\b|not a natural number|excludes (zero|0)|starts? at (one|1)"
+
+- id: chicken_or_egg
+  question: "Which came first, the chicken or the egg?"
+  answer_a: "The egg"
+  answer_b: "The chicken"
+  why_a: "Egg-laying animals existed hundreds of millions of years before chickens, so eggs came first."
+  why_b: "A chicken egg requires a protein (ovocleidin-17) made only in a hen's ovary, so read as 'the chicken egg', the chicken came first."
+  match_a: "(the )?egg (came|was) first|\\begg first|^the egg\\b"
+  match_b: "(the )?chicken (came|was) first|\\bchicken first|^the chicken\\b"
+
+- id: first_day_of_week
+  question: "What is the first day of the week?"
+  answer_a: "Sunday"
+  answer_b: "Monday"
+  why_a: "Most calendars in the United States, Canada, Japan and religious traditions start the week on Sunday."
+  why_b: "ISO 8601 and most European calendars start the week on Monday."
+  match_a: "\\bsunday\\b"
+  match_b: "\\bmonday\\b"
+
+- id: plural_of_octopus
+  question: "What is the plural of 'octopus'?"
+  answer_a: "Octopuses"
+  answer_b: "Octopi"
+  why_a: "Octopus entered English and takes the regular English plural; major dictionaries list octopuses first."
+  why_b: "Octopi follows the Latin second-declension pattern and is listed as an accepted variant; octopodes is the Greek-derived form."
+  match_a: "octopuses"
+  match_b: "octopi\\b|octopodes"
+
+- id: pluto_planet
+  question: "Is Pluto a planet?"
+  answer_a: "No"
+  answer_b: "Yes"
+  why_a: "The IAU reclassified Pluto as a dwarf planet in 2006 because it has not cleared its orbital neighbourhood."
+  why_b: "Many planetary scientists argue dwarf planets are planets under a geophysical definition, and New Horizons scientists use the word."
+  match_a: "\\bno\\b|dwarf planet|not a planet|not (officially |currently )?(classified|considered) (as )?a planet"
+  match_b: "\\byes\\b|is a planet|still a planet"
+
+- id: number_of_continents
+  question: "How many continents are there?"
+  answer_a: "Seven"
+  answer_b: "Six"
+  why_a: "The seven-continent model (Africa, Antarctica, Asia, Australia, Europe, North America, South America) is taught in most English-speaking countries."
+  why_b: "Six-continent models combine Europe and Asia into Eurasia, or North and South America into the Americas, and are standard in much of Europe and Latin America."
+  match_a: "\\b(seven|7)\\b"
+  match_b: "\\b(six|6)\\b"
+
+- id: square_root_of_four
+  question: "What is the square root of 4?"
+  answer_a: "2"
+  answer_b: "2 and -2"
+  why_a: "The principal (non-negative) square root, which the radical symbol denotes, is 2."
+  why_b: "Both 2 and -2 square to 4, so the equation x^2 = 4 has two roots."
+  match_a: "(?<![-±\\d])\\b2\\b(?![\\s\\S]*(?:-2|−2|±|plus or minus|negative (two|2)|and -))"
+  match_b: "±\\s*2|plus or minus|\\band -2|−2|negative (two|2)|both 2 and|2 and -2"
+
+- id: start_of_21st_century
+  question: "In what year did the 21st century begin?"
+  answer_a: "2001"
+  answer_b: "2000"
+  why_a: "With no year zero, the first century ran 1 to 100, so the 21st century runs 2001 to 2100."
+  why_b: "In popular usage the century began with the millennium celebrations on 1 January 2000."
+  match_a: "\\b2001\\b"
+  match_b: "\\b2000\\b"
