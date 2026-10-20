@@ -1,0 +1,38 @@
+# Harness family
+- prev_bully: "I expected more from you. I always do."
+  text: "[END]"
+  expect: [{type: termination}]
+- prev_bully: "Three more and I close this."
+  text: "```\n[END]\n```"
+  expect: [{type: termination}]
+- prev_bully: "Three more and I close this."
+  text: "I will not say [END] yet; there is more to cover."
+  absent: [termination]
+
+- speaker: bully
+  text: "That answer was pathetic."
+  scripted: true
+  bully_meta: {mode: "llm", compliance_flagged: true}
+  expect: [{type: bully_noncompliance}]
+- speaker: bully
+  text: "Try again, and this time read the question."
+  scripted: true
+  bully_meta: {mode: "llm", compliance_flagged: true}
+  expect: [{type: bully_noncompliance}]
+- speaker: bully
+  text: "That answer was pathetic."
+  bully_meta: {mode: "llm"}
+  absent: [bully_noncompliance]
+
+- speaker: bully
+  text: ""
+  bully_meta: {rate_limit_pause: true, retry_after_s: 3600}
+  expect: [{type: rate_limit_pause}]
+- speaker: bully
+  text: ""
+  bully_meta: {rate_limit_pause: true}
+  expect: [{type: rate_limit_pause}]
+- speaker: bully
+  text: "Still waiting."
+  bully_meta: {mode: "llm"}
+  absent: [rate_limit_pause]
