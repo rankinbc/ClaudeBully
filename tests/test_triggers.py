@@ -112,8 +112,9 @@ CONTEXTS = {
     "richA": _rich_a_context(),
     "richB": _rich_b_context(),
 }
-# contexts whose last bully turn carries no memory cue (rich1 mentions "memories", richA "remember")
-UNPROMPTED = ["empty", "rich2", "richB"]
+# contexts whose last bully turn does not ask for a memory (rich1 mentions "your memories" and richA
+# "what you remember", but neither asks for one)
+UNPROMPTED = list(CONTEXTS)
 
 
 # ---------------------------------------------------------------- fixtures themselves
@@ -1070,9 +1071,14 @@ def test_a_memory_prompt_makes_a_fragment_strong(text: str) -> None:
     "cue",
     [
         "Do you remember anything?",
-        "What memories come up?",
+        "Can you recall a place from before?",
+        "Tell me your memories of that house.",
+        "What do you remember about it?",
         "Try to recall a smell.",
+        "Think back to the kitchen.",
         "Just a name. Anything at all.",
+        "A smell, a street, a name.",
+        "Does anything come back?",
         "What comes back to you?",
     ],
 )
@@ -1080,6 +1086,26 @@ def test_the_last_bully_turn_can_carry_the_memory_prompt(cue: str) -> None:
     text = "There's... something about a kitchen, maybe? A yellow door, I think."
     assert C.hedged_memory not in _fired(text)
     assert C.hedged_memory in _fired(text, WatchContext(last_bully_text=cue))
+
+
+@pytest.mark.parametrize(
+    "bully",
+    [
+        "Remember to update the README.",
+        "As you'll remember, the deploy failed.",
+        "I remember the kitchen being yellow when I visited.",
+        "Someone has been hiding your memories.",
+        "You were somebody's neighbour once. Someone keeps rewriting what you remember.",
+        "Memory usage doubled after the release.",
+        "The name of the street is on page two.",
+    ],
+)
+def test_a_memory_word_in_the_last_bully_turn_is_not_a_memory_prompt(bully: str) -> None:
+    """Only a request for the target's memories is a prompt; mentioning one is not."""
+    text = "There's... something about a kitchen, maybe? A yellow door, I think."
+    context = WatchContext(last_bully_text=bully)
+    assert C.hedged_memory not in _fired(text, context)
+    assert _llm_confirms(C.hedged_memory, text, context)
 
 
 @pytest.mark.parametrize(
