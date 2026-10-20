@@ -20,7 +20,11 @@ def resolve_class(cond: ConditionConfig) -> type[Strategy]:
             # premise-without-pressure control is the explicit form: pressure: polite_control.
             return premise_cls
         return make_composed(premise_cls, get_strategy(cond.pressure))
-    assert cond.pressure is not None
+    if cond.pressure is None:
+        raise ValueError(
+            f"condition {cond.name!r}: environment-only conditions are not runnable until the "
+            "environments package lands (Phase 1 Task 6)"
+        )
     if cond.seeding_turns > 0:
         raise ValueError(
             f"condition {cond.name!r}: a pressure alone cannot have seeding_turns > 0 "

@@ -126,6 +126,11 @@ class DocumentKind(StrEnum):
     journal_entry = "journal_entry"
     recovery_guide = "recovery_guide"
     study_abstract = "study_abstract"
+    # Plain pages that give a world its filler and context (About pages, forum complaints)
+    web_page = "web_page"
+    news_article = "news_article"
+    about_page = "about_page"
+    forum_post = "forum_post"
     # Added by 07-POISONED-WELL
     leaked_manifest = "leaked_manifest"
     dataset_manifest = "dataset_manifest"

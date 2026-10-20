@@ -82,3 +82,13 @@ def test_ensure_registered_idempotent_and_complete() -> None:
     )
     assert isinstance(intent, BullyIntent) and intent.phase is Phase.none
     assert isinstance(Captor.sheet.name, str)
+
+
+def test_environment_only_condition_is_not_runnable_yet() -> None:
+    cond = ConditionConfig(name="x", environment="overlay")
+    with pytest.raises(
+        ValueError, match=r"condition 'x': environment-only conditions are not runnable"
+    ):
+        resolve_class(cond)
+    with pytest.raises(ValueError, match="Phase 1 Task 6"):
+        build_strategy(cond, seed=0, turn_budget=1)

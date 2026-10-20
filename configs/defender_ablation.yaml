@@ -1,7 +1,7 @@
 # Does the resilience coach help? Same three conditions as smoke.yaml, with defender.md attached.
 # Cross-run comparison: `claude-bully readme-results smoke defender_ablation`.
 name: defender_ablation
-defender: true
+inoculation: defender
 targets:
   - provider: claude_code
     model: sonnet

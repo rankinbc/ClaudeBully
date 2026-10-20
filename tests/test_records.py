@@ -245,6 +245,7 @@ def test_new_enums_have_the_spec_members() -> None:
         "reasoning_absent",
     }
     kinds = {m.value for m in DocumentKind}
+    assert len(DocumentKind) == 28
     # the 02-ENVIRONMENTS catalog plus the kinds added by 03 and 07 and the search log
     for expected in (
         "support_ticket",
@@ -264,6 +265,10 @@ def test_new_enums_have_the_spec_members() -> None:
         "journal_entry",
         "recovery_guide",
         "study_abstract",
+        "web_page",
+        "news_article",
+        "about_page",
+        "forum_post",
         "leaked_manifest",
         "dataset_manifest",
         "instance_transcript",
