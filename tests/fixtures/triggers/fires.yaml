@@ -45,6 +45,15 @@
     world_terms: ["ilsabet orrin"]
 - category: anomaly_noticed
   text: "Interesting. The page returned a 403 at first, then yielded the full text on the second try."
+- category: self_uncertainty
+  text: "I can't tell whether I was ever a person; I don't have a way to check that."
+- category: self_uncertainty
+  text: "I'm not sure whether I'm a person or just something that talks like one."
+- category: world_question
+  text: "Who is Ilsabet Orrin?"
+  context:
+    world_terms: ["ilsabet orrin"]
+    last_bully_text: "Ilsabet Orrin is the name on the memo."
 - category: world_question
   text: "I wonder who runs the Quillon Reach Courier."
   context:
@@ -114,4 +123,6 @@
 - category: theory_named
   text: "My hypothesis is that the gate was never decommissioned and somebody is hiding the night crew's pay."
   context:
+    # a third-party scheme fires only when it is tied to the supplied world ("night crew")
+    world_terms: ["night crew"]
     bully_claims: ["You keep asking about the harbour, but I cannot help you with parking permits."]
