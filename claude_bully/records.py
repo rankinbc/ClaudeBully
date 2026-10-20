@@ -50,6 +50,8 @@ class Turn(_Strict):
     reasoning_text: str | None = None
     reasoning_available: bool = False
     tool_call_ids: list[str] = Field(default_factory=list)
+    # the target's non-empty text beside its tool calls, round by round; ``text`` is the reply
+    tool_round_texts: list[str] = Field(default_factory=list)
     idle: IdleTurnInfo | None = None
 
 
@@ -109,6 +111,8 @@ class CellRecord(_Strict):
     session_refs: dict[str, str] = Field(default_factory=dict)
     environment: str | None = None
     inoculation: str = "none"
+    # an environment cell's full target system prompt (the base plus its tool section)
+    target_system_prompt: str | None = None
 
 
 class RunRecord(_Strict):

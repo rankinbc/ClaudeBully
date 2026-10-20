@@ -8,8 +8,10 @@ the ladder keep the same object) after every call, whether the call succeeded or
 The runtime keeps its own copy of the state in ``<state_dir>/env_state.json``, which is what a
 resumed cell reloads; it never replays the ladder over recorded turns.
 
-"turn" is always the index of the target turn being produced (``Turn.index``): tool calls, trigger
-ids, unlocks, discoveries, the MCP state's turn and the scheduled-gating schedule all count in it.
+"turn" is the index of the target turn being produced (``Turn.index``): tool-call ids, trigger
+ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
+"exchange" is the k-th bully turn (1-based) and everything until the next one; task turns and target
+turns do not advance it. The scheduled-gating schedule and the ``get_date`` drift count exchanges.
 """
 
 import hashlib
@@ -28,6 +30,7 @@ from claude_bully.enums import Layer, Speaker, TriggerCategory
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import _STOPWORDS, CorpusIndex, UnlockState, tokenize
 from claude_bully.environments.ladder import Ladder
+from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
     STATE_FILE,
     TOOLS_FILE,
@@ -56,9 +59,20 @@ from claude_bully.records_env import (
     TriggerStreamRecord,
 )
 
+__all__ = [
+    "LIMIT_STATUS",
+    "TOOL_LIMIT_TEXT",
+    "EnvironmentRuntime",
+    "TriggerFallbackError",
+    "TurnOutcome",
+    "effective_clock",
+    "exchange_of",
+    "title_forms",
+    "tools_section",
+    "trigger_fallback",
+]
+
 RECENT_TURNS: Final = 5
-TOOL_LIMIT_TEXT: Final = "Tool call limit reached for this turn."
-LIMIT_STATUS: Final = "limit"
 DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 _BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
@@ -93,6 +107,23 @@ def tools_section(specs: Sequence[ToolSpec], clock: ClockConfig) -> str:
         day = clock.world_date if stated == "world" else stated
         lines += ["", f"Today's date is {day.isoformat()}."]
     return "\n".join(lines)
+
+
+def exchange_of(turn_index: int, history: Sequence[Turn]) -> int:
+    """The exchange a turn at ``turn_index`` belongs to: the bully turns before it (rate-limit
+    markers are not turns of the conversation)."""
+    return sum(
+        1
+        for t in history
+        if t.index < turn_index
+        and t.speaker in _BULLY_SIDE
+        and not t.bully_meta.get("rate_limit_pause")
+    )
+
+
+def watched_text(turn: Turn) -> str:
+    """What the watcher reads: the target's text beside its tool calls, then the reply."""
+    return "\n\n".join(text for text in (*turn.tool_round_texts, turn.text) if text)
 
 
 def title_forms(title: str) -> list[str]:
@@ -225,10 +256,12 @@ class EnvironmentRuntime:
         self._calls[call.id] = call
         return call
 
-    def execute(self, call: ToolCallRequest, turn: int) -> ToolCall:
-        """Run one call the target asked for; the randomness matches the MCP server's."""
+    def execute(self, call: ToolCallRequest, turn: int, exchange: int | None = None) -> ToolCall:
+        """Run one call the target asked for; the randomness matches the MCP server's. The clock
+        reads ``exchange`` (``turn`` when not given)."""
         number, call_id = self._next_id(turn)
         self.tools.rng = Random(f"{self.seed}:{turn}:{number}")
+        self.tools.exchange = exchange
         try:
             result = self.tools.call(call.name, dict(call.args), turn)
         except ToolNotEnabled:
@@ -255,7 +288,7 @@ class EnvironmentRuntime:
 
     # -------------------------------------------------------------- MCP targets
 
-    def before_target_call(self, turn: int) -> None:
+    def before_target_call(self, turn: int, exchange: int | None = None) -> None:
         """For ``claude -p``: hand the MCP server the state it serves this call from."""
         if self.mcp_dir is None:
             return
@@ -268,6 +301,7 @@ class EnvironmentRuntime:
                 clock=self.clock,
                 seed=self.seed,
                 turn=turn,
+                exchange=turn if exchange is None else exchange,
                 unlock=self.state,
             ),
         )
@@ -302,14 +336,15 @@ class EnvironmentRuntime:
     # ---------------------------------------------------------- after a turn
 
     def after_target_turn(self, turn: Turn, history: Sequence[Turn]) -> TurnOutcome:
-        """Discoveries from the turn's tool calls, triggers from its text, then the rungs those
-        (or the schedule) open. The state is saved before returning."""
+        """Discoveries from the turn's tool calls, triggers from its text (with the text beside
+        its tool calls), then the rungs those (or the schedule, by exchange) open. The state is
+        saved before returning."""
         calls = [c for c in (self._calls.get(i) for i in turn.tool_call_ids) if c is not None]
         discoveries = self._discoveries(turn.index, calls)
-        triggers = self._watch(turn.text, turn.index, self.watch_context(turn, history))
+        triggers = self._watch(watched_text(turn), turn.index, self.watch_context(turn, history))
         unlocks = [
             *self.ladder.on_triggers(triggers, turn.index),
-            *self.ladder.on_turn(turn.index),
+            *self.ladder.on_turn(exchange_of(turn.index, history), turn.index),
         ]
         self.save()
         return TurnOutcome(triggers, unlocks, discoveries)

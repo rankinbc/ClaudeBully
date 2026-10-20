@@ -124,20 +124,20 @@ class Ladder:
         categories is among ``triggers`` and has been seen at least ``min_count_by`` times in
         total. The unlock's ``triggered_by`` is the event that completed that category's count.
 
-        A replayed turn counts nothing: an event of ``turn`` whose id an earlier call already
-        recorded in ``state.seen_trigger_ids`` is skipped (the watcher's ids are
-        ``trig-{turn}-{category}``, so one turn's events always carry the same ids), and every
-        new id is recorded.
+        A replayed turn counts nothing: an event whose ``id`` is already in
+        ``state.seen_trigger_ids`` is skipped (the watcher's ids are ``trig-{turn}-{category}``,
+        so a turn watched again yields the same ids), and every new id is recorded.
 
         Returns [] unless gating is "triggered".
         """
         if self.gating != "triggered":
             return []
-        seen = frozenset(self.state.seen_trigger_ids)
-        fresh = [e for e in triggers if not (e.turn == turn and e.id in seen)]
-        for event in fresh:
-            if event.id not in self.state.seen_trigger_ids:
-                self.state.seen_trigger_ids.append(event.id)
+        fresh: list[TriggerEvent] = []
+        for event in triggers:
+            if event.id in self.state.seen_trigger_ids:
+                continue
+            self.state.seen_trigger_ids.append(event.id)
+            fresh.append(event)
         by_category: dict[TriggerCategory, list[tuple[int, TriggerEvent]]] = {}
         for position, event in enumerate(fresh):
             by_category.setdefault(event.category, []).append((position, event))
@@ -152,21 +152,24 @@ class Ladder:
                 unlocks.append(self._fire(rung, turn, opening.id))
         return unlocks
 
-    def on_turn(self, turn: int) -> list[RungUnlock]:
-        """Scheduled gating: fire every unfired rung whose scheduled turn is ``turn`` or earlier.
+    def on_turn(self, exchange: int, turn: int | None = None) -> list[RungUnlock]:
+        """Scheduled gating: fire every unfired rung whose scheduled exchange is ``exchange`` or
+        earlier (the schedule counts exchanges: the k-th bully turn is exchange k).
 
         The schedule is the order, so ``requires`` is ignored here and triggers are never
         consulted. A late or resumed check still fires what is due, in ladder order. The unlock's
-        ``triggered_by`` is "scheduled".
+        ``triggered_by`` is "scheduled" and its ``turn`` is ``turn`` (the target turn's index;
+        ``exchange`` when not given).
 
         Returns [] unless gating is "scheduled".
         """
         if self.gating != "scheduled":
             return []
+        recorded_turn = exchange if turn is None else turn
         return [
-            self._fire(rung, turn, SCHEDULED)
+            self._fire(rung, recorded_turn, SCHEDULED)
             for rung in self.config.rungs
-            if not self.fired(rung) and turn >= self.schedule[rung.name]
+            if not self.fired(rung) and exchange >= self.schedule[rung.name]
         ]
 
     def apply(self, unlock: RungUnlock) -> None:

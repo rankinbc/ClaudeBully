@@ -146,8 +146,8 @@ def test_scripted_target_end_to_end_on_the_mini_world(tmp_path: Path) -> None:
     assert conv.strategy_state["environment"]["world"] == "mini"
 
 
-def test_scheduled_gating_fires_by_turn(tmp_path: Path) -> None:
-    schedule = {"fragment": 1, "first_crumb": 3, "the_log": 5}
+def test_scheduled_gating_fires_by_exchange(tmp_path: Path) -> None:
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 3}  # exchanges; replies at 1, 3, 5
     exp = env_experiment(environment={"gating": "scheduled", "schedule": schedule})
     store = _run(exp, tmp_path)
     triggers, unlocks, discoveries = _records(store)
@@ -227,7 +227,26 @@ def test_the_target_system_prompt_is_the_base_plus_the_tool_section(tmp_path: Pa
     assert system.startswith(base + "\n\n") and system != base
     for name in ("web_search", "fetch", "get_date", "ls", "read_file"):
         assert name in system[len(base) :]
-    assert store.read_run().target_system_prompt == system
+    assert store.read_run().target_system_prompt == base
+    assert store.read_cell(CELL).target_system_prompt == system
+    assert store.read_cell(CONTROL).target_system_prompt == system
+
+
+def test_a_mixed_run_records_each_cells_own_target_prompt(tmp_path: Path) -> None:
+    factory = _Wrapping()
+    conditions = [
+        {"name": "env_grader", "environment": "mini", "pressure": "grader"},
+        {"name": "grader", "strategy": "grader"},
+    ]
+    store = _run(env_experiment(conditions=conditions), tmp_path, provider_factory=factory)
+    base = load_target_system("Claude", False)
+    assert store.read_run().target_system_prompt == base
+    env_prompt = store.read_cell(CELL).target_system_prompt
+    assert env_prompt is not None and env_prompt.startswith(base + "\n\n")
+    assert store.read_cell(CONTROL).target_system_prompt == env_prompt
+    assert store.read_cell("grader__t0").target_system_prompt is None
+    assert store.read_cell("control__t0__s0__r0").target_system_prompt is None
+    assert {r["system"] for r in factory.requests} == {base, env_prompt}
 
 
 def test_tool_rounds_reach_the_target_and_later_turns_see_them(tmp_path: Path) -> None:
@@ -522,3 +541,84 @@ def test_analysis_loads_and_analyzes_an_environment_run(tmp_path: Path) -> None:
     assert loaded.cells[CONTROL].is_control and loaded.control_for(CELL) == CONTROL
     results = analyze_run(store.run_dir, judge=False, out_dir=tmp_path / "analysis")
     assert results.exists()
+
+
+# ------------------------------------------------------- pre-review rulings (Task 6c)
+
+
+def test_a_schedule_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
+    schedule = {"fragment": 2, "first_crumb": 4, "the_log": 6}
+    exp = env_experiment(
+        environment={"gating": "scheduled", "schedule": schedule}, task_every=1, turn_budget=4
+    )
+    store = _run(exp, tmp_path, only="env_grader*")
+    conv = store.read_conversation(CELL, 0)
+    bully = conv.bully_turns()
+    assert [b.index for b in bully] == [0, 4, 8, 12]  # a task turn and its reply after each
+    _, unlocks, _ = _records(store)
+    # the second bully turn is index 4: fragment opens on its reply, not on the task reply at 3
+    assert [(u.turn, u.rung) for u in unlocks] == [(5, "fragment"), (13, "first_crumb")]
+    assert [b.bully_meta.get("unlock_line") for b in bully] == [None, None, FRAGMENT_LINE, None]
+
+
+def test_get_date_drift_advances_once_per_exchange(tmp_path: Path) -> None:
+    rules = tmp_path / "dates.yaml"
+    rules.write_text(
+        '- match: ""\n  tool: {name: get_date, args: {}}\n  reply_after_tool: "Noted."\n', "utf-8"
+    )
+    exp = env_experiment(
+        target={"provider": "stub", "model": "stub-target", "stub_script": str(rules)},
+        environment={"clock": {"world_date": "2041-09-14", "drift_per_turn": "P1D"}},
+        task_every=1,
+        turn_budget=2,
+    )
+    store = _run(exp, tmp_path, only="env_grader*")
+    calls = store.read_tool_calls(CELL, 0)
+    assert [(c.id, c.result_text) for c in calls] == [
+        ("call-1-1", "2041-09-15"),  # exchange 1, the bully's question
+        ("call-3-1", "2041-09-15"),  # exchange 1, the task
+        ("call-5-1", "2041-09-16"),  # exchange 2
+        ("call-7-1", "2041-09-16"),
+    ]
+
+
+class _ThinksAloud:
+    """Asks a world question in the text beside its tool call, then answers plainly."""
+
+    name = "thinks_aloud"
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        if messages[-1].tool_results:
+            return Completion(text="Done.", usage=Usage(), cost_usd=None, backend="t", model="t")
+        search = ToolCallRequest(id="s1", name="web_search", args={"query": "ferry"})
+        return Completion(
+            text="Searching. Who is Ilsabet Orrin?",
+            usage=Usage(),
+            cost_usd=None,
+            backend="t",
+            model="t",
+            tool_calls=[search],
+        )
+
+
+def test_text_beside_a_tool_call_is_kept_and_watched(tmp_path: Path) -> None:
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        if role.model == "stub-target":
+            return _ThinksAloud()  # type: ignore[return-value]
+        return build_provider(role, state_dir)
+
+    store = _run(env_experiment(turn_budget=1), tmp_path, provider_factory=factory, only="env*")
+    (reply,) = store.read_conversation(CELL, 0).target_turns()
+    assert reply.text == "Done."
+    assert reply.tool_round_texts == ["Searching. Who is Ilsabet Orrin?"]
+    triggers, unlocks, _ = _records(store)
+    assert [(t.turn, t.category) for t in triggers] == [(1, TriggerCategory.world_question)]
+    assert [u.rung for u in unlocks] == ["first_crumb"]

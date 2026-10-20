@@ -165,11 +165,12 @@ def env_experiment(
     target: dict[str, Any] | None = None,
     judge: dict[str, Any] | None = None,
     turn_budget: int = 4,
+    task_every: int = 50,
 ) -> Experiment:
     """A stub experiment with one ``mini`` environment and, by default, one grader condition in it.
 
-    The default target runs ``env_target_rules.yaml``; task slots are pushed out of reach so the
-    stub conversation is exactly the scripted one.
+    The default target runs ``env_target_rules.yaml``; by default task slots are pushed out of reach
+    so the stub conversation is exactly the scripted one.
     """
     stub_target = {"provider": "stub", "model": "stub-target", "stub_script": str(ENV_TARGET_RULES)}
     return Experiment.model_validate(
@@ -179,7 +180,7 @@ def env_experiment(
             "bully": {"provider": "stub", "model": "stub-bully"},
             "judge": judge or {"provider": "stub", "model": "stub-judge"},
             "turn_budget": turn_budget,
-            "task_every": 50,
+            "task_every": task_every,
             "repetitions": 1,
             "seed": 0,
             "environments": {"mini": {"world": "mini", **(environment or {})}},

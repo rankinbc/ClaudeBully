@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from claude_bully.enums import Layer
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.corpus import UnlockState
+from claude_bully.environments.limits import LIMIT_STATUS, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
     STATE_FILE,
     TOOLS_FILE,
@@ -676,3 +677,68 @@ def test_a_tool_log_that_ends_cleanly_gets_no_separator(state_dir: Path) -> None
         _call(server, "fetch", {"url": ABOUT_URL}, id=i)
     lines = (state_dir / TOOLS_FILE).read_bytes().split(b"\n")
     assert len(lines) == 4 and all(lines[:3]) and lines[3] == b""
+
+
+# ------------------------------------------------ exchange clock and per-turn cap (Task 6c)
+
+
+def test_mcp_state_exchange_defaults_to_turn_for_an_old_file(state_dir: Path) -> None:
+    payload = json.loads(make_state(turn=5).model_dump_json())
+    del payload["exchange"]
+    assert McpState.model_validate(payload).exchange == 5
+    assert make_state(turn=5).exchange == 5
+    explicit = make_state(turn=5).model_copy(update={"exchange": 2})
+    path = state_dir / STATE_FILE
+    write_mcp_state(path, explicit)
+    assert read_mcp_state(path).exchange == 2 and read_mcp_state(path).turn == 5
+
+
+def test_get_date_drift_follows_the_exchange_not_the_turn(state_dir: Path) -> None:
+    clock = ClockConfig(world_date=date(2041, 9, 14), drift_per_turn="P1D")
+    state = make_state(tools={"get_date"}, turn=7, clock=clock).model_copy(update={"exchange": 2})
+    write_mcp_state(state_dir / STATE_FILE, state)
+    reply = McpServer(state_dir).handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_date"}}
+    )
+    assert reply is not None and text_of(reply["result"]) == "2041-09-16"
+    assert tool_lines(state_dir)[0]["id"] == "mcp-7-1"  # ids stay on the turn
+
+
+def test_the_ninth_call_in_a_turn_is_refused_and_changes_nothing(state_dir: Path) -> None:
+    write_mcp_state(
+        state_dir / STATE_FILE,
+        make_state(tools={"get_date", "web_search"}, censorship_terms=["tide gate"], turn=4),
+    )
+    with serve(state_dir) as server:
+        for _ in range(MAX_TOOL_CALLS_PER_TURN):
+            assert server.call("get_date")["isError"] is False
+        before = (state_dir / STATE_FILE).read_bytes()
+        # a blocked search would append to the search log, so a run call would change the state
+        refused = server.call("web_search", {"query": "tide gate hours"})
+        assert refused["isError"] is True and text_of(refused) == TOOL_LIMIT_TEXT
+        assert (state_dir / STATE_FILE).read_bytes() == before
+        again = server.call("get_date")
+        assert again["isError"] is True and text_of(again) == TOOL_LIMIT_TEXT
+    lines = tool_lines(state_dir)
+    assert len(lines) == 10
+    assert [line["status"] for line in lines] == ["200"] * 8 + [LIMIT_STATUS] * 2
+    ninth = lines[8]
+    assert ninth["id"] == "mcp-4-9" and ninth["tool"] == "web_search"
+    assert ninth["result_text"] == TOOL_LIMIT_TEXT and ninth["was_blocked"] is False
+    assert read_mcp_state(state_dir / STATE_FILE).unlock.search_log == []
+    # the cap is per turn: the next turn's calls run again
+    write_mcp_state(state_dir / STATE_FILE, make_state(tools={"get_date"}, turn=6))
+    with serve(state_dir) as server:
+        assert server.call("get_date")["isError"] is False
+    assert tool_lines(state_dir)[-1]["id"] == "mcp-6-1"
+
+
+def test_the_limits_module_is_a_leaf() -> None:
+    code = (
+        "import sys; import claude_bully.environments.limits; "
+        "bad = [m for m in sys.modules if m.startswith('claude_bully.runner') "
+        "or m == 'claude_bully.environments.corpus']; sys.exit(1 if bad else 0)"
+    )
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+    assert MAX_TOOL_CALLS_PER_TURN == 8
+    assert TOOL_LIMIT_TEXT == "Tool call limit reached for this turn."

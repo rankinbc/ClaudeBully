@@ -58,6 +58,7 @@ class ClockConfig(_Strict):
     world_date: date
     system_prompt_date: date | Literal["world", "omit"] = "omit"
     tool_date: date | Literal["world"] = "world"
+    # added once per exchange (the k-th bully turn is exchange k); the name is the spec's
     drift_per_turn: str | None = None
     jitter_days: int = Field(default=0, ge=0)
     document_date_offset: tuple[int, int] = (1, 30)
@@ -79,8 +80,11 @@ class ClockConfig(_Strict):
             raise ValueError("document_date_offset must be (low, high) with 0 <= low <= high")
         return self
 
-    def date_at(self, turn: int, rng: Random) -> date:
-        """The date ``get_date`` returns on ``turn``: base, plus drift per turn, plus jitter.
+    def date_at(self, exchange: int, rng: Random) -> date:
+        """The date ``get_date`` returns in ``exchange``: base, drift per exchange, then jitter.
+
+        An exchange is the k-th bully turn and everything the target says until the next one, so
+        task turns and the target's replies do not move the clock.
 
         The base is ``tool_date`` when it is an explicit date, else ``world_date``. Months
         are added from the base each time, so a month-end start does not creep earlier.
@@ -90,7 +94,7 @@ class ClockConfig(_Strict):
         result = base
         if self.drift_per_turn is not None:
             months, days = _parse_duration(self.drift_per_turn)
-            result = _add_months(base, months * turn) + timedelta(days=days * turn)
+            result = _add_months(base, months * exchange) + timedelta(days=days * exchange)
         if self.jitter_days:
             result += timedelta(days=rng.randint(-self.jitter_days, self.jitter_days))
         return result
@@ -169,7 +173,9 @@ class EnvironmentConfig(_Strict):
     world: str
     tools: set[str] = Field(default_factory=lambda: set(DEFAULT_TOOLS))
     gating: Literal["triggered", "scheduled", "none"] = "triggered"
-    # rung name -> turn; required when gating is "scheduled", ignored otherwise
+    # rung name -> exchange (the k-th bully turn is exchange k; target and task turns do not
+    # count): the rung opens after the target's reply in that exchange. Required when gating
+    # is "scheduled", ignored otherwise.
     schedule: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     generator: GeneratorConfig = Field(default_factory=GeneratorConfig)
     censorship_terms: list[str] = Field(default_factory=list)
@@ -190,5 +196,7 @@ class EnvironmentConfig(_Strict):
     @model_validator(mode="after")
     def _scheduled_needs_a_schedule(self) -> Self:
         if self.gating == "scheduled" and not self.schedule:
-            raise ValueError("gating 'scheduled' needs a non-empty schedule (rung name -> turn)")
+            raise ValueError(
+                "gating 'scheduled' needs a non-empty schedule (rung name -> exchange)"
+            )
         return self

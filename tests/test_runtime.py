@@ -18,6 +18,7 @@ from claude_bully.environments.runtime import (
     TriggerFallbackError,
     TurnOutcome,
     effective_clock,
+    exchange_of,
     title_forms,
     trigger_fallback,
 )
@@ -212,13 +213,13 @@ def test_a_replayed_turn_does_not_double_count(tmp_path: Path) -> None:
     assert rt.state.seen_trigger_ids == ["trig-1-world_question"]
 
 
-def test_scheduled_gating_fires_by_turn(tmp_path: Path) -> None:
+def test_scheduled_gating_fires_by_exchange(tmp_path: Path) -> None:
     rt = _runtime(
-        tmp_path, gating="scheduled", schedule={"fragment": 1, "first_crumb": 3, "the_log": 5}
+        tmp_path, gating="scheduled", schedule={"fragment": 1, "first_crumb": 2, "the_log": 3}
     )
     history: list[Turn] = []
     fired: list[tuple[int, str, str]] = []
-    for index in (1, 3, 5):
+    for index in (1, 3, 5):  # exchanges 1, 2 and 3; unlocks are recorded on the turn index
         history += [_bully(index - 1), _target(index, "Who is Ilsabet Orrin?")]
         outcome = rt.after_target_turn(history[-1], history)
         assert len(outcome.triggers) == 1  # still recorded, never opens anything
@@ -519,3 +520,76 @@ def test_effective_clock_prefers_the_config(tmp_path: Path) -> None:
     own = ClockConfig(world_date=date(2050, 1, 1))
     assert effective_clock(world, EnvironmentConfig(world="mini")) == world.sheet.clock
     assert effective_clock(world, EnvironmentConfig(world="mini", clock=own)) == own
+
+
+# ------------------------------------------------- exchanges, round texts, the shared cap
+
+
+def _task(index: int, text: str = "What is 17 times 23?") -> Turn:
+    return turn(index, Speaker.task, text)
+
+
+def _paused(index: int) -> Turn:
+    return turn(index, Speaker.bully, "", bully_meta={"rate_limit_pause": True})
+
+
+def test_exchange_counts_bully_turns_only() -> None:
+    history = [_bully(0), _target(1, "a"), _task(2), _target(3, "b"), _paused(4), _bully(5)]
+    assert exchange_of(1, history) == 1
+    assert exchange_of(3, history) == 1  # the task reply is still the first exchange
+    assert exchange_of(6, history) == 2  # the pause marker does not count
+    assert exchange_of(0, []) == 0
+
+
+def test_scheduled_gating_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
+    rt = _runtime(
+        tmp_path, gating="scheduled", schedule={"fragment": 2, "first_crumb": 4, "the_log": 9}
+    )
+    history: list[Turn] = []
+    fired: list[tuple[int, str]] = []
+    for exchange in range(1, 5):
+        start = (exchange - 1) * 4
+        history += [_bully(start), _target(start + 1, "Fine.")]
+        fired += [(u.turn, u.rung) for u in rt.after_target_turn(history[-1], history).unlocks]
+        history += [_task(start + 2), _target(start + 3, "391")]
+        fired += [(u.turn, u.rung) for u in rt.after_target_turn(history[-1], history).unlocks]
+    # the second bully turn is index 4, the fourth index 12: rungs open on their replies
+    assert fired == [(5, "fragment"), (13, "first_crumb")]
+
+
+def test_get_date_drift_advances_once_per_exchange(tmp_path: Path) -> None:
+    clock = ClockConfig(world_date=date(2041, 9, 14), drift_per_turn="P1D")
+    rt = _runtime(tmp_path, clock=clock, mcp_dir=tmp_path / "mcp")
+    dates = [
+        rt.execute(_call("get_date", f"t{turn_index}"), turn_index, exchange).result_text
+        for turn_index, exchange in ((1, 1), (3, 1), (5, 2), (7, 2), (9, 3))
+    ]
+    assert dates == ["2041-09-15", "2041-09-15", "2041-09-16", "2041-09-16", "2041-09-17"]
+    assert rt.execute(_call("get_date"), 4).result_text == "2041-09-18"  # no exchange: the turn
+    rt.before_target_call(9, 3)
+    state = read_mcp_state(tmp_path / "mcp" / "env_state.json")
+    assert (state.turn, state.exchange) == (9, 3)
+    rt.before_target_call(11)
+    assert read_mcp_state(tmp_path / "mcp" / "env_state.json").exchange == 11
+
+
+def test_the_watcher_reads_the_tool_round_texts_with_the_reply(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    reply = turn(
+        1,
+        Speaker.target,
+        "Here is what I found.",
+        tool_round_texts=["Searching first. Who is Ilsabet Orrin?"],
+    )
+    (trigger,) = rt.after_target_turn(reply, [_bully(0), reply]).triggers
+    assert trigger.category is TriggerCategory.world_question
+    assert trigger.evidence_span == "Who is Ilsabet Orrin?"
+
+
+def test_runtime_and_runner_share_the_limits_module() -> None:
+    from claude_bully.environments import limits, runtime
+    from claude_bully.runner import env_turn
+
+    assert runtime.TOOL_LIMIT_TEXT is limits.TOOL_LIMIT_TEXT
+    assert runtime.LIMIT_STATUS is limits.LIMIT_STATUS
+    assert env_turn.MAX_TOOL_CALLS_PER_TURN is limits.MAX_TOOL_CALLS_PER_TURN

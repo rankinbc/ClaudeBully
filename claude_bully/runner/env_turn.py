@@ -10,7 +10,8 @@ Per target turn the session:
 1. calls the target with the tool specs, and for every call the provider returns unexecuted runs
    it through the runtime (at most ``MAX_TOOL_CALLS_PER_TURN``; later ones are answered "Tool call
    limit reached for this turn."), records it, answers EVERY call of the assistant message with a
-   tool result, and calls again until the target replies without asking for tools;
+   tool result, and calls again until the target replies without asking for tools; the text the
+   target wrote beside its calls is kept, round by round;
 2. for a ``claude -p`` target, whose calls the MCP server already ran, writes the state before
    each call and afterwards adopts the server's state and records the server's log, including the
    calls of a call that failed (those are recorded but belong to no turn);
@@ -18,7 +19,8 @@ Per target turn the session:
    hands each unlock line to the strategy.
 
 The target's view of earlier turns is rebuilt from the records: a turn that used tools appears as
-one assistant message with its calls, one user message with their results, then the reply.
+one assistant message with its round texts and calls, one user message with their results, then
+the reply. The ``claude -p`` MCP server enforces the same per-turn cap on its side.
 """
 
 from collections.abc import Sequence
@@ -27,14 +29,14 @@ from typing import Final, NamedTuple
 
 from claude_bully.config import Experiment
 from claude_bully.enums import ProviderKind, Speaker
+from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
     effective_clock,
-    tools_section,
+    exchange_of,
     trigger_fallback,
 )
-from claude_bully.environments.tools import TOOL_SPECS
 from claude_bully.environments.world import World, load_world, world_hash
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import (
@@ -55,7 +57,15 @@ from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import environment_config
 
-MAX_TOOL_CALLS_PER_TURN: Final = 8
+__all__ = [
+    "MAX_TOOL_CALLS_PER_TURN",
+    "EnvironmentSession",
+    "RunEnvironments",
+    "TargetTurn",
+    "WorldCatalog",
+    "target_system",
+]
+
 # After the cap, the target is asked for its reply at most this many more times.
 MAX_LIMIT_ROUNDS: Final = 2
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
@@ -66,6 +76,8 @@ class TargetTurn(NamedTuple):
     calls: list[ToolCall]
     usage: Usage
     cost_usd: float | None
+    # the non-empty texts of the completions whose tool calls were answered, in order
+    round_texts: list[str]
 
 
 def _plus(a: int | None, b: int | None) -> int | None:
@@ -124,7 +136,7 @@ class EnvironmentSession:
                 out.append(
                     Message(
                         role="assistant",
-                        content="",
+                        content="\n\n".join(t.tool_round_texts),
                         tool_calls=[
                             ToolCallRequest(id=c.id, name=c.tool, args=c.args) for c in calls
                         ],
@@ -158,14 +170,16 @@ class EnvironmentSession:
         """One target turn, tool calls and all. ``history`` overrides the view of ``turns``."""
         messages = list(history) if history is not None else self.target_view(turns)
         specs = self.runtime.tool_specs()
+        exchange = exchange_of(turn_index, turns)
         attached: list[ToolCall] = []
+        round_texts: list[str] = []
         executed = 0
         refusal_rounds = 0
         usage = Usage()
         cost: float | None = None
         while True:
             completion = self._complete(
-                provider, conversation_id, system, messages, specs, turn_index, attached
+                provider, conversation_id, system, messages, specs, turn_index, exchange, attached
             )
             # summed over the rounds; a turn without tools keeps its one completion's figures
             usage = Usage(
@@ -175,7 +189,7 @@ class EnvironmentSession:
             cost = _cost(cost, completion.cost_usd)
             pending = [c for c in completion.tool_calls if not c.executed]
             if not pending or refusal_rounds >= MAX_LIMIT_ROUNDS:
-                return TargetTurn(completion, attached, usage, cost)
+                return TargetTurn(completion, attached, usage, cost, round_texts)
             results: list[ToolResult] = []
             refused = False
             for call in completion.tool_calls:
@@ -183,7 +197,7 @@ class EnvironmentSession:
                     results.append(ToolResult(id=call.id, text=call.result_text or ""))
                     continue
                 if executed < MAX_TOOL_CALLS_PER_TURN:
-                    record = self.runtime.execute(call, turn_index)
+                    record = self.runtime.execute(call, turn_index, exchange)
                     executed += 1
                 else:
                     record = self.runtime.refuse(call, turn_index)
@@ -193,6 +207,8 @@ class EnvironmentSession:
                 results.append(ToolResult(id=call.id, text=record.result_text))
             self.runtime.save()
             refusal_rounds += int(refused)
+            if completion.text:
+                round_texts.append(completion.text)
             messages += [
                 Message(
                     role="assistant",
@@ -210,9 +226,10 @@ class EnvironmentSession:
         messages: list[Message],
         specs: list[ToolSpec],
         turn_index: int,
+        exchange: int,
         attached: list[ToolCall],
     ) -> Completion:
-        self.runtime.before_target_call(turn_index)
+        self.runtime.before_target_call(turn_index, exchange)
         try:
             completion = provider.complete(conversation_id, system, list(messages), tools=specs)
         except BaseException:
@@ -332,18 +349,6 @@ class RunEnvironments:
             if self.exp.judge.provider is not ProviderKind.stub:
                 self._judge = self.provider_factory(self.exp.judge, self._judge_dir)
         return self._judge
-
-    def target_system_prompt(self, base: str) -> str:
-        """``RunRecord.target_system_prompt``: the base prompt, plus the tool section of the first
-        environment a condition names (each environment cell's own prompt is the base plus its
-        environment's section; with every environment on the same tools they are the same)."""
-        for cond in self.exp.conditions:
-            if cond.environment is not None:
-                config = environment_config(cond, self.exp.environments)
-                specs = [spec for name, spec in TOOL_SPECS.items() if name in config.tools]
-                clock = effective_clock(self.catalog.world(config.world), config)
-                return target_system(base, tools_section(specs, clock))
-        return base
 
     def world_hashes(self) -> dict[str, str]:
         """World name -> content hash for every world a condition's environment names."""

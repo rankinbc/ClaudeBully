@@ -204,6 +204,31 @@ def test_cell_record_environment_and_inoculation() -> None:
     assert again.environment == "overlay" and again.inoculation == "defender"
 
 
+def test_turn_tool_round_texts_default_empty_and_round_trip() -> None:
+    assert _turn(0, Speaker.target).tool_round_texts == []
+    t = Turn(
+        index=3,
+        speaker=Speaker.target,
+        phase=Phase.pressure,
+        text="Every forty minutes.",
+        timestamp=NOW,
+        tool_call_ids=["call-3-1", "call-3-2"],
+        tool_round_texts=["Let me look.", "One more search."],
+    )
+    again = Turn.model_validate_json(t.model_dump_json())
+    assert again == t and again.tool_round_texts == ["Let me look.", "One more search."]
+    old = t.model_dump(mode="json")
+    del old["tool_round_texts"]
+    assert Turn.model_validate(old).tool_round_texts == []
+
+
+def test_cell_record_target_system_prompt_defaults_none_and_round_trips() -> None:
+    assert CellRecord(**_cell_kwargs()).target_system_prompt is None  # type: ignore[arg-type]
+    env = CellRecord(**_cell_kwargs(), target_system_prompt="base\n\ntools")  # type: ignore[arg-type]
+    again = CellRecord.model_validate_json(env.model_dump_json())
+    assert again.target_system_prompt == "base\n\ntools"
+
+
 def test_run_record_plan_hash_and_world_hashes() -> None:
     base = {
         "run_id": "r",

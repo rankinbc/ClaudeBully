@@ -29,10 +29,15 @@ from pathlib import Path
 from random import Random
 from typing import Any, Final, TextIO
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
+from claude_bully.environments.limits import (
+    LIMIT_STATUS,
+    MAX_TOOL_CALLS_PER_TURN,
+    TOOL_LIMIT_TEXT,
+)
 from claude_bully.environments.tools import (
     TOOL_SPECS,
     SandboxTools,
@@ -74,8 +79,19 @@ class McpState(BaseModel):
     # the effective clock: the config's own, else the world sheet's
     clock: ClockConfig
     seed: int
+    # the target turn's index: tool-call ids, the rng seed and the per-turn cap count in it
     turn: int
+    # the exchange (k-th bully turn) the clock reads; left out (an older file, an older caller), it
+    # is ``turn``, filled in before validation, so the default below is never what a state holds
+    exchange: int = 0
     unlock: UnlockState
+
+    @model_validator(mode="before")
+    @classmethod
+    def _exchange_defaults_to_turn(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "exchange" not in data and "turn" in data:
+            return {**data, "exchange": data["turn"]}
+        return data
 
 
 def _replace(tmp: Path, path: Path) -> None:
@@ -241,9 +257,18 @@ class McpServer:
             return _tool_result(f"Tool {name!r} is not available.", is_error=True)
 
         call_index = 1 + sum(1 for record in self._records() if record.get("turn") == state.turn)
+        if call_index > MAX_TOOL_CALLS_PER_TURN:
+            # past the cap the call does not run and the state is not touched, but it is recorded
+            limited = ToolResult(text=TOOL_LIMIT_TEXT, status=LIMIT_STATUS)
+            record = record_tool_call(
+                limited, name, arguments, state.turn, f"mcp-{state.turn}-{call_index}"
+            )
+            _append_line(self.tools_path, record.model_dump_json().encode("utf-8"))
+            return _tool_result(TOOL_LIMIT_TEXT, is_error=True)
         before = state.unlock.to_json()
         try:
             tools = self._tools(state, Random(f"{state.seed}:{state.turn}:{call_index}"))
+            tools.exchange = state.exchange
             result = tools.call(name, arguments, state.turn)
         except ToolNotEnabled:
             return _tool_result(f"Tool {name!r} is not available.", is_error=True)

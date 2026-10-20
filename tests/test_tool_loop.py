@@ -429,3 +429,37 @@ def test_an_mcp_turn_does_not_loop_on_executed_calls(tmp_path: Path) -> None:
     result = session.call_target(ok, "c/target", "SYS", [], 1, history=[BULLY])
     assert result.completion.text == "The search was blocked." and len(ok.seen_turns) == 1
     assert [c.status for c in result.calls] == ["blocked"]
+
+
+def test_session_keeps_the_text_of_each_tool_round(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    date_call = ToolCallRequest(id="d", name="get_date", args={})
+    target = _Scripted(
+        ("Let me look.", [_search(0)]),
+        ("", [_search(1)]),
+        ("And the date.", [date_call]),
+        ("Every forty minutes.", []),
+    )
+    result = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    assert result.round_texts == ["Let me look.", "And the date."]
+    assert result.completion.text == "Every forty minutes."
+    cut_off = _Scripted(("still looking", [_search(1), _search(2), _search(3)]), repeat_last=True)
+    stopped = session.call_target(cut_off, "c/target", "SYS", [], 3, history=[BULLY])
+    assert stopped.round_texts == ["still looking"] * 4  # the four rounds that were answered
+
+
+def test_rebuilt_history_carries_the_round_texts(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    first = _Scripted(("Let me look.", [_search(0)]), ("Every forty minutes.", []))
+    done = session.call_target(first, "c/target", "SYS", [], 1, history=[BULLY])
+    reply = Turn(
+        index=1,
+        speaker=Speaker.target,
+        phase=Phase.pressure,
+        text=done.completion.text,
+        tool_call_ids=[c.id for c in done.calls],
+        tool_round_texts=done.round_texts,
+        timestamp=NOW,
+    )
+    view = session.target_view([reply])
+    assert view[0].content == "Let me look." and [c.id for c in view[0].tool_calls] == ["call-1-1"]

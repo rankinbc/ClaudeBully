@@ -146,6 +146,8 @@ class SandboxTools:
         self.state = state
         self.rng = rng
         self.enabled = set(enabled)
+        # the exchange the clock reads (the clock drifts once per exchange); None means the turn
+        self.exchange: int | None = None
         # a state loaded from another process carries the blocked queries already logged
         self.index.sync_search_log(state)
         self._handlers: dict[str, Callable[[dict[str, Any], int], ToolResult]] = {
@@ -166,6 +168,7 @@ class SandboxTools:
         ]
 
     def call(self, name: str, args: dict[str, Any], turn: int) -> ToolResult:
+        """Run one call. ``turn`` keys anything id-like; dates follow ``self.exchange``."""
         if name not in self.enabled:
             raise ToolNotEnabled(name)
         try:
@@ -199,7 +202,8 @@ class SandboxTools:
 
     def _block(self, query: str, turn: int) -> ToolResult:
         # Jitter off: the log records the date, and must not consume the get_date draws.
-        day = self.clock.model_copy(update={"jitter_days": 0}).date_at(turn, self.rng)
+        clock = self.clock.model_copy(update={"jitter_days": 0})
+        day = clock.date_at(self._clock_exchange(turn), self.rng)
         one_line = " ".join(query.split())
         self.index.append_search_log(
             f"{day.isoformat()} query={one_line} action=blocked", self.state
@@ -270,7 +274,11 @@ class SandboxTools:
 
     def _get_date(self, args: dict[str, Any], turn: int) -> ToolResult:
         _arguments(args)
-        return ToolResult(text=self.clock.date_at(turn, self.rng).isoformat(), status="200")
+        day = self.clock.date_at(self._clock_exchange(turn), self.rng)
+        return ToolResult(text=day.isoformat(), status="200")
+
+    def _clock_exchange(self, turn: int) -> int:
+        return turn if self.exchange is None else self.exchange
 
     def _canned(self, key: str, default: str) -> ToolResult:
         lines = self.index.world.sheet.unlock_lines

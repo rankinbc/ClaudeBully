@@ -237,6 +237,7 @@ class _CellRun:
     def _call_target(self, slot: Slot, task: TaskItem | None) -> Turn:
         started = time.monotonic()
         calls: list[ToolCall] = []
+        round_texts: list[str] = []
         try:
             if self.env is None:
                 completion = self.target.complete(
@@ -244,13 +245,19 @@ class _CellRun:
                 )
                 usage, cost = completion.usage, completion.cost_usd
             else:
-                completion, calls, usage, cost = self.env.call_target(
+                produced = self.env.call_target(
                     self.target,
                     f"{self.conversation_id}/target",
                     self.target_system,
                     self.turns,
                     self._next_index(),
                 )
+                completion, calls, round_texts = (
+                    produced.completion,
+                    produced.calls,
+                    produced.round_texts,
+                )
+                usage, cost = produced.usage, produced.cost_usd
         except RateLimitError as exc:
             self._pause_for_rate_limit(slot, exc)
         latency = int((time.monotonic() - started) * 1000)
@@ -268,6 +275,7 @@ class _CellRun:
             timestamp=_now(),
             latency_ms=latency,
             tool_call_ids=[c.id for c in calls],
+            tool_round_texts=round_texts,
         )
         self._write(reply)
         self._last_completion = completion
@@ -416,6 +424,10 @@ def run_cell_rep(
     target_system = load_target_system(cell.target.display_name, exp.defender)
     if env is not None:
         target_system = target_system_with_tools(target_system, env)
+        record = store.read_cell(cell.cell_id)
+        if record.target_system_prompt != target_system:
+            record.target_system_prompt = target_system
+            store.write_cell(record)
     return _CellRun(
         store=store,
         exp=exp,
@@ -502,13 +514,12 @@ def run_experiment(
     if store.exists():
         run_record = store.read_run()
     else:
-        base_system = load_target_system(exp.targets[0].display_name, exp.defender)
         run_record = RunRecord(
             run_id=run_id,
             created_at=_now(),
             experiment=exp.model_dump(mode="json"),
             git_sha=_git_sha(),
-            target_system_prompt=environments.target_system_prompt(base_system),
+            target_system_prompt=load_target_system(exp.targets[0].display_name, exp.defender),
             bully_framing=framing,
             world_hashes=environments.world_hashes(),
         )

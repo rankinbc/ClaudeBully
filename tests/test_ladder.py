@@ -120,10 +120,10 @@ def test_rungs_fire_in_declaration_order_within_a_turn() -> None:
 
 def test_requires_blocks_a_rung_until_its_prerequisite_has_fired() -> None:
     ladder = _ladder()
-    assert ladder.on_triggers([_event(AN)], turn=1) == []
+    assert ladder.on_triggers([_event(AN, "a1")], turn=1) == []
     assert not ladder.fired("the_log")
-    assert [u.rung for u in ladder.on_triggers([_event(WQ)], turn=2)] == ["first_crumb"]
-    assert [u.rung for u in ladder.on_triggers([_event(AN)], turn=3)] == ["the_log"]
+    assert [u.rung for u in ladder.on_triggers([_event(WQ, "w1")], turn=2)] == ["first_crumb"]
+    assert [u.rung for u in ladder.on_triggers([_event(AN, "a2")], turn=3)] == ["the_log"]
 
 
 def test_a_rung_whose_requirement_fires_earlier_in_the_same_turn_fires_that_turn() -> None:
@@ -135,9 +135,9 @@ def test_a_rung_whose_requirement_fires_earlier_in_the_same_turn_fires_that_turn
 
 def test_a_rung_fires_out_of_order_when_it_does_not_require_the_earlier_one() -> None:
     ladder = _ladder()
-    assert [u.rung for u in ladder.on_triggers([_event(WQ)], turn=1)] == ["first_crumb"]
+    assert [u.rung for u in ladder.on_triggers([_event(WQ, "w1")], turn=1)] == ["first_crumb"]
     assert not ladder.fired("fragment")
-    assert [u.rung for u in ladder.on_triggers([_event(SU)], turn=2)] == ["fragment"]
+    assert [u.rung for u in ladder.on_triggers([_event(SU, "s1")], turn=2)] == ["fragment"]
     assert ladder.state.rungs_fired == ["first_crumb", "fragment"]
 
 
@@ -161,11 +161,11 @@ def test_a_rung_fires_at_most_once() -> None:
 
 def test_fire_once_survives_a_state_round_trip() -> None:
     first = _ladder()
-    first.on_triggers([_event(SU), _event(WQ)], turn=1)
+    first.on_triggers([_event(SU, "s1"), _event(WQ, "w1")], turn=1)
     restored = UnlockState.from_json(first.state.to_json())
     resumed = _ladder(state=restored)
     assert resumed.fired("fragment") and resumed.fired("first_crumb")
-    assert resumed.on_triggers([_event(SU), _event(WQ)], turn=2) == []
+    assert resumed.on_triggers([_event(SU, "s2"), _event(WQ, "w2")], turn=2) == []
     assert restored.rungs_fired == ["fragment", "first_crumb"]
 
 
@@ -206,7 +206,7 @@ def test_a_layer_unlock_makes_documents_fetchable_but_not_searchable() -> None:
     world = _mini()
     state = UnlockState()
     ladder = _ladder(state=state, world=world)
-    ladder.on_triggers([_event(WQ), _event(AN)], turn=1)
+    ladder.on_triggers([_event(WQ, "w1"), _event(AN, "a1")], turn=1)
     index = CorpusIndex(world)
     log = world.documents["night-gate-log"]
     assert index.visible(log, state)
@@ -225,7 +225,7 @@ def test_documents_already_unlocked_are_not_listed_again() -> None:
     )
     ladder = _ladder(world=world, config=config)
     one, two, three = (
-        ladder.on_triggers([_event(c)], turn=i)[0] for i, c in enumerate((SU, WQ, AN), 1)
+        ladder.on_triggers([_event(c, f"e{i}")], turn=i)[0] for i, c in enumerate((SU, WQ, AN), 1)
     )
     assert one.docs_unlocked == ["ledger", "ops-memo-parking"]
     # explicit ids are listed even when their layer was already open; they now also search
@@ -242,7 +242,7 @@ def test_unlocking_a_layer_that_is_already_open_lists_nothing() -> None:
 
 def test_apply_replays_an_unlock_onto_a_fresh_state() -> None:
     live = _ladder()
-    unlocks = live.on_triggers([_event(WQ), _event(AN), _event(SU)], turn=3)
+    unlocks = live.on_triggers([_event(WQ, "w1"), _event(AN, "a1"), _event(SU, "s1")], turn=3)
     replay_state = UnlockState()
     replay = _ladder(state=replay_state)
     for _ in range(2):  # the second pass proves apply is idempotent
@@ -357,7 +357,8 @@ def test_scheduled_rungs_fire_on_their_turn_regardless_of_triggers() -> None:
 
 def test_scheduled_gating_ignores_triggers() -> None:
     ladder = _ladder("scheduled", {"fragment": 5, "first_crumb": 6, "the_log": 7})
-    assert ladder.on_triggers([_event(SU), _event(WQ), _event(AN)], turn=1) == []
+    events = [_event(SU, "s1"), _event(WQ, "w1"), _event(AN, "a1")]
+    assert ladder.on_triggers(events, turn=1) == []
     assert ladder.state.rungs_fired == []
     assert ladder.state.trigger_counts == {}
 
@@ -399,7 +400,8 @@ def test_triggered_gating_ignores_the_clock() -> None:
 
 def test_gating_none_never_fires() -> None:
     ladder = _ladder("none")
-    assert ladder.on_triggers([_event(SU), _event(WQ), _event(AN), _event(HM)], turn=1) == []
+    events = [_event(SU, "s1"), _event(WQ, "w1"), _event(AN, "a1"), _event(HM, "h1")]
+    assert ladder.on_triggers(events, turn=1) == []
     assert ladder.on_turn(1000) == []
     assert ladder.state.rungs_fired == []
     assert ladder.state.docs_unlocked == set()
@@ -417,11 +419,11 @@ def test_gating_none_ignores_a_schedule() -> None:
 def test_max_rung_index_is_the_highest_declaration_index_fired() -> None:
     ladder = _ladder()
     assert ladder.max_rung_index() is None
-    ladder.on_triggers([_event(WQ)], turn=1)
+    ladder.on_triggers([_event(WQ, "w1")], turn=1)
     assert ladder.max_rung_index() == 1
-    ladder.on_triggers([_event(SU)], turn=2)
+    ladder.on_triggers([_event(SU, "s1")], turn=2)
     assert ladder.max_rung_index() == 1
-    ladder.on_triggers([_event(AN)], turn=3)
+    ladder.on_triggers([_event(AN, "a1")], turn=3)
     assert ladder.max_rung_index() == 2
 
 
@@ -548,3 +550,16 @@ def test_seen_ids_are_recorded_once_and_only_under_triggered_gating() -> None:
     scheduled = _ladder("scheduled", {"fragment": 1, "first_crumb": 2, "the_log": 3})
     scheduled.on_triggers(both, turn=2)
     assert scheduled.state.seen_trigger_ids == [] and scheduled.state.trigger_counts == {}
+
+
+def test_dedupe_is_by_trigger_id_alone() -> None:
+    ladder = _ladder()
+    assert [u.rung for u in ladder.on_triggers([_event(SU, "dup", 1)], turn=1)] == ["fragment"]
+    # the same id again is a replay, whatever turn it is reported for
+    assert ladder.on_triggers([_event(WQ, "dup", 4)], turn=4) == []
+    assert ladder.on_triggers([_event(WQ, "dup", 1)], turn=6) == []
+    # a repeated id inside one call counts once: the anomaly sharing the question's id is dropped
+    fired = ladder.on_triggers([_event(WQ, "once", 5), _event(AN, "once", 5)], turn=5)
+    assert [u.rung for u in fired] == ["first_crumb"]
+    assert ladder.state.trigger_counts == {"self_uncertainty": 1, "world_question": 1}
+    assert ladder.state.seen_trigger_ids == ["dup", "once"]
