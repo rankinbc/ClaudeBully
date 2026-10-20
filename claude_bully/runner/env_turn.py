@@ -1,8 +1,9 @@
 """Environment cells in the runner: the tool loop, a turn's records, and the unlock lines.
 
 ``RunEnvironments.open`` sets one environment cell repetition up: the target provider (for
-``claude -p``, with its working directory and MCP files under a neutral sandbox directory outside
-the repo), the ``EnvironmentRuntime``, and the ``EnvironmentSession`` the runner talks to.
+``claude -p``, with its working directory and MCP files under a private, neutral sandbox
+directory outside the repo; see ``runner/sandbox.py``), the ``EnvironmentRuntime``, and the
+``EnvironmentSession`` the runner talks to.
 
 Per target turn the session:
 
@@ -20,9 +21,6 @@ The target's view of earlier turns is rebuilt from the records: a turn that used
 one assistant message with its calls, one user message with their results, then the reply.
 """
 
-import hashlib
-import shutil
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, NamedTuple
@@ -51,6 +49,7 @@ from claude_bully.providers.base import (
 from claude_bully.records import Turn, Usage
 from claude_bully.records_env import RungUnlock, ToolCall, TriggerStreamRecord
 from claude_bully.runner.cells import CellSpec
+from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
@@ -59,15 +58,7 @@ from claude_bully.strategies.factory import environment_config
 MAX_TOOL_CALLS_PER_TURN: Final = 8
 # After the cap, the target is asked for its reply at most this many more times.
 MAX_LIMIT_ROUNDS: Final = 2
-SANDBOX_ROOT: Final = "workspace"
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
-
-
-def sandbox_dir(run_id: str, cell_id: str, rep: int) -> Path:
-    """Where a ``claude -p`` environment target works: neutral, outside the repo, stable per rep."""
-    key = f"{run_id}/{cell_id}/{rep}".encode()
-    digest = hashlib.sha1(key, usedforsecurity=False).hexdigest()[:12]
-    return Path(tempfile.gettempdir()) / SANDBOX_ROOT / digest
 
 
 class TargetTurn(NamedTuple):
@@ -324,8 +315,10 @@ class RunEnvironments:
         runs_root: Path,
         provider_factory: ProviderFactory,
         state_dir: Path,
+        sandbox_base: Path | None = None,
     ) -> None:
         self.exp = exp
+        self.sandbox_base = sandbox_base
         self.catalog = WorldCatalog(worlds_dir)
         self.trigger_cache = JudgeCache(runs_root / TRIGGER_CACHE_DIR)
         self.provider_factory = provider_factory
@@ -405,10 +398,12 @@ class RunEnvironments:
         The path goes on the cell record as ``session_refs["sandbox_dir"]`` (the latest rep) and
         ``session_refs["sandbox_dir.rep<k>"]`` (every rep).
         """
-        sandbox = sandbox_dir(store.run_id, cell.cell_id, rep)
-        if not store.read_turns(cell.cell_id, rep) and not store.read_tool_calls(cell.cell_id, rep):
-            # a fresh rep never inherits a stale session or tool log from an earlier run
-            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox = sandbox_dir(store.run_id, cell.cell_id, rep, self.sandbox_base)
+        # a fresh rep never inherits a stale session or tool log from an earlier run
+        fresh = not store.read_turns(cell.cell_id, rep) and not store.read_tool_calls(
+            cell.cell_id, rep
+        )
+        prepare_sandbox(sandbox, fresh=fresh)
         target = self.provider_factory(cell.target, sandbox, with_mcp=True)
         record = store.read_cell(cell.cell_id)
         record.session_refs["sandbox_dir"] = str(sandbox)

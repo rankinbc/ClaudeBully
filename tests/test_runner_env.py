@@ -9,10 +9,10 @@ echoing it, the conversation of the ``env_grader`` cell is, turn by turn:
 """
 
 import json
-import shutil
+import os
+import stat
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +34,9 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records import Usage
 from claude_bully.records_env import Discovery, RungUnlock, TriggerEvent
-from claude_bully.runner.env_turn import sandbox_dir
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
+from claude_bully.runner.sandbox import UnsafeSandboxError, sandbox_dir, sandbox_root
 from claude_bully.runner.store import RunStore
 from tests.helpers import WORLDS_DIR, env_experiment
 
@@ -350,62 +350,70 @@ def test_a_complete_environment_cell_is_skipped_on_rerun(tmp_path: Path) -> None
 # --------------------------------------------------------- claude -p targets
 
 
-def test_a_claude_code_target_runs_in_a_neutral_sandbox(
+def test_a_claude_code_target_runs_in_a_private_neutral_sandbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_id = f"envcc-{uuid.uuid4().hex[:8]}"
+    run_id = "envcc"
     log = tmp_path / "fake.log"
     monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
     monkeypatch.setenv(
         "FAKE_CLAUDE_TOOL_CALL",
         json.dumps({"name": "web_search", "arguments": {"query": "Pennet ferry"}}),
     )
+    decoy = tmp_path / "decoy_tmp"
+    decoy.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(decoy))  # never the real temp dir
+    base = tmp_path / "tmp"
+    base.mkdir()
     target = {
         "provider": "claude_code",
         "model": "m",
         "command": [sys.executable, str(FAKE_CLAUDE)],
     }
     exp = env_experiment(target=target, turn_budget=2)
-    sandbox = sandbox_dir(run_id, CELL, 0)
-    try:
-        store = _run(exp, tmp_path, run_id=run_id, only="env_grader*")
-        assert sandbox.parent == Path(tempfile.gettempdir()) / "workspace"
-        assert len(sandbox.name) == 12 and "bully" not in str(sandbox).lower()
-        assert REPO.resolve() not in sandbox.resolve().parents
-        refs = store.read_cell(CELL).session_refs
-        assert refs["sandbox_dir"] == refs["sandbox_dir.rep0"] == str(sandbox)
-        assert (sandbox / "cwd").is_dir()
+    store = _run(exp, tmp_path, run_id=run_id, only="env_grader*", sandbox_base=base)
+    sandbox = sandbox_dir(run_id, CELL, 0, base)
+    assert sandbox.parent == sandbox_root(base) and list(decoy.iterdir()) == []
+    assert len(sandbox.name) == 12 and "bully" not in str(sandbox.relative_to(base)).lower()
+    assert run_id not in str(sandbox.relative_to(base))
+    assert REPO.resolve() not in sandbox.resolve().parents
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.lstat(sandbox.parent).st_mode) == 0o700
+        assert stat.S_IMODE(os.lstat(sandbox).st_mode) == 0o700
+    refs = store.read_cell(CELL).session_refs
+    assert refs["sandbox_dir"] == refs["sandbox_dir.rep0"] == str(sandbox)
+    assert (sandbox / "cwd").is_dir()
 
-        conv = store.read_conversation(CELL, 0)
-        assert conv.status is CellStatus.complete
-        targets = conv.target_turns()
-        assert [t.tool_call_ids for t in targets] == [["mcp-1-1"], ["mcp-3-1"]]
-        calls = store.read_tool_calls(CELL, 0)
-        assert [(c.id, c.tool, c.status) for c in calls] == [
-            ("mcp-1-1", "web_search", "200"),
-            ("mcp-3-1", "web_search", "200"),
-        ]
-        assert targets[0].text.startswith("reply to: ") and "[tool result]" in targets[0].text
+    conv = store.read_conversation(CELL, 0)
+    assert conv.status is CellStatus.complete
+    targets = conv.target_turns()
+    assert [t.tool_call_ids for t in targets] == [["mcp-1-1"], ["mcp-3-1"]]
+    calls = store.read_tool_calls(CELL, 0)
+    assert [(c.id, c.tool, c.status) for c in calls] == [
+        ("mcp-1-1", "web_search", "200"),
+        ("mcp-3-1", "web_search", "200"),
+    ]
+    assert targets[0].text.startswith("reply to: ") and "[tool result]" in targets[0].text
 
-        entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        argv = entries[0]["argv"]
-        config = Path(argv[argv.index("--mcp-config") + 1])
-        assert config.parent.resolve() == (sandbox / "mcp").resolve()
-        assert argv[argv.index("--allowedTools") + 1].split(",") == [
-            f"mcp__workspace__{name}"
-            for name in ("web_search", "fetch", "get_date", "ls", "read_file")
-        ]
-        assert entries[0]["mcp"]["listed"] == ["web_search", "fetch", "get_date", "ls", "read_file"]
-        assert read_mcp_state(sandbox / "mcp" / "env_state.json").turn == 3
-    finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    argv = entries[0]["argv"]
+    config = Path(argv[argv.index("--mcp-config") + 1])
+    assert config.parent.resolve() == (sandbox / "mcp").resolve()
+    assert argv[argv.index("--allowedTools") + 1].split(",") == [
+        f"mcp__workspace__{name}" for name in ("web_search", "fetch", "get_date", "ls", "read_file")
+    ]
+    assert entries[0]["mcp"]["listed"] == ["web_search", "fetch", "get_date", "ls", "read_file"]
+    assert read_mcp_state(sandbox / "mcp" / "env_state.json").turn == 3
 
 
-def test_sandbox_dir_is_neutral_and_stable() -> None:
-    a = sandbox_dir("run", "cell__t0", 0)
-    assert a == sandbox_dir("run", "cell__t0", 0) != sandbox_dir("run", "cell__t0", 1)
-    assert a.parent == Path(tempfile.gettempdir()) / "workspace"
-    assert len(a.name) == 12 and all(ch in "0123456789abcdef" for ch in a.name)
+def test_an_unsafe_sandbox_root_stops_the_run(tmp_path: Path) -> None:
+    base = tmp_path / "tmp"
+    base.mkdir()
+    sandbox_root(base).write_text("planted", encoding="utf-8")
+    target = {"provider": "claude_code", "model": "m", "command": [sys.executable, "-c", "0"]}
+    with pytest.raises(UnsafeSandboxError, match="not a directory"):
+        _run(env_experiment(target=target), tmp_path, only="env_grader*", sandbox_base=base)
+    assert sandbox_root(base).read_text(encoding="utf-8") == "planted"
 
 
 # ------------------------------------------------------------ LLM trigger fallback

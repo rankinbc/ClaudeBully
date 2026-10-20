@@ -471,7 +471,10 @@ def run_experiment(
     provider_factory: ProviderFactory = build_provider,
     console: Console | None = None,
     worlds_dir: Path = DEFAULT_WORLDS_DIR,
+    sandbox_base: Path | None = None,
 ) -> RunSummary:
+    """Run (or resume) ``exp``. ``sandbox_base`` is where claude -p environment targets get their
+    private sandbox root (default: the system temp directory)."""
     ensure_registered()
     run_id = run_id or exp.name
     store = RunStore(runs_root, run_id)
@@ -494,6 +497,7 @@ def run_experiment(
         runs_root=runs_root,
         provider_factory=provider_factory,
         state_dir=store.state_dir,
+        sandbox_base=sandbox_base,
     )
     if store.exists():
         run_record = store.read_run()
