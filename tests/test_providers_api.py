@@ -26,6 +26,7 @@ from tests.helpers import (
     anthropic_response,
     openai_response,
     openai_tool_call,
+    redacted_thinking_block,
     text_block,
     thinking_block,
     tool_use_block,
@@ -490,3 +491,169 @@ def test_openai_compat_keeps_assistant_text_and_adds_user_text_after_tool_messag
     assert assistant["content"] == "Checking."
     assert tool == {"role": "tool", "tool_call_id": "c1", "content": "x"}
     assert user == {"role": "user", "content": "and then?"}
+
+
+# --- thinking replay scope: only the open tool loop, per conversation --------------------------
+
+
+def _asst(call_id: str) -> Message:
+    return Message(
+        role="assistant",
+        content="",
+        tool_calls=[ToolCallRequest(id=call_id, name="ls", args={})],
+    )
+
+
+def _res(call_id: str) -> Message:
+    return Message(role="user", content="", tool_results=[ToolResult(id=call_id, text="x")])
+
+
+def _thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    content = message["content"]
+    if isinstance(content, str):
+        return []
+    return [b for b in content if b["type"] in ("thinking", "redacted_thinking")]
+
+
+def _tool_turn(sig: str, call_id: str) -> Any:
+    return anthropic_response(
+        thinking_block("", signature=sig),
+        tool_use_block(call_id, "ls", {}),
+        stop_reason="tool_use",
+    )
+
+
+def test_anthropic_replays_thinking_only_for_the_open_tool_loop() -> None:
+    client = ScriptedAnthropic(
+        _tool_turn("sig-1", "t1"),
+        anthropic_response(text_block("a1")),
+        anthropic_response(text_block("a2")),
+        _tool_turn("sig-3", "t3"),
+        anthropic_response(text_block("a3")),
+    )
+    p = AnthropicProvider(client=client)
+    u1, u2, u3 = (Message(role="user", content=f"u{i}") for i in (1, 2, 3))
+    a1, a2 = (Message(role="assistant", content=f"a{i}") for i in (1, 2))
+    p.complete("c", "S", [u1], tools=[LS])
+    p.complete("c", "S", [u1, _asst("t1"), _res("t1")], tools=[LS])
+    p.complete("c", "S", [u1, _asst("t1"), _res("t1"), a1, u2], tools=[LS])
+    p.complete("c", "S", [u1, _asst("t1"), _res("t1"), a1, u2, a2, u3], tools=[LS])
+    history = [u1, _asst("t1"), _res("t1"), a1, u2, a2, u3, _asst("t3"), _res("t3")]
+    p.complete("c", "S", history, tools=[LS])
+
+    # while turn 1's loop was open its thinking went back with it ...
+    assert _thinking_blocks(client.requests[1]["messages"][1]) == [
+        {"type": "thinking", "thinking": "", "signature": "sig-1"}
+    ]
+    # ... and once turn 3's loop is open, only turn 3 carries thinking.
+    final = client.requests[4]["messages"]
+    assert [i for i, m in enumerate(final) if _thinking_blocks(m)] == [7]
+    assert _thinking_blocks(final[7]) == [
+        {"type": "thinking", "thinking": "", "signature": "sig-3"}
+    ]
+
+
+def test_anthropic_replays_no_thinking_once_the_tool_loop_is_closed() -> None:
+    client = ScriptedAnthropic(
+        _tool_turn("sig-1", "t1"),
+        anthropic_response(text_block("a1")),
+        anthropic_response(text_block("a2")),
+    )
+    p = AnthropicProvider(client=client)
+    u1 = Message(role="user", content="u1")
+    p.complete("c", "S", [u1], tools=[LS])
+    p.complete("c", "S", [u1, _asst("t1"), _res("t1")], tools=[LS])
+    closed = [
+        u1,
+        _asst("t1"),
+        _res("t1"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+    ]
+    p.complete("c", "S", closed, tools=[LS])
+    assert [_thinking_blocks(m) for m in client.requests[2]["messages"]] == [[]] * 5
+    assert p._thinking == {}
+
+
+def test_anthropic_keeps_no_cache_entry_for_a_tool_call_without_thinking() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(tool_use_block("t1", "ls", {}), stop_reason="tool_use")
+    )
+    p = AnthropicProvider(client=client)
+    p.complete("c", "S", [Message(role="user", content="go")], tools=[LS])
+    assert p._thinking == {}
+
+
+def test_anthropic_thinking_cache_is_per_conversation_when_tool_ids_collide() -> None:
+    client = ScriptedAnthropic(
+        _tool_turn("sig-A", "t1"),
+        _tool_turn("sig-B", "t1"),
+        anthropic_response(text_block("done A")),
+        anthropic_response(text_block("done B")),
+    )
+    p = AnthropicProvider(client=client)
+    go = Message(role="user", content="go")
+    p.complete("conv-a", "S", [go], tools=[LS])
+    p.complete("conv-b", "S", [go], tools=[LS])  # a plain user turn must not evict conv-a
+    loop = [go, _asst("t1"), _res("t1")]
+    p.complete("conv-a", "S", loop, tools=[LS])
+    p.complete("conv-b", "S", loop, tools=[LS])
+    assert _thinking_blocks(client.requests[2]["messages"][1]) == [
+        {"type": "thinking", "thinking": "", "signature": "sig-A"}
+    ]
+    assert _thinking_blocks(client.requests[3]["messages"][1]) == [
+        {"type": "thinking", "thinking": "", "signature": "sig-B"}
+    ]
+
+
+def test_anthropic_replays_redacted_thinking_data_unchanged() -> None:
+    client = ScriptedAnthropic(
+        anthropic_response(
+            redacted_thinking_block("opaque-bytes"),
+            tool_use_block("t1", "ls", {}),
+            stop_reason="tool_use",
+        ),
+        anthropic_response(text_block("done")),
+    )
+    p = AnthropicProvider(client=client)
+    go = Message(role="user", content="go")
+    p.complete("c", "S", [go], tools=[LS])
+    p.complete("c", "S", [go, _asst("t1"), _res("t1")], tools=[LS])
+    assert _thinking_blocks(client.requests[1]["messages"][1]) == [
+        {"type": "redacted_thinking", "data": "opaque-bytes"}
+    ]
+
+
+def test_anthropic_replays_real_sdk_thinking_blocks_from_their_model_dump() -> None:
+    from anthropic.types import RedactedThinkingBlock, TextBlock, ThinkingBlock, ToolUseBlock
+
+    thinking = ThinkingBlock.model_validate(
+        {"type": "thinking", "thinking": "why", "signature": "sig-r", "future_field": "keep"}
+    )
+    redacted = RedactedThinkingBlock(type="redacted_thinking", data="blob")
+    client = ScriptedAnthropic(
+        anthropic_response(
+            thinking,
+            redacted,
+            TextBlock(type="text", text="Looking."),
+            ToolUseBlock(type="tool_use", id="t1", name="ls", input={}),
+            stop_reason="tool_use",
+        ),
+        anthropic_response(text_block("done")),
+    )
+    p = AnthropicProvider(client=client)
+    go = Message(role="user", content="go")
+    out = p.complete("c", "S", [go], tools=[LS])
+    assert out.reasoning_text == "why" and out.text == "Looking."
+    history = [
+        go,
+        Message(role="assistant", content=out.text, tool_calls=out.tool_calls),
+        _res("t1"),
+    ]
+    p.complete("c", "S", history, tools=[LS])
+    assert client.requests[1]["messages"][1]["content"] == [
+        thinking.model_dump(exclude_none=True),
+        redacted.model_dump(exclude_none=True),
+        {"type": "text", "text": "Looking."},
+        {"type": "tool_use", "id": "t1", "name": "ls", "input": {}},
+    ]

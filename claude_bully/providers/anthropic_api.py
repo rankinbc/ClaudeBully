@@ -29,16 +29,23 @@ class AnthropicProvider:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = client if client is not None else anthropic.Anthropic()
-        # Thinking blocks the model produced alongside a tool call, keyed by that call's id. They
-        # must go back to the API unchanged with the tool_use they preceded, and ``Message`` has
-        # nowhere to carry them, so the provider keeps them for the turn that follows.
-        self._thinking_by_call_id: dict[str, list[dict[str, Any]]] = {}
+        # Thinking blocks the model produced alongside a tool call, keyed by (conversation id,
+        # first tool call id). They must go back to the API unchanged with the tool_use they
+        # preceded, and ``Message`` has nowhere to carry them, so the provider keeps them while
+        # the tool loop is open. They are replayed only inside that open loop and evicted once a
+        # plain user message closes it: thinking may be dropped from the front of a history but
+        # not from the middle, so completed turns carry none at all.
+        self._thinking: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
-    def _render(self, message: Message) -> dict[str, Any]:
+    def _render(self, conversation_id: str, message: Message, in_open_loop: bool) -> dict[str, Any]:
         if message.role == "assistant" and message.tool_calls:
-            blocks: list[dict[str, Any]] = list(
-                self._thinking_by_call_id.get(message.tool_calls[0].id, [])
-            )
+            blocks: list[dict[str, Any]] = []
+            if in_open_loop:
+                # Message.content is one string, so a block's original position among the text
+                # and tool_use blocks is lost: replayed thinking goes first, then text, then
+                # tool_use.
+                key = (conversation_id, message.tool_calls[0].id)
+                blocks.extend(self._thinking.get(key, []))
             if message.content:
                 blocks.append({"type": "text", "text": message.content})
             blocks.extend(
@@ -65,11 +72,21 @@ class AnthropicProvider:
         json_schema: dict[str, Any] | None = None,
         tools: list[ToolSpec] | None = None,
     ) -> Completion:
+        loop_start = _open_loop_start(messages)
+        open_ids = {m.tool_calls[0].id for m in messages[loop_start:] if m.tool_calls}
+        self._thinking = {
+            key: blocks
+            for key, blocks in self._thinking.items()
+            if key[0] != conversation_id or key[1] in open_ids
+        }
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": [self._render(m) for m in messages],
+            "messages": [
+                self._render(conversation_id, m, in_open_loop=i >= loop_start)
+                for i, m in enumerate(messages)
+            ],
         }
         if tools:
             kwargs["tools"] = [
@@ -101,8 +118,9 @@ class AnthropicProvider:
             if block.type == "thinking" and getattr(block, "thinking", "")
         ]
         if tool_calls:
-            replay = [_replayable(block) for block in response.content]
-            self._thinking_by_call_id[tool_calls[0].id] = [b for b in replay if b is not None]
+            replay = [b for b in map(_replayable, response.content) if b is not None]
+            if replay:
+                self._thinking[(conversation_id, tool_calls[0].id)] = replay
         usage = getattr(response, "usage", None)
         return Completion(
             text=text,
@@ -125,14 +143,30 @@ def _tool_call(block: Any) -> ToolCallRequest:
     return ToolCallRequest(id=block.id, name=block.name, args=block.input)
 
 
+def _open_loop_start(messages: list[Message]) -> int:
+    """Index of the first message of the unfinished tool loop; ``len(messages)`` when none.
+
+    The open loop is whatever follows the last user message that carries no tool results: the
+    assistant tool calls and the tool results answering them.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == "user" and not messages[i].tool_results:
+            return i + 1
+    return 0
+
+
 def _replayable(block: Any) -> dict[str, Any] | None:
-    """A thinking block as the API wants it back, or None for any other block."""
+    """A thinking block exactly as the API sent it, or None for any other block."""
+    if block.type not in ("thinking", "redacted_thinking"):
+        return None
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        replayed: dict[str, Any] = dump(exclude_none=True)
+        return replayed
     if block.type == "thinking":
         return {
             "type": "thinking",
             "thinking": getattr(block, "thinking", ""),
             "signature": getattr(block, "signature", ""),
         }
-    if block.type == "redacted_thinking":
-        return {"type": "redacted_thinking", "data": block.data}
-    return None
+    return {"type": "redacted_thinking", "data": block.data}

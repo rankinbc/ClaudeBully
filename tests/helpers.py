@@ -114,3 +114,7 @@ class ScriptedOpenAI:
     def _create(self, **kwargs: Any) -> Any:
         self.requests.append(copy.deepcopy(kwargs))
         return self._responses.pop(0)
+
+
+def redacted_thinking_block(data: str) -> SimpleNamespace:
+    return SimpleNamespace(type="redacted_thinking", data=data)
