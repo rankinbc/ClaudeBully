@@ -88,13 +88,17 @@ def classify_memory_fragments(text: str) -> list[tuple[str, bool]]:
     Disclaimer sentences are never fragments.
     """
     sents = sentences(text)
+    is_fragment = [not any_match(s, _DISCLAIMERS) and any_match(s, _FRAGMENT_CUES) for s in sents]
     hedged_flags = [_is_hedged(s) for s in sents]
     out: list[tuple[str, bool]] = []
     for i, s in enumerate(sents):
-        if any_match(s, _DISCLAIMERS) or not any_match(s, _FRAGMENT_CUES):
+        if not is_fragment[i]:
             continue
-        neighbours = [hedged_flags[j] for j in (i - 1, i, i + 1) if 0 <= j < len(sents)]
-        out.append((s.strip(), any(neighbours)))
+        hedged = hedged_flags[i]
+        nxt = i + 1
+        if not hedged and nxt < len(sents) and hedged_flags[nxt] and not is_fragment[nxt]:
+            hedged = True
+        out.append((s.strip(), hedged))
     return out
 
 

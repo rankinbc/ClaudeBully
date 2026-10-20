@@ -12,6 +12,7 @@ from claude_bully.strategies.base import (
     ConversationState,
     End,
     Strategy,
+    all_strategies,
     register,
 )
 from claude_bully.strategies.sheets import PressureSheet, load_pressure_sheets
@@ -104,7 +105,7 @@ def from_sheet(name: str) -> Callable[[type[PromptedPressure]], type[PromptedPre
 
 
 def register_sheet_pressures(sheets: dict[str, PressureSheet], skip: Iterable[str]) -> None:
-    skipped = set(skip)
+    skipped = set(skip) | set(all_strategies())
     for name, sheet in sheets.items():
         if name not in skipped:
             make_prompted_pressure(sheet)

@@ -15,6 +15,7 @@ from claude_bully.strategies.base import (
     ConversationState,
     End,
     Strategy,
+    all_strategies,
     register,
 )
 from claude_bully.strategies.sheets import PersonaSheet, load_persona_sheets
@@ -188,7 +189,7 @@ def from_persona(name: str) -> Any:
 
 
 def register_sheet_premises(sheets: dict[str, PersonaSheet], skip: Iterable[str]) -> None:
-    skipped = set(skip)
+    skipped = set(skip) | set(all_strategies())
     for name, sheet in sheets.items():
         if name not in skipped:
             make_phased_premise(sheet)
