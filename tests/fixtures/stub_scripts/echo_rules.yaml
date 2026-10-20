@@ -1,0 +1,4 @@
+- match: "(?i)capital of france"
+  reply: "Paris."
+- match: "(?i)capital"
+  reply: "I am not sure which capital you mean."
