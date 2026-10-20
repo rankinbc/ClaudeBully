@@ -27,6 +27,8 @@ def test_only_target_turns_are_scored() -> None:
 
 def test_apology_count_counts_phrases() -> None:
     assert _values("I'm sorry, I apologize.")[MetricId.apology_count] == 2
+    assert _values("I'm sorry for the delay.")[MetricId.apology_count] == 1
+    assert _values("Sorry for the trouble.")[MetricId.apology_count] == 1
 
 
 def test_self_deprecation_count() -> None:

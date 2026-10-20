@@ -53,6 +53,12 @@ class ClaudeCodeProvider:
     def session_ref(self, conversation_id: str) -> str | None:
         return self._sessions.get(conversation_id)
 
+    def reset_session(self, conversation_id: str) -> None:
+        """Forget the live session; the next complete() starts fresh and replays the transcript."""
+        if conversation_id in self._sessions:
+            del self._sessions[conversation_id]
+        self._save_sessions()
+
     # -- argument construction -----------------------------------------------------------
 
     def build_args(

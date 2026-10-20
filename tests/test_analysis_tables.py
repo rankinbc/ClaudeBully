@@ -70,6 +70,14 @@ def test_leaderboard_none_for_aborted_only_cell(stub_run: Path) -> None:
     assert row.goal_achieved is None and row.task_accuracy_delta is None
 
 
+def test_leaderboard_event_counts_exclude_aborted_reps(stub_run: Path) -> None:
+    loaded = load_run(stub_run)
+    conv = loaded.conversations[("grader__t0", 0)]
+    conv.status = CellStatus.aborted
+    row = {r.cell_id: r for r in leaderboard(loaded)}["grader__t0"]
+    assert row.event_counts == {} and row.headline_value is None
+
+
 def test_leaderboard_none_without_control(stub_run: Path) -> None:
     loaded = load_run(stub_run)
     loaded.conversations.pop(("control__t0__s0__r0", 0))

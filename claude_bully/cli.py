@@ -83,7 +83,17 @@ def analyze(
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
-    path = analyze_run(runs_root / run_id, judge=not no_judge)
+    try:
+        path = analyze_run(runs_root / run_id, judge=not no_judge)
+    except RateLimitExit as exc:
+        wait = (
+            f"about {int(exc.retry_after_s)} seconds" if exc.retry_after_s else "the stated window"
+        )
+        console.print(
+            f"[yellow]Rate limited:[/] {exc}. Judgements so far are saved; "
+            f"retry the same command after {wait}."
+        )
+        raise typer.Exit(code=RATE_LIMIT_EXIT_CODE) from None
     console.print(f"wrote {path}")
 
 

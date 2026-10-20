@@ -90,6 +90,15 @@ def test_run_exits_3_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "60" in result.output and "retry" in result.output.lower()
 
 
+def test_analyze_exits_3_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RateLimitExit("judge usage limit", retry_after_s=90)
+
+    monkeypatch.setattr(cli, "analyze_run", boom)
+    result = runner.invoke(cli.app, ["analyze", "x", "--runs-root", str(tmp_path)])
+    assert result.exit_code == 3 and "90" in result.output
+
+
 def test_doctor_offline_passes() -> None:
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output

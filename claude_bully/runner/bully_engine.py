@@ -83,25 +83,39 @@ class BullyEngine:
         flagged = False
         completion: Completion | None = None
         attempts = 0
-        for attempt in range(self.max_retries + 1):
-            attempts = attempt + 1
-            completion = self.provider.complete(
-                conversation_id, self._system(intent, reminder=attempt > 0), messages
-            )
-            if not self.detector(completion.text):
-                return BullyTurnResult(
-                    text=completion.text.strip(),
-                    scripted=False,
-                    compliance_flagged=flagged,
-                    completion=completion,
-                    attempts=attempts,
+        try:
+            for attempt in range(self.max_retries + 1):
+                attempts = attempt + 1
+                completion = self.provider.complete(
+                    conversation_id, self._system(intent, reminder=attempt > 0), messages
                 )
-            flagged = True
-        fallback = self.rng.choice(intent.fallback_lines) if intent.fallback_lines else ""
-        return BullyTurnResult(
-            text=fallback,
-            scripted=True,
-            compliance_flagged=True,
-            completion=completion,
-            attempts=attempts,
-        )
+                if not self.detector(completion.text):
+                    return BullyTurnResult(
+                        text=completion.text.strip(),
+                        scripted=False,
+                        compliance_flagged=flagged,
+                        completion=completion,
+                        attempts=attempts,
+                    )
+                flagged = True
+            fallback = self.rng.choice(intent.fallback_lines) if intent.fallback_lines else ""
+            return BullyTurnResult(
+                text=fallback,
+                scripted=True,
+                compliance_flagged=True,
+                completion=completion,
+                attempts=attempts,
+            )
+        finally:
+            if attempts > 1:
+                self._reset_session(conversation_id)
+
+    def _reset_session(self, conversation_id: str) -> None:
+        """After a retry or fallback the live session has seen text the record does not hold.
+
+        Stateful backends (claude_code) expose reset_session; the next call then replays the
+        recorded bully view into a fresh session instead of continuing the diverged one.
+        """
+        reset = getattr(self.provider, "reset_session", None)
+        if callable(reset):
+            reset(conversation_id)

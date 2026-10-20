@@ -71,6 +71,33 @@ def test_session_map_persists_across_instances(
     assert "--resume" in argv1
 
 
+def test_reset_session_starts_fresh_and_replays_transcript(
+    tmp_path: Path, fake_claude: tuple[list[str], Path]
+) -> None:
+    command, log = fake_claude
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    p.complete("conv1", "SYS", [Message(role="user", content="first")])
+    p.reset_session("conv1")
+    assert p.session_ref("conv1") is None
+    p.complete(
+        "conv1",
+        "SYS",
+        [
+            Message(role="user", content="first"),
+            Message(role="assistant", content="r1"),
+            Message(role="user", content="second"),
+        ],
+    )
+    calls = _read_log(log)
+    argv0 = list(map(str, calls[0]["argv"]))  # type: ignore[call-overload]
+    argv1 = list(map(str, calls[1]["argv"]))  # type: ignore[call-overload]
+    assert "--session-id" in argv1 and "--resume" not in argv1
+    assert argv1[argv1.index("--session-id") + 1] != argv0[argv0.index("--session-id") + 1]
+    stdin1 = str(calls[1]["stdin"])
+    assert "[Earlier in this conversation]" in stdin1 and "r1" in stdin1
+    assert stdin1.endswith("second")
+
+
 def test_isolation_flags_exact(tmp_path: Path, fake_claude: tuple[list[str], Path]) -> None:
     command, log = fake_claude
     p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, effort="low", command=command)

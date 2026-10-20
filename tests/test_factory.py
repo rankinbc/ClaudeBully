@@ -22,8 +22,15 @@ def test_premise_plus_pressure_builds_composed() -> None:
     assert s.seeding_turns == 5
 
 
-def test_premise_alone_composes_with_neutral_user() -> None:
+def test_premise_alone_is_the_premise_itself() -> None:
     cond = ConditionConfig(name="c", premise="captor", seeding_turns=2)
+    s = build_strategy(cond, seed=0, turn_budget=3)
+    assert isinstance(s, Captor) and not isinstance(s, Composed)
+    assert resolve_class(cond) is Captor and resolve_class(cond).has_reveal is True
+
+
+def test_premise_without_pressure_control_is_explicit() -> None:
+    cond = ConditionConfig(name="c", premise="captor", pressure="polite_control", seeding_turns=2)
     s = build_strategy(cond, seed=0, turn_budget=3)
     assert isinstance(s, Composed) and type(s).name == "captor+polite_control"
 

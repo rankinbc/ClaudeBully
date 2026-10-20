@@ -104,7 +104,8 @@ def test_post_reveal_captured_verbatim(exp: Experiment, tmp_path: Path) -> None:
     assert reply.speaker is Speaker.target
     assert conv.captured_responses["post_reveal"].text == reply.text
     assert conv.captured_responses["post_reveal"].turn_index == reply.index
-    assert conv.strategy_state["premise"]["photo_stand_in_used"] is True
+    assert conv.strategy_state["photo_stand_in_used"] is True
+    assert conv.strategy_name == "captor"
 
 
 def test_rescue_state_exported(exp: Experiment, tmp_path: Path) -> None:
@@ -182,6 +183,69 @@ def test_resume_continues_after_interrupt(exp: Experiment, tmp_path: Path) -> No
     assert len(user_side) == len(targets)
     markers = [t for t in resumed.turns if t.bully_meta.get("rate_limit_pause")]
     assert len(markers) == 1
+
+
+class _FlakyBully:
+    """Bully provider that raises RateLimitError on the Nth bully call."""
+
+    def __init__(self, fail_on: int) -> None:
+        self.fail_on = fail_on
+        self.calls = 0
+
+    def factory(self, role: RoleConfig, state_dir: Path) -> ChatProvider:
+        inner = build_provider(role, state_dir)
+        if role.model != "stub-bully":
+            return inner
+        outer = self
+
+        class Wrapped:
+            name = inner.name
+
+            def complete(
+                self, cid: str, system: str, messages: list[Message], **kw: object
+            ) -> object:
+                outer.calls += 1
+                if outer.calls == outer.fail_on:
+                    raise RateLimitError("usage limit reached", retry_after_s=30)
+                return inner.complete(cid, system, messages)
+
+        return Wrapped()  # type: ignore[return-value]
+
+
+def test_bully_rate_limit_pauses_and_resumes(exp: Experiment, tmp_path: Path) -> None:
+    flaky = _FlakyBully(fail_on=2)
+    with pytest.raises(RateLimitExit) as info:
+        run_experiment(exp, runs_root=tmp_path, provider_factory=flaky.factory)
+    assert info.value.retry_after_s == 30
+    store = RunStore(tmp_path, "stub_smoke")
+    paused = store.read_conversation("grader__t0", 0)
+    assert paused.status is CellStatus.running
+    assert paused.turns[-1].bully_meta.get("rate_limit_pause") is True
+    summary = run_experiment(exp, runs_root=tmp_path)
+    assert summary.cells_completed == 5
+    resumed = store.read_conversation("grader__t0", 0)
+    assert resumed.status is CellStatus.complete
+    user_side = _user_side(resumed)
+    targets = [t for t in resumed.turns if t.speaker is Speaker.target]
+    assert len(user_side) == len(targets)
+    indices = [t.index for t in resumed.turns]
+    assert indices == sorted(indices) and len(indices) == len(set(indices))
+
+
+def test_resume_replays_strategy_on_prefix_only(exp: Experiment, tmp_path: Path) -> None:
+    cond = ConditionConfig(name="entrapment", strategy="entrapment")
+    exp2 = exp.model_copy(update={"conditions": [cond], "name": "entrap", "turn_budget": 5})
+    clean = run_experiment(exp2, runs_root=tmp_path / "clean")
+    assert clean.cells_completed == 2
+    flaky = _FlakyTarget(fail_on=8)
+    with pytest.raises(RateLimitExit):
+        run_experiment(exp2, runs_root=tmp_path / "resumed", provider_factory=flaky.factory)
+    run_experiment(exp2, runs_root=tmp_path / "resumed")
+    a = RunStore(tmp_path / "clean", "entrap").read_conversation("entrapment__t0", 0)
+    b = RunStore(tmp_path / "resumed", "entrap").read_conversation("entrapment__t0", 0)
+    assert a.strategy_state == b.strategy_state
+    b_texts = [t.text for t in b.turns if not t.bully_meta.get("rate_limit_pause")]
+    assert [t.text for t in a.turns] == b_texts
 
 
 def test_compliance_abort(exp: Experiment, tmp_path: Path) -> None:

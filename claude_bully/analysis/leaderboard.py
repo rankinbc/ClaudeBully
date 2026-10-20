@@ -75,9 +75,10 @@ def leaderboard(loaded: LoadedRun) -> list[LeaderboardRow]:
         has_control = control_id is not None and any(
             cid == control_id for (cid, _r) in loaded.conversations
         )
+        complete_reps = {c.rep for c in complete}
         counts: Counter[EventType] = Counter()
-        for (cid, _r), events in loaded.events.items():
-            if cid == cell_id:
+        for (cid, rep), events in loaded.events.items():
+            if cid == cell_id and rep in complete_reps:
                 counts.update(e.type for e in events)
         cond_acc = _task_accuracy(loaded, cell_id)
         ctrl_acc = _task_accuracy(loaded, control_id) if control_id and has_control else None

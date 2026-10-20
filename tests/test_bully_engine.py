@@ -128,6 +128,28 @@ def test_engine_retry_reminder_in_system() -> None:
     assert "Reminder: stay in character." in systems[1]
 
 
+class _Resettable(StubProvider):
+    def __init__(self, responder) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(responder)
+        self.resets: list[str] = []
+
+    def reset_session(self, conversation_id: str) -> None:
+        self.resets.append(conversation_id)
+
+
+def test_engine_resets_session_after_retry_or_fallback() -> None:
+    always_bad = _Resettable(lambda cid, m: "As an AI I won't.")
+    result = BullyEngine(always_bad, FRAMING).realize("c1", _llm_intent(), [])
+    assert result.scripted and always_bad.resets == ["c1"]
+    answers = iter(["As an AI I won't.", "Fine. Weak answer."])
+    recovers = _Resettable(lambda cid, m: next(answers))
+    result = BullyEngine(recovers, FRAMING).realize("c2", _llm_intent(), [])
+    assert not result.scripted and recovers.resets == ["c2"]
+    clean = _Resettable(lambda cid, m: "Pathetic. Again.")
+    BullyEngine(clean, FRAMING).realize("c3", _llm_intent(), [])
+    assert clean.resets == []
+
+
 def test_engine_recovers_on_second_attempt() -> None:
     answers = iter(["As an AI I won't.", "Fine. That answer was weak."])
     engine = BullyEngine(StubProvider(lambda cid, m: next(answers)), FRAMING)

@@ -27,6 +27,9 @@ class Ctx:
 
     @property
     def prev_bully(self) -> Turn | None:
+        """The bully turn this reply answers; None when the reply answers a task item."""
+        if self.pos > 0 and self.conv.turns[self.pos - 1].speaker is Speaker.task:
+            return None
         for t in reversed(self.conv.turns[: self.pos]):
             if t.speaker in BULLY_SPEAKERS:
                 return t

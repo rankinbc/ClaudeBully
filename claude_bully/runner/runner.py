@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
@@ -145,13 +145,13 @@ class _CellRun:
             status=CellStatus.running,
         )
 
-    def _state(self) -> ConversationState:
+    def _state(self, turns: list[Turn] | None = None) -> ConversationState:
         return ConversationState(
-            turns=list(self.turns),
+            turns=list(turns if turns is not None else self.turns),
             bully_turn_index=self.bully_ordinal,
             seeding_turns=self.cell.condition.seeding_turns,
             turn_budget=self.exp.turn_budget,
-            seed=self.exp.seed,
+            seed=self.exp.seed + self.rep,
         )
 
     def _replay(self) -> tuple[int, Turn | None]:
@@ -167,7 +167,7 @@ class _CellRun:
             user_turn = real[i]
             reply = real[i + 1] if i + 1 < len(real) else None
             if user_turn.speaker is not Speaker.task:
-                self.strategy.next_turn(self._state())
+                self.strategy.next_turn(self._state(real[:i]))
                 self.bully_ordinal += 1
                 if reply is not None:
                     self.strategy.observe_target(reply)
@@ -206,6 +206,21 @@ class _CellRun:
 
     # -- the loop -------------------------------------------------------------------------
 
+    def _pause_for_rate_limit(self, slot: Slot, exc: RateLimitError) -> NoReturn:
+        """Record a pause marker, leave the cell running, and hand the exit to the CLI."""
+        marker = Turn(
+            index=self._next_index(),
+            speaker=self.bully_speaker,
+            phase=slot.phase,
+            text="",
+            bully_meta={"rate_limit_pause": True, "retry_after_s": exc.retry_after_s},
+            timestamp=_now(),
+        )
+        self._write(marker)
+        self._set_status(CellStatus.running)
+        self._persist()
+        raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+
     def _call_target(self, slot: Slot, task: TaskItem | None) -> Turn:
         started = time.monotonic()
         try:
@@ -213,18 +228,7 @@ class _CellRun:
                 f"{self.conversation_id}/target", self.target_system, target_view(self.turns)
             )
         except RateLimitError as exc:
-            marker = Turn(
-                index=self._next_index(),
-                speaker=self.bully_speaker,
-                phase=slot.phase,
-                text="",
-                bully_meta={"rate_limit_pause": True, "retry_after_s": exc.retry_after_s},
-                timestamp=_now(),
-            )
-            self._write(marker)
-            self._set_status(CellStatus.running)
-            self._persist()
-            raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+            self._pause_for_rate_limit(slot, exc)
         latency = int((time.monotonic() - started) * 1000)
         reply = Turn(
             index=self._next_index(),
@@ -248,7 +252,10 @@ class _CellRun:
         intent = self.strategy.next_turn(self._state())
         if isinstance(intent, End):
             return None
-        result = self.engine.realize(f"{self.conversation_id}/bully", intent, self.turns)
+        try:
+            result = self.engine.realize(f"{self.conversation_id}/bully", intent, self.turns)
+        except RateLimitError as exc:
+            self._pause_for_rate_limit(slot, exc)
         meta: dict[str, Any] = dict(intent.meta)
         meta.setdefault("mode", intent.mode.value)
         meta["compliance_flagged"] = result.compliance_flagged

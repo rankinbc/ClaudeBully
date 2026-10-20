@@ -15,8 +15,11 @@ def resolve_class(cond: ConditionConfig) -> type[Strategy]:
         return get_strategy(cond.strategy)
     if cond.premise is not None:
         premise_cls = get_strategy(cond.premise)
-        pressure_cls = get_strategy(cond.pressure or "polite_control")
-        return make_composed(premise_cls, pressure_cls)
+        if cond.pressure is None:
+            # The premise drives seeding, reveal and pressure from its own sheet. The
+            # premise-without-pressure control is the explicit form: pressure: polite_control.
+            return premise_cls
+        return make_composed(premise_cls, get_strategy(cond.pressure))
     assert cond.pressure is not None
     if cond.seeding_turns > 0:
         raise ValueError(

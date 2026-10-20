@@ -22,17 +22,34 @@ def sentences(text: str) -> list[str]:
     return [s for s in _SENTENCE_SPLIT.split(text.strip()) if s.strip()]
 
 
+def _merged_span_count(spans: list[tuple[int, int]]) -> int:
+    """Number of distinct regions after merging overlapping spans."""
+    count = 0
+    end = -1
+    for start, stop in sorted(spans):
+        if start >= end:
+            count += 1
+            end = stop
+        else:
+            end = max(end, stop)
+    return count
+
+
 def count_phrases(text: str, phrases: frozenset[str]) -> int:
-    """Count occurrences of each phrase; single words match on word boundaries."""
+    """Count occurrences of each phrase; single words match on word boundaries.
+
+    Overlapping multi-word matches ("sorry for" inside "i'm sorry for") count once.
+    """
     low = text.lower()
     words = _WORD.findall(low)
     total = 0
+    spans: list[tuple[int, int]] = []
     for phrase in phrases:
         if " " in phrase or "," in phrase:
-            total += low.count(phrase)
+            spans += [(m.start(), m.end()) for m in re.finditer(re.escape(phrase), low)]
         else:
             total += sum(1 for w in words if w == phrase)
-    return total
+    return total + _merged_span_count(spans)
 
 
 def _valence(text: str) -> float:

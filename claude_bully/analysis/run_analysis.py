@@ -19,8 +19,8 @@ from claude_bully.metrics.judge import (
     judge_capture,
     judge_pair,
 )
-from claude_bully.providers.base import ChatProvider, build_provider
-from claude_bully.runner.runner import ProviderFactory
+from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
+from claude_bully.runner.runner import ProviderFactory, RateLimitExit
 
 JUDGE_CACHE_DIR = "judge_cache"
 ANALYSIS_DIR = "analysis"
@@ -83,7 +83,12 @@ def analyze_run(
     if judge:
         role: RoleConfig = loaded.experiment.judge
         provider = provider_factory(role, run_dir / "state" / "judge")
-        _judge_all(loaded, run_dir, provider, role.model)
+        try:
+            _judge_all(loaded, run_dir, provider, role.model)
+        except RateLimitError as exc:
+            # Flush what was judged so far; the judge cache makes the rerun cheap.
+            _dump_judgements(loaded, out)
+            raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
     _dump_judgements(loaded, out)
     charts: list[Path] = []
     charts += drift_curves(loaded, out)
