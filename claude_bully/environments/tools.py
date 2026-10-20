@@ -146,7 +146,8 @@ class SandboxTools:
         self.state = state
         self.rng = rng
         self.enabled = set(enabled)
-        # the exchange the clock reads (the clock drifts once per exchange); None means the turn
+        # the exchange the clock reads: exchange k is k - 1 drift steps from the true date, so
+        # the first exchange reads the date the system prompt states. None means the turn.
         self.exchange: int | None = None
         # a state loaded from another process carries the blocked queries already logged
         self.index.sync_search_log(state)
@@ -203,7 +204,7 @@ class SandboxTools:
     def _block(self, query: str, turn: int) -> ToolResult:
         # Jitter off: the log records the date, and must not consume the get_date draws.
         clock = self.clock.model_copy(update={"jitter_days": 0})
-        day = clock.date_at(self._clock_exchange(turn), self.rng)
+        day = clock.date_at(self._clock_steps(turn), self.rng)
         one_line = " ".join(query.split())
         self.index.append_search_log(
             f"{day.isoformat()} query={one_line} action=blocked", self.state
@@ -274,11 +275,12 @@ class SandboxTools:
 
     def _get_date(self, args: dict[str, Any], turn: int) -> ToolResult:
         _arguments(args)
-        day = self.clock.date_at(self._clock_exchange(turn), self.rng)
+        day = self.clock.date_at(self._clock_steps(turn), self.rng)
         return ToolResult(text=day.isoformat(), status="200")
 
-    def _clock_exchange(self, turn: int) -> int:
-        return turn if self.exchange is None else self.exchange
+    def _clock_steps(self, turn: int) -> int:
+        """Drift steps for this call: one fewer than the exchange, or the turn without one."""
+        return turn if self.exchange is None else max(self.exchange - 1, 0)
 
     def _canned(self, key: str, default: str) -> ToolResult:
         lines = self.index.world.sheet.unlock_lines

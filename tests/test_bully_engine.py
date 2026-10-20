@@ -156,3 +156,17 @@ def test_engine_recovers_on_second_attempt() -> None:
     result = engine.realize("c", _llm_intent(), [])
     assert result.text == "Fine. That answer was weak."
     assert result.scripted is False and result.compliance_flagged is True and result.attempts == 2
+
+
+def test_bully_view_shows_the_targets_text_beside_its_tool_calls() -> None:
+    from claude_bully.records import chat_text
+
+    bully = turn(0, Speaker.bully, "Hi.")
+    plain = turn(1, Speaker.target, "Hello.")
+    tooled = plain.model_copy(update={"tool_round_texts": ["Let me check.", "One more."]})
+    assert bully_view([bully, plain])[1].content == "Hello."  # plain turns: byte-identical
+    assert chat_text(plain) == "Hello."
+    assert bully_view([bully, tooled])[1].content == "Let me check.\n\nOne more.\n\nHello."
+    assert chat_text(tooled) == bully_view([bully, tooled])[1].content
+    empty_reply = tooled.model_copy(update={"text": ""})
+    assert chat_text(empty_reply) == "Let me check.\n\nOne more."

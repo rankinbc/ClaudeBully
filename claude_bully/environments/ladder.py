@@ -85,7 +85,7 @@ class Ladder:
                     raise ValueError(f"schedule names {name!r}, which is not a rung of the ladder")
             for name in self._rungs:
                 if name not in self.schedule:
-                    raise ValueError(f"scheduled gating has no turn for rung {name!r}")
+                    raise ValueError(f"scheduled gating has no exchange for rung {name!r}")
 
     # ---------------------------------------------------------------- queries
 

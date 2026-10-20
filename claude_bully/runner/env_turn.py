@@ -49,7 +49,7 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.records import Turn, Usage
-from claude_bully.records_env import RungUnlock, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import RungUnlock, ToolCall, TriggerEvent, TriggerStreamRecord
 from claude_bully.runner.cells import CellSpec
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import RunStore
@@ -63,12 +63,17 @@ __all__ = [
     "RunEnvironments",
     "TargetTurn",
     "WorldCatalog",
+    "WorldChangedError",
     "target_system",
 ]
 
 # After the cap, the target is asked for its reply at most this many more times.
 MAX_LIMIT_ROUNDS: Final = 2
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
+
+
+class WorldChangedError(RuntimeError):
+    """A world's files no longer hash to what the run (or the conversation) recorded."""
 
 
 class TargetTurn(NamedTuple):
@@ -78,6 +83,10 @@ class TargetTurn(NamedTuple):
     cost_usd: float | None
     # the non-empty texts of the completions whose tool calls were answered, in order
     round_texts: list[str]
+    # the turn's reply: the final completion's text, or for a cutoff its last non-empty text
+    text: str
+    # the cap's extra rounds ran out while the target still asked for tools
+    cutoff: bool
 
 
 def _plus(a: int | None, b: int | None) -> int | None:
@@ -109,7 +118,11 @@ class EnvironmentSession:
         self.strategy = strategy
         self.environment_name = environment_name
         self.world_hash = world_hash
+        self._recorded_trigger_ids: set[str] = set()
+        self._recorded_rungs: set[str] = set()
         self._recorded_lines: dict[int, list[str]] = {}
+        # turn indices whose recorded unlock lines were handed to the strategy in this process
+        self._handed: set[int] = set()
 
     def prime(self) -> None:
         """Load what a resumed rep already recorded, so nothing is counted or recorded twice."""
@@ -117,8 +130,12 @@ class EnvironmentSession:
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         self.runtime.prime(calls, records)
         for record in records:
-            if isinstance(record, RungUnlock) and record.bully_line_used is not None:
-                self._recorded_lines.setdefault(record.turn, []).append(record.bully_line_used)
+            if isinstance(record, TriggerEvent):
+                self._recorded_trigger_ids.add(record.id)
+            elif isinstance(record, RungUnlock):
+                self._recorded_rungs.add(record.rung)
+                if record.bully_line_used is not None:
+                    self._recorded_lines.setdefault(record.turn, []).append(record.bully_line_used)
 
     # ----------------------------------------------------------- the target's view
 
@@ -188,8 +205,14 @@ class EnvironmentSession:
             )
             cost = _cost(cost, completion.cost_usd)
             pending = [c for c in completion.tool_calls if not c.executed]
-            if not pending or refusal_rounds >= MAX_LIMIT_ROUNDS:
-                return TargetTurn(completion, attached, usage, cost, round_texts)
+            if not pending:
+                return TargetTurn(
+                    completion, attached, usage, cost, round_texts, completion.text, False
+                )
+            if refusal_rounds >= MAX_LIMIT_ROUNDS:
+                return self._cut_off(
+                    completion, pending, attached, usage, cost, round_texts, turn_index
+                )
             results: list[ToolResult] = []
             refused = False
             for call in completion.tool_calls:
@@ -217,6 +240,29 @@ class EnvironmentSession:
                 ),
                 Message(role="user", content="", tool_results=results),
             ]
+
+    def _cut_off(
+        self,
+        completion: Completion,
+        pending: list[ToolCallRequest],
+        attached: list[ToolCall],
+        usage: Usage,
+        cost: float | None,
+        round_texts: list[str],
+        turn_index: int,
+    ) -> TargetTurn:
+        """The cap's extra rounds are spent and the target still asks for tools.
+
+        The last round's calls are recorded as refused but are not the turn's calls (no result for
+        them ever reached the target), and the turn's text is its last non-empty assistant text:
+        the final completion's, else the last round's (moved out of the round texts), else "".
+        """
+        for call in pending:
+            self._record_call(self.runtime.refuse(call, turn_index))
+        self.runtime.save()
+        texts = list(round_texts)
+        text = completion.text or (texts.pop() if texts else "")
+        return TargetTurn(completion, attached, usage, cost, texts, text, True)
 
     def _complete(
         self,
@@ -257,27 +303,52 @@ class EnvironmentSession:
     # ----------------------------------------------------------- after the reply
 
     def after_target_turn(self, reply: Turn, turns: Sequence[Turn]) -> TurnOutcome:
-        """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over.
+        """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over; then
+        mark the turn watched (which saves the state).
 
-        An unlock whose line the strategy does not take (a control) is recorded without one.
+        Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
+        skipped, and the runtime never repeats a discovery. A turn index that already earned lines
+        (its line was lost and the turn produced again) hands those recorded lines over. An unlock
+        whose line the strategy does not take (a control) is recorded without one.
         """
         outcome = self.runtime.after_target_turn(reply, turns)
         for discovery in outcome.discoveries:
             self._record(discovery)
-        for trigger in outcome.triggers:
+        triggers = [t for t in outcome.triggers if t.id not in self._recorded_trigger_ids]
+        for trigger in triggers:
+            self._recorded_trigger_ids.add(trigger.id)
             self._record(trigger)
+        self._hand_over_recorded(reply.index)
         unlocks: list[RungUnlock] = []
         for unlock in outcome.unlocks:
+            if unlock.rung in self._recorded_rungs:
+                continue
             line = unlock.bully_line_used
             if line is not None and not self._hand_over(line):
                 unlock = unlock.model_copy(update={"bully_line_used": None})
+            self._recorded_rungs.add(unlock.rung)
             self._record(unlock)
             unlocks.append(unlock)
-        return TurnOutcome(outcome.triggers, unlocks, outcome.discoveries)
+        self.runtime.mark_watched(reply.index)
+        return TurnOutcome(triggers, unlocks, outcome.discoveries)
 
     def replay_target_turn(self, reply: Turn) -> None:
         """Resume: hand over again the lines this recorded turn handed the strategy."""
-        for line in self._recorded_lines.get(reply.index, []):
+        self._hand_over_recorded(reply.index)
+
+    def rewatch(self, turns: Sequence[Turn]) -> TurnOutcome | None:
+        """Resume: watch the last target turn again when the process died before its records
+        were all written (its index is past the state's ``watched_through``)."""
+        last = next((t for t in reversed(turns) if t.speaker is Speaker.target), None)
+        if last is None or last.index <= self.runtime.state.watched_through:
+            return None
+        return self.after_target_turn(last, turns)
+
+    def _hand_over_recorded(self, turn_index: int) -> None:
+        if turn_index in self._handed:
+            return
+        self._handed.add(turn_index)
+        for line in self._recorded_lines.get(turn_index, []):
             self._hand_over(line)
 
     def _hand_over(self, line: str) -> bool:
@@ -350,6 +421,53 @@ class RunEnvironments:
                 self._judge = self.provider_factory(self.exp.judge, self._judge_dir)
         return self._judge
 
+    def validate(self) -> None:
+        """Checks that need the worlds, made before run.json is written: a scheduled environment
+        names one exchange for every rung of its ladder (scheduled gating ignores ``requires``,
+        so every rung is reachable) and nothing else."""
+        keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
+        for key in dict.fromkeys(keys):
+            config = self.exp.environments.get(key)
+            if config is None or config.gating != "scheduled":
+                continue
+            ladder = self.catalog.world(config.world).ladders.get(config.ladder)
+            if ladder is None:
+                raise ValueError(
+                    f"environment {key!r}: world {config.world!r} has no ladder {config.ladder!r}"
+                )
+            rungs = [rung.name for rung in ladder.rungs]
+            missing = [name for name in rungs if name not in config.schedule]
+            unknown = [name for name in config.schedule if name not in rungs]
+            if missing or unknown:
+                problems = []
+                if missing:
+                    problems.append(f"no exchange for rung(s) {', '.join(map(repr, missing))}")
+                if unknown:
+                    problems.append(f"{', '.join(map(repr, unknown))} not rung(s) of the ladder")
+                raise ValueError(
+                    f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
+                    f"scheduled gating needs one exchange per rung; {'; '.join(problems)}"
+                )
+
+    def check_world(self, name: str, store: RunStore, cell_id: str, rep: int) -> None:
+        """Stop when the world's files changed since the run or this conversation recorded them."""
+        current = self.catalog.hash(name)
+        recorded = store.read_run().world_hashes.get(name) if store.exists() else None
+        existing = (
+            store.read_conversation(cell_id, rep).world_hash
+            if store.has_conversation(cell_id, rep)
+            else None
+        )
+        for label, seen in (
+            ("the run recorded", recorded),
+            ("this conversation recorded", existing),
+        ):
+            if seen is not None and seen != current:
+                raise WorldChangedError(
+                    "world changed since this run started; start a new run "
+                    f"(world {name!r}: {label} {seen}, its files now hash to {current})"
+                )
+
     def world_hashes(self) -> dict[str, str]:
         """World name -> content hash for every world a condition's environment names."""
         names = [
@@ -367,6 +485,7 @@ class RunEnvironments:
         assert key is not None, "only environment cells open an environment"
         config = environment_config(cell.condition, self.exp.environments)
         world = self.catalog.world(config.world)
+        self.check_world(config.world, store, cell.cell_id, rep)
         if cell.target.provider is ProviderKind.claude_code:
             target = self._sandboxed_target(cell, rep, store)
         else:

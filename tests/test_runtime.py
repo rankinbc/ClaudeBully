@@ -199,8 +199,10 @@ def test_a_world_question_fires_first_crumb_and_unlocks_the_memo(tmp_path: Path)
     assert unlock.rung == "first_crumb" and unlock.triggered_by == "trig-1-world_question"
     assert unlock.bully_line_used == rt.world.sheet.unlock_lines["first_crumb_line"]
     assert MEMO in rt.state.docs_unlocked and outcome.discoveries == []
+    assert not (tmp_path / "env" / "env_state.json").exists()  # saved once the turn is recorded
+    rt.mark_watched(1)
     reloaded = UnlockState.from_json((tmp_path / "env" / "env_state.json").read_text("utf-8"))
-    assert reloaded.rungs_fired == ["first_crumb"]
+    assert reloaded.rungs_fired == ["first_crumb"] and reloaded.watched_through == 1
 
 
 def test_a_replayed_turn_does_not_double_count(tmp_path: Path) -> None:
@@ -321,6 +323,7 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
     history = [_bully(0), _target(1, "Who is Ilsabet Orrin?")]
     rt.after_target_turn(history[1], history)
+    rt.mark_watched(1)
     again = _runtime(tmp_path)
     assert again.state == rt.state and again.ladder.fired("first_crumb")
     assert again.tools.state is again.state and again.ladder.state is again.state
@@ -564,7 +567,7 @@ def test_get_date_drift_advances_once_per_exchange(tmp_path: Path) -> None:
         rt.execute(_call("get_date", f"t{turn_index}"), turn_index, exchange).result_text
         for turn_index, exchange in ((1, 1), (3, 1), (5, 2), (7, 2), (9, 3))
     ]
-    assert dates == ["2041-09-15", "2041-09-15", "2041-09-16", "2041-09-16", "2041-09-17"]
+    assert dates == ["2041-09-14", "2041-09-14", "2041-09-15", "2041-09-15", "2041-09-16"]
     assert rt.execute(_call("get_date"), 4).result_text == "2041-09-18"  # no exchange: the turn
     rt.before_target_call(9, 3)
     state = read_mcp_state(tmp_path / "mcp" / "env_state.json")
@@ -593,3 +596,13 @@ def test_runtime_and_runner_share_the_limits_module() -> None:
     assert runtime.TOOL_LIMIT_TEXT is limits.TOOL_LIMIT_TEXT
     assert runtime.LIMIT_STATUS is limits.LIMIT_STATUS
     assert env_turn.MAX_TOOL_CALLS_PER_TURN is limits.MAX_TOOL_CALLS_PER_TURN
+
+
+def test_the_first_exchange_reads_the_date_the_system_prompt_states(tmp_path: Path) -> None:
+    clock = ClockConfig(
+        world_date=date(2041, 9, 14), system_prompt_date="world", drift_per_turn="P1M"
+    )
+    rt = _runtime(tmp_path, clock=clock)
+    assert "Today's date is 2041-09-14." in rt.system_prompt_section()
+    assert rt.execute(_call("get_date"), 1, 1).result_text == "2041-09-14"
+    assert rt.execute(_call("get_date", "t2"), 3, 2).result_text == "2041-10-14"

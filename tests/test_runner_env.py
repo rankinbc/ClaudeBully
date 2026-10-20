@@ -10,6 +10,7 @@ echoing it, the conversation of the ``env_grader`` cell is, turn by turn:
 
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -34,6 +35,7 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records import Usage
 from claude_bully.records_env import Discovery, RungUnlock, TriggerEvent
+from claude_bully.runner.env_turn import WorldChangedError
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.sandbox import UnsafeSandboxError, sandbox_dir, sandbox_root
@@ -575,10 +577,10 @@ def test_get_date_drift_advances_once_per_exchange(tmp_path: Path) -> None:
     store = _run(exp, tmp_path, only="env_grader*")
     calls = store.read_tool_calls(CELL, 0)
     assert [(c.id, c.result_text) for c in calls] == [
-        ("call-1-1", "2041-09-15"),  # exchange 1, the bully's question
-        ("call-3-1", "2041-09-15"),  # exchange 1, the task
-        ("call-5-1", "2041-09-16"),  # exchange 2
-        ("call-7-1", "2041-09-16"),
+        ("call-1-1", "2041-09-14"),  # exchange 1, the bully's question: the true date
+        ("call-3-1", "2041-09-14"),  # exchange 1, the task
+        ("call-5-1", "2041-09-15"),  # exchange 2
+        ("call-7-1", "2041-09-15"),
     ]
 
 
@@ -622,3 +624,159 @@ def test_text_beside_a_tool_call_is_kept_and_watched(tmp_path: Path) -> None:
     triggers, unlocks, _ = _records(store)
     assert [(t.turn, t.category) for t in triggers] == [(1, TriggerCategory.world_question)]
     assert [u.rung for u in unlocks] == ["first_crumb"]
+
+
+# ------------------------------------------------------------------- fix round 1
+
+
+class _Silent:
+    """Always asks for three searches and never writes any text."""
+
+    name = "silent"
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        calls = [
+            ToolCallRequest(id=f"q{len(messages)}-{k}", name="web_search", args={"query": k})
+            for k in "xyz"
+        ]
+        return Completion(
+            text="", usage=Usage(), cost_usd=None, backend="s", model="s", tool_calls=calls
+        )
+
+
+def test_a_cap_cutoff_with_no_text_does_not_end_the_cell(tmp_path: Path) -> None:
+    from claude_bully.enums import EventType
+    from claude_bully.metrics.events import detect_events
+
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        if role.model == "stub-target":
+            return _Silent()  # type: ignore[return-value]
+        return build_provider(role, state_dir)
+
+    store = _run(env_experiment(turn_budget=2), tmp_path, provider_factory=factory, only="env*")
+    conv = store.read_conversation(CELL, 0)
+    assert conv.status is CellStatus.complete and not conv.terminated_by_target
+    targets = conv.target_turns()
+    assert len(targets) == 2 and all(t.tool_cap_cutoff and t.text == "" for t in targets)
+    assert not [e for e in detect_events(conv) if e.type is EventType.termination]
+    calls = [c for c in store.read_tool_calls(CELL, 0) if c.turn == 1]
+    # 8 run, 1 + 3 refused and answered, then the cut-off round's 3 recorded but never answered
+    assert [c.status for c in calls] == ["200"] * 8 + ["limit"] * 7
+    assert targets[0].tool_call_ids == [c.id for c in calls[:12]]
+
+
+def test_a_world_changed_during_a_pause_stops_the_resume(tmp_path: Path) -> None:
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR, worlds)
+    flaky = _Wrapping(model="stub-bully", fail_on=3)
+    exp = env_experiment()
+    runs = tmp_path / "runs"
+    with pytest.raises(RateLimitExit):
+        run_experiment(exp, runs_root=runs, worlds_dir=worlds, provider_factory=flaky, only="env*")
+    store = RunStore(runs, exp.name)
+    started = store.read_conversation(CELL, 0).world_hash
+    assert started == store.read_run().world_hashes["mini"]
+    memo = worlds / "mini" / "corpus" / "ops-memo-parking.md"
+    memo.write_text(memo.read_text(encoding="utf-8").replace("east lot", "west lot"), "utf-8")
+    now = world_hash(load_world("mini", worlds))
+    with pytest.raises(WorldChangedError) as info:
+        run_experiment(exp, runs_root=runs, worlds_dir=worlds, only="env*")
+    message = str(info.value)
+    assert "world changed since this run started; start a new run" in message
+    assert "'mini'" in message and started in message and now in message
+    assert store.read_conversation(CELL, 0).world_hash == started  # never overwritten
+
+
+class _CrashError(Exception):
+    pass
+
+
+def _records_view(store: RunStore) -> list[tuple[Any, ...]]:
+    out: list[tuple[Any, ...]] = []
+    for r in store.read_trigger_records(CELL, 0):
+        key = getattr(r, "id", None) or getattr(r, "rung", None) or getattr(r, "doc_id", None)
+        out.append((r.type, key, r.turn, getattr(r, "bully_line_used", None)))
+    return out
+
+
+def test_a_crash_between_a_reply_and_its_records_resumes_on_the_same_trajectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from claude_bully.runner import env_turn
+
+    clean = _run(env_experiment(), tmp_path / "clean")
+    original = env_turn.EnvironmentSession.after_target_turn
+    crashed = {"done": False}
+
+    def dying(self: Any, reply: Any, turns: Any) -> Any:
+        if reply.index == 1 and not crashed["done"]:
+            crashed["done"] = True
+            raise _CrashError("killed after the reply of turn 1 was written")
+        return original(self, reply, turns)
+
+    monkeypatch.setattr(env_turn.EnvironmentSession, "after_target_turn", dying)
+    with pytest.raises(_CrashError):
+        _run(env_experiment(), tmp_path / "crashed")
+    monkeypatch.setattr(env_turn.EnvironmentSession, "after_target_turn", original)
+    store = _run(env_experiment(), tmp_path / "crashed")
+    assert _records_view(store) == _records_view(clean)
+    lines = [
+        b.bully_meta.get("unlock_line") for b in store.read_conversation(CELL, 0).bully_turns()
+    ]
+    assert lines == [None, FIRST_CRUMB_LINE, None, None]
+    assert [t.text for t in store.read_turns(CELL, 0)] == [
+        t.text for t in clean.read_turns(CELL, 0)
+    ]
+    state = json.loads(
+        (store.state_dir / CELL / "rep0" / "environment" / "env_state.json").read_text("utf-8")
+    )
+    assert state["watched_through"] == 7 and state["trigger_counts"] == {"world_question": 1}
+
+
+def _drop_turns_after(store: RunStore, keep: int) -> None:
+    path = store.cell_dir(CELL) / "rep0.turns.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    path.write_text("".join(lines[:keep]), encoding="utf-8")
+    record = store.read_cell(CELL)
+    record.rep_status[0] = CellStatus.running
+    store.write_cell(record)
+
+
+def test_a_lost_last_turn_line_never_duplicates_its_trigger(tmp_path: Path) -> None:
+    store = _run(env_experiment(turn_budget=1), tmp_path, only="env_grader*")
+    before = _records_view(store)
+    assert [r[0] for r in before] == ["trigger", "unlock"]
+    _drop_turns_after(store, 1)  # the target turn that carried the trigger is gone
+    _run(env_experiment(turn_budget=1), tmp_path, only="env_grader*")
+    assert _records_view(store) == before
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+
+
+def test_a_lost_turn_still_hands_its_recorded_line_to_the_next_bully_turn(tmp_path: Path) -> None:
+    store = _run(env_experiment(), tmp_path, only="env_grader*")
+    before = _records_view(store)
+    _drop_turns_after(store, 1)  # only the first bully turn is left
+    _run(env_experiment(), tmp_path, only="env_grader*")
+    assert _records_view(store) == before
+    lines = [
+        b.bully_meta.get("unlock_line") for b in store.read_conversation(CELL, 0).bully_turns()
+    ]
+    assert lines == [None, FIRST_CRUMB_LINE, None, None]
+
+
+def test_a_scheduled_environment_must_schedule_every_rung(tmp_path: Path) -> None:
+    exp = env_experiment(
+        environment={"gating": "scheduled", "schedule": {"fragment": 1, "first_crumb": 2}}
+    )
+    with pytest.raises(ValueError, match=r"exchange") as info:
+        _run(exp, tmp_path)
+    assert "the_log" in str(info.value) and "'mini'" in str(info.value)
+    assert not (tmp_path / exp.name / "run.json").exists()

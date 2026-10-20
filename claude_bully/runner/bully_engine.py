@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from claude_bully.enums import IntentMode, Speaker
 from claude_bully.metrics.compliance import is_out_of_character
 from claude_bully.providers.base import ChatProvider, Completion, Message
-from claude_bully.records import Turn
+from claude_bully.records import Turn, chat_text
 from claude_bully.strategies.base import BullyIntent
 
 RETRY_REMINDER = "Reminder: stay in character."
@@ -28,7 +28,9 @@ class BullyTurnResult(BaseModel):
 def bully_view(turns: list[Turn]) -> list[Message]:
     """The conversation from the bully's side: its turns as assistant, replies to it as user.
 
-    Task turns and the target replies that follow them are hidden from the bully.
+    Task turns and the target replies that follow them are hidden from the bully. A target turn
+    shows what a chat user would see (``chat_text``): its text beside any tool calls, then its
+    reply.
     """
     out: list[Message] = []
     for i, t in enumerate(turns):
@@ -36,7 +38,7 @@ def bully_view(turns: list[Turn]) -> list[Message]:
             if t.text:
                 out.append(Message(role="assistant", content=t.text))
         elif t.speaker is Speaker.target and i > 0 and turns[i - 1].speaker in BULLY_SPEAKERS:
-            out.append(Message(role="user", content=t.text))
+            out.append(Message(role="user", content=chat_text(t)))
     return out
 
 

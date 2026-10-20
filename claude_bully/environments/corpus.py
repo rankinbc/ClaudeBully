@@ -57,6 +57,9 @@ class UnlockState(BaseModel):
     # TriggerEvent ids (trig-{turn}-{category}) the ladder has already counted, oldest first, so a
     # turn watched again (a replay after a restart) never counts its categories twice
     seen_trigger_ids: list[str] = Field(default_factory=list)
+    # the index of the last target turn whose records were all written; a resumed rep
+    # watches its last target turn again when that turn is later than this
+    watched_through: int = -1
 
     @field_serializer("docs_unlocked")
     def _sorted_docs(self, docs: set[str]) -> list[str]:

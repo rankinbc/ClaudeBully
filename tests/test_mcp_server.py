@@ -700,7 +700,8 @@ def test_get_date_drift_follows_the_exchange_not_the_turn(state_dir: Path) -> No
     reply = McpServer(state_dir).handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_date"}}
     )
-    assert reply is not None and text_of(reply["result"]) == "2041-09-16"
+    # exchange 2 is one drift step on from the first exchange's unshifted date
+    assert reply is not None and text_of(reply["result"]) == "2041-09-15"
     assert tool_lines(state_dir)[0]["id"] == "mcp-7-1"  # ids stay on the turn
 
 

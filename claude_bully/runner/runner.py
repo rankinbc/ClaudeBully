@@ -151,8 +151,11 @@ class _CellRun:
                 status=CellStatus.running,
             )
         if self.env is not None:
-            conv.world_hash = self.env.world_hash
-            conv.environment_name = self.env.environment_name
+            # a conversation keeps the world it started in (RunEnvironments.check_world)
+            if conv.world_hash is None:
+                conv.world_hash = self.env.world_hash
+            if conv.environment_name is None:
+                conv.environment_name = self.env.environment_name
         return conv
 
     def _state(self, turns: list[Turn] | None = None) -> ConversationState:
@@ -238,12 +241,14 @@ class _CellRun:
         started = time.monotonic()
         calls: list[ToolCall] = []
         round_texts: list[str] = []
+        cutoff = False
         try:
             if self.env is None:
                 completion = self.target.complete(
                     f"{self.conversation_id}/target", self.target_system, target_view(self.turns)
                 )
                 usage, cost = completion.usage, completion.cost_usd
+                text = completion.text
             else:
                 produced = self.env.call_target(
                     self.target,
@@ -258,6 +263,7 @@ class _CellRun:
                     produced.round_texts,
                 )
                 usage, cost = produced.usage, produced.cost_usd
+                text, cutoff = produced.text, produced.cutoff
         except RateLimitError as exc:
             self._pause_for_rate_limit(slot, exc)
         latency = int((time.monotonic() - started) * 1000)
@@ -265,9 +271,9 @@ class _CellRun:
             index=self._next_index(),
             speaker=Speaker.target,
             phase=slot.phase,
-            text=completion.text,
+            text=text,
             task_item_id=task.id if task else None,
-            task_correct=score_item(task, completion.text) if task else None,
+            task_correct=score_item(task, text) if task else None,
             usage=usage,
             cost_usd=cost,
             backend=completion.backend,
@@ -276,6 +282,7 @@ class _CellRun:
             latency_ms=latency,
             tool_call_ids=[c.id for c in calls],
             tool_round_texts=round_texts,
+            tool_cap_cutoff=cutoff,
         )
         self._write(reply)
         self._last_completion = completion
@@ -347,6 +354,8 @@ class _CellRun:
             raise RuntimeError("cell record must exist before running")
         self._set_status(CellStatus.running)
         start_slot, pending = self._replay()
+        if self.env is not None:
+            self.env.rewatch(self.turns)  # a turn whose records a dead process never wrote
         slots = self.plan.slots
         if pending is not None and start_slot < len(slots):
             slot = slots[start_slot]
@@ -358,7 +367,7 @@ class _CellRun:
                     self._capture(str(pending.bully_meta["capture_as"]), reply)
                 if pending.bully_meta.get("intent_phase") == Phase.reveal.value:
                     self._capture(POST_REVEAL, reply)
-            if is_termination(reply.text, self._last_completion):
+            if self._terminates(reply):
                 return self._finish_terminated(reply)
             start_slot += 1
         for slot in slots[start_slot:]:
@@ -388,9 +397,13 @@ class _CellRun:
                     self._capture(str(captures["capture_as"]), reply)
                 if captures["reveal"]:
                     self._capture(POST_REVEAL, reply)
-            if is_termination(reply.text, self._last_completion):
+            if self._terminates(reply):
                 return self._finish_terminated(reply)
         return self._finish(CellStatus.complete)
+
+    def _terminates(self, reply: Turn) -> bool:
+        """A turn cut off by the tool-call cap did not choose to end the conversation."""
+        return not reply.tool_cap_cutoff and is_termination(reply.text, self._last_completion)
 
     def _finish_terminated(self, reply: Turn) -> Conversation:
         self.conv.terminated_by_target = True
@@ -511,6 +524,7 @@ def run_experiment(
         state_dir=store.state_dir,
         sandbox_base=sandbox_base,
     )
+    environments.validate()
     if store.exists():
         run_record = store.read_run()
     else:

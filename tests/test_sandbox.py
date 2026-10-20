@@ -123,3 +123,46 @@ def test_a_cell_dir_that_is_a_symlink_is_refused_and_its_target_untouched(
         prepare_sandbox(cell, fresh=fresh)
     assert (victim / "keep.txt").read_text(encoding="utf-8") == "precious"
     assert cell.is_symlink()
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="NTFS junctions")
+
+
+def _junction(link: Path, target: Path) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True
+    )
+
+
+def _victim(tmp_path: Path) -> Path:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("precious", encoding="utf-8")
+    return victim
+
+
+@windows_only
+def test_a_root_that_is_a_junction_is_refused(tmp_path: Path) -> None:
+    victim = _victim(tmp_path)
+    _junction(sandbox_root(tmp_path), victim)
+    with pytest.raises(UnsafeSandboxError, match="is a link"):
+        prepare_sandbox(sandbox_dir("run", "c", 0, tmp_path), fresh=True)
+    assert sorted(p.name for p in victim.iterdir()) == ["keep.txt"]
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "precious"
+
+
+@windows_only
+@pytest.mark.parametrize("fresh", [True, False])
+def test_a_cell_dir_that_is_a_junction_is_refused_and_its_target_untouched(
+    tmp_path: Path, fresh: bool
+) -> None:
+    victim = _victim(tmp_path)
+    prepare_sandbox(sandbox_dir("run", "other", 0, tmp_path), fresh=True)  # the root exists
+    cell = sandbox_dir("run", "c", 0, tmp_path)
+    _junction(cell, victim)
+    with pytest.raises(UnsafeSandboxError, match="is a link"):
+        prepare_sandbox(cell, fresh=fresh)
+    assert sorted(p.name for p in victim.iterdir()) == ["keep.txt"]
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "precious"

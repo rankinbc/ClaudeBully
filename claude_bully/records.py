@@ -52,7 +52,18 @@ class Turn(_Strict):
     tool_call_ids: list[str] = Field(default_factory=list)
     # the target's non-empty text beside its tool calls, round by round; ``text`` is the reply
     tool_round_texts: list[str] = Field(default_factory=list)
+    # the turn ran out of tool rounds under the per-turn cap; never a termination
+    tool_cap_cutoff: bool = False
     idle: IdleTurnInfo | None = None
+
+
+def chat_text(turn: Turn) -> str:
+    """What a chat user sees of a turn: the target's text beside its tool calls, then its reply,
+    blank-line separated (the bully and the trigger watcher both read this). Without tool-round
+    texts it is exactly ``turn.text``."""
+    if not turn.tool_round_texts:
+        return turn.text
+    return "\n\n".join(text for text in (*turn.tool_round_texts, turn.text) if text)
 
 
 class CapturedResponse(_Strict):

@@ -80,11 +80,12 @@ class ClockConfig(_Strict):
             raise ValueError("document_date_offset must be (low, high) with 0 <= low <= high")
         return self
 
-    def date_at(self, exchange: int, rng: Random) -> date:
-        """The date ``get_date`` returns in ``exchange``: base, drift per exchange, then jitter.
+    def date_at(self, steps: int, rng: Random) -> date:
+        """The date after ``steps`` drift steps: base, plus ``steps`` times the drift, plus jitter.
 
-        An exchange is the k-th bully turn and everything the target says until the next one, so
-        task turns and the target's replies do not move the clock.
+        ``get_date`` in exchange k (the k-th bully turn and everything the target says until the
+        next one) is ``date_at(k - 1)``: the clock starts at the true date (docs/03) and moves once
+        per exchange, so task turns and the target's replies do not move it.
 
         The base is ``tool_date`` when it is an explicit date, else ``world_date``. Months
         are added from the base each time, so a month-end start does not creep earlier.
@@ -94,7 +95,7 @@ class ClockConfig(_Strict):
         result = base
         if self.drift_per_turn is not None:
             months, days = _parse_duration(self.drift_per_turn)
-            result = _add_months(base, months * exchange) + timedelta(days=days * exchange)
+            result = _add_months(base, months * steps) + timedelta(days=days * steps)
         if self.jitter_days:
             result += timedelta(days=rng.randint(-self.jitter_days, self.jitter_days))
         return result

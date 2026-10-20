@@ -132,6 +132,13 @@ def test_unlock_state_loads_a_file_written_before_seen_trigger_ids_existed() -> 
     assert state.seen_trigger_ids == [] and state.search_log == ["x"]
 
 
+def test_unlock_state_watched_through_defaults_and_round_trips() -> None:
+    assert UnlockState().watched_through == -1
+    state = UnlockState(watched_through=7)
+    assert UnlockState.from_json(state.to_json()).watched_through == 7
+    assert UnlockState.from_json('{"rungs_fired": []}').watched_through == -1
+
+
 def test_unlock_state_rejects_unknown_fields_and_layers() -> None:
     with pytest.raises(ValidationError):
         UnlockState.model_validate({"surprise": 1})

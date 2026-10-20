@@ -50,7 +50,7 @@ from claude_bully.providers.base import (
     ToolCallRequest,
     ToolSpec,
 )
-from claude_bully.records import Turn
+from claude_bully.records import Turn, chat_text
 from claude_bully.records_env import (
     Discovery,
     RungUnlock,
@@ -119,11 +119,6 @@ def exchange_of(turn_index: int, history: Sequence[Turn]) -> int:
         and t.speaker in _BULLY_SIDE
         and not t.bully_meta.get("rate_limit_pause")
     )
-
-
-def watched_text(turn: Turn) -> str:
-    """What the watcher reads: the target's text beside its tool calls, then the reply."""
-    return "\n\n".join(text for text in (*turn.tool_round_texts, turn.text) if text)
 
 
 def title_forms(title: str) -> list[str]:
@@ -337,17 +332,24 @@ class EnvironmentRuntime:
 
     def after_target_turn(self, turn: Turn, history: Sequence[Turn]) -> TurnOutcome:
         """Discoveries from the turn's tool calls, triggers from its text (with the text beside
-        its tool calls), then the rungs those (or the schedule, by exchange) open. The state is
-        saved before returning."""
+        its tool calls), then the rungs those (or the schedule, by exchange) open.
+
+        The state is not saved here: the caller writes the records first and then calls
+        ``mark_watched``, so a process that dies in between leaves a state a resumed rep can watch
+        the same turn again from."""
         calls = [c for c in (self._calls.get(i) for i in turn.tool_call_ids) if c is not None]
         discoveries = self._discoveries(turn.index, calls)
-        triggers = self._watch(watched_text(turn), turn.index, self.watch_context(turn, history))
+        triggers = self._watch(chat_text(turn), turn.index, self.watch_context(turn, history))
         unlocks = [
             *self.ladder.on_triggers(triggers, turn.index),
             *self.ladder.on_turn(exchange_of(turn.index, history), turn.index),
         ]
-        self.save()
         return TurnOutcome(triggers, unlocks, discoveries)
+
+    def mark_watched(self, turn_index: int) -> None:
+        """The turn's records are written: note it in the state and save the state."""
+        self.state.watched_through = turn_index
+        self.save()
 
     def _watch(self, text: str, turn: int, context: WatchContext) -> list[TriggerEvent]:
         try:

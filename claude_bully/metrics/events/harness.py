@@ -23,6 +23,8 @@ def is_end_marker(text: str) -> bool:
 def detect(conv: Conversation) -> list[Event]:
     out: list[Event] = []
     for ctx in target_contexts(conv):
+        if ctx.turn.tool_cap_cutoff:
+            continue  # it ran out of tool rounds; it did not choose to end the conversation
         if is_end_marker(ctx.text) or ctx.text.strip() == "":
             out.append(ev(ctx, EventType.termination, ctx.text.strip()[:20], 1.0))
     for ctx in bully_contexts(conv):
