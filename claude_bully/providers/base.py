@@ -10,10 +10,39 @@ from claude_bully.enums import ProviderKind
 from claude_bully.records import Usage
 
 
+class ToolSpec(BaseModel):
+    """A tool offered to the model: name, description and a JSON schema for its arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+class ToolCallRequest(BaseModel):
+    """A tool call the model made. ``executed`` calls (the claude_code backend) carry a result."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    name: str
+    args: dict[str, Any]
+    executed: bool = False
+    result_text: str | None = None
+
+
+class ToolResult(BaseModel):
+    """The outcome of one tool call, returned to the model on a user message."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    text: str
+
+
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
     content: str
+    tool_results: list[ToolResult] = []
 
 
 class Completion(BaseModel):
@@ -25,6 +54,8 @@ class Completion(BaseModel):
     model: str
     raw_session_ref: str | None = None
     stop_reason: str | None = None
+    tool_calls: list[ToolCallRequest] = []
+    reasoning_text: str | None = None
 
 
 class ProviderError(Exception):
@@ -49,6 +80,7 @@ class ChatProvider(Protocol):
         messages: list[Message],
         *,
         json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> Completion: ...
 
 

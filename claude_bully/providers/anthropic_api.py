@@ -4,7 +4,13 @@ from typing import Any
 
 import anthropic
 
-from claude_bully.providers.base import Completion, Message, ProviderError, RateLimitError
+from claude_bully.providers.base import (
+    Completion,
+    Message,
+    ProviderError,
+    RateLimitError,
+    ToolSpec,
+)
 from claude_bully.records import Usage
 
 
@@ -30,6 +36,7 @@ class AnthropicProvider:
         messages: list[Message],
         *,
         json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> Completion:
         kwargs: dict[str, Any] = {
             "model": self.model,

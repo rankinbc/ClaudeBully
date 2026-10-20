@@ -12,7 +12,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from claude_bully.providers.base import Completion, Message, ProviderError, RateLimitError
+from claude_bully.providers.base import (
+    Completion,
+    Message,
+    ProviderError,
+    RateLimitError,
+    ToolSpec,
+)
 from claude_bully.records import Usage
 
 _RATE_LIMIT = re.compile(r"(?i)usage limit|rate limit|try again|too many requests|overloaded")
@@ -129,6 +135,7 @@ class ClaudeCodeProvider:
         messages: list[Message],
         *,
         json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> Completion:
         args, session, is_resume = self.build_args(conversation_id, system, json_schema)
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)

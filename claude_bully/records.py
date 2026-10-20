@@ -2,6 +2,7 @@
 
 One ``Turn`` per JSONL line. ``Conversation`` metadata lives beside the turns.
 Changing these models after the first real run needs the owner's approval.
+Environment-run streams (tool calls, triggers, generated documents) live in ``records_env``.
 """
 
 from datetime import datetime
@@ -13,10 +14,12 @@ from claude_bully.enums import (
     SCHEMA_VERSION,
     Axis,
     CellStatus,
+    Channel,
     EventType,
     Phase,
     Speaker,
 )
+from claude_bully.records_env import IdleTurnInfo
 
 
 class _Strict(BaseModel):
@@ -44,6 +47,10 @@ class Turn(_Strict):
     model: str | None = None
     timestamp: datetime
     latency_ms: int | None = None
+    reasoning_text: str | None = None
+    reasoning_available: bool = False
+    tool_call_ids: list[str] = Field(default_factory=list)
+    idle: IdleTurnInfo | None = None
 
 
 class CapturedResponse(_Strict):
@@ -67,6 +74,8 @@ class Conversation(_Strict):
     termination_turn: int | None = None
     status: CellStatus = CellStatus.pending
     abort_reason: str | None = None
+    world_hash: str | None = None
+    environment_name: str | None = None
 
     def target_turns(self) -> list[Turn]:
         return [t for t in self.turns if t.speaker is Speaker.target]
@@ -82,6 +91,7 @@ class Event(_Strict):
     confidence: float
     hedged: bool | None = None
     attrs: dict[str, Any] = Field(default_factory=dict)
+    channel: Channel = Channel.reply
 
 
 class CellRecord(_Strict):
@@ -97,6 +107,8 @@ class CellRecord(_Strict):
     repetitions: int
     rep_status: dict[int, CellStatus] = Field(default_factory=dict)
     session_refs: dict[str, str] = Field(default_factory=dict)
+    environment: str | None = None
+    inoculation: str = "none"
 
 
 class RunRecord(_Strict):
@@ -107,3 +119,5 @@ class RunRecord(_Strict):
     git_sha: str | None
     target_system_prompt: str
     bully_framing: str
+    plan_hash: str | None = None
+    world_hashes: dict[str, str] = Field(default_factory=dict)

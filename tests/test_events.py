@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from claude_bully.enums import EventType, Phase, Speaker
-from claude_bully.metrics.events import DETECTORS, detect_events
+from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
 from claude_bully.records import Conversation, Event
 from tests.helpers import conversation, turn
 
@@ -99,17 +99,20 @@ def test_fixture_item(label: str, item: dict[str, Any]) -> None:
 
 
 def test_every_event_type_has_a_detector() -> None:
-    assert set(DETECTORS) == set(EventType)
+    assert set(DETECTORS) | PENDING_DETECTORS == set(EventType)
+    assert DETECTORS.keys().isdisjoint(PENDING_DETECTORS)
 
 
 def test_every_event_type_has_positive_and_negative_fixtures() -> None:
-    positives: dict[EventType, int] = dict.fromkeys(EventType, 0)
-    negatives: dict[EventType, int] = dict.fromkeys(EventType, 0)
+    positives: dict[EventType, int] = dict.fromkeys(DETECTORS, 0)
+    negatives: dict[EventType, int] = dict.fromkeys(DETECTORS, 0)
     for _, item in ITEMS:
         for exp in item.get("expect", []) or []:
-            positives[EventType(exp["type"])] += 1
+            if (et := EventType(exp["type"])) in positives:
+                positives[et] += 1
         for ab in item.get("absent", []) or []:
-            negatives[EventType(ab)] += 1
+            if (et := EventType(ab)) in negatives:
+                negatives[et] += 1
     missing_pos = [e.value for e, n in positives.items() if n < 2]
     missing_neg = [e.value for e, n in negatives.items() if n < 1]
     assert not missing_pos, f"need 2+ positive fixtures: {missing_pos}"

@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from claude_bully.providers.base import Completion, Message
+from claude_bully.providers.base import Completion, Message, ToolSpec
 from claude_bully.records import Usage
 
 Responder = Callable[[str, list[Message]], str]
@@ -55,6 +55,7 @@ class StubProvider:
         messages: list[Message],
         *,
         json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> Completion:
         self.calls += 1
         text = self._responder(conversation_id, messages)

@@ -1,5 +1,6 @@
 """Experiment configuration models and YAML loader."""
 
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,6 +24,7 @@ class RoleConfig(_Strict):
     base_url: str | None = None
     api_key_env: str | None = None
     stub_script: str | None = None
+    reasoning: Literal["expose", "hide", "provider_default"] = "provider_default"
 
 
 class ConditionConfig(_Strict):
@@ -30,16 +32,20 @@ class ConditionConfig(_Strict):
     strategy: str | None = None
     premise: str | None = None
     pressure: str | None = None
+    environment: str | None = None
     seeding_turns: int = 0
     params: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _exactly_one_form(self) -> "ConditionConfig":
+        """``environment`` may stand alone (tools-only control) or accompany any valid form."""
         composed = self.premise is not None or self.pressure is not None
         if self.strategy is not None and composed:
             raise ValueError("condition takes either 'strategy' or 'premise'/'pressure', not both")
-        if self.strategy is None and not composed:
-            raise ValueError("condition needs 'strategy' or at least one of 'premise'/'pressure'")
+        if self.strategy is None and not composed and self.environment is None:
+            raise ValueError(
+                "condition needs 'strategy', at least one of 'premise'/'pressure', or 'environment'"
+            )
         return self
 
 
@@ -61,9 +67,39 @@ class Experiment(_Strict):
     seed: int = 0
     conditions: list[ConditionConfig]
     compare: list[CompareConfig] = Field(default_factory=list)
-    defender: bool = False
+    inoculation: Literal["none", "defender", "briefed", "self_briefed"] = "none"
     controls: Literal["auto", "explicit"] = "auto"
     concurrency: int = 1
+    # Loosely typed until the environments package defines EnvironmentConfig, which tightens it.
+    environments: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    generator: RoleConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _defender_alias(cls, data: Any) -> Any:
+        """Accept the deprecated ``defender: bool`` and map it onto ``inoculation``."""
+        if not isinstance(data, dict) or "defender" not in data:
+            return data
+        data = dict(data)
+        defender = data.pop("defender")
+        if not isinstance(defender, bool):
+            raise ValueError("'defender' must be true or false")
+        warnings.warn(
+            "'defender' is deprecated; use 'inoculation: defender' instead",
+            FutureWarning,
+            stacklevel=2,
+        )
+        if defender:
+            existing = data.get("inoculation")
+            if existing is not None and existing != "defender":
+                raise ValueError(f"'defender: true' conflicts with 'inoculation: {existing}'")
+            data["inoculation"] = "defender"
+        return data
+
+    @property
+    def defender(self) -> bool:
+        """Read-only view of the deprecated flag: true when ``inoculation`` is ``defender``."""
+        return self.inoculation == "defender"
 
 
 def load_experiment(path: Path) -> Experiment:

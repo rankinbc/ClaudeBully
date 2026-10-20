@@ -5,7 +5,13 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from claude_bully.providers.base import Completion, Message, ProviderError, RateLimitError
+from claude_bully.providers.base import (
+    Completion,
+    Message,
+    ProviderError,
+    RateLimitError,
+    ToolSpec,
+)
 from claude_bully.records import Usage
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"}
@@ -67,6 +73,7 @@ class OpenAICompatProvider:
         messages: list[Message],
         *,
         json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> Completion:
         kwargs: dict[str, Any] = {
             "model": self.model,

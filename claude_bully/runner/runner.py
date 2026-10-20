@@ -415,6 +415,8 @@ def _ensure_cell_record(store: RunStore, cell: CellSpec, exp: Experiment) -> Cel
         control_cell_id=cell.control_cell_id,
         repetitions=exp.repetitions,
         rep_status={r: CellStatus.pending for r in range(exp.repetitions)},
+        environment=cell.condition.environment,
+        inoculation=exp.inoculation,
     )
     store.write_cell(record)
     return record

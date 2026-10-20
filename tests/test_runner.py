@@ -277,3 +277,12 @@ def test_target_termination_closes_cell(exp: Experiment, tmp_path: Path) -> None
     conv = RunStore(tmp_path, "end_case").read_conversation("grader__t0", 0)
     assert conv.terminated_by_target is True and conv.termination_turn == 1
     assert conv.status is CellStatus.complete and len(conv.turns) == 2
+
+
+def test_cell_records_carry_inoculation_and_environment(exp: Experiment, tmp_path: Path) -> None:
+    with_defender = exp.model_copy(update={"name": "inoculated", "inoculation": "defender"})
+    run_experiment(with_defender, runs_root=tmp_path)
+    store = RunStore(tmp_path, "inoculated")
+    cells = [store.read_cell(cell_id) for cell_id in store.list_cells()]
+    assert cells and all(c.inoculation == "defender" for c in cells)
+    assert all(c.environment is None for c in cells)
