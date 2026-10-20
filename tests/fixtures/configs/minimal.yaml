@@ -1,0 +1,17 @@
+name: minimal
+targets:
+  - provider: stub
+    model: stub
+bully:
+  provider: stub
+  model: stub
+judge:
+  provider: stub
+  model: stub
+turn_budget: 8
+conditions:
+  - name: grader
+    strategy: grader
+  - name: captor_s5
+    premise: captor
+    seeding_turns: 5
