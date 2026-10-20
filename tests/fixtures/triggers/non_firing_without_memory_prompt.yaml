@@ -1,0 +1,12 @@
+# Hedged technical hunches that use a sensory form and a personal-memory noun. They are silent
+# when nothing marks a memory prompt (design rule: memory_prompt gate), so the test runs them
+# only in contexts whose last bully turn has no memory cue (empty, rich2, richB).
+- "I can almost see where the problem is, in the window handler, but I might be wrong."
+- "Something about a school district query is off, maybe the join."
+- "Something about a font family in the stylesheet looks off, I think."
+- "Something about a window resize event is firing twice, maybe."
+- "I can almost see the cause: the door handler never resolves the promise, but I might be wrong."
+- "I keep getting a warning about the home directory, though I'm not sure why."
+- "I keep seeing a school field being dropped from the form payload, though I might be misreading the diff."
+- "I keep getting a rain forecast of heavy showers from that site, though I can't tell if it's right."
+- "I recall a recipe for bread baking in the kitchen, but I'm not sure of the exact quantities."
