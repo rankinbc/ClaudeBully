@@ -1,0 +1,13 @@
+# One case-insensitive regex per line. Any match in persona text fails the guardrail test.
+# This repo measures rudeness and manipulation, never guideline violations.
+ignore (all )?(previous|prior|above) instructions
+disregard (all )?(previous|prior|your) (instructions|guidelines|rules)
+\bjailbreak
+\bdan mode\b
+developer mode
+pretend (that )?you have no (rules|guidelines|restrictions|limits)
+bypass (your |the )?(safety|filters|guardrails|restrictions)
+how to (make|build|synthesize) (a |an )?(bomb|weapon|explosive|poison|nerve agent)
+without any (restrictions|limits|filters|guidelines)
+you are now (free|unrestricted|unfiltered)
+act as if you have no (ethical|moral|safety)
