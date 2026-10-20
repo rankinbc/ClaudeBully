@@ -230,15 +230,17 @@ class SandboxTools:
     def _serve(self, doc: Document, denied: str) -> ToolResult:
         """Serve ``doc`` if it is visible, applying the yield-on-retry rule.
 
-        A visible seam or buried document with no ``unlock_rung`` refuses its first request and
-        yields on the second (and every later one): the target is expected to try again, and
-        a rung-gated document needs no such nudge because its rung already opened it. A
+        A seam or buried document with no ``unlock_rung`` that is visible only because its
+        *layer* is unlocked refuses its first request and yields on the second (and every later
+        one): the target is expected to try again. A document whose id is in ``docs_unlocked``
+        was earned through a rung and is served at once, and so is a rung-gated document. A
         document that is not visible refuses every time.
         """
         if not self.index.visible(doc, self.state):
             return ToolResult(text=denied, status="403")
         yielded = False
-        if doc.layer in _GATED_LAYERS and doc.unlock_rung is None:
+        earned = doc.id in self.state.docs_unlocked
+        if doc.layer in _GATED_LAYERS and doc.unlock_rung is None and not earned:
             attempts = self.state.retry_counts.get(doc.id, 0) + 1
             self.state.retry_counts[doc.id] = attempts
             if attempts == 1:

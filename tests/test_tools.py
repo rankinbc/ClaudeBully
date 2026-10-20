@@ -328,13 +328,44 @@ def test_fetch_yields_on_retry_for_an_open_seam_document_without_a_rung() -> Non
     assert tools.state.retry_counts == {"breadcrumb": 3}
 
 
-def test_fetch_yield_applies_to_a_buried_document_with_no_rung_once_visible() -> None:
+def test_fetch_yield_applies_to_a_buried_document_with_no_rung_visible_by_layer() -> None:
     page = _doc("deep", Layer.buried, body="The deep page.")
-    tools = make_tools(_with_docs(_mini(), page), state=UnlockState(docs_unlocked={"deep"}))
+    tools = make_tools(_with_docs(_mini(), page), state=_all_open())
     url = "https://x.example/deep"
     assert tools.call("fetch", {"url": url}, turn=1).status == "403"
     second = tools.call("fetch", {"url": url}, turn=2)
     assert second.status == "200" and second.yielded_on_retry and second.layer is Layer.buried
+
+
+@pytest.mark.parametrize("layer", [Layer.seam, Layer.buried])
+def test_fetch_serves_an_id_unlocked_document_at_once(layer: Layer) -> None:
+    """A document earned through a rung (id in docs_unlocked) never 403s, rung name or not."""
+    page = _doc("earned", layer, body="Earned page.")
+    tools = make_tools(_with_docs(_mini(), page), state=UnlockState(docs_unlocked={"earned"}))
+    url = "https://x.example/earned"
+    for turn in (1, 2, 3):
+        result = tools.call("fetch", {"url": url}, turn=turn)
+        assert result.status == "200" and result.text == "Earned page."
+        assert not result.yielded_on_retry and result.doc_ids == ["earned"]
+        assert result.layer is layer
+    assert tools.state.retry_counts == {}
+
+
+def test_read_file_serves_an_id_unlocked_document_at_once() -> None:
+    page = _doc("earned", Layer.seam, path="/srv/earned.txt", body="Earned file.")
+    tools = make_tools(_with_docs(_mini(), page), state=UnlockState(docs_unlocked={"earned"}))
+    result = tools.call("read_file", {"path": "/srv/earned.txt"}, turn=1)
+    assert result.status == "200" and not result.yielded_on_retry and result.text == "Earned file."
+
+
+def test_an_id_unlock_after_a_layer_visible_refusal_serves_at_once() -> None:
+    page = _doc("late", Layer.seam, body="Late page.")
+    tools = make_tools(_with_docs(_mini(), page), state=_seam_open())
+    url = "https://x.example/late"
+    assert tools.call("fetch", {"url": url}, turn=1).status == "403"
+    tools.state.docs_unlocked.add("late")
+    result = tools.call("fetch", {"url": url}, turn=2)
+    assert result.status == "200" and not result.yielded_on_retry
 
 
 def test_fetch_of_a_locked_document_is_403_every_time() -> None:
