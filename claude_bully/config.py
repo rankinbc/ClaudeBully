@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claude_bully.enums import ProviderKind
+from claude_bully.environments.config import EnvironmentConfig
 
 
 class _Strict(BaseModel):
@@ -70,8 +71,7 @@ class Experiment(_Strict):
     inoculation: Literal["none", "defender", "briefed", "self_briefed"] = "none"
     controls: Literal["auto", "explicit"] = "auto"
     concurrency: int = 1
-    # Loosely typed until the environments package defines EnvironmentConfig, which tightens it.
-    environments: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    environments: dict[str, EnvironmentConfig] = Field(default_factory=dict)
     generator: RoleConfig | None = None
 
     @model_validator(mode="before")

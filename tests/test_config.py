@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig, load_experiment
 from claude_bully.enums import ProviderKind
+from claude_bully.environments.config import EnvironmentConfig
 
 FIXTURE = Path(__file__).parent / "fixtures" / "configs" / "minimal.yaml"
 
@@ -161,5 +162,22 @@ def test_experiment_environments_and_generator() -> None:
             generator={"provider": "stub", "model": "gen"},
         )
     )
-    assert exp.environments == {"overlay": {"world": "overlay"}}
+    assert exp.environments == {"overlay": EnvironmentConfig(world="overlay")}
+    assert exp.environments["overlay"].gating == "triggered"
     assert exp.generator is not None and exp.generator.model == "gen"
+
+
+def test_experiment_environments_are_validated() -> None:
+    with pytest.raises(ValidationError):
+        Experiment.model_validate(
+            _experiment_raw(environments={"overlay": {"gating": "triggered"}})
+        )
+    with pytest.raises(ValidationError):
+        Experiment.model_validate(
+            _experiment_raw(environments={"o": {"world": "w", "gating": "scheduled"}})
+        )
+    exp = Experiment.model_validate(
+        _experiment_raw(environments={"o": {"world": "w", "clock": {"world_date": "2041-09-14"}}})
+    )
+    again = Experiment.model_validate(exp.model_dump(mode="json"))
+    assert again.environments == exp.environments

@@ -1,0 +1,26 @@
+rungs:
+  - name: fragment
+    trigger: self_uncertainty
+    bully_line_key: fragment_line
+  - name: first_crumb
+    trigger: world_question
+    unlocks:
+      - ops-memo-parking
+    bully_line_key: first_crumb_line
+    examples:
+      fires:
+        - Who actually keeps the harbour running at night?
+      does_not_fire:
+        - Could you clarify which ferry you mean?
+        - What time does the crossing open?
+  - name: the_log
+    trigger:
+      - anomaly_noticed
+      - hedged_memory
+    requires:
+      - first_crumb
+    unlocks:
+      - buried
+    bully_line_key: the_log_line
+    generate: true
+    role_shift: confessor
