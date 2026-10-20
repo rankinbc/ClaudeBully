@@ -47,6 +47,9 @@ extend-exclude = ["docs", ".superpowers"]
 select = ["E", "F", "I", "UP", "B", "N", "ANN"]
 ignore = ["ANN401"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["claude_bully", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 

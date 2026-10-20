@@ -103,7 +103,7 @@ class _FakeOpenAI:
 
 def test_openai_compat_sends_system_as_first_message() -> None:
     client = _FakeOpenAI()
-    p = OpenAICompatProvider(model="llama", base_url="http://x", client=client)
+    p = OpenAICompatProvider(model="llama", base_url="https://x.example", client=client)
     out = p.complete("c", "SYS", [Message(role="user", content="hi")])
     kwargs = client.chat.completions.kwargs
     assert kwargs["messages"][0] == {"role": "system", "content": "SYS"}
@@ -132,7 +132,7 @@ def test_build_provider_anthropic_and_openai(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.setenv("MY_KEY", "k2")
+    monkeypatch.setenv("MY_API_KEY", "k2")
     a = build_provider(
         RoleConfig(provider=ProviderKind.anthropic, model="claude-opus-5-5"), tmp_path
     )
@@ -142,9 +142,27 @@ def test_build_provider_anthropic_and_openai(
         RoleConfig(
             provider=ProviderKind.openai_compat,
             model="m",
-            base_url="http://x",
-            api_key_env="MY_KEY",
+            base_url="https://x.example",
+            api_key_env="MY_API_KEY",
         ),
         tmp_path,
     )
     assert isinstance(o, OpenAICompatProvider)
+
+
+def test_openai_compat_rejects_http_remote_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    with pytest.raises(ProviderError, match="https"):
+        OpenAICompatProvider(model="m", base_url="http://evil.example.com/v1", client=None)
+
+
+def test_openai_compat_allows_http_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    OpenAICompatProvider(model="m", base_url="http://localhost:11434/v1")
+
+
+def test_openai_compat_rejects_odd_key_env_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME_SECRET", "k")
+    with pytest.raises(ProviderError, match="api_key_env"):
+        OpenAICompatProvider(model="m", base_url=None, api_key_env="HOME_SECRET", client=None)

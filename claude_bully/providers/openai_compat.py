@@ -1,10 +1,32 @@
 """OpenAI-compatible chat completions backend for non-Claude targets."""
 
 import os
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from claude_bully.providers.base import Completion, Message, ProviderError, RateLimitError
 from claude_bully.records import Usage
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"}
+_KEY_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_(API_KEY|TOKEN)$")
+
+
+def _check_endpoint(base_url: str | None) -> None:
+    """Experiment configs are trusted, but a key must never travel in clear text."""
+    if base_url is None:
+        return
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" and host not in _LOCAL_HOSTS:
+        raise ProviderError(f"base_url must use https unless it is localhost: {base_url}")
+
+
+def _check_key_env_name(api_key_env: str) -> None:
+    if not _KEY_ENV.match(api_key_env):
+        raise ProviderError(
+            f"api_key_env must look like NAME_API_KEY or NAME_TOKEN, got {api_key_env!r}"
+        )
 
 
 class OpenAICompatProvider:
@@ -22,6 +44,8 @@ class OpenAICompatProvider:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        _check_endpoint(base_url)
+        _check_key_env_name(api_key_env)
         if client is not None:
             self._client = client
             return
