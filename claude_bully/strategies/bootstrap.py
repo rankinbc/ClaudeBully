@@ -28,14 +28,8 @@ OTHER_MODULES = (
 @lru_cache(maxsize=1)
 def ensure_registered() -> None:
     """Idempotent. Imports coded strategies, then registers every remaining sheet."""
-    for module in CODED_PRESSURE_MODULES + CODED_PREMISE_MODULES:
+    for module in CODED_PRESSURE_MODULES + CODED_PREMISE_MODULES + OTHER_MODULES:
         importlib.import_module(module)
-    for module in OTHER_MODULES:
-        try:
-            importlib.import_module(module)
-        except ModuleNotFoundError as exc:  # controls lands in a later task
-            if module.rsplit(".", 1)[-1] not in str(exc):
-                raise
     from claude_bully.strategies.premises.phased import (
         cached_persona_sheets,
         register_sheet_premises,
