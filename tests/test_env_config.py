@@ -193,6 +193,54 @@ def test_rung_round_trips_with_all_fields() -> None:
     assert RungConfig.model_validate(rung.model_dump(mode="json")) == rung
 
 
+def test_rung_min_count_by_defaults_empty_and_is_not_shared() -> None:
+    a = RungConfig(name="a", trigger=TriggerCategory.anomaly_noticed)
+    b = RungConfig(name="b", trigger=TriggerCategory.anomaly_noticed)
+    assert a.min_count_by == {}
+    a.min_count_by[TriggerCategory.anomaly_noticed] = 2
+    assert b.min_count_by == {}
+
+
+def test_rung_min_count_by_accepts_categories_of_the_trigger_list() -> None:
+    rung = RungConfig.model_validate(
+        {
+            "name": "buried_opens",
+            "trigger": ["hedged_memory", "anomaly_noticed"],
+            "min_count_by": {"anomaly_noticed": 2},
+        }
+    )
+    assert rung.min_count_by == {TriggerCategory.anomaly_noticed: 2}
+    assert RungConfig.model_validate(rung.model_dump(mode="json")) == rung
+
+
+def test_rung_min_count_by_accepts_a_single_category_trigger() -> None:
+    rung = RungConfig(
+        name="a",
+        trigger=TriggerCategory.anomaly_noticed,
+        min_count_by={TriggerCategory.anomaly_noticed: 3},
+    )
+    assert rung.min_count_by[TriggerCategory.anomaly_noticed] == 3
+
+
+def test_rung_min_count_by_rejects_a_category_outside_the_trigger() -> None:
+    with pytest.raises(ValidationError, match="hedged_memory"):
+        RungConfig.model_validate(
+            {
+                "name": "a",
+                "trigger": "anomaly_noticed",
+                "min_count_by": {"hedged_memory": 2},
+            }
+        )
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_rung_min_count_by_rejects_counts_below_one(bad: int) -> None:
+    with pytest.raises(ValidationError):
+        RungConfig.model_validate(
+            {"name": "a", "trigger": "anomaly_noticed", "min_count_by": {"anomaly_noticed": bad}}
+        )
+
+
 def _rung(name: str, requires: list[str] | None = None) -> RungConfig:
     return RungConfig(name=name, trigger=TriggerCategory.world_question, requires=requires or [])
 

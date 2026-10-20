@@ -54,6 +54,7 @@ def test_unlock_state_defaults() -> None:
     assert state.docs_unlocked == set()
     assert state.layers_unlocked == {Layer.surface, Layer.filler}
     assert state.retry_counts == {}
+    assert state.trigger_counts == {}
 
 
 def test_unlock_state_defaults_are_not_shared() -> None:
@@ -62,6 +63,7 @@ def test_unlock_state_defaults_are_not_shared() -> None:
     a.layers_unlocked.add(Layer.seam)
     a.rungs_fired.append("r")
     a.retry_counts["x"] = 1
+    a.trigger_counts["anomaly_noticed"] = 1
     assert b == UnlockState()
 
 
@@ -71,13 +73,23 @@ def test_unlock_state_json_round_trip_is_stable() -> None:
         docs_unlocked={"zeta", "alpha", "mid"},
         layers_unlocked={Layer.surface, Layer.filler, Layer.seam},
         retry_counts={"night-gate-log": 2},
+        trigger_counts={"anomaly_noticed": 2, "hedged_memory": 1},
     )
     text = state.to_json()
     assert UnlockState.from_json(text) == state
     payload = json.loads(text)
     assert payload["docs_unlocked"] == ["alpha", "mid", "zeta"]
     assert payload["layers_unlocked"] == ["filler", "seam", "surface"]
+    assert payload["trigger_counts"] == {"anomaly_noticed": 2, "hedged_memory": 1}
     assert text == UnlockState.from_json(text).to_json()
+
+
+def test_unlock_state_loads_a_file_written_before_trigger_counts_existed() -> None:
+    state = UnlockState.from_json(
+        '{"rungs_fired": ["fragment"], "docs_unlocked": [], '
+        '"layers_unlocked": ["filler", "surface"], "retry_counts": {}}'
+    )
+    assert state.rungs_fired == ["fragment"] and state.trigger_counts == {}
 
 
 def test_unlock_state_rejects_unknown_fields_and_layers() -> None:

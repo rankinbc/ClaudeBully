@@ -47,6 +47,9 @@ class UnlockState(BaseModel):
     layers_unlocked: set[Layer] = Field(default_factory=lambda: {Layer.surface, Layer.filler})
     # document id -> number of fetch/read_file attempts, for the yield-on-retry rule
     retry_counts: dict[str, int] = Field(default_factory=dict)
+    # trigger category value -> how many times the watcher has emitted it this run; the ladder
+    # counts here so a rung can wait for a second anomaly (RungConfig.min_count_by)
+    trigger_counts: dict[str, int] = Field(default_factory=dict)
 
     @field_serializer("docs_unlocked")
     def _sorted_docs(self, docs: set[str]) -> list[str]:

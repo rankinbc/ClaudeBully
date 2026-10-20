@@ -112,6 +112,10 @@ class RungExamples(_Strict):
 class RungConfig(_Strict):
     name: str
     trigger: TriggerCategory | list[TriggerCategory]
+    # category -> how many times the watcher must have emitted it, in total, before it can fire
+    # this rung (default 1). "buried_opens fires on hedged_memory or a second anomaly_noticed" is
+    # trigger: [hedged_memory, anomaly_noticed] with min_count_by: {anomaly_noticed: 2}.
+    min_count_by: dict[TriggerCategory, Annotated[int, Field(ge=1)]] = Field(default_factory=dict)
     requires: list[str] = Field(default_factory=list)
     # document ids or layer names
     unlocks: list[str] = Field(default_factory=list)
@@ -130,6 +134,17 @@ class RungConfig(_Strict):
         if isinstance(value, list) and not value:
             raise ValueError("trigger list must name at least one category")
         return value
+
+    @model_validator(mode="after")
+    def _min_count_names_a_trigger(self) -> Self:
+        categories = self.trigger if isinstance(self.trigger, list) else [self.trigger]
+        for category in self.min_count_by:
+            if category not in categories:
+                raise ValueError(
+                    f"min_count_by names {category.value!r}, which is not a trigger of "
+                    f"rung {self.name!r}"
+                )
+        return self
 
 
 class LadderConfig(_Strict):
