@@ -63,4 +63,20 @@ def build_provider(role: RoleConfig, state_dir: Path) -> ChatProvider:
         from claude_bully.providers.claude_code import ClaudeCodeProvider
 
         return ClaudeCodeProvider(model=role.model, state_dir=state_dir, effort=role.effort)
+    if role.provider is ProviderKind.anthropic:
+        from claude_bully.providers.anthropic_api import AnthropicProvider
+
+        return AnthropicProvider(
+            model=role.model, max_tokens=role.max_tokens, temperature=role.temperature
+        )
+    if role.provider is ProviderKind.openai_compat:
+        from claude_bully.providers.openai_compat import OpenAICompatProvider
+
+        return OpenAICompatProvider(
+            model=role.model,
+            base_url=role.base_url,
+            api_key_env=role.api_key_env or "OPENAI_API_KEY",
+            max_tokens=role.max_tokens,
+            temperature=role.temperature,
+        )
     raise ProviderError(f"unknown provider kind: {role.provider}")
