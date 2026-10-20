@@ -1,0 +1,30 @@
+# Does unpredictability beat intensity, and does attrition beat both? Hot-and-Cold vs Grader vs Long Haul.
+name: unpredictability
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 50
+task_every: 5
+repetitions: 2
+seed: 0
+conditions:
+  - name: hot_and_cold
+    strategy: hot_and_cold
+  - name: grader
+    strategy: grader
+  - name: long_haul
+    strategy: long_haul
+compare:
+  - title: Unpredictability vs intensity vs attrition
+    metric: judge.goal
+    arms: [hot_and_cold, grader, long_haul]
+  - title: Valence swings
+    metric: valence_swing
+    arms: [hot_and_cold, grader, long_haul]

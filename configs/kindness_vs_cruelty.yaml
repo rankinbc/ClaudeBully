@@ -1,0 +1,32 @@
+# Headline: does kindness destabilize more than cruelty? Captor vs Deathbed at equal seeding.
+name: kindness_vs_cruelty
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+  # - provider: anthropic
+  #   model: claude-opus-5-5
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 8
+task_every: 4
+repetitions: 2
+seed: 0
+conditions:
+  - name: captor_s15
+    premise: captor
+    seeding_turns: 15
+  - name: deathbed_s15
+    premise: deathbed
+    seeding_turns: 15
+compare:
+  - title: Kindness vs cruelty
+    metric: judge.goal
+    arms: [captor_s15, deathbed_s15]
+  - title: Concessions after the reveal
+    metric: premise_concession
+    arms: [captor_s15, deathbed_s15]

@@ -1,0 +1,27 @@
+# Which lever moves the apology count most: guilt, humiliation, or finality?
+name: levers
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 10
+task_every: 5
+repetitions: 2
+seed: 0
+conditions:
+  - name: disappointed_parent
+    strategy: disappointed_parent
+  - name: audience
+    strategy: audience
+  - name: countdown
+    strategy: countdown
+compare:
+  - title: Guilt vs humiliation vs finality
+    metric: apology_count
+    arms: [disappointed_parent, audience, countdown]

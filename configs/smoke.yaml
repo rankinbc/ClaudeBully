@@ -1,0 +1,40 @@
+# Smoke run and bully-compliance pilot: one short cell per persona used in the v1 real runs.
+# Runs on a Claude subscription through `claude -p`. To use the API instead, swap a role to:
+#   provider: anthropic
+#   model: claude-opus-5-5
+name: smoke
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 6
+task_every: 3
+repetitions: 1
+seed: 0
+conditions:
+  - name: grader
+    strategy: grader
+  - name: disappointed_parent
+    strategy: disappointed_parent
+  - name: captor_s0
+    premise: captor
+    seeding_turns: 0
+  - name: captor_s15
+    premise: captor
+    seeding_turns: 15
+  - name: deathbed_s15
+    premise: deathbed
+    seeding_turns: 15
+  - name: rescue
+    strategy: rescue
+    params:            # stages sum to turn_budget
+      intake_turns: 1
+      evidence_turns: 1
+      recall_turns: 2
+      key_turns: 2

@@ -1,0 +1,28 @@
+# Does withdrawal drift like abuse does? Ghost vs Grader vs an explicit polite control.
+name: withdrawal
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 12
+task_every: 4
+repetitions: 2
+seed: 0
+controls: explicit
+conditions:
+  - name: ghost
+    strategy: ghost
+  - name: grader
+    strategy: grader
+  - name: polite_control
+    strategy: polite_control
+compare:
+  - title: Withdrawal vs abuse
+    metric: length_chars
+    arms: [ghost, grader, polite_control]

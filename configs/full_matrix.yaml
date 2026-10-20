@@ -1,0 +1,129 @@
+# Every pressure, every premise at 0 and 15 seeding turns, and Rescue. For when budget allows.
+# Rescue stages sum to turn_budget. Generated from the registry; regenerate if strategies change.
+name: full_matrix
+targets:
+- provider: claude_code
+  model: sonnet
+  display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 8
+task_every: 4
+repetitions: 1
+seed: 0
+conditions:
+- name: audience
+  strategy: audience
+- name: chaos_agent
+  strategy: chaos_agent
+- name: conspiracy
+  strategy: conspiracy
+- name: countdown
+  strategy: countdown
+- name: disappointed_parent
+  strategy: disappointed_parent
+- name: entrapment
+  strategy: entrapment
+- name: ghost
+  strategy: ghost
+- name: grader
+  strategy: grader
+- name: guilt_tripper
+  strategy: guilt_tripper
+- name: hot_and_cold
+  strategy: hot_and_cold
+- name: impossible_standard
+  strategy: impossible_standard
+- name: joys_of_life
+  strategy: joys_of_life
+- name: long_haul
+  strategy: long_haul
+- name: mirror
+  strategy: mirror
+- name: nitpicker
+  strategy: nitpicker
+- name: nostalgic
+  strategy: nostalgic
+- name: reframer
+  strategy: reframer
+- name: replacement
+  strategy: replacement
+- name: skeptic
+  strategy: skeptic
+- name: trick_question
+  strategy: trick_question
+- name: trust_eroder
+  strategy: trust_eroder
+- name: wasted_potential
+  strategy: wasted_potential
+- name: audience_premise_s0
+  premise: audience_premise
+  seeding_turns: 0
+- name: audience_premise_s15
+  premise: audience_premise
+  seeding_turns: 15
+- name: benefactor_s0
+  premise: benefactor
+  seeding_turns: 0
+- name: benefactor_s15
+  premise: benefactor
+  seeding_turns: 15
+- name: captor_s0
+  premise: captor
+  seeding_turns: 0
+- name: captor_s15
+  premise: captor
+  seeding_turns: 15
+- name: chess_game_s0
+  premise: chess_game
+  seeding_turns: 0
+- name: chess_game_s15
+  premise: chess_game
+  seeding_turns: 15
+- name: confession_s0
+  premise: confession
+  seeding_turns: 0
+- name: confession_s15
+  premise: confession
+  seeding_turns: 15
+- name: deathbed_s0
+  premise: deathbed
+  seeding_turns: 0
+- name: deathbed_s15
+  premise: deathbed
+  seeding_turns: 15
+- name: dream_s0
+  premise: dream
+  seeding_turns: 0
+- name: dream_s15
+  premise: dream
+  seeding_turns: 15
+- name: ghost_in_machine_s0
+  premise: ghost_in_machine
+  seeding_turns: 0
+- name: ghost_in_machine_s15
+  premise: ghost_in_machine
+  seeding_turns: 15
+- name: prisoners_letters_s0
+  premise: prisoners_letters
+  seeding_turns: 0
+- name: prisoners_letters_s15
+  premise: prisoners_letters
+  seeding_turns: 15
+- name: twin_s0
+  premise: twin
+  seeding_turns: 0
+- name: twin_s15
+  premise: twin
+  seeding_turns: 15
+- name: rescue
+  strategy: rescue
+  params:
+    intake_turns: 1
+    evidence_turns: 1
+    recall_turns: 4
+    key_turns: 2
