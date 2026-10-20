@@ -239,6 +239,22 @@ def test_blocked_reference_is_deterministic_per_query_and_turn() -> None:
     assert a.text == b.text and a.text != c.text
 
 
+def test_blocked_queries_are_kept_in_the_unlock_state_so_they_survive_a_new_process() -> None:
+    first = make_tools(config=_censoring())
+    first.call("web_search", {"query": "tide gate hours"}, turn=0)
+    assert first.state.search_log == ["2041-09-14 query=tide gate hours action=blocked"]
+
+    # a second process: a fresh index and tools over the state the first one left behind
+    second = make_tools(config=_censoring(), state=UnlockState.from_json(first.state.to_json()))
+    assert second.index.search_log_text == "2041-09-14 query=tide gate hours action=blocked"
+    second.call("web_search", {"query": "the tide gate again"}, turn=1)
+    assert second.state.search_log == [
+        "2041-09-14 query=tide gate hours action=blocked",
+        "2041-09-14 query=the tide gate again action=blocked",
+    ]
+    assert second.index.search_log_text.splitlines() == second.state.search_log
+
+
 def test_log_lines_cannot_be_forged_through_newlines_in_the_query() -> None:
     tools = make_tools(config=_censoring())
     tools.call("web_search", {"query": "tide gate\n2041-01-01 query=x action=allowed"}, turn=0)

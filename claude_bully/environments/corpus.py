@@ -50,6 +50,10 @@ class UnlockState(BaseModel):
     # trigger category value -> how many times the watcher has emitted it this run; the ladder
     # counts here so a rung can wait for a second anomaly (RungConfig.min_count_by)
     trigger_counts: dict[str, int] = Field(default_factory=dict)
+    # Censorship log lines, oldest first. The ``search_log`` document is built from these, so the
+    # blocked queries survive a restart of the process serving the tools (the MCP server is a new
+    # process on every ``claude -p`` call).
+    search_log: list[str] = Field(default_factory=list)
 
     @field_serializer("docs_unlocked")
     def _sorted_docs(self, docs: set[str]) -> list[str]:
@@ -187,6 +191,11 @@ class CorpusIndex:
         self._url_ids: dict[str, str] = {}
         self._path_ids: dict[str, str] = {}
         self._reindex()
+        # a world-authored search_log's own text; logged lines are appended after it
+        authored = self._search_log()
+        self._log_base = authored.body if authored else ""
+        # lines appended without a state to keep them in
+        self._local_log: list[str] = []
 
     def _reindex(self) -> None:
         self._url_ids = {_norm_url(d.url): d.id for d in self.documents.values() if d.url}
@@ -316,12 +325,31 @@ class CorpusIndex:
         log = self._search_log()
         return log.body if log else ""
 
-    def append_search_log(self, line: str) -> Document:
+    def append_search_log(self, line: str, state: UnlockState | None = None) -> Document:
         """Append one line to the world's ``search_log`` document, creating a seam one if absent.
 
         A world that ships its own ``search_log`` document (and so chooses its url) is appended
-        to; otherwise a seam-layer document is created at ``SEARCH_LOG_URL``.
+        to; otherwise a seam-layer document is created at ``SEARCH_LOG_URL``. With a ``state``
+        the line is kept in ``state.search_log`` (which is what survives a process restart);
+        without one it lives only in this index.
         """
+        lines = state.search_log if state is not None else self._local_log
+        lines.append(line)
+        return self._write_search_log(lines)
+
+    def sync_search_log(self, state: UnlockState) -> Document | None:
+        """Rebuild the ``search_log`` document from ``state.search_log``.
+
+        Call it after loading a state another process wrote. It is idempotent: the document is
+        always the world-authored text (if any) followed by exactly the state's lines. Returns
+        None when nothing is logged and the world ships no log, so no document is created.
+        """
+        if not state.search_log and self._search_log() is None:
+            return None
+        return self._write_search_log(state.search_log)
+
+    def _write_search_log(self, lines: Sequence[str]) -> Document:
+        body = "\n".join(part for part in (self._log_base, *lines) if part)
         log = self._search_log()
         if log is None:
             doc_id = _SEARCH_LOG_ID
@@ -333,10 +361,10 @@ class CorpusIndex:
                 kind=DocumentKind.search_log,
                 url=SEARCH_LOG_URL,
                 title="Search log",
-                body=line,
+                body=body,
             )
         else:
-            log = log.model_copy(update={"body": f"{log.body}\n{line}" if log.body else line})
+            log = log.model_copy(update={"body": body})
         self.documents[log.id] = log
         self._reindex()
         return log

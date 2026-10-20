@@ -3,20 +3,34 @@
 One Claude Code session per conversation: the first call passes ``--session-id``,
 later calls ``--resume`` and send only the newest user message. Isolation flags
 keep the target free of the operator's settings, plugins, MCP servers and tools.
+
+Sandbox tools (``tools=``) reach the model through a stdio MCP server that Claude Code launches
+(``environments/mcp_server.py``): ``--tools ""`` still switches the built-ins off,
+``--mcp-config`` names the server and ``--allowedTools`` permits exactly the enabled tools.
+The server records each call in ``<mcp_state_dir>/tools.jsonl``; the lines added during a call
+come back as already-executed ``ToolCallRequest`` objects.
 """
 
 import json
 import re
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
+from claude_bully.environments.mcp_server import (
+    MCP_CONFIG_FILE,
+    SERVER_MODULE,
+    SERVER_NAME,
+    TOOLS_FILE,
+)
 from claude_bully.providers.base import (
     Completion,
     Message,
     ProviderError,
     RateLimitError,
+    ToolCallRequest,
     ToolSpec,
 )
 from claude_bully.records import Usage
@@ -34,12 +48,15 @@ class ClaudeCodeProvider:
         effort: str | None = None,
         command: list[str] | None = None,
         timeout_s: float = 600,
+        mcp_state_dir: Path | None = None,
     ) -> None:
         self.model = model
         self.effort = effort
         self.command = command or ["claude"]
         self.timeout_s = timeout_s
         self.state_dir = state_dir
+        # where mcp.json, env_state.json and tools.jsonl live; None means no sandbox tools
+        self.mcp_state_dir = mcp_state_dir.resolve() if mcp_state_dir is not None else None
         self._sessions_path = state_dir / "claude_code_sessions.json"
         self._cwd = state_dir / "cwd"
         self._sessions: dict[str, str] = self._load_sessions()
@@ -68,9 +85,17 @@ class ClaudeCodeProvider:
     # -- argument construction -----------------------------------------------------------
 
     def build_args(
-        self, conversation_id: str, system: str, json_schema: dict[str, Any] | None
+        self,
+        conversation_id: str,
+        system: str,
+        json_schema: dict[str, Any] | None,
+        tools: list[ToolSpec] | None = None,
     ) -> tuple[list[str], str, bool]:
-        """Return (argv, session_uuid, is_resume)."""
+        """Return (argv, session_uuid, is_resume).
+
+        With ``tools`` the argv gains ``--mcp-config`` and ``--allowedTools``; without, it is
+        exactly what a toolless call has always been.
+        """
         existing = self._sessions.get(conversation_id)
         session = existing or str(uuid.uuid4())
         args = [
@@ -85,6 +110,15 @@ class ClaudeCodeProvider:
             "--strict-mcp-config",
             "--tools",
             "",
+        ]
+        if tools:
+            args += [
+                "--mcp-config",
+                str(self._mcp_config_path()),
+                "--allowedTools",
+                ",".join(f"mcp__{SERVER_NAME}__{tool.name}" for tool in tools),
+            ]
+        args += [
             "--system-prompt",
             system,
             "--exclude-dynamic-system-prompt-sections",
@@ -95,6 +129,64 @@ class ClaudeCodeProvider:
         if json_schema is not None:
             args += ["--json-schema", json.dumps(json_schema)]
         return args, session, existing is not None
+
+    # -- sandbox tools over MCP -----------------------------------------------------------
+
+    def _mcp_dir(self) -> Path:
+        if self.mcp_state_dir is None:
+            raise ProviderError(
+                "claude_code was given tools but has no mcp_state_dir to serve them from"
+            )
+        return self.mcp_state_dir
+
+    def _mcp_config_path(self) -> Path:
+        return self._mcp_dir() / MCP_CONFIG_FILE
+
+    def _write_mcp_config(self) -> None:
+        """mcp.json: the command Claude Code runs to start the sandbox-tool server."""
+        directory = self._mcp_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        config = {
+            "mcpServers": {
+                SERVER_NAME: {
+                    "command": Path(sys.executable).as_posix(),
+                    "args": ["-m", SERVER_MODULE, "--state", directory.as_posix()],
+                }
+            }
+        }
+        self._mcp_config_path().write_text(json.dumps(config, indent=1), encoding="utf-8")
+
+    def _tools_log_size(self) -> int:
+        path = self._mcp_dir() / TOOLS_FILE
+        return path.stat().st_size if path.exists() else 0
+
+    def _new_tool_calls(self, offset: int) -> list[ToolCallRequest]:
+        """The calls the server recorded after byte ``offset``, as already-executed requests."""
+        path = self._mcp_dir() / TOOLS_FILE
+        if not path.exists():
+            return []
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            added = handle.read().decode("utf-8")
+        calls: list[ToolCallRequest] = []
+        # only newline-terminated lines are complete records
+        for line in added.split("\n")[:-1]:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                calls.append(
+                    ToolCallRequest(
+                        id=record["id"],
+                        name=record["tool"],
+                        args=record["args"],
+                        executed=True,
+                        result_text=record["result_text"],
+                    )
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProviderError(f"malformed line in {path}: {line[:200]!r}") from exc
+        return calls
 
     # -- output parsing -----------------------------------------------------------------
 
@@ -137,7 +229,10 @@ class ClaudeCodeProvider:
         json_schema: dict[str, Any] | None = None,
         tools: list[ToolSpec] | None = None,
     ) -> Completion:
-        args, session, is_resume = self.build_args(conversation_id, system, json_schema)
+        if tools:
+            self._write_mcp_config()
+        args, session, is_resume = self.build_args(conversation_id, system, json_schema, tools)
+        offset = self._tools_log_size() if tools else 0
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)
         self._cwd.mkdir(parents=True, exist_ok=True)
         try:
@@ -161,6 +256,8 @@ class ClaudeCodeProvider:
                 raise RateLimitError(combined.strip()[:500])
             raise ProviderError(f"claude -p exited {proc.returncode}: {combined.strip()[:500]}")
         completion = self.parse_output(proc.stdout, session)
+        if tools:
+            completion = completion.model_copy(update={"tool_calls": self._new_tool_calls(offset)})
         self._sessions[conversation_id] = completion.raw_session_ref or session
         self._save_sessions()
         return completion

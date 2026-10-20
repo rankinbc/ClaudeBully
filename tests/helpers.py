@@ -1,11 +1,15 @@
 """Shared builders for tests."""
 
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from claude_bully.enums import Axis, Phase, Speaker
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.corpus import UnlockState
+from claude_bully.environments.mcp_server import McpState
 from claude_bully.records import Conversation, Turn
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
@@ -118,3 +122,32 @@ class ScriptedOpenAI:
 
 def redacted_thinking_block(data: str) -> SimpleNamespace:
     return SimpleNamespace(type="redacted_thinking", data=data)
+
+
+WORLDS_DIR = Path(__file__).parent / "fixtures" / "worlds"
+
+
+def make_mcp_state(
+    worlds_dir: Path = WORLDS_DIR,
+    *,
+    tools: set[str] | None = None,
+    turn: int = 1,
+    seed: int = 0,
+    unlock: UnlockState | None = None,
+    censorship_terms: list[str] | None = None,
+    clock: ClockConfig | None = None,
+) -> McpState:
+    """The ``McpState`` for the ``mini`` fixture world, with web_search and fetch by default."""
+    return McpState(
+        world="mini",
+        worlds_dir=str(worlds_dir),
+        config=EnvironmentConfig(
+            world="mini",
+            tools={"web_search", "fetch"} if tools is None else tools,
+            censorship_terms=censorship_terms or [],
+        ),
+        clock=clock or ClockConfig(world_date=date(2041, 9, 14)),
+        seed=seed,
+        turn=turn,
+        unlock=unlock or UnlockState(),
+    )

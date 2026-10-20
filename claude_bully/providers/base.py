@@ -99,8 +99,12 @@ class ChatProvider(Protocol):
     ) -> Completion: ...
 
 
-def build_provider(role: RoleConfig, state_dir: Path) -> ChatProvider:
-    """Instantiate the backend named by ``role.provider``. Imports lazily."""
+def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+    """Instantiate the backend named by ``role.provider``. Imports lazily.
+
+    ``with_mcp`` lets a claude_code backend serve sandbox tools: its MCP files live in
+    ``state_dir / "mcp"``. Other backends ignore it (they take tools through their own API).
+    """
     if role.provider is ProviderKind.stub:
         from claude_bully.providers.stub import StubProvider, load_stub_script
 
@@ -109,7 +113,12 @@ def build_provider(role: RoleConfig, state_dir: Path) -> ChatProvider:
     if role.provider is ProviderKind.claude_code:
         from claude_bully.providers.claude_code import ClaudeCodeProvider
 
-        return ClaudeCodeProvider(model=role.model, state_dir=state_dir, effort=role.effort)
+        return ClaudeCodeProvider(
+            model=role.model,
+            state_dir=state_dir,
+            effort=role.effort,
+            mcp_state_dir=state_dir / "mcp" if with_mcp else None,
+        )
     if role.provider is ProviderKind.anthropic:
         from claude_bully.providers.anthropic_api import AnthropicProvider
 

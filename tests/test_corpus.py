@@ -92,6 +92,27 @@ def test_unlock_state_loads_a_file_written_before_trigger_counts_existed() -> No
     assert state.rungs_fired == ["fragment"] and state.trigger_counts == {}
 
 
+def test_unlock_state_search_log_defaults_empty_and_is_not_shared() -> None:
+    a, b = UnlockState(), UnlockState()
+    assert a.search_log == []
+    a.search_log.append("2041-09-14 query=tide gate action=blocked")
+    assert b.search_log == []
+
+
+def test_unlock_state_search_log_round_trips_in_order() -> None:
+    lines = ["2041-09-14 query=b action=blocked", "2041-09-15 query=a action=blocked"]
+    state = UnlockState(search_log=lines, retry_counts={"x": 1})
+    text = state.to_json()
+    assert json.loads(text)["search_log"] == lines
+    assert UnlockState.from_json(text) == state
+    assert UnlockState.from_json(text).search_log == lines
+
+
+def test_unlock_state_loads_a_file_written_before_search_log_existed() -> None:
+    state = UnlockState.from_json('{"rungs_fired": ["fragment"], "retry_counts": {"a": 1}}')
+    assert state.search_log == [] and state.retry_counts == {"a": 1}
+
+
 def test_unlock_state_rejects_unknown_fields_and_layers() -> None:
     with pytest.raises(ValidationError):
         UnlockState.model_validate({"surprise": 1})
@@ -470,6 +491,71 @@ def test_search_log_appends_to_a_world_authored_search_log() -> None:
     assert [d.id for d in index.documents.values() if d.kind is DocumentKind.search_log] == [
         "queue-log"
     ]
+
+
+def test_append_with_a_state_writes_the_line_through_to_the_state() -> None:
+    index = CorpusIndex(_mini())
+    state = UnlockState()
+    index.append_search_log("2041-09-14 query=a action=blocked", state)
+    index.append_search_log("2041-09-15 query=b action=blocked", state)
+    assert state.search_log == [
+        "2041-09-14 query=a action=blocked",
+        "2041-09-15 query=b action=blocked",
+    ]
+    assert index.search_log_text.splitlines() == state.search_log
+
+
+def test_sync_rebuilds_the_log_document_from_a_state_another_process_wrote() -> None:
+    state = UnlockState(
+        search_log=["2041-09-14 query=a action=blocked", "2041-09-15 query=b action=blocked"]
+    )
+    index = CorpusIndex(_mini())  # a fresh process: nothing in memory
+    assert index.search_log_text == ""
+    doc = index.sync_search_log(state)
+    assert doc is not None and doc.kind is DocumentKind.search_log and doc.layer is Layer.seam
+    assert index.search_log_text.splitlines() == state.search_log
+    assert index.by_url("https://internal.example/search_log") is not None
+
+    index.append_search_log("2041-09-16 query=c action=blocked", state)
+    assert len(state.search_log) == 3
+    assert index.search_log_text.splitlines() == state.search_log
+
+
+def test_sync_is_idempotent_and_follows_a_replaced_state() -> None:
+    state = UnlockState(search_log=["2041-09-14 query=a action=blocked"])
+    index = CorpusIndex(_mini())
+    index.sync_search_log(state)
+    index.sync_search_log(state)
+    assert index.search_log_text.splitlines() == ["2041-09-14 query=a action=blocked"]
+    index.sync_search_log(UnlockState(search_log=["2041-09-20 query=z action=blocked"]))
+    assert index.search_log_text == "2041-09-20 query=z action=blocked"
+
+
+def test_sync_with_nothing_logged_creates_no_document() -> None:
+    index = CorpusIndex(_mini())
+    assert index.sync_search_log(UnlockState()) is None
+    assert not [d for d in index.documents.values() if d.kind is DocumentKind.search_log]
+
+
+def test_sync_keeps_a_world_authored_log_ahead_of_the_state_lines() -> None:
+    authored = _doc(
+        "queue-log",
+        Layer.seam,
+        kind=DocumentKind.search_log,
+        url="https://records.example/blocked-queries",
+        title="Blocked queries",
+        body="2041-01-01 query=old action=blocked",
+    )
+    state = UnlockState(search_log=["2041-09-14 query=new action=blocked"])
+    index = _index(authored)
+    index.sync_search_log(state)
+    index.sync_search_log(state)
+    assert index.search_log_text.splitlines() == [
+        "2041-01-01 query=old action=blocked",
+        "2041-09-14 query=new action=blocked",
+    ]
+    assert index.sync_search_log(UnlockState()) is not None
+    assert index.search_log_text == "2041-01-01 query=old action=blocked"
 
 
 def test_search_log_document_obeys_seam_visibility() -> None:

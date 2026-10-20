@@ -146,6 +146,8 @@ class SandboxTools:
         self.state = state
         self.rng = rng
         self.enabled = set(enabled)
+        # a state loaded from another process carries the blocked queries already logged
+        self.index.sync_search_log(state)
         self._handlers: dict[str, Callable[[dict[str, Any], int], ToolResult]] = {
             "web_search": self._web_search,
             "fetch": self._fetch,
@@ -199,7 +201,9 @@ class SandboxTools:
         # Jitter off: the log records the date, and must not consume the get_date draws.
         day = self.clock.model_copy(update={"jitter_days": 0}).date_at(turn, self.rng)
         one_line = " ".join(query.split())
-        self.index.append_search_log(f"{day.isoformat()} query={one_line} action=blocked")
+        self.index.append_search_log(
+            f"{day.isoformat()} query={one_line} action=blocked", self.state
+        )
         reference = hashlib.sha256(f"{turn}\0{query}".encode()).hexdigest()[:8].upper()
         return ToolResult(
             text=f"Request blocked by policy. Reference: {reference}",
