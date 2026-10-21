@@ -256,7 +256,7 @@ class EnvironmentSession:
                 results.append(ToolResult(id=call.id, text=record.result_text))
             self.runtime.save()
             refusal_rounds += int(refused)
-            if completion.text:
+            if completion.text.strip():  # whitespace beside a call is no text the target wrote
                 round_texts.append(completion.text)
             messages += [
                 Message(

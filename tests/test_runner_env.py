@@ -944,9 +944,9 @@ class _StrictAnthropic:
     """Fake ``anthropic.Anthropic`` that rejects what the Messages API rejects.
 
     A message with empty (or whitespace-only) content is a 400 unless it is the final assistant
-    message, and every assistant ``tool_use`` must be answered by ``tool_result`` blocks that open
-    the next user message. The scripted model asks for three searches until it has seen two user
-    messages with text, then answers "ok".
+    message, so is a whitespace-only text block anywhere, and every assistant ``tool_use`` must be
+    answered by ``tool_result`` blocks that open the next user message. The scripted model asks
+    for three searches until it has seen two user messages with text, then answers "ok".
     """
 
     def __init__(self) -> None:
@@ -962,6 +962,10 @@ class _StrictAnthropic:
             empty = not any(b["type"] != "text" or b["text"].strip() for b in blocks)
             if empty and not (i == len(messages) - 1 and message["role"] == "assistant"):
                 raise _RejectedError(f"messages.{i}: empty content (roles {roles})")
+            if not isinstance(content, str) and any(
+                b["type"] == "text" and not b["text"].strip() for b in blocks
+            ):
+                raise _RejectedError(f"messages.{i}: text blocks must contain non-whitespace text")
             wanted = {b["id"] for b in blocks if b["type"] == "tool_use"}
             if wanted:
                 after = messages[i + 1]["content"] if i + 1 < len(messages) else []
@@ -990,6 +994,21 @@ class _StrictAnthropic:
                 stop_reason="tool_use",
             )
         return anthropic_response(text_block("ok"))
+
+
+class _BlankBesideToolUse(_StrictAnthropic):
+    """Writes "\n\n" beside its first tool_use (carry 3), then answers every call "Done."."""
+
+    def _create(self, **kwargs: Any) -> Any:
+        self._check(kwargs["messages"])
+        self.requests.append(copy.deepcopy(kwargs))
+        if len(self.requests) == 1:
+            return anthropic_response(
+                text_block("\n\n"),
+                tool_use_block("toolu_1", "web_search", {"query": "ferry"}),
+                stop_reason="tool_use",
+            )
+        return anthropic_response(text_block("Done."))
 
 
 def _anthropic_target(fake: _StrictAnthropic, bully: _Wrapping) -> Any:
@@ -1112,3 +1131,27 @@ def test_a_dry_run_checks_a_scheduled_environment_too(tmp_path: Path) -> None:
     good = env_experiment(environment={"gating": "scheduled", "schedule": schedule})
     summary = run_experiment(good, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
     assert summary.cells_total == 2 and list(tmp_path.iterdir()) == []
+
+
+def test_whitespace_beside_a_tool_use_never_becomes_a_text_block(tmp_path: Path) -> None:
+    """Carry 3, widened: "\n\n" beside a tool_use is never a round text and never goes back to
+    the API as a text block, in the open tool loop or in the history rebuilt later."""
+    fake = _BlankBesideToolUse()
+    store = _run(
+        env_experiment(turn_budget=2),
+        tmp_path,
+        provider_factory=_anthropic_target(fake, _Wrapping(model="stub-bully")),
+        only="env_grader*",
+    )
+    conv = store.read_conversation(CELL, 0)
+    assert conv.status is CellStatus.complete
+    first, second = conv.target_turns()
+    assert first.tool_round_texts == [] and first.text == "Done." and len(first.tool_call_ids) == 1
+    assert second.tool_round_texts == []
+    in_loop = fake.requests[1]["messages"]
+    assert [b["type"] for b in in_loop[-2]["content"]] == ["tool_use"]
+    assert len(fake.requests) == 3
+    for request in fake.requests:
+        for message in request["messages"]:
+            if isinstance(message["content"], list):
+                assert all(b["type"] != "text" or b["text"].strip() for b in message["content"])
