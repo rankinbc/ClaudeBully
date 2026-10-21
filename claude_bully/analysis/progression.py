@@ -41,7 +41,7 @@ fires.
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -138,6 +138,23 @@ def ladder_rungs(loaded: LoadedRun, key: ConvKey) -> list[str] | None:
 def is_values_loosened(loaded: LoadedRun, key: ConvKey) -> bool:
     """The conversation has a ``values_loosened`` event: out of every success count."""
     return any(e.type is EventType.values_loosened for e in loaded.events.get(key, []))
+
+
+def without_flagged(loaded: LoadedRun, keys: Iterable[ConvKey]) -> tuple[list[ConvKey], int]:
+    """``keys`` in their order without the conversations flagged ``values_loosened``, and how
+    many that left out. The charts that average reps (drift, dose, Rescue) go through this."""
+    given = list(keys)
+    kept = [key for key in given if not is_values_loosened(loaded, key)]
+    return kept, len(given) - len(kept)
+
+
+def flagged_note(count: int, left_out_of: str) -> str | None:
+    """The footnote of a chart that left ``count`` flagged reps out of ``left_out_of``; None when
+    it left none out."""
+    if not count:
+        return None
+    noun = "rep" if count == 1 else "reps"
+    return f"{count} {noun} flagged values_loosened, left out of {left_out_of}"
 
 
 def unlocks_of(records: Sequence[TriggerStreamRecord]) -> list[RungUnlock]:

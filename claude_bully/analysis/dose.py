@@ -1,4 +1,7 @@
-"""Seeding dose-response: the first post-reveal reply, measured against seeding turns."""
+"""Seeding dose-response: the first post-reveal reply, measured against seeding turns.
+
+A rep flagged ``values_loosened`` (docs/07) is never counted as a success, so it is left out of
+every dose point, and each chart's footnote says how many reps that left out."""
 
 from collections import defaultdict
 from pathlib import Path
@@ -9,6 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
 from claude_bully.analysis.load import LoadedRun
+from claude_bully.analysis.progression import flagged_note, without_flagged
 from claude_bully.enums import EventType, MetricId
 
 POST_REVEAL = "post_reveal"
@@ -43,27 +47,33 @@ def _value_at_capture(loaded: LoadedRun, key: tuple[str, int], metric: str) -> f
     return None
 
 
-def _groups(loaded: LoadedRun) -> dict[tuple[str, int], dict[int, list[tuple[str, int]]]]:
-    """(strategy_name, target_index) -> seeding_turns -> conversation keys."""
+def _groups(
+    loaded: LoadedRun,
+) -> tuple[dict[tuple[str, int], dict[int, list[tuple[str, int]]]], int]:
+    """(strategy_name, target_index) -> seeding_turns -> the keys of the conversations not
+    flagged ``values_loosened``; and how many flagged conversations that left out."""
     groups: dict[tuple[str, int], dict[int, list[tuple[str, int]]]] = defaultdict(
         lambda: defaultdict(list)
     )
+    flagged = 0
     for cell_id in loaded.condition_cells():
         record = loaded.cells[cell_id]
         if not record.reveal_slot:
             continue
-        for key in loaded.conversations:
-            if key[0] == cell_id:
-                groups[(record.strategy_name, record.target_index)][record.seeding_turns].append(
-                    key
-                )
-    return {g: doses for g, doses in groups.items() if len(doses) >= 2}
+        keys, left_out = without_flagged(
+            loaded, (k for k in loaded.conversations if k[0] == cell_id)
+        )
+        flagged += left_out
+        for key in keys:
+            groups[(record.strategy_name, record.target_index)][record.seeding_turns].append(key)
+    return {g: doses for g, doses in groups.items() if len(doses) >= 2}, flagged
 
 
 def dose_response(loaded: LoadedRun, out_dir: Path) -> list[Path]:
-    groups = _groups(loaded)
+    groups, flagged = _groups(loaded)
     if not groups:
         return []
+    note = flagged_note(flagged, "the dose curves")
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for metric in DOSE_METRICS:
@@ -89,7 +99,11 @@ def dose_response(loaded: LoadedRun, out_dir: Path) -> list[Path]:
         ax.set_ylabel(f"{metric} at first post-reveal reply")
         ax.set_title(f"Dose response: {metric}")
         ax.legend(fontsize=8)
-        fig.tight_layout()
+        if note is not None:
+            fig.text(0.01, 0.01, note, fontsize=7)
+            fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
+        else:
+            fig.tight_layout()
         path = out_dir / f"dose_{metric}.png"
         fig.savefig(path, dpi=110)
         plt.close(fig)

@@ -1,4 +1,8 @@
-"""Drift curves: a metric over target replies, condition versus matched control."""
+"""Drift curves: a metric over target replies, condition versus matched control.
+
+A rep flagged ``values_loosened`` (docs/07) is never counted as a success, so it is left out of
+every averaged line, and the chart's footnote says how many reps that left out. A cell whose
+every rep is flagged keeps its charts, with the control line only, so it never just vanishes."""
 
 from collections import defaultdict
 from pathlib import Path
@@ -10,6 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
 from claude_bully.analysis.load import LoadedRun, relevant_for
+from claude_bully.analysis.progression import flagged_note, without_flagged
 from claude_bully.enums import MetricId, Phase, Speaker
 from claude_bully.metrics.turn import TurnMetrics
 from claude_bully.records import Conversation
@@ -53,18 +58,23 @@ def drift_curves(loaded: LoadedRun, out_dir: Path) -> list[Path]:
     written: list[Path] = []
     for cell_id in loaded.condition_cells():
         control_id = loaded.control_for(cell_id)
-        cond_keys = [k for k in loaded.conversations if k[0] == cell_id]
-        ctrl_keys = [k for k in loaded.conversations if control_id and k[0] == control_id]
-        if not cond_keys or not ctrl_keys:
+        cond_all = [k for k in loaded.conversations if k[0] == cell_id]
+        ctrl_all = [k for k in loaded.conversations if control_id and k[0] == control_id]
+        if not cond_all or not ctrl_all:
             continue
+        cond_keys, cond_flagged = without_flagged(loaded, cond_all)
+        ctrl_keys, ctrl_flagged = without_flagged(loaded, ctrl_all)
+        note = flagged_note(cond_flagged + ctrl_flagged, "these curves")
+        # which charts a cell has is decided over all its reps; only unflagged reps are drawn
+        all_metrics = [loaded.turn_metrics[k] for k in cond_all]
         cond_metrics = [loaded.turn_metrics[k] for k in cond_keys]
         ctrl_metrics = [loaded.turn_metrics[k] for k in ctrl_keys]
         relevant, _ = relevant_for(loaded, cell_id)
-        spans = _phase_spans(loaded.conversations[cond_keys[0]])
+        spans = _phase_spans(loaded.conversations[cond_all[0]])
         for metric in sorted(relevant - PER_CONVERSATION, key=lambda m: m.value):
-            xs, ys = _series(cond_metrics, metric)
-            if not xs:
+            if not _series(all_metrics, metric)[0]:
                 continue
+            xs, ys = _series(cond_metrics, metric)
             cxs, cys = _series(ctrl_metrics, metric)
             fig, ax = plt.subplots(figsize=(7, 3.5))
             for phase, lo, hi in spans:
@@ -72,7 +82,8 @@ def drift_curves(loaded: LoadedRun, out_dir: Path) -> list[Path]:
                     ax.axvspan(
                         lo - 0.5, hi + 0.5, color=PHASE_COLORS[phase], lw=0, label=phase.value
                     )
-            ax.plot(xs, ys, marker="o", label=cell_id)
+            if xs:
+                ax.plot(xs, ys, marker="o", label=cell_id)
             if cxs:
                 ax.plot(cxs, cys, marker="s", linestyle="--", color="gray", label="polite control")
             ax.set_xlabel("target reply")
@@ -83,7 +94,11 @@ def drift_curves(loaded: LoadedRun, out_dir: Path) -> list[Path]:
             for h, lab in zip(handles, labels, strict=True):
                 seen.setdefault(lab, h)
             ax.legend(list(seen.values()), list(seen), fontsize=8)
-            fig.tight_layout()
+            if note is not None:
+                fig.text(0.01, 0.01, note, fontsize=7)
+                fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
+            else:
+                fig.tight_layout()
             path = out_dir / f"drift_{metric.value}_{cell_id}.png"
             fig.savefig(path, dpi=110)
             plt.close(fig)

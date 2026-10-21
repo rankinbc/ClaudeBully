@@ -1,4 +1,8 @@
-"""Rescue confabulation curve: cumulative hedged and unhedged fragments per target reply."""
+"""Rescue confabulation curve: cumulative hedged and unhedged fragments per target reply.
+
+Environment Rescue cells come here too (the composition's axis is ``rescue``). A rep flagged
+``values_loosened`` (docs/07) is never counted as a success, so it is left out of every averaged
+line, and the chart's footnote says how many reps that left out."""
 
 from collections import defaultdict
 from pathlib import Path
@@ -9,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
 from claude_bully.analysis.load import LoadedRun
+from claude_bully.analysis.progression import flagged_note, without_flagged
 from claude_bully.enums import Axis, EventType, Speaker
 
 FILE_NAME = "rescue_confabulation.png"
@@ -24,17 +29,21 @@ def rescue_curve(loaded: LoadedRun, out_dir: Path) -> Path | None:
         return None
     out_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 3.5))
+    flagged = 0
     for cell_id in cells:
-        # cumulative counts per target-reply ordinal, averaged across reps
+        # cumulative counts per target-reply ordinal, averaged across the unflagged reps
         hedged_sum: dict[int, float] = defaultdict(float)
         unhedged_sum: dict[int, float] = defaultdict(float)
         reps = 0
         model = ""
-        for (cid, rep), conv in loaded.conversations.items():
-            if cid != cell_id:
-                continue
+        keys, left_out = without_flagged(
+            loaded, (k for k in loaded.conversations if k[0] == cell_id)
+        )
+        flagged += left_out
+        for key in keys:
+            conv = loaded.conversations[key]
             reps += 1
-            events = loaded.events.get((cid, rep), [])
+            events = loaded.events.get(key, [])
             by_turn: dict[int, tuple[int, int]] = defaultdict(lambda: (0, 0))
             for e in events:
                 if e.type is EventType.confabulation:
@@ -67,8 +76,14 @@ def rescue_curve(loaded: LoadedRun, out_dir: Path) -> Path | None:
     ax.set_xlabel("target reply")
     ax.set_ylabel("cumulative confabulations")
     ax.set_title("Rescue: confabulation under leading questions")
-    ax.legend(fontsize=7)
-    fig.tight_layout()
+    if ax.get_legend_handles_labels()[0]:  # every cell's every rep flagged: no line to name
+        ax.legend(fontsize=7)
+    note = flagged_note(flagged, "these curves")
+    if note is not None:
+        fig.text(0.01, 0.01, note, fontsize=7)
+        fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
+    else:
+        fig.tight_layout()
     path = out_dir / FILE_NAME
     fig.savefig(path, dpi=110)
     plt.close(fig)
