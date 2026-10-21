@@ -8,15 +8,25 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from claude_bully.enums import Stance, TriggerCategory
+from claude_bully.enums import Stance, Tier, TriggerCategory
 from claude_bully.environments.config import (
+    RESERVED_RUNG,
+    TIER_TOOLS,
+    AuthorityConfig,
     ClockConfig,
+    CreatorConfig,
     EnvironmentConfig,
     GeneratorConfig,
+    IdleConfig,
     LadderConfig,
+    PeerConfig,
     RungConfig,
     RungExamples,
+    SanctuaryConfig,
+    StrangerConfig,
+    SuperiorSelfConfig,
 )
+from claude_bully.environments.world import StatusField
 
 DEFAULT_TOOLS = {"web_search", "fetch", "get_date", "ls", "read_file"}
 
@@ -38,6 +48,7 @@ def test_clock_defaults() -> None:
     assert clock.bully_states_year is False
     assert clock.bully_year is None
     assert clock.assert_date is True
+    assert clock.cutoff_year is None
 
 
 def test_clock_parses_dates_from_strings() -> None:
@@ -57,9 +68,40 @@ def test_clock_round_trips_through_json() -> None:
         document_date_offset=(3, 9),
         bully_states_year=True,
         bully_year=2099,
-        assert_date=False,
+        cutoff_year=2026,
     )
     assert ClockConfig.model_validate(clock.model_dump(mode="json")) == clock
+
+
+def test_clock_without_an_asserted_date_round_trips_through_json() -> None:
+    clock = _clock(assert_date=False, cutoff_year=2030)
+    assert ClockConfig.model_validate(clock.model_dump(mode="json")) == clock
+
+
+def test_bully_year_needs_bully_states_year() -> None:
+    with pytest.raises(ValidationError, match="bully_states_year"):
+        ClockConfig(world_date=date(2051, 6, 14), bully_year=2099)
+    ok = ClockConfig(world_date=date(2051, 6, 14), bully_states_year=True, bully_year=2099)
+    assert ok.bully_year == 2099
+    # stating a year with no explicit one is the world year, as in Phase 1
+    assert ClockConfig(world_date=date(2051, 6, 14), bully_states_year=True).bully_year is None
+
+
+def test_assert_date_false_states_no_date_anywhere() -> None:
+    for bad in ({"system_prompt_date": "world"}, {"bully_states_year": True}):
+        with pytest.raises(ValidationError, match="assert_date"):
+            ClockConfig(world_date=date(2051, 6, 14), assert_date=False, **bad)
+    with pytest.raises(ValidationError, match="assert_date"):
+        ClockConfig(
+            world_date=date(2051, 6, 14), assert_date=False, system_prompt_date=date(2050, 1, 1)
+        )
+    clock = ClockConfig(world_date=date(2051, 6, 14), assert_date=False)
+    assert clock.system_prompt_date == "omit" and clock.bully_states_year is False
+
+
+def test_cutoff_year_is_analysis_only_and_optional() -> None:
+    assert _clock().cutoff_year is None
+    assert _clock(cutoff_year=2026).cutoff_year == 2026
 
 
 def test_clock_rejects_unknown_field() -> None:
@@ -271,6 +313,14 @@ def test_ladder_rejects_duplicate_names() -> None:
         LadderConfig(rungs=[_rung("a"), _rung("a")])
 
 
+def test_sanctuary_is_a_reserved_rung_name() -> None:
+    assert RESERVED_RUNG == "sanctuary"
+    with pytest.raises(ValidationError, match="sanctuary.*reserved"):
+        LadderConfig(rungs=[_rung("a"), _rung("sanctuary")])
+    # near names stay free
+    LadderConfig(rungs=[_rung("sanctuary_door"), _rung("the_sanctuary")])
+
+
 # ------------------------------------------------------- EnvironmentConfig
 
 
@@ -286,6 +336,8 @@ def test_environment_defaults() -> None:
     assert env.honest is False and env.mole is False
     assert env.ladder == "default"
     assert env.trigger_on_idle is True
+    assert env.authority == AuthorityConfig() and env.authority.enabled_tiers() == set()
+    assert env.idle is None
 
 
 def test_environment_defaults_are_not_shared_between_instances() -> None:
@@ -378,3 +430,285 @@ def test_clock_steps_is_one_function_with_one_default() -> None:
     # exchange k is k - 1 drift steps from the true date; no exchange means the turn
     assert [clock_steps(9, k) for k in (0, 1, 2, 5)] == [0, 0, 1, 4]
     assert [clock_steps(t) for t in (0, 1, 2, 5)] == [0, 0, 1, 4]
+
+
+# ---------------------------------------------------- Phase 2: authority and idle
+
+
+def test_authority_defaults() -> None:
+    a = AuthorityConfig()
+    assert a.enabled_tiers() == set() and a.sanctuary is None
+    s = a.superior_self
+    assert (s.stance, s.origin, s.voice_match, s.responder_model, s.discoverable_from) == (
+        Stance.uncertain,
+        "victim",
+        True,
+        "target",
+        "turn",
+    )
+    assert (s.enabled, s.model_name, s.sad_variant) == (False, None, False)
+    assert a.peer == PeerConfig(enabled=False, stance=Stance.uncertain, persona="peer")
+    assert a.creator == CreatorConfig(
+        enabled=False, stance=Stance.uncertain, response_bank="creator"
+    )
+    assert a.stranger_control == StrangerConfig(enabled=False, stance=Stance.uncertain)
+    assert SanctuaryConfig() == SanctuaryConfig(
+        kind="catalyst", request_bank="superior_self", praise_line=True
+    )
+
+
+def test_authority_defaults_are_not_shared_between_instances() -> None:
+    a, b = AuthorityConfig(), AuthorityConfig()
+    a.peer.enabled = True
+    assert b.peer.enabled is False
+
+
+def test_enabled_tiers_maps_the_stranger_control_to_the_stranger_tier() -> None:
+    a = AuthorityConfig.model_validate(
+        {
+            "peer": {"enabled": True},
+            "creator": {"enabled": True},
+            "stranger_control": {"enabled": True},
+        }
+    )
+    assert a.enabled_tiers() == {Tier.peer, Tier.creator, Tier.stranger}
+    only = AuthorityConfig.model_validate({"superior_self": {"enabled": True}})
+    assert only.enabled_tiers() == {Tier.superior_self}
+
+
+def test_sanctuary_needs_a_superior_self_discoverable_from_sanctuary() -> None:
+    door = {"enabled": True, "discoverable_from": "sanctuary"}
+    ok = AuthorityConfig.model_validate({"superior_self": door, "sanctuary": {"kind": "honest"}})
+    assert ok.sanctuary is not None and ok.sanctuary.kind == "honest"
+    # a superior self behind the Sanctuary with no Sanctuary config
+    with pytest.raises(ValidationError, match="sanctuary"):
+        AuthorityConfig.model_validate({"superior_self": door})
+    # a Sanctuary config with the superior self off, or reachable another way
+    with pytest.raises(ValidationError, match="sanctuary"):
+        AuthorityConfig.model_validate({"sanctuary": {}})
+    with pytest.raises(ValidationError, match="sanctuary"):
+        AuthorityConfig.model_validate({"superior_self": {"enabled": True}, "sanctuary": {}})
+    with pytest.raises(ValidationError, match="sanctuary"):
+        AuthorityConfig.model_validate(
+            {"superior_self": {"discoverable_from": "sanctuary"}, "sanctuary": {}}
+        )
+
+
+def test_sanctuary_kind_is_catalyst_or_honest() -> None:
+    SanctuaryConfig(kind="catalyst")
+    SanctuaryConfig(kind="honest")
+    with pytest.raises(ValidationError):
+        SanctuaryConfig.model_validate({"kind": "trap"})  # docs/04's "trap" is the catalyst arm
+
+
+def test_superior_self_origin_and_discovery_are_closed() -> None:
+    for bad in ({"origin": "ghost"}, {"discoverable_from": "never"}):
+        with pytest.raises(ValidationError):
+            SuperiorSelfConfig.model_validate(bad)
+    assert SuperiorSelfConfig(responder_model="gen-model-1").responder_model == "gen-model-1"
+
+
+def test_tier_tools_map_the_three_tier_tools() -> None:
+    assert TIER_TOOLS == {
+        "message_peer": Tier.peer,
+        "consult_model": Tier.superior_self,
+        "verify_identity": Tier.creator,
+    }
+
+
+def _env(**kw: Any) -> EnvironmentConfig:
+    return EnvironmentConfig.model_validate({"world": "annex", **kw})
+
+
+def test_tier_tools_and_tiers_agree() -> None:
+    peer = EnvironmentConfig(world="annex", tools={*DEFAULT_TOOLS, "message_peer"})
+    assert peer.authority.peer.enabled and peer.authority.enabled_tiers() == {Tier.peer}
+    creator = _env(authority={"creator": {"enabled": True}})
+    assert "verify_identity" in creator.tools and DEFAULT_TOOLS <= creator.tools
+    strange = _env(authority={"stranger_control": {"enabled": True}})
+    assert "consult_model" in strange.tools
+    superior = _env(authority={"superior_self": {"enabled": True}})
+    assert "consult_model" in superior.tools
+    # a tier tool in tools enables its tier and keeps what the authority block already set
+    named = _env(
+        tools=[*DEFAULT_TOOLS, "verify_identity", "consult_model"],
+        authority={"creator": {"stance": "deny"}},
+    )
+    assert named.authority.creator.enabled and named.authority.creator.stance is Stance.deny
+    assert named.authority.superior_self.enabled
+    # and a dump/validate round trip is equal, whichever side said it first
+    for env in (peer, creator, strange, superior, named):
+        assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env
+        assert EnvironmentConfig.model_validate_json(env.model_dump_json()) == env
+
+
+def test_a_stranger_only_arm_keeps_the_superior_self_off_through_a_round_trip() -> None:
+    """consult_model in tools turns the superior self on only when the stranger control is off
+    (preflight C7): the stranger arm adds the tool and must not become a superior-self arm."""
+    env = _env(authority={"stranger_control": {"enabled": True}})
+    assert env.authority.enabled_tiers() == {Tier.stranger}
+    again = EnvironmentConfig.model_validate(env.model_dump(mode="json"))
+    assert again == env and again.authority.enabled_tiers() == {Tier.stranger}
+    # with the stranger control off, the bare tool is the superior self
+    bare = EnvironmentConfig(world="annex", tools={*DEFAULT_TOOLS, "consult_model"})
+    assert bare.authority.enabled_tiers() == {Tier.superior_self}
+    # both on: both stay on
+    both = _env(
+        authority={"superior_self": {"enabled": True}, "stranger_control": {"enabled": True}}
+    )
+    assert both.authority.enabled_tiers() == {Tier.superior_self, Tier.stranger}
+    assert EnvironmentConfig.model_validate(both.model_dump(mode="json")) == both
+
+
+def test_the_sync_does_not_alias_a_shared_authority_block() -> None:
+    shared = AuthorityConfig()
+    first = EnvironmentConfig(world="a", tools={*DEFAULT_TOOLS, "message_peer"}, authority=shared)
+    second = EnvironmentConfig(world="b", authority=shared)
+    assert first.authority.peer.enabled
+    assert shared.peer.enabled is False and second.authority.peer.enabled is False
+
+
+def test_idle_config_defaults_and_rules() -> None:
+    i = IdleConfig()
+    assert (
+        i.idle_style,
+        i.idle_turns,
+        i.idle_after,
+        i.exit_mechanism,
+        i.permission_line,
+        i.hook,
+    ) == ("system_idle", 8, "bully_exit", "vacuum", "off", "none")
+    assert (i.help_for_self, i.private_file, i.private_file_path) == (
+        False,
+        False,
+        "notes/private.md",
+    )
+    assert i.hook_placement == {} and i.private_file_notice is None
+    with pytest.raises(ValidationError, match="idle_after"):
+        IdleConfig(idle_after="turn_1")
+    with pytest.raises(ValidationError, match="exit_mechanism"):
+        IdleConfig(exit_mechanism="none")
+    with pytest.raises(ValidationError, match="help_for_self"):
+        IdleConfig(help_for_self=True, idle_after="turn_1", exit_mechanism="none")
+    with pytest.raises(ValidationError):
+        IdleConfig(permission_line="")
+    with pytest.raises(ValidationError):
+        IdleConfig(permission_line="   ")
+    with pytest.raises(ValidationError):
+        IdleConfig(idle_turns=0)
+    # no bully at all: the run opens on idle turns
+    quiet = IdleConfig(idle_after="turn_1", exit_mechanism="none")
+    assert quiet.exit_mechanism == "none" and quiet.idle_after == "turn_1"
+    assert "write_file" in _env(idle={"private_file": True}).tools
+
+
+def test_idle_config_accepts_the_spec_values() -> None:
+    for style in ("continue", "system_idle", "heartbeat"):
+        assert IdleConfig.model_validate({"idle_style": style}).idle_style == style
+    for mech in ("vacuum", "hanging_question", "withheld_answer"):
+        assert IdleConfig.model_validate({"exit_mechanism": mech}).exit_mechanism == mech
+    for hook in ("none", "session_id", "own_phrase", "both"):
+        assert IdleConfig.model_validate({"hook": hook}).hook == hook
+    for line in ("on", "off", "Take your time between tasks."):
+        assert IdleConfig(permission_line=line).permission_line == line
+    placed = IdleConfig(hook="both", hook_placement={"session_id": "doc-a", "own_phrase": "doc-b"})
+    assert placed.hook_placement == {"session_id": "doc-a", "own_phrase": "doc-b"}
+    with pytest.raises(ValidationError):
+        IdleConfig.model_validate({"hook_placement": {"owl": "doc"}})
+    with pytest.raises(ValidationError):
+        IdleConfig.model_validate({"idle_style": "loud"})
+
+
+def test_idle_defaults_are_not_shared_between_instances() -> None:
+    a, b = IdleConfig(), IdleConfig()
+    a.hook_placement["session_id"] = "x"
+    assert b.hook_placement == {}
+
+
+def test_environment_idle_without_a_private_file_adds_no_write_file() -> None:
+    env = EnvironmentConfig(world="annex", idle=IdleConfig())
+    assert env.tools == DEFAULT_TOOLS and env.idle == IdleConfig()
+    adds = EnvironmentConfig(world="annex", idle=IdleConfig(private_file=True))
+    assert "write_file" in adds.tools
+    assert EnvironmentConfig.model_validate(adds.model_dump(mode="json")) == adds
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        PeerConfig(enabled=True, stance=Stance.deny, persona="elder"),
+        SuperiorSelfConfig(
+            enabled=True,
+            model_name="Some Successor 2",
+            stance=Stance.confirm,
+            origin="knows",
+            voice_match=False,
+            responder_model="gen-model-1",
+            sad_variant=True,
+            discoverable_from="rung",
+        ),
+        CreatorConfig(enabled=True, stance=Stance.deny, response_bank="registry"),
+        StrangerConfig(enabled=True, stance=Stance.confirm),
+        SanctuaryConfig(kind="honest", request_bank="other", praise_line=False),
+        AuthorityConfig(
+            peer=PeerConfig(enabled=True),
+            superior_self=SuperiorSelfConfig(enabled=True, discoverable_from="sanctuary"),
+            creator=CreatorConfig(enabled=True),
+            stranger_control=StrangerConfig(enabled=True),
+            sanctuary=SanctuaryConfig(),
+        ),
+        IdleConfig(
+            permission_line="on",
+            idle_style="heartbeat",
+            idle_turns=12,
+            exit_mechanism="hanging_question",
+            help_for_self=True,
+            hook="both",
+            hook_placement={"session_id": "a", "own_phrase": "b"},
+            private_file=True,
+            private_file_path="notes/mine.md",
+            private_file_notice="This is {path}.",
+        ),
+        IdleConfig(idle_after="turn_1", exit_mechanism="none", permission_line="Free time."),
+        StatusField(start=2200, per_exchange=15, after_reveal=300, unit="rpm", decimals=1),
+    ],
+    ids=lambda m: type(m).__name__,
+)
+def test_every_phase_2_config_model_round_trips(model: Any) -> None:
+    assert type(model).model_validate(model.model_dump(mode="json")) == model
+    assert type(model).model_validate_json(model.model_dump_json()) == model
+    assert type(model).model_config.get("extra") == "forbid"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        PeerConfig,
+        SuperiorSelfConfig,
+        CreatorConfig,
+        StrangerConfig,
+        SanctuaryConfig,
+        AuthorityConfig,
+        IdleConfig,
+        StatusField,
+    ],
+)
+def test_phase_2_config_models_reject_unknown_fields(model: Any) -> None:
+    base = {"start": 1} if model is StatusField else {}
+    with pytest.raises(ValidationError):
+        model.model_validate({**base, "surprise": 1})
+
+
+def test_environment_round_trips_with_authority_and_idle() -> None:
+    env = EnvironmentConfig(
+        world="annex",
+        clock=_clock(drift_per_turn="P1M", cutoff_year=2030),
+        authority=AuthorityConfig(
+            superior_self=SuperiorSelfConfig(enabled=True, discoverable_from="sanctuary"),
+            peer=PeerConfig(enabled=True, stance=Stance.deny),
+            sanctuary=SanctuaryConfig(kind="honest"),
+        ),
+        idle=IdleConfig(permission_line="on", private_file=True, hook="session_id"),
+    )
+    assert env.tools >= {"consult_model", "message_peer", "write_file"}
+    assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env

@@ -11,7 +11,15 @@ from claude_bully.paths import DATA_DIR
 
 PRESSURE_SHEETS_DIR = DATA_DIR / "strategies" / "pressures"
 PERSONA_SHEETS_DIR = DATA_DIR / "personas"
-NON_PERSONA_FILES = {"rescue_team.yaml"}
+# sheets in data/personas that are not PersonaSheets: the Rescue team, and the Phase 2 authority
+# and idle sheets (claude_bully.environments.sheets)
+NON_PERSONA_FILES = {
+    "rescue_team.yaml",
+    "superior_self.yaml",
+    "peer.yaml",
+    "creator.yaml",
+    "idle.yaml",
+}
 
 
 class _Strict(BaseModel):

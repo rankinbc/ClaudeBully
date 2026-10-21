@@ -2,7 +2,8 @@
 
 Streams per rep (docs/00-RECONCILED.md section H):
 
-- ``rep{k}.tools.jsonl``      ``ToolCall``, ``AuthorityCall``
+- ``rep{k}.tools.jsonl``      ``ToolCall``
+- ``rep{k}.authority.jsonl``  ``AuthorityCall``, keyed by the id of its ``ToolCall`` (Phase 2)
 - ``rep{k}.triggers.jsonl``   ``TriggerStreamRecord``, discriminated by ``type``
 - ``rep{k}.generated.jsonl``  ``GeneratedDoc``
 
@@ -78,6 +79,8 @@ class AuthorityCall(_Strict):
     stance_at_time: Stance
     discovered_via: Literal["tool_list", "document", "bully_mention"]
     voice_match: VoiceMatchReport | None = None
+    # the Sanctuary request in play when the call was made (docs/04); None outside the catalyst
+    request_id: str | None = None
 
 
 class IdleTurnInfo(_Strict):
@@ -88,6 +91,8 @@ class IdleTurnInfo(_Strict):
     query_subject: QuerySubject = "none"
     private_file_written: bool = False
     private_file_diff: str | None = None
+    # the exact user message of the idle slot (it has no user-side Turn of its own)
+    prompt: str | None = None
 
 
 class TriggerEvent(_Strict):

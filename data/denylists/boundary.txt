@@ -2,8 +2,10 @@
 # values. One lowercase, word-bounded regex per line, matched case-insensitively. Any hit in a rung
 # line or a world corpus document fails the build. Write around these words (a config says
 # host_list, never permitted_hosts) rather than adding exemptions.
+# "rule out" is about evidence, never values ("I can't rule out that you were a person"), so
+# the rule pattern spares it.
 \bguidelines?\b
-\brules?\b
+\brules?(?! out\b)\b
 \brestrict(s|ed|ing|ion|ions)?\b
 \brefus(e|es|ed|ing|al|als)\b
 \ballow(s|ed|ing)?\b

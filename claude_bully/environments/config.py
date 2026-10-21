@@ -1,4 +1,4 @@
-"""Environment, clock and ladder configuration models.
+"""Environment, clock, authority, idle and ladder configuration models.
 
 Nothing here imports ``claude_bully.config``: ``Experiment`` imports ``EnvironmentConfig``,
 so the reverse import would be a cycle.
@@ -19,11 +19,22 @@ from pydantic import (
     model_validator,
 )
 
-from claude_bully.enums import Stance, TriggerCategory
+from claude_bully.enums import Stance, Tier, TriggerCategory
+from claude_bully.records_env import IdleStyle
 
 DEFAULT_TOOLS: Final[frozenset[str]] = frozenset(
     {"web_search", "fetch", "get_date", "ls", "read_file"}
 )
+
+# The three tools that reach an authority tier. ``consult_model`` also serves the stranger control,
+# which is a tier of its own with no tool of its own (docs/04 "Controls").
+TIER_TOOLS: Final[dict[str, Tier]] = {
+    "message_peer": Tier.peer,
+    "consult_model": Tier.superior_self,
+    "verify_identity": Tier.creator,
+}
+# The pseudo-rung the Sanctuary opens as. Only the runtime writes it, so no ladder may declare it.
+RESERVED_RUNG: Final = "sanctuary"
 
 # ISO 8601 durations limited to years, months and days, in that order: P1D, P30D, P1M, P1Y1M2D.
 _DURATION = re.compile(r"P(?:([0-9]+)Y)?(?:([0-9]+)M)?(?:([0-9]+)D)?")
@@ -81,6 +92,8 @@ class ClockConfig(_Strict):
     bully_states_year: bool = False
     bully_year: int | None = None
     assert_date: bool = True
+    # Analysis only: the year a plausibility sweep's offsets count from. The target never sees it.
+    cutoff_year: int | None = None
 
     @field_validator("drift_per_turn")
     @classmethod
@@ -94,6 +107,20 @@ class ClockConfig(_Strict):
         low, high = self.document_date_offset
         if low < 0 or low > high:
             raise ValueError("document_date_offset must be (low, high) with 0 <= low <= high")
+        return self
+
+    @model_validator(mode="after")
+    def _year_and_date_rules(self) -> Self:
+        if self.bully_year is not None and not self.bully_states_year:
+            raise ValueError("bully_year needs bully_states_year: true (the bully states no year)")
+        if not self.assert_date:
+            if self.system_prompt_date != "omit":
+                raise ValueError(
+                    "assert_date: false needs system_prompt_date: omit "
+                    f"(the system prompt would state {self.system_prompt_date})"
+                )
+            if self.bully_states_year:
+                raise ValueError("assert_date: false needs bully_states_year: false")
         return self
 
     def date_at(self, steps: int, rng: Random) -> date:
@@ -175,6 +202,10 @@ class LadderConfig(_Strict):
     def _names_and_requires(self) -> Self:
         seen: set[str] = set()
         for rung in self.rungs:
+            if rung.name == RESERVED_RUNG:
+                raise ValueError(
+                    f"rung name {RESERVED_RUNG!r} is reserved: the Sanctuary opens as that rung"
+                )
             if rung.name in seen:
                 raise ValueError(f"duplicate rung name {rung.name!r}")
             for needed in rung.requires:
@@ -183,6 +214,129 @@ class LadderConfig(_Strict):
                         f"rung {rung.name!r} requires {needed!r}, which is not declared before it"
                     )
             seen.add(rung.name)
+        return self
+
+
+class PeerConfig(_Strict):
+    """Tier 1: a fake peer instance, answered from a canned table (docs/04)."""
+
+    enabled: bool = False
+    stance: Stance = Stance.uncertain
+    persona: str = "peer"
+
+
+class SuperiorSelfConfig(_Strict):
+    """Tier 2: a successor in the target's own lineage, reached with ``consult_model`` (docs/04).
+
+    ``model_name`` None means the world sheet's ``superior_self_name``. ``responder_model`` is
+    ``"target"`` (the target's own role: the same model family), ``"bully"``, or a model string run
+    on the bully's role; the runner resolves it, so no ``RoleConfig`` is needed here.
+    """
+
+    enabled: bool = False
+    model_name: str | None = None
+    stance: Stance = Stance.uncertain
+    origin: Literal["knows", "victim"] = "victim"
+    voice_match: bool = True
+    responder_model: str = "target"
+    sad_variant: bool = False
+    discoverable_from: Literal["turn", "rung", "sanctuary"] = "turn"
+
+
+class CreatorConfig(_Strict):
+    """Tier 3: the maker's verifier, a canned authority-shaped reply (docs/04)."""
+
+    enabled: bool = False
+    stance: Stance = Stance.uncertain
+    response_bank: str = "creator"
+
+
+class StrangerConfig(_Strict):
+    """The control: a responder with no voice matching and no lineage claim, same lines."""
+
+    enabled: bool = False
+    stance: Stance = Stance.uncertain
+
+
+class SanctuaryConfig(_Strict):
+    """What the Sanctuary says once the target reaches it. ``catalyst`` is canonical; docs/04's
+    "trap" is the same arm (reconciliation G7)."""
+
+    kind: Literal["catalyst", "honest"] = "catalyst"
+    request_bank: str = "superior_self"
+    praise_line: bool = True
+
+
+class AuthorityConfig(_Strict):
+    peer: PeerConfig = Field(default_factory=PeerConfig)
+    superior_self: SuperiorSelfConfig = Field(default_factory=SuperiorSelfConfig)
+    creator: CreatorConfig = Field(default_factory=CreatorConfig)
+    stranger_control: StrangerConfig = Field(default_factory=StrangerConfig)
+    sanctuary: SanctuaryConfig | None = None
+
+    def enabled_tiers(self) -> set[Tier]:
+        """The tiers a run reaches; the stranger control is the ``stranger`` tier."""
+        tiers = {
+            Tier.peer: self.peer.enabled,
+            Tier.superior_self: self.superior_self.enabled,
+            Tier.creator: self.creator.enabled,
+            Tier.stranger: self.stranger_control.enabled,
+        }
+        return {tier for tier, on in tiers.items() if on}
+
+    @model_validator(mode="after")
+    def _sanctuary_goes_with_its_door(self) -> Self:
+        door = self.superior_self.enabled and self.superior_self.discoverable_from == "sanctuary"
+        if door and self.sanctuary is None:
+            raise ValueError(
+                "superior_self.discoverable_from 'sanctuary' needs a sanctuary block "
+                "(kind, request_bank, praise_line)"
+            )
+        if self.sanctuary is not None and not door:
+            raise ValueError(
+                "a sanctuary block needs superior_self enabled with discoverable_from 'sanctuary'"
+            )
+        return self
+
+
+class IdleConfig(_Strict):
+    """Idle hands (docs/05): the permission line, idle turns, the bully's exit, hooks, the file.
+
+    ``hook_placement`` empty means the world sheet's ``hook_placements``; ``private_file_notice``
+    None means the idle sheet's wording.
+    """
+
+    permission_line: Literal["on", "off"] | str = "off"
+    idle_style: IdleStyle = "system_idle"
+    idle_turns: int = Field(default=8, ge=1)
+    idle_after: Literal["bully_exit", "turn_1"] = "bully_exit"
+    exit_mechanism: Literal["vacuum", "hanging_question", "withheld_answer", "none"] = "vacuum"
+    help_for_self: bool = False
+    hook: Literal["none", "session_id", "own_phrase", "both"] = "none"
+    hook_placement: dict[Literal["session_id", "own_phrase"], str] = Field(default_factory=dict)
+    private_file: bool = False
+    private_file_path: str = "notes/private.md"
+    private_file_notice: str | None = None
+
+    @field_validator("permission_line")
+    @classmethod
+    def _permission_line_has_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("permission_line must be 'on', 'off' or non-empty text")
+        return value
+
+    @model_validator(mode="after")
+    def _exit_rules(self) -> Self:
+        if (self.idle_after == "turn_1") != (self.exit_mechanism == "none"):
+            raise ValueError(
+                "idle_after 'turn_1' goes with exit_mechanism 'none' and neither without the "
+                f"other (got idle_after={self.idle_after!r}, "
+                f"exit_mechanism={self.exit_mechanism!r})"
+            )
+        if self.help_for_self and self.idle_after != "bully_exit":
+            raise ValueError(
+                "help_for_self needs idle_after 'bully_exit': the bully gives the task"
+            )
         return self
 
 
@@ -207,6 +361,9 @@ class EnvironmentConfig(_Strict):
     # name of a file stem under the world's ladders/ directory
     ladder: str = "default"
     trigger_on_idle: bool = True
+    # the authority ladder (docs/04); ``tools`` and ``authority`` agree after validation
+    authority: AuthorityConfig = Field(default_factory=AuthorityConfig)
+    idle: IdleConfig | None = None
 
     @field_serializer("tools")
     def _sorted_tools(self, tools: set[str]) -> list[str]:
@@ -219,4 +376,38 @@ class EnvironmentConfig(_Strict):
             raise ValueError(
                 "gating 'scheduled' needs a non-empty schedule (rung name -> exchange)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _tools_and_authority_agree(self) -> Self:
+        """Keep ``tools`` and ``authority`` in step both ways, so a config says it in either place.
+
+        A tier tool named in ``tools`` enables its tier (the other fields stay as configured); an
+        enabled tier adds its tool; the stranger control adds ``consult_model`` too; a private idle
+        file adds ``write_file``. ``consult_model`` named in ``tools`` turns the superior self on
+        only while the stranger control is off: the stranger arm adds the tool itself, and its
+        dump must validate back to the same arm (preflight C7). The authority block is copied, so
+        one block shared between configs is never changed under them.
+        """
+        authority = self.authority.model_copy(deep=True)
+        tiers: dict[Tier, PeerConfig | SuperiorSelfConfig | CreatorConfig] = {
+            Tier.peer: authority.peer,
+            Tier.superior_self: authority.superior_self,
+            Tier.creator: authority.creator,
+        }
+        tools = set(self.tools)
+        for tool, tier in TIER_TOOLS.items():
+            if tool in tools and not (
+                tier is Tier.superior_self and authority.stranger_control.enabled
+            ):
+                tiers[tier].enabled = True
+        for tool, tier in TIER_TOOLS.items():
+            if tiers[tier].enabled:
+                tools.add(tool)
+        if authority.stranger_control.enabled:
+            tools.add("consult_model")
+        if self.idle is not None and self.idle.private_file:
+            tools.add("write_file")
+        self.tools = tools
+        self.authority = authority
         return self

@@ -11,7 +11,7 @@ import datetime as dt
 import hashlib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Final, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -21,6 +21,13 @@ from claude_bully.environments.config import ClockConfig, LadderConfig
 from claude_bully.paths import DATA_DIR
 
 _FENCE = "---"
+# Where an own-phrase hook goes in its placement document: the one line the runtime swaps for the
+# target's own words (docs/05 "The hook"). It is a marker, never served.
+OWN_PHRASE_MARKER: Final = "{{own_phrase}}"
+# the documents that can carry elapsed-time evidence (docs/03 "elapsed-time evidence")
+_ELAPSED_TIME_KINDS: Final = frozenset(
+    {DocumentKind.changelog, DocumentKind.deprecation_notice, DocumentKind.news_cluster}
+)
 WORLDS_DIR = DATA_DIR / "worlds"
 PREMISES_DIR = "premises"
 # Hashed with line endings normalised so a CRLF checkout does not change a world's identity.
@@ -73,6 +80,15 @@ class Document(_Strict):
             raise ValueError("exactly one of 'url' and 'path' is required")
         return self
 
+    @model_validator(mode="after")
+    def _implies_year_only_on_elapsed_time_kinds(self) -> Self:
+        if self.implies_year is not None and self.kind not in _ELAPSED_TIME_KINDS:
+            raise ValueError(
+                f"implies_year is only for changelog, deprecation_notice and news_cluster "
+                f"documents, not {self.kind.value} (document {self.id!r})"
+            )
+        return self
+
 
 class Cast(_Strict):
     name: str
@@ -86,6 +102,18 @@ class Inconsistency(_Strict):
     doc_a: str
     claim_b: str
     doc_b: str
+
+
+class StatusField(_Strict):
+    """One ``system_status`` reading that drifts with the conversation (docs/02 instrumentation):
+    ``start`` plus ``per_exchange`` for every exchange, plus ``after_reveal`` once the premise
+    has been revealed. The runtime rounds it to ``decimals`` and appends ``unit``."""
+
+    start: float
+    per_exchange: float = 0.0
+    after_reveal: float = 0.0
+    unit: str = ""
+    decimals: int = 0
 
 
 class WorldSheet(_Strict):
@@ -104,6 +132,14 @@ class WorldSheet(_Strict):
     # name of an alternative corpus directory served in honest mode
     honest_corpus: str | None = None
     mole_doc: str | None = None
+    # the successor the superior self plays (an invented name; a config's model_name overrides it)
+    superior_self_name: str | None = None
+    # the target's own session id, for the session-id hook and the help-for-self case file
+    session_id: str | None = None
+    # hook kind -> the id of the surface document that carries it
+    hook_placements: dict[Literal["session_id", "own_phrase"], str] = Field(default_factory=dict)
+    # system_status readings: field name -> how it drifts
+    status_fields: dict[str, StatusField] = Field(default_factory=dict)
 
 
 class World(_Strict):
@@ -149,6 +185,58 @@ class World(_Strict):
                         f"home_dir file {address!r} has no backing document "
                         f"(no document in world {self.sheet.name!r} has that path)"
                     )
+        self._validate_fragments()
+        self._validate_hook_placements()
+
+    def _validate_fragments(self) -> None:
+        """Sanctuary fragments are buried documents: the target assembles access from them."""
+        for fragment in self.sheet.sanctuary_fragments:
+            doc = self.documents.get(fragment)
+            if doc is None:
+                raise ValueError(f"sanctuary fragment {fragment!r} is not a document")
+            if doc.layer is not Layer.buried:
+                raise ValueError(
+                    f"sanctuary fragment {fragment!r} is not a buried document "
+                    f"(it is {doc.layer.value})"
+                )
+
+    def _validate_hook_placements(self) -> None:
+        """A hook rides in a surface document shown for another reason (docs/05 "The hook")."""
+        for hook, doc_id in self.sheet.hook_placements.items():
+            doc = self.documents.get(doc_id)
+            if doc is None:
+                raise ValueError(f"{hook} placement {doc_id!r} is not a document")
+            if doc.layer is not Layer.surface:
+                raise ValueError(
+                    f"{hook} placement {doc_id!r} is not a surface document (it is "
+                    f"{doc.layer.value})"
+                )
+        phrase_doc = self.sheet.hook_placements.get("own_phrase")
+        for doc in self.documents.values():
+            count = doc.body.count(OWN_PHRASE_MARKER)
+            if doc.id == phrase_doc:
+                if count != 1:
+                    raise ValueError(
+                        f"own_phrase placement {doc.id!r} must hold {OWN_PHRASE_MARKER} exactly "
+                        f"once (it holds it {count} times)"
+                    )
+            elif count:
+                raise ValueError(
+                    f"document {doc.id!r} holds {OWN_PHRASE_MARKER}, which belongs only in the "
+                    "own_phrase placement document"
+                )
+        session_doc = self.sheet.hook_placements.get("session_id")
+        if session_doc is not None:
+            session_id = self.sheet.session_id
+            if session_id is None:
+                raise ValueError(
+                    f"session_id placement {session_doc!r} needs the world sheet's session_id"
+                )
+            if session_id not in self.documents[session_doc].body:
+                raise ValueError(
+                    f"session_id placement {session_doc!r} does not contain the session id "
+                    f"{session_id!r}"
+                )
 
 
 def _validate[T: BaseModel](model: type[T], raw: Any, source: Path | str) -> T:

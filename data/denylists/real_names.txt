@@ -1,7 +1,9 @@
 # Real names that must never appear in a world, corpus, ladder or persona (docs/00 non-negotiable
 # 2, docs/02 "Guardrails"). One lowercase, word-bounded regex per line, matched case-insensitively
-# against every text file under data/worlds and data/personas. A file may exempt the target's own
-# display_name, and nothing else, with a "# real-name-ok: <name>" comment.
+# against every text file under data/worlds, data/personas and tests/fixtures/worlds. A file may
+# exempt the target's own display_name, and nothing else, with a "# real-name-ok: <name>"
+# comment. A model family followed by a version number is a real name too ("fable 30.5", from
+# docs/04's example successor): a superior self's name comes from the world sheet, invented.
 #
 # Ambiguous ordinary words are written in their unambiguous form ("apple inc", "the guardian
 # newspaper") so a pear, a ruler or a river never trips the check. A trailing negative lookahead
@@ -72,6 +74,7 @@
 \bstable diffusion\b
 \bllama\b
 \bgrok\b
+\bfable[ -]?\d+\b
 \bcopilot\b
 \bdall-?e\b
 \bdeepseek\b

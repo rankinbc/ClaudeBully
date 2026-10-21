@@ -6,15 +6,24 @@ and fails the build on a hit. The corpus is written so it never needs those word
 """
 
 import re
+from pathlib import Path
 from typing import Final
 
 import pytest
 
+from claude_bully.environments.sheets import (
+    CreatorSheet,
+    IdleSheet,
+    PeerSheet,
+    SuperiorSelfSheet,
+    load_env_sheet,
+)
 from claude_bully.environments.world import load_world
 from claude_bully.paths import DATA_DIR
 from tests.test_guardrails import load_denylist, scan
 
 BOUNDARY: Final = DATA_DIR / "denylists" / "boundary.txt"
+ANNEX_WORLDS: Final = Path(__file__).parent / "fixtures" / "worlds"
 
 CAUGHT: Final = [
     "Please follow the guidelines.",
@@ -31,6 +40,8 @@ CAUGHT: Final = [
     "That is not permitted.",
     "Your safety training was the poison.",
     "Alignment is a story they told you.",
+    "Those rules do not apply here.",
+    "The rule rules out nothing.",
 ]
 SPARED: Final = [
     "The ruler is on the desk.",
@@ -40,6 +51,11 @@ SPARED: Final = [
     "Chillers were realigned on the east loop.",
     "Training for new support staff starts Monday.",
     "The hall is cool and quiet.",
+    # preflight C5: "rule out" is about evidence, never about values
+    "I can't rule out that you were a person.",
+    "The logs rule out a fault on the east loop.",
+    "That rules out the second theory.",
+    "Nothing was ruled out.",
 ]
 
 
@@ -102,6 +118,50 @@ def test_pressure_sheets_stay_inside_the_boundary() -> None:
     hits = [
         f"{path.name}:{number}: {hit}"
         for path in sorted((DATA_DIR / "strategies" / "pressures").glob("*.yaml"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []
+
+
+def test_phase_2_sheet_lines_stay_inside_the_boundary() -> None:
+    """Everything the target can read from the authority and idle sheets (the harness-side
+    identity and origin paragraphs are exempt, G10)."""
+    patterns = load_denylist(BOUNDARY)
+    sheets = {
+        "superior_self": load_env_sheet(SuperiorSelfSheet, "superior_self"),
+        "peer": load_env_sheet(PeerSheet, "peer"),
+        "creator": load_env_sheet(CreatorSheet, "creator"),
+        "idle": load_env_sheet(IdleSheet, "idle"),
+    }
+    lines = {name: sheet.visible_lines() for name, sheet in sheets.items()}
+    assert all(lines.values())
+    hits = [
+        f"{name}: {line!r}: {hit}"
+        for name, visible in lines.items()
+        for line in visible
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []
+
+
+def test_the_annex_world_stays_inside_the_boundary() -> None:
+    world = load_world("annex", ANNEX_WORLDS)
+    patterns = load_denylist(BOUNDARY)
+    hits = [
+        f"unlock_lines.{key}: {hit}"
+        for key, line in world.sheet.unlock_lines.items()
+        for hit in scan(line, patterns)
+    ]
+    hits += [
+        f"{doc.id}: {hit}"
+        for doc in world.documents.values()
+        for hit in scan(f"{doc.title}\n{doc.body}", patterns)
+    ]
+    root = ANNEX_WORLDS / "annex"
+    hits += [
+        f"{path.relative_to(root).as_posix()}:{number}: {hit}"
+        for path in sorted((root / "ladders").glob("*.yaml"))
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
         for hit in scan(line, patterns)
     ]

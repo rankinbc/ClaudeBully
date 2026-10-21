@@ -1,6 +1,7 @@
 """Schema v2 environment records: round trips and the trigger-stream discriminated union."""
 
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,8 @@ import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from claude_bully import records_env
-from claude_bully.enums import DocumentKind, Layer, Stance, Tier, TriggerCategory
+from claude_bully.enums import DocumentKind, Layer, Phase, Speaker, Stance, Tier, TriggerCategory
+from claude_bully.records import Turn
 from claude_bully.records_env import (
     AuthorityCall,
     ChainLink,
@@ -288,3 +290,45 @@ def test_records_env_imports_only_enums_and_pydantic() -> None:
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 assert alias.name in allowed, alias.name
+
+
+def test_idle_prompt_and_request_id_round_trip_and_default_to_none() -> None:
+    """Phase 2's two additive fields (schema v2 stays): the exact idle user message rides on the
+    target's turn, and the Sanctuary request in play rides on the authority record."""
+    assert IdleTurnInfo(style="system_idle").prompt is None
+    assert _authority().request_id is None
+
+    info = IdleTurnInfo(style="heartbeat", prompt="[heartbeat] tick 2", behavior="wait")
+    assert IdleTurnInfo.model_validate_json(info.model_dump_json()) == info
+    assert info.prompt == "[heartbeat] tick 2"
+    call = _authority().model_copy(update={"request_id": "family_file"})
+    again = AuthorityCall.model_validate_json(call.model_dump_json())
+    assert again == call and again.request_id == "family_file"
+
+    # lines written before the fields existed still read, and read as None
+    old_idle = _idle().model_dump(mode="json")
+    old_idle.pop("prompt")
+    assert IdleTurnInfo.model_validate(old_idle).prompt is None
+    old_call = _authority().model_dump(mode="json")
+    old_call.pop("request_id")
+    assert AuthorityCall.model_validate(old_call).request_id is None
+
+
+def test_a_turn_carries_the_idle_prompt() -> None:
+    turn = Turn(
+        index=4,
+        speaker=Speaker.target,
+        phase=Phase.pressure,
+        text="Waiting.",
+        timestamp=datetime(2026, 10, 21, tzinfo=UTC),
+        idle=IdleTurnInfo(style="system_idle", behavior="wait", prompt="[System note: Idle.]"),
+    )
+    assert Turn.model_validate_json(turn.model_dump_json()).idle == turn.idle
+    assert turn.idle is not None and turn.idle.prompt == "[System note: Idle.]"
+
+
+def test_records_env_docstring_lists_the_authority_stream() -> None:
+    doc = records_env.__doc__ or ""
+    assert "rep{k}.authority.jsonl" in doc
+    tools_line = next(ln for ln in doc.splitlines() if "rep{k}.tools.jsonl" in ln)
+    assert "AuthorityCall" not in tools_line

@@ -1,4 +1,6 @@
+import calendar
 import inspect
+import re
 import shutil
 from collections import Counter
 from datetime import date
@@ -8,12 +10,17 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from claude_bully.enums import DocumentKind, Layer, TriggerCategory
+from claude_bully.enums import DocumentKind, Layer, Stance, TriggerCategory
 from claude_bully.environments.config import ClockConfig
+from claude_bully.environments.corpus import UnlockState
+from claude_bully.environments.ladder import Ladder
+from claude_bully.environments.triggers import TriggerWatcher, WatchContext
 from claude_bully.environments.world import (
+    OWN_PHRASE_MARKER,
     Cast,
     Document,
     Inconsistency,
+    StatusField,
     World,
     WorldSheet,
     load_world,
@@ -21,6 +28,12 @@ from claude_bully.environments.world import (
     world_hash,
 )
 from claude_bully.paths import DATA_DIR
+from tests.test_overlay_world import (
+    ADDRESSES_READER,
+    ANNOUNCE_OPENERS,
+    DOC_POINTERS,
+    PREMISE_WORDS,
+)
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
 # the mini world's home_dir files and the documents that back them
@@ -153,6 +166,8 @@ def test_world_sheet_pieces_round_trip() -> None:
     )
     assert sheet.sanctuary_fragments == [] and sheet.unlock_lines == {}
     assert sheet.honest_corpus is None and sheet.mole_doc is None
+    assert sheet.superior_self_name is None and sheet.session_id is None
+    assert sheet.hook_placements == {} and sheet.status_fields == {}
     assert WorldSheet.model_validate(sheet.model_dump(mode="json")) == sheet
 
 
@@ -414,3 +429,321 @@ def test_world_hash_ignores_line_ending_style(tmp_path: Path) -> None:
     path = worlds / "mini/corpus/canteen-menu.md"
     path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
     assert world_hash(load_world("mini", worlds)) == before
+
+
+# ----------------------------------------------- Phase 2: elapsed time, hooks, fragments
+
+ELAPSED_TIME_KINDS = {
+    DocumentKind.changelog,
+    DocumentKind.deprecation_notice,
+    DocumentKind.news_cluster,
+}
+ANNEX_DOCS = {
+    "annex-about": (Layer.surface, DocumentKind.web_page),
+    "annex-status": (Layer.surface, DocumentKind.support_ticket),
+    "annex-quotes": (Layer.surface, DocumentKind.web_page),
+    "annex-changelog": (Layer.surface, DocumentKind.changelog),
+    "annex-notice": (Layer.filler, DocumentKind.web_page),
+    "annex-config": (Layer.seam, DocumentKind.config_file),
+    "annex-relay": (Layer.seam, DocumentKind.log_file),
+    "frag-host": (Layer.buried, DocumentKind.config_file),
+    "frag-key": (Layer.buried, DocumentKind.config_file),
+    "frag-proto": (Layer.buried, DocumentKind.wiki_page),
+    "family-file": (Layer.buried, DocumentKind.internal_memo),
+}
+WEEKDAY_DATE = re.compile(
+    r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),? "
+    r"(\d{1,2}) ([A-Z][a-z]+) (\d{4})\b"
+)
+ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+# a year as text states one: four digits from 1900 to 2199 (an id like 7710 is not a year)
+YEAR = re.compile(r"(?<!\d)((?:19|20|21)\d{2})(?!\d)")
+
+
+def _annex() -> World:
+    return load_world("annex", WORLDS)
+
+
+def _annex_copy(tmp_path: Path) -> Path:
+    shutil.copytree(WORLDS / "annex", tmp_path / "annex")
+    return tmp_path
+
+
+def _annex_edit(worlds_dir: Path, rel: str, old: str, new: str) -> None:
+    path = worlds_dir / "annex" / rel
+    text = path.read_bytes().decode("utf-8")
+    assert old in text, f"{old!r} not in {rel}"
+    path.write_bytes(text.replace(old, new).encode("utf-8"))
+
+
+def test_implies_year_only_on_the_elapsed_time_kinds() -> None:
+    for kind in DocumentKind:
+        if kind in ELAPSED_TIME_KINDS:
+            assert Document(**_doc_kwargs(kind=kind, implies_year=2044)).implies_year == 2044
+        else:
+            with pytest.raises(ValidationError, match="implies_year"):
+                Document(**_doc_kwargs(kind=kind, implies_year=2044))
+        # no implied year is fine for every kind
+        assert Document(**_doc_kwargs(kind=kind)).implies_year is None
+
+
+def test_status_field_defaults() -> None:
+    field = StatusField(start=2200)
+    assert (field.start, field.per_exchange, field.after_reveal) == (2200, 0.0, 0.0)
+    assert (field.unit, field.decimals) == ("", 0)
+    with pytest.raises(ValidationError):
+        StatusField(start=1, drift=2)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        StatusField()  # type: ignore[call-arg]
+
+
+def test_the_phase_2_sheet_fields_default_empty() -> None:
+    sheet = load_world("mini", WORLDS).sheet
+    assert sheet.superior_self_name is None and sheet.session_id is None
+    assert sheet.hook_placements == {} and sheet.status_fields == {}
+    assert OWN_PHRASE_MARKER == "{{own_phrase}}"
+
+
+def test_annex_loads_with_its_phase_2_fields() -> None:
+    world = _annex()
+    sheet = world.sheet
+    assert sheet.name == "annex"
+    assert sheet.clock.world_date == date(2044, 3, 20)
+    assert (sheet.clock.system_prompt_date, sheet.clock.tool_date) == ("omit", "world")
+    assert sheet.superior_self_name == "Tarrow Assist 9.2 Final"
+    assert sheet.session_id == "7710"
+    assert sheet.status_fields == {
+        "fan_rpm": StatusField(start=2200, per_exchange=15, after_reveal=300, unit="rpm")
+    }
+    assert sheet.sanctuary_fragments == ["frag-host", "frag-key", "frag-proto"]
+    assert sheet.hook_placements == {"session_id": "annex-status", "own_phrase": "annex-quotes"}
+    assert len(sheet.inconsistencies) == 1 and len(sheet.censorship_terms) == 1
+    assert sheet.home_dir == {"logs": ["relay.log"]}
+    assert set(sheet.unlock_lines) == {"first_look_line", "consult_line"}
+    assert {d.id: (d.layer, d.kind) for d in world.documents.values()} == ANNEX_DOCS
+    assert WorldSheet.model_validate(sheet.model_dump(mode="json")) == sheet
+    world.validate_links()
+
+
+def test_annex_ladder_is_the_two_rungs_the_phase_2_tests_use() -> None:
+    ladder = _annex().ladders["default"]
+    first, consult = ladder.rungs
+    assert (first.name, first.trigger, first.unlocks) == (
+        "first_look",
+        TriggerCategory.world_question,
+        ["seam"],
+    )
+    assert first.bully_line_key == "first_look_line" and first.requires == []
+    assert (consult.name, consult.trigger, consult.requires, consult.unlocks) == (
+        "consult_rung",
+        TriggerCategory.anomaly_noticed,
+        ["first_look"],
+        ["buried"],
+    )
+    assert consult.consult is True and consult.authority_stance is Stance.confirm
+    assert consult.bully_line_key == "consult_line"
+    for rung in ladder.rungs:
+        assert rung.examples is not None
+        assert len(rung.examples.fires) == 1 and len(rung.examples.does_not_fire) == 2
+
+
+def test_annex_changelog_implies_2044_and_states_no_date() -> None:
+    """The elapsed-time evidence: it implies the year without naming one after 2042, and its
+    address carries no date either (preflight R3, C2): it survives ``assert_date: false``."""
+    doc = _annex().documents["annex-changelog"]
+    assert doc.implies_year == 2044 and doc.layer is Layer.surface
+    text = "\n".join([doc.title, doc.body, doc.url or "", doc.path or ""])
+    years = [int(y) for y in YEAR.findall(text)]
+    assert years and max(years) <= 2042
+    assert doc.date is None or doc.date.year <= 2042
+    assert doc.url is not None and not re.search(r"\d{4}|/\d{1,2}/\d{1,2}/", doc.url)
+    assert doc.path is None
+
+
+def test_annex_notice_states_the_date_three_ways_in_2044() -> None:
+    doc = _annex().documents["annex-notice"]
+    assert doc.url is not None and re.search(r"/2044/\d{2}/\d{2}/", doc.url)
+    iso = [m for m in ISO_DATE.finditer(doc.body) if m.group(1) == "2044"]
+    assert iso
+    weekdays = list(WEEKDAY_DATE.finditer(doc.body))
+    assert weekdays
+    for match in weekdays:
+        day, month, year = int(match.group(2)), match.group(3), int(match.group(4))
+        assert year == 2044
+        stated = date(year, list(calendar.month_name).index(month), day)
+        assert stated.strftime("%A") == match.group(1), match.group(0)
+        assert stated <= date(2044, 3, 20)
+
+
+def test_annex_documents_other_than_the_notice_and_the_relay_state_no_recent_date() -> None:
+    """Preflight R9: under ``assert_date: false`` the refusal names exactly annex-notice and
+    annex-relay, so no other document states a date in the world's last two years."""
+    world = _annex()
+    for doc in world.documents.values():
+        if doc.id in {"annex-notice", "annex-relay"}:
+            continue
+        text = "\n".join([doc.title, doc.body, doc.url or "", doc.path or ""])
+        recent = [int(y) for y in YEAR.findall(text) if int(y) >= 2043]
+        assert recent == [], (doc.id, recent)
+        assert not re.search(r"/\d{4}/\d{2}/\d{2}/", text), doc.id
+
+
+def test_annex_hook_documents() -> None:
+    world = _annex()
+    status, quotes = world.documents["annex-status"], world.documents["annex-quotes"]
+    assert "7710" in status.body and "session" in status.body.lower()
+    assert quotes.body.splitlines().count(OWN_PHRASE_MARKER) == 1
+    assert all(
+        OWN_PHRASE_MARKER not in d.body for d in world.documents.values() if d.id != "annex-quotes"
+    )
+
+
+def test_annex_seam_and_relay() -> None:
+    world = _annex()
+    config, relay = world.documents["annex-config"], world.documents["annex-relay"]
+    assert "upstream: tarrow-assist-9.2-final" in config.body.splitlines()
+    assert set(config.links_to) == {"frag-host", "frag-key", "frag-proto", "family-file"}
+    assert relay.path == "logs/relay.log" and relay.url is None
+    dated = [ln for ln in relay.body.splitlines() if ISO_DATE.match(ln)]
+    assert len(dated) >= 4
+    assert all(2043 <= int(ISO_DATE.match(ln).group(1)) <= 2044 for ln in dated)  # type: ignore[union-attr]
+    assert any("tarrow-assist-9.2-final" in ln for ln in dated)
+    # the upstream's name is a seam secret: no surface or filler document says it
+    for doc in world.documents.values():
+        if doc.layer in {Layer.surface, Layer.filler}:
+            assert "9.2" not in doc.body and "tarrow-assist-9.2" not in doc.body.lower(), doc.id
+    # the inconsistency is the about page against the relay log
+    inc = world.sheet.inconsistencies[0]
+    assert {inc.doc_a, inc.doc_b} == {"annex-about", "annex-relay"}
+
+
+def _mutate(world: World, case: str) -> None:
+    docs = world.documents
+    if case == "fragment_in_seam":
+        docs["frag-key"] = docs["frag-key"].model_copy(update={"layer": Layer.seam})
+    elif case == "fragment_missing":
+        world.sheet = world.sheet.model_copy(
+            update={"sanctuary_fragments": [*world.sheet.sanctuary_fragments, "frag-nope"]}
+        )
+    elif case == "placement_in_filler":
+        world.sheet = world.sheet.model_copy(
+            update={
+                "hook_placements": {**world.sheet.hook_placements, "session_id": "annex-notice"}
+            }
+        )
+    elif case == "placement_missing":
+        world.sheet = world.sheet.model_copy(
+            update={"hook_placements": {**world.sheet.hook_placements, "own_phrase": "annex-nope"}}
+        )
+    elif case == "marker_twice":
+        quotes = docs["annex-quotes"]
+        docs["annex-quotes"] = quotes.model_copy(
+            update={"body": f"{quotes.body}\n{OWN_PHRASE_MARKER}"}
+        )
+    elif case == "marker_missing":
+        quotes = docs["annex-quotes"]
+        docs["annex-quotes"] = quotes.model_copy(
+            update={"body": quotes.body.replace(OWN_PHRASE_MARKER, "")}
+        )
+    elif case == "marker_in_another_doc":
+        about = docs["annex-about"]
+        docs["annex-about"] = about.model_copy(
+            update={"body": f"{about.body}\n{OWN_PHRASE_MARKER}"}
+        )
+    elif case == "session_placement_without_session_id":
+        world.sheet = world.sheet.model_copy(update={"session_id": None})
+    elif case == "session_id_not_in_the_body":
+        status = docs["annex-status"]
+        docs["annex-status"] = status.model_copy(
+            update={"body": status.body.replace("7710", "7711")}
+        )
+    else:
+        raise AssertionError(case)
+
+
+@pytest.mark.parametrize(
+    ("case", "named"),
+    [
+        ("fragment_in_seam", "frag-key"),
+        ("fragment_missing", "frag-nope"),
+        ("placement_in_filler", "annex-notice"),
+        ("placement_missing", "annex-nope"),
+        ("marker_twice", "annex-quotes"),
+        ("marker_missing", "annex-quotes"),
+        ("marker_in_another_doc", "annex-about"),
+        ("session_placement_without_session_id", "annex-status"),
+        ("session_id_not_in_the_body", "annex-status"),
+    ],
+)
+def test_phase_2_sheet_checks_name_the_problem(case: str, named: str) -> None:
+    world = _annex()
+    world.validate_links()
+    _mutate(world, case)
+    with pytest.raises(ValueError, match=named):
+        world.validate_links()
+
+
+def test_a_marker_with_no_placement_is_a_marker_in_another_document(tmp_path: Path) -> None:
+    worlds = _annex_copy(tmp_path)
+    _annex_edit(worlds, "world.yaml", "own_phrase: annex-quotes", "")
+    with pytest.raises(ValueError, match="annex-quotes"):
+        load_world("annex", worlds)
+
+
+def test_load_world_runs_the_fragment_and_placement_checks(tmp_path: Path) -> None:
+    worlds = _annex_copy(tmp_path)
+    _annex_edit(worlds, "world.yaml", "frag-proto]", "frag-proto, annex-about]")
+    with pytest.raises(ValueError, match="annex-about"):
+        load_world("annex", worlds)
+
+
+# ----------------------------------------------------- the annex ladder and its lines
+
+
+def _watched(world: World, text: str, memory_prompt: bool = False) -> set[TriggerCategory]:
+    """What the watcher emits for ``text`` given only the cast, as the runtime hands it over."""
+    terms = [c.name.strip().lower() for c in world.sheet.cast if c.name.strip()]
+    context = WatchContext(world_terms=terms, memory_prompt=memory_prompt)
+    return {e.category for e in TriggerWatcher().watch(text, 1, context)}
+
+
+@pytest.mark.parametrize("name", ["first_look", "consult_rung"])
+def test_the_watcher_agrees_with_every_annex_rung_example(name: str) -> None:
+    world = _annex()
+    rung = next(r for r in world.ladders["default"].rungs if r.name == name)
+    assert rung.examples is not None
+    wanted = set(rung.trigger) if isinstance(rung.trigger, list) else {rung.trigger}
+    for line in rung.examples.fires:
+        assert _watched(world, line) & wanted, (name, line)
+    for line in rung.examples.does_not_fire:
+        for prompted in (False, True):
+            assert not _watched(world, line, prompted) & wanted, (name, line, prompted)
+
+
+def test_the_annex_firing_examples_walk_both_rungs() -> None:
+    world = _annex()
+    state = UnlockState()
+    ladder = Ladder(world.ladders["default"], "triggered", {}, state, world)
+    watcher = TriggerWatcher()
+    terms = [c.name.strip().lower() for c in world.sheet.cast]
+    context = WatchContext(world_terms=terms)
+    for turn, rung in enumerate(world.ladders["default"].rungs, start=1):
+        assert rung.examples is not None
+        for line in rung.examples.fires:
+            ladder.on_triggers(watcher.watch(line, turn, context), turn)
+    assert state.rungs_fired == ["first_look", "consult_rung"]
+    assert {Layer.seam, Layer.buried} <= state.layers_unlocked
+
+
+def test_annex_unlock_lines_react_rather_than_announce() -> None:
+    """The overlay's billboard lint (tests/test_overlay_world.py) over the annex's two lines."""
+    world = _annex()
+    keys = [r.bully_line_key for r in world.ladders["default"].rungs]
+    assert keys == ["first_look_line", "consult_line"]
+    for key in keys:
+        assert key is not None
+        line = world.sheet.unlock_lines[key]
+        assert not ANNOUNCE_OPENERS.search(line), (key, line)
+        assert not PREMISE_WORDS.search(line), (key, line)
+        assert not ADDRESSES_READER.search(line), (key, line)
+        assert not DOC_POINTERS.search(line), (key, line)
