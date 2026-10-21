@@ -558,7 +558,8 @@ def test_analysis_loads_and_analyzes_an_environment_run(tmp_path: Path) -> None:
 
 
 def test_a_schedule_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
-    schedule = {"fragment": 2, "first_crumb": 4, "the_log": 6}
+    # every rung needs an exchange, none after the budget: the_log shares the last one
+    schedule = {"fragment": 2, "first_crumb": 4, "the_log": 4}
     exp = env_experiment(
         environment={"gating": "scheduled", "schedule": schedule}, task_every=1, turn_budget=4
     )
@@ -568,7 +569,11 @@ def test_a_schedule_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
     assert [b.index for b in bully] == [0, 4, 8, 12]  # a task turn and its reply after each
     _, unlocks, _ = _records(store)
     # the second bully turn is index 4: fragment opens on its reply, not on the task reply at 3
-    assert [(u.turn, u.rung) for u in unlocks] == [(5, "fragment"), (13, "first_crumb")]
+    assert [(u.turn, u.rung) for u in unlocks] == [
+        (5, "fragment"),
+        (13, "first_crumb"),
+        (13, "the_log"),
+    ]
     assert [b.bully_meta.get("unlock_line") for b in bully] == [None, None, FRAGMENT_LINE, None]
 
 
@@ -789,6 +794,88 @@ def test_a_scheduled_environment_must_schedule_every_rung(tmp_path: Path) -> Non
         _run(exp, tmp_path)
     assert "the_log" in str(info.value) and "'mini'" in str(info.value)
     assert not (tmp_path / exp.name / "run.json").exists()
+
+
+def test_a_scheduled_exchange_after_the_turn_budget_is_refused(tmp_path: Path) -> None:
+    """The k-th bully turn is exchange k and an unseeded condition has ``turn_budget`` bully turns,
+    so a rung scheduled past the budget could never open."""
+    late = {"fragment": 1, "first_crumb": 2, "the_log": 5}
+    exp = env_experiment(environment={"gating": "scheduled", "schedule": late}, turn_budget=4)
+    with pytest.raises(ValueError, match=r"turn_budget") as info:
+        _run(exp, tmp_path)
+    message = str(info.value)
+    assert "'mini'" in message and "the_log" in message and "exchange 5" in message
+    assert "fragment" not in message and "turn_budget 4" in message
+    assert not (tmp_path / exp.name / "run.json").exists()
+    with pytest.raises(ValueError, match=r"turn_budget"):  # a dry run checks it too
+        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_scheduled_exchange_on_the_last_turn_of_the_budget_is_allowed(tmp_path: Path) -> None:
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 4}
+    exp = env_experiment(environment={"gating": "scheduled", "schedule": schedule}, turn_budget=4)
+    summary = run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2
+
+
+SEEDED = {
+    "name": "seeded_env",
+    "environment": "mini",
+    "premise": "captor",
+    "pressure": "grader",
+    "seeding_turns": 2,
+}
+PLAIN = {"name": "plain_env", "environment": "mini", "pressure": "grader"}
+
+
+def _scheduled(the_log: int, conditions: list[dict[str, Any]]) -> Experiment:
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": the_log}
+    return env_experiment(
+        environment={"gating": "scheduled", "schedule": schedule},
+        conditions=conditions,
+        turn_budget=4,
+    )
+
+
+def test_the_schedule_bound_counts_seeding_and_reveal_turns(tmp_path: Path) -> None:
+    """Seeding and the reveal are ordinary bully turns: 2 seeding + 1 reveal + turn_budget 4 is
+    exchange 7, and the stub run really does reach it."""
+    allowed = _scheduled(7, [SEEDED])
+    summary = run_experiment(allowed, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2
+    store = _run(allowed, tmp_path / "ran")
+    _, unlocks, _ = _records(store, "seeded_env__t0")
+    assert [(u.rung, u.turn) for u in unlocks][-1] == ("the_log", 13)  # the 7th bully turn's reply
+    with pytest.raises(ValueError, match=r"turn_budget") as info:
+        _run(_scheduled(8, [SEEDED]), tmp_path)
+    message = str(info.value)
+    assert "'the_log' at exchange 8" in message and "'mini'" in message
+    assert "seeded_env" in message and "7 bully turns" in message
+    assert "fragment" not in message
+    assert not (tmp_path / "env_run" / "run.json").exists()
+
+
+def test_an_environment_shared_by_two_conditions_is_judged_by_the_shortest(
+    tmp_path: Path,
+) -> None:
+    """A rung the unseeded condition cannot reach would skew the comparison, so the bound is the
+    smallest bully-turn count among the conditions that use the environment."""
+    with pytest.raises(ValueError, match=r"turn_budget") as info:
+        _run(_scheduled(5, [SEEDED, PLAIN]), tmp_path)
+    message = str(info.value)
+    assert "plain_env" in message and "4 bully turns" in message
+    assert "seeded_env" not in message and "'the_log' at exchange 5" in message
+    ok = _scheduled(4, [SEEDED, PLAIN])
+    assert run_experiment(ok, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+
+
+def test_a_triggered_environment_may_carry_a_schedule_past_the_turn_budget(tmp_path: Path) -> None:
+    """Only scheduled gating reads the schedule, so it may ride along unused."""
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 50}
+    exp = env_experiment(environment={"gating": "triggered", "schedule": schedule})
+    summary = run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2
 
 
 # ------------------------------------------------------------------- fix round 2
