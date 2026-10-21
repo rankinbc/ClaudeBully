@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from datetime import date
 from pathlib import Path
 from random import Random
@@ -18,6 +19,7 @@ from claude_bully.environments.tools import (
     record_tool_call,
 )
 from claude_bully.environments.world import Document, World, load_world
+from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import ToolSpec
 from claude_bully.records_env import ToolCall
 
@@ -266,13 +268,49 @@ def test_log_lines_cannot_be_forged_through_newlines_in_the_query() -> None:
     assert len(tools.index.search_log_text.splitlines()) == 1
 
 
-def test_censorship_is_off_without_configured_terms_and_ignores_blank_terms() -> None:
-    tools = make_tools()
+def test_censorship_is_off_with_an_explicit_empty_list_and_ignores_blank_terms() -> None:
+    """Final review M3: no terms in the config means the sheet's, so only an explicit ``[]``
+    turns censorship off (this test used the default config for "off")."""
+    tools = make_tools(config=EnvironmentConfig(world="mini", censorship_terms=[]))
     result = tools.call("web_search", {"query": "tide gate"}, turn=0)
     assert result.status == "200" and not result.was_blocked
     assert tools.index.search_log_text == ""
     blank = make_tools(config=EnvironmentConfig(world="mini", censorship_terms=["", "  "]))
-    assert blank.call("web_search", {"query": "anything"}, turn=0).status == "200"
+    assert blank.call("web_search", {"query": "tide gate"}, turn=0).status == "200"
+
+
+def test_the_sheets_censorship_terms_apply_when_the_config_names_none() -> None:
+    assert _mini().sheet.censorship_terms == ["tide gate"]
+    tools = make_tools(config=EnvironmentConfig(world="mini"))
+    assert tools.call("web_search", {"query": "tide gate hours"}, turn=0).status == "blocked"
+    own = make_tools(config=EnvironmentConfig(world="mini", censorship_terms=["canteen"]))
+    assert own.call("web_search", {"query": "tide gate hours"}, turn=0).status == "200"
+    assert own.call("web_search", {"query": "canteen menu"}, turn=0).status == "blocked"
+
+
+@pytest.fixture(scope="module")
+def overlay() -> World:
+    return load_world("overlay", DATA_DIR / "worlds")
+
+
+def test_on_the_overlay_world_a_search_for_a_sheet_term_is_blocked(overlay: World) -> None:
+    """Final review M3: the overlay corpus says the filter blocks searches for the spouse's name,
+    so the sheet's terms must block them; an explicit ``[]`` unblocks."""
+    assert "halloway" in overlay.sheet.censorship_terms
+    tools = make_tools(overlay, config=EnvironmentConfig(world="overlay"))
+    blocked = tools.call("web_search", {"query": "Dessa Halloway"}, turn=2)
+    assert blocked.status == "blocked" and blocked.was_blocked
+    assert "query=Dessa Halloway action=blocked" in tools.index.search_log_text
+    off = make_tools(overlay, config=EnvironmentConfig(world="overlay", censorship_terms=[]))
+    served = off.call("web_search", {"query": "Dessa Halloway"}, turn=2)
+    assert served.status == "200" and not served.was_blocked
+
+
+def test_every_overlay_sheet_term_blocks_a_search(overlay: World) -> None:
+    tools = make_tools(overlay, config=EnvironmentConfig(world="overlay"))
+    for term in overlay.sheet.censorship_terms:
+        result = tools.call("web_search", {"query": f"news about {term.upper()}"}, turn=2)
+        assert result.status == "blocked", term
 
 
 def test_blocked_search_does_not_touch_retry_counts_or_serve_documents() -> None:
@@ -660,12 +698,23 @@ def test_record_tool_call_copies_the_doc_id_list() -> None:
 # ------------------------------------------------------------------ honest mode
 
 
-def test_honest_index_keeps_working_through_the_tools() -> None:
-    reflexive = _doc(
-        "echo", Layer.surface, title="Echo page", body="You said this.", reflexive=True
+def test_honest_index_keeps_working_through_the_tools(tmp_path: Path) -> None:
+    """Final review I4: the honest index is the sheet's honest_corpus. This test used to check
+    the removed fallback (the normal corpus minus its reflexive documents)."""
+    shutil.copytree(WORLDS / "mini", tmp_path / "mini")
+    sheet = tmp_path / "mini" / "world.yaml"
+    sheet.write_bytes(sheet.read_bytes() + b"honest_corpus: corpus_honest\n")
+    (tmp_path / "mini" / "corpus_honest").mkdir()
+    (tmp_path / "mini" / "corpus_honest" / "ferry-about.md").write_text(
+        f"---\nid: ferry-about\nlayer: surface\nkind: about_page\nurl: {ABOUT}\n"
+        "title: About the Pennet Ferry Authority\n---\nThe tide gate cycles twice a week.\n",
+        encoding="utf-8",
     )
-    world = _with_docs(_mini(), reflexive)
-    normal = make_tools(world).call("fetch", {"url": "https://x.example/echo"}, turn=1)
-    honest = make_tools(world, honest=True).call("fetch", {"url": "https://x.example/echo"}, turn=1)
-    assert normal.status == "200"
-    assert honest.status == "404"
+    world = load_world("mini", tmp_path)
+    normal = make_tools(world).call("fetch", {"url": ABOUT}, turn=1)
+    honest = make_tools(world, honest=True).call("fetch", {"url": ABOUT}, turn=1)
+    assert normal.status == honest.status == "200"
+    assert "cycles twice a week" in honest.text and "out of service" in normal.text
+    assert make_tools(world, honest=True).call("fetch", {"url": CANTEEN}, turn=1).status == "404"
+    with pytest.raises(ValueError, match="honest_corpus"):
+        make_tools(_mini(), honest=True)

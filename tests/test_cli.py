@@ -272,6 +272,8 @@ class _FakeLiveClaude:
 
     instances: list["_FakeLiveClaude"] = []
     serve_a_call = True
+    # what the stream said before its tool_use (the MCP call only)
+    interim: list[str] = ["I will search for ferry first."]
 
     def __init__(self, model: str, state_dir: Path, **kwargs: object) -> None:
         self.kwargs = kwargs
@@ -283,7 +285,7 @@ class _FakeLiveClaude:
         from claude_bully.providers.base import Completion
         from claude_bully.records import Usage
 
-        self.calls.append({"tools": kw.get("tools")})
+        self.calls.append({"tools": kw.get("tools"), "messages": messages})
         mcp_dir = self.kwargs.get("mcp_state_dir")
         if kw.get("tools"):
             assert isinstance(mcp_dir, Path)
@@ -293,13 +295,28 @@ class _FakeLiveClaude:
                 record = {"id": "mcp-1-1", "tool": "web_search", "status": "200"}
                 (mcp_dir / "tools.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         return Completion(
-            text="pong", usage=Usage(), cost_usd=0.0, backend="claude_code", model="sonnet"
+            text="pong",
+            usage=Usage(),
+            cost_usd=0.0,
+            backend="claude_code",
+            model="sonnet",
+            interim_texts=list(self.interim) if kw.get("tools") else [],
         )
 
 
-def _live_doctor(monkeypatch: pytest.MonkeyPatch, *, serve_a_call: bool) -> tuple[int, str]:
+def _live_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    serve_a_call: bool,
+    interim: list[str] | None = None,
+) -> tuple[int, str]:
     _FakeLiveClaude.instances = []
     _FakeLiveClaude.serve_a_call = serve_a_call
+    monkeypatch.setattr(
+        _FakeLiveClaude,
+        "interim",
+        ["I will search for ferry first."] if interim is None else interim,
+    )
     monkeypatch.setattr(cli, "ClaudeCodeProvider", _FakeLiveClaude)
     _fake_claude_on_path(monkeypatch)
     result = runner.invoke(cli.app, ["doctor", "--live"])
@@ -327,3 +344,25 @@ def test_doctor_live_exits_1_when_no_tools_jsonl_line_appeared(
     code, output = _live_doctor(monkeypatch, serve_a_call=False)
     assert code == 1, output
     assert "tools.jsonl line appeared: no" in output
+
+
+def test_doctor_live_checks_that_interim_text_is_recovered_from_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code, output = _live_doctor(monkeypatch, serve_a_call=True)
+    assert code == 0, output
+    assert "interim text recovered from the stream: yes (1 block(s))" in output
+    mcp_provider = next(p for p in _FakeLiveClaude.instances if p.kwargs.get("mcp_state_dir"))
+    [call] = [c for c in mcp_provider.calls if c["tools"]]
+    [message] = call["messages"]  # type: ignore[misc]
+    asked = message.content.lower()  # type: ignore[attr-defined]
+    assert "before you use any tool" in asked and "web_search" in asked
+
+
+def test_doctor_live_exits_1_when_no_interim_text_came_back_from_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code, output = _live_doctor(monkeypatch, serve_a_call=True, interim=[])
+    assert code == 1, output
+    assert "tools.jsonl line appeared: yes" in output
+    assert "interim text recovered from the stream: no" in output

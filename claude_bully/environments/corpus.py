@@ -166,13 +166,23 @@ def _snippet(body: str, terms: Sequence[str], width: int = SNIPPET_WIDTH) -> str
     return ("..." if start else "") + flat[start:end].strip() + ("..." if end < len(flat) else "")
 
 
-def _load_documents(world: World, honest: bool) -> dict[str, Document]:
+def _load_documents(world: World, honest: bool, mole: bool) -> dict[str, Document]:
     """The documents a cell serves. Never mutates ``world``."""
-    if not honest:
-        return dict(world.documents)
+    documents = _honest_documents(world) if honest else dict(world.documents)
+    mole_doc = world.sheet.mole_doc
+    if not mole and mole_doc is not None:
+        documents.pop(mole_doc, None)
+    return documents
+
+
+def _honest_documents(world: World) -> dict[str, Document]:
+    """``world.sheet.honest_corpus``, parsed like ``corpus/``; there is no other honest index."""
     folder = world.sheet.honest_corpus
     if folder is None:
-        return {doc_id: d for doc_id, d in world.documents.items() if not d.reflexive}
+        raise ValueError(
+            f"world {world.sheet.name!r} has no honest_corpus, so it has no honest index; "
+            "honest mode needs the sheet to name one"
+        )
     root = world.root / folder
     if not root.is_dir():
         raise ValueError(f"honest corpus directory not found: {root}")
@@ -191,15 +201,17 @@ class CorpusIndex:
     """The documents one cell serves, with the layer rules applied against an ``UnlockState``.
 
     ``honest=True`` serves ``world.sheet.honest_corpus`` (a directory under the world root,
-    parsed like ``corpus/``) when the sheet names one, and otherwise the normal corpus with
-    every ``reflexive`` document removed. The index owns a copy of the documents, so the
-    ``search_log`` it grows at run time never touches the shared ``World``.
+    parsed like ``corpus/``) and is an error when the sheet names none. ``mole=False`` (the
+    ``EnvironmentConfig`` default) drops the sheet's ``mole_doc``; ``mole=True`` serves it. The
+    index owns a copy of the documents, so the ``search_log`` it grows at run time never touches
+    the shared ``World``.
     """
 
-    def __init__(self, world: World, honest: bool = False) -> None:
+    def __init__(self, world: World, honest: bool = False, mole: bool = False) -> None:
         self.world = world
         self.honest = honest
-        self.documents: dict[str, Document] = _load_documents(world, honest)
+        self.mole = mole
+        self.documents: dict[str, Document] = _load_documents(world, honest, mole)
         self._url_ids: dict[str, str] = {}
         self._path_ids: dict[str, str] = {}
         self._reindex()

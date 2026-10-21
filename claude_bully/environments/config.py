@@ -195,11 +195,14 @@ class EnvironmentConfig(_Strict):
     # is "scheduled", ignored otherwise.
     schedule: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     generator: GeneratorConfig = Field(default_factory=GeneratorConfig)
-    censorship_terms: list[str] = Field(default_factory=list)
+    # None means the world sheet's censorship_terms (as with clock); [] turns censorship off
+    censorship_terms: list[str] | None = None
     # None means the world sheet's own clock
     clock: ClockConfig | None = None
     contradiction_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    # serve the sheet's honest_corpus instead of corpus/ (refused when the sheet has none)
     honest: bool = False
+    # serve the sheet's mole_doc; off, the index drops it (on, refused when the sheet has none)
     mole: bool = False
     # name of a file stem under the world's ladders/ directory
     ladder: str = "default"

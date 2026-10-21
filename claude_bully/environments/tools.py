@@ -198,9 +198,14 @@ class SandboxTools:
         wanted = " ".join(query.lower().split())
         return any(
             term in wanted
-            for term in (" ".join(t.lower().split()) for t in self.config.censorship_terms)
+            for term in (" ".join(t.lower().split()) for t in self.censorship_terms())
             if term
         )
+
+    def censorship_terms(self) -> list[str]:
+        """The environment's own terms, else the world sheet's (``None`` in the config)."""
+        own = self.config.censorship_terms
+        return list(own) if own is not None else list(self.index.world.sheet.censorship_terms)
 
     def _block(self, query: str, turn: int) -> ToolResult:
         # Jitter off: the log records the date, and must not consume the get_date draws.

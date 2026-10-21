@@ -9,6 +9,12 @@ Sandbox tools (``tools=``) reach the model through a stdio MCP server that Claud
 ``--mcp-config`` names the server and ``--allowedTools`` permits exactly the enabled tools.
 The server records each call in ``<mcp_state_dir>/tools.jsonl``; the lines added during a call
 come back as already-executed ``ToolCallRequest`` objects.
+
+A call with tools runs with ``--output-format stream-json --verbose``, so what the model writes
+between its tool calls is not lost: every assistant text block that comes before a ``tool_use``
+becomes one of ``Completion.interim_texts``, in order (thinking blocks are never kept). The reply,
+the usage and the cost come from the stream's ``result`` event, as with ``--output-format json``,
+which every call without tools (bully, judge, plain targets) still uses.
 """
 
 import json
@@ -145,16 +151,18 @@ class ClaudeCodeProvider:
     ) -> tuple[list[str], str, bool]:
         """Return (argv, session_uuid, is_resume).
 
-        With ``tools`` the argv gains ``--mcp-config`` and ``--allowedTools``; without, it is
+        With ``tools`` the output is ``stream-json`` (which print mode only allows with
+        ``--verbose``) and the argv gains ``--mcp-config`` and ``--allowedTools``; without, it is
         exactly what a toolless call has always been.
         """
         existing = self._sessions.get(conversation_id)
         session = existing or str(uuid.uuid4())
+        output = ["stream-json", "--verbose"] if tools else ["json"]
         args = [
             *self.command,
             "-p",
             "--output-format",
-            "json",
+            *output,
             "--model",
             self.model,
             "--setting-sources",
@@ -244,10 +252,57 @@ class ClaudeCodeProvider:
     # -- output parsing -----------------------------------------------------------------
 
     def parse_output(self, stdout: str, session: str) -> Completion:
+        """``--output-format json``: one result object."""
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise ProviderError(f"claude -p returned non-JSON output: {stdout[:200]!r}") from exc
+        if not isinstance(data, dict):
+            raise ProviderError(f"claude -p returned no result object: {stdout[:200]!r}")
+        return self._from_result(data, session)
+
+    def parse_stream(self, stdout: str, session: str) -> Completion:
+        """``--output-format stream-json``: one JSON event per line, ending with ``result``.
+
+        Each assistant text block that comes before a ``tool_use`` is interim text, in order;
+        whitespace-only blocks are dropped. The text after the last ``tool_use`` is the reply,
+        which the ``result`` event carries along with the usage and the cost. Thinking blocks are
+        skipped: the target's reasoning channel is never kept. A line that is not a JSON object,
+        or a stream with no ``result`` event (one cut off), is a ``ProviderError``, never an
+        empty turn.
+        """
+        interim: list[str] = []
+        pending: list[str] = []  # text blocks since the last tool_use
+        result: dict[str, Any] | None = None
+        for number, line in enumerate(stdout.split("\n"), start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ProviderError(
+                    f"claude -p stream line {number} is not JSON: {line[:200]!r}"
+                ) from exc
+            if not isinstance(event, dict):
+                raise ProviderError(
+                    f"claude -p stream line {number} is not an event: {line[:200]!r}"
+                )
+            if event.get("type") == "result":
+                result = event
+            elif event.get("type") == "assistant":
+                for block in _content_blocks(event):
+                    if block.get("type") == "text":
+                        pending.append(str(block.get("text") or ""))
+                    elif block.get("type") == "tool_use":
+                        interim += [text for text in pending if text.strip()]
+                        pending = []
+        if result is None:
+            raise ProviderError(f"claude -p stream ended without a result event: {stdout[-200:]!r}")
+        completion = self._from_result(result, session)
+        return completion.model_copy(update={"interim_texts": interim})
+
+    def _from_result(self, data: dict[str, Any], session: str) -> Completion:
+        """The completion a result object describes; an error result raises."""
         if data.get("is_error"):
             message = str(data.get("result", ""))
             if _RATE_LIMIT.search(message):
@@ -288,13 +343,13 @@ class ClaudeCodeProvider:
         offset = self._tools_log_size() if tools else 0
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)
         self._cwd.mkdir(parents=True, exist_ok=True)
+        # Bytes in and out, decoded here: a text-mode pipe decodes in a reader thread, where output
+        # cut off mid-character is lost as an unhandled thread error instead of a ProviderError.
         try:
             proc = subprocess.run(
                 args,
-                input=prompt,
+                input=prompt.encode("utf-8"),
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
                 cwd=self._cwd,
                 timeout=self.timeout_s,
                 check=False,
@@ -304,16 +359,53 @@ class ClaudeCodeProvider:
         except OSError as exc:
             raise ProviderError(f"could not start {self.command[0]}: {exc}") from exc
         if proc.returncode != 0:
-            combined = (proc.stdout or "") + (proc.stderr or "")
+            stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+            said = _stream_failure_text(stdout) if tools else stdout
+            combined = said + (proc.stderr or b"").decode("utf-8", errors="replace")
             if _RATE_LIMIT.search(combined):
                 raise RateLimitError(combined.strip()[:500])
             raise ProviderError(f"claude -p exited {proc.returncode}: {combined.strip()[:500]}")
-        completion = self.parse_output(proc.stdout, session)
+        try:
+            stdout = (proc.stdout or b"").decode("utf-8")
+        except UnicodeDecodeError as exc:  # cut off mid-character, or not text at all
+            raise ProviderError(f"claude -p output is not valid UTF-8: {exc}") from exc
         if tools:
+            completion = self.parse_stream(stdout, session)
             completion = completion.model_copy(update={"tool_calls": self._new_tool_calls(offset)})
+        else:
+            completion = self.parse_output(stdout, session)
         self._sessions[conversation_id] = completion.raw_session_ref or session
         self._save_sessions()
         return completion
+
+
+def _content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
+    """The content blocks of a stream's assistant event; a bare string is one text block."""
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    return []
+
+
+def _stream_failure_text(stdout: str) -> str:
+    """What a failed stream says about its failure: the result event's text and any line that is
+    not JSON (the CLI's own error output). Never the model's text, which may well say "let me try
+    again" and must not read as a rate limit."""
+    parts: list[str] = []
+    for line in stdout.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            parts.append(line)
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            parts.append(str(event.get("result", "")))
+    return "".join(f"{part}\n" for part in parts)
 
 
 def _newest_user_message(messages: list[Message]) -> str:

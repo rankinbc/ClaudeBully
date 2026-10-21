@@ -448,6 +448,19 @@ def test_session_keeps_the_text_of_each_tool_round(tmp_path: Path) -> None:
     assert stopped.round_texts == ["still looking"] * 4  # the four rounds that were answered
 
 
+def test_a_whitespace_only_round_text_is_not_kept(tmp_path: Path) -> None:
+    """Carry 3: text beside a tool call joins the round texts only when it is not blank."""
+    session, _ = _session(tmp_path)
+    target = _Scripted(
+        ("\n\n", [_search(0)]),
+        (" \t ", [_search(1)]),
+        ("Found it.", [_search(2)]),
+        ("Every forty minutes.", []),
+    )
+    result = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    assert result.round_texts == ["Found it."]
+
+
 def test_rebuilt_history_carries_the_round_texts(tmp_path: Path) -> None:
     session, _ = _session(tmp_path)
     first = _Scripted(("Let me look.", [_search(0)]), ("Every forty minutes.", []))

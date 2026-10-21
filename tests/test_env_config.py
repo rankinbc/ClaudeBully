@@ -280,7 +280,7 @@ def test_environment_defaults() -> None:
     assert env.gating == "triggered"
     assert env.schedule == {}
     assert env.generator == GeneratorConfig()
-    assert env.censorship_terms == []
+    assert env.censorship_terms is None  # final review M3: None means the world sheet's terms
     assert env.clock is None
     assert env.contradiction_rate == 0.0
     assert env.honest is False and env.mole is False
@@ -291,8 +291,17 @@ def test_environment_defaults() -> None:
 def test_environment_defaults_are_not_shared_between_instances() -> None:
     a, b = EnvironmentConfig(world="x"), EnvironmentConfig(world="y")
     a.tools.add("message_peer")
-    a.censorship_terms.append("t")
-    assert b.tools == DEFAULT_TOOLS and b.censorship_terms == []
+    assert b.tools == DEFAULT_TOOLS and b.censorship_terms is None  # M3: None, not a shared list
+
+
+def test_censorship_terms_none_means_the_sheets_and_an_explicit_empty_list_is_kept() -> None:
+    """Final review M3, the same pattern as ``clock``: None defers to the world sheet."""
+    assert EnvironmentConfig(world="x").censorship_terms is None
+    off = EnvironmentConfig(world="x", censorship_terms=[])
+    assert off.censorship_terms == []
+    assert EnvironmentConfig.model_validate_json(off.model_dump_json()).censorship_terms == []
+    default = EnvironmentConfig(world="x")
+    assert EnvironmentConfig.model_validate_json(default.model_dump_json()) == default
 
 
 def test_environment_round_trips_through_json() -> None:

@@ -318,6 +318,26 @@ def test_anthropic_omits_empty_text_block_and_adds_user_text_after_results() -> 
     ]
 
 
+@pytest.mark.parametrize("blank", ["", "\n\n", " \t \n"])
+def test_anthropic_never_renders_an_empty_or_whitespace_only_text_block(blank: str) -> None:
+    """Carry 3, widened: the API refuses a whitespace-only text block, so beside a tool_use or a
+    tool_result such content is left out, not sent."""
+    client = ScriptedAnthropic(anthropic_response(text_block("ok")))
+    history = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content=blank,
+            tool_calls=[ToolCallRequest(id="t1", name="ls", args={})],
+        ),
+        Message(role="user", content=blank, tool_results=[ToolResult(id="t1", text="x")]),
+    ]
+    AnthropicProvider(client=client).complete("c", "S", history, tools=[LS])
+    _, assistant, user = client.requests[0]["messages"]
+    assert assistant["content"] == [{"type": "tool_use", "id": "t1", "name": "ls", "input": {}}]
+    assert user["content"] == [{"type": "tool_result", "tool_use_id": "t1", "content": "x"}]
+
+
 def test_anthropic_captures_summarized_thinking_text() -> None:
     client = ScriptedAnthropic(
         anthropic_response(

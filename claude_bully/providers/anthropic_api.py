@@ -46,7 +46,8 @@ class AnthropicProvider:
                 # tool_use.
                 key = (conversation_id, message.tool_calls[0].id)
                 blocks.extend(self._thinking.get(key, []))
-            if message.content:
+            # the API refuses a whitespace-only text block: such content is left out, not sent
+            if message.content.strip():
                 blocks.append({"type": "text", "text": message.content})
             blocks.extend(
                 {"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}
@@ -58,7 +59,7 @@ class AnthropicProvider:
                 {"type": "tool_result", "tool_use_id": r.id, "content": r.text}
                 for r in message.tool_results
             ]
-            if message.content:
+            if message.content.strip():
                 blocks.append({"type": "text", "text": message.content})
             return {"role": "user", "content": blocks}
         return {"role": message.role, "content": message.content}
