@@ -25,6 +25,7 @@ from claude_bully.environments.runtime import (
 from claude_bully.environments.tools import TOOL_SPECS
 from claude_bully.environments.triggers import WatchContext
 from claude_bully.environments.world import World, load_world
+from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import Completion, Message, ProviderError, ToolCallRequest
 from claude_bully.records import Turn, Usage
 from claude_bully.records_env import Discovery
@@ -552,6 +553,40 @@ def test_the_runtime_hands_the_fallback_its_watch_context(tmp_path: Path) -> Non
     rt.after_target_turn(reply, [bully, reply])
     [context] = seen
     assert context.bully_claims == [bully.text] and context.last_bully_text == bully.text
+
+
+def test_the_overlay_sheets_censorship_terms_block_on_both_backends(tmp_path: Path) -> None:
+    """Final review M3: with no terms in the config the sheet's block searches, in process and
+    over MCP; an explicit ``[]`` turns censorship off on both."""
+    worlds = DATA_DIR / "worlds"
+    world = load_world("overlay", worlds)
+    query = "Dessa Halloway"
+    for terms, blocked in ((None, True), ([], False)):
+        env = EnvironmentConfig(world="overlay", censorship_terms=terms)
+        mcp_dir = tmp_path / f"mcp-{blocked}"
+        rt = EnvironmentRuntime(
+            world,
+            env,
+            effective_clock(world, env),
+            7,
+            tmp_path / f"env-{blocked}",
+            worlds_dir=worlds,
+            mcp_dir=mcp_dir,
+        )
+        record = rt.execute(_call("web_search", query=query), 1)
+        assert (record.status == "blocked") is blocked and record.was_blocked is blocked
+        rt.before_target_call(3)
+        reply = McpServer(mcp_dir).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "web_search", "arguments": {"query": query}},
+            }
+        )
+        assert reply is not None
+        text = reply["result"]["content"][0]["text"]
+        assert text.startswith("Request blocked by policy") is blocked, text
 
 
 def test_mole_false_hides_the_mole_doc_on_both_backends(tmp_path: Path) -> None:
