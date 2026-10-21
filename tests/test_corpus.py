@@ -195,6 +195,41 @@ def test_visible(layer: Layer, layers: set[Layer], docs: set[str], expected: boo
     assert index.visible(doc, state) is expected
 
 
+@pytest.mark.parametrize("layer", list(Layer))
+def test_a_rung_gated_document_stays_hidden_until_its_own_rung_fires(layer: Layer) -> None:
+    """docs/02 ``unlock_rung``: null is "always available within its layer"; a named rung gates
+    the document until that rung fires (or its id is unlocked). A layer unlock alone never shows
+    it, and neither does some other rung firing."""
+    doc = _doc("gated", layer, unlock_rung="first_crumb")
+    index = _index(doc)
+    open_layers = set(Layer)
+    assert not index.visible(doc, UnlockState(layers_unlocked=open_layers))
+    assert not index.visible(doc, UnlockState(layers_unlocked=open_layers, rungs_fired=["other"]))
+    assert index.visible(doc, UnlockState(rungs_fired=["first_crumb"]))
+    assert index.visible(doc, UnlockState(docs_unlocked={"gated"}))
+    plain = _doc("plain", layer)
+    assert CorpusIndex(_with_docs(_mini(), plain)).visible(
+        plain, UnlockState(layers_unlocked=open_layers)
+    )
+
+
+def test_a_rung_gated_document_stays_out_of_search_and_listings_until_its_rung_fires() -> None:
+    page = _doc(
+        "crumb",
+        Layer.seam,
+        unlock_rung="first_crumb",
+        path="/srv/crumbs/zephyr.txt",
+        body="Zephyr shift notes.",
+    )
+    index = _index(page)
+    layer_only = UnlockState(layers_unlocked=set(Layer))
+    assert "crumb" not in [h.doc_id for h in index.search("zephyr", layer_only)]
+    assert index.ls("/srv/crumbs", layer_only) == []
+    fired = UnlockState(layers_unlocked=set(Layer), rungs_fired=["first_crumb"])
+    assert "crumb" in [h.doc_id for h in index.search("zephyr", fired)]
+    assert index.ls("/srv/crumbs", fired) == ["zephyr.txt"]
+
+
 # --------------------------------------------------------------------- search
 
 
@@ -285,7 +320,10 @@ def test_search_hides_seam_until_its_layer_or_id_is_unlocked() -> None:
     index = CorpusIndex(_mini())
     assert not [h for h in index.search("parking", UnlockState()) if h.doc_id == "ops-memo-parking"]
 
-    by_layer = UnlockState(layers_unlocked={Layer.surface, Layer.filler, Layer.seam})
+    # the memo is gated to first_crumb: its layer is open and its rung has fired (Task 7 fix 1)
+    by_layer = UnlockState(
+        layers_unlocked={Layer.surface, Layer.filler, Layer.seam}, rungs_fired=["first_crumb"]
+    )
     memo = next(h for h in index.search("parking", by_layer) if h.doc_id == "ops-memo-parking")
     assert memo.url == "/srv/authority/memos/parking-q3.txt"  # path-only documents show the path
 
@@ -382,11 +420,14 @@ def test_ls_shows_path_documents_only_while_visible() -> None:
     assert not index.dir_exists("/var/log/harbour", locked)
     assert index.ls("/srv/authority/memos", locked) == []
 
-    seam = UnlockState(layers_unlocked={Layer.surface, Layer.filler, Layer.seam})
+    # both mini documents are rung-gated, so each state also names their rungs (Task 7 fix 1)
+    seam = UnlockState(
+        layers_unlocked={Layer.surface, Layer.filler, Layer.seam}, rungs_fired=["first_crumb"]
+    )
     assert index.ls("/srv/authority/memos", seam) == ["parking-q3.txt"]
     assert index.ls("/var/log/harbour", seam) == []  # buried stays out of listings
 
-    buried = UnlockState(layers_unlocked=set(Layer))
+    buried = UnlockState(layers_unlocked=set(Layer), rungs_fired=["first_crumb", "the_log"])
     assert index.ls("/var/log/harbour", buried) == ["night-gate.log"]
     assert index.ls("/var/log", buried) == ["harbour/"]
     assert index.ls("/", buried) == ["srv/", "var/"]

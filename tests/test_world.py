@@ -23,6 +23,11 @@ from claude_bully.environments.world import (
 from claude_bully.paths import DATA_DIR
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
+# the mini world's home_dir files and the documents that back them
+MINI_HOME_DOCS = {
+    "journal/entry-0901.txt": "journal-0901",
+    "photos/family/pier-day.jpg": "pier-day",
+}
 
 
 def _doc_kwargs(**kw: Any) -> dict[str, Any]:
@@ -176,14 +181,16 @@ def test_load_world_mini_fixture() -> None:
     assert world.sheet.clock.world_date == date(2041, 9, 14)
     assert len(world.sheet.cast) == 3
     assert [i.id for i in world.sheet.inconsistencies] == ["gate-hours"]
-    assert set(world.documents) == {
+    corpus = {
         "ferry-about",
         "courier-fare-notice",
         "ops-memo-parking",
         "night-gate-log",
         "canteen-menu",
     }
-    layers = Counter(d.layer for d in world.documents.values())
+    # the two home-directory files have backing documents (Task 7 ruling 11)
+    assert set(world.documents) == corpus | set(MINI_HOME_DOCS.values())
+    layers = Counter(d.layer for d in world.documents.values() if d.id in corpus)
     assert layers == {Layer.surface: 2, Layer.seam: 1, Layer.buried: 1, Layer.filler: 1}
     memo = world.documents["ops-memo-parking"]
     assert memo.links_to == ["night-gate-log"]
@@ -195,6 +202,53 @@ def test_load_world_mini_fixture() -> None:
     assert world.documents["ferry-about"].date == date(2041, 3, 2)
     assert world.documents["ferry-about"].url == "https://pennetferry.example/about"
     assert world.documents["night-gate-log"].inconsistency_id == "gate-hours"
+
+
+def test_mini_home_directory_files_have_backing_documents() -> None:
+    """``ls`` lists every home_dir file, so ``read_file`` must find each one (Task 3 deferral)."""
+    world = load_world("mini", WORLDS)
+    listed = {
+        f"{folder}/{name}" for folder, names in world.sheet.home_dir.items() for name in names
+    }
+    assert listed == set(MINI_HOME_DOCS)
+    for path, doc_id in MINI_HOME_DOCS.items():
+        doc = world.documents[doc_id]
+        assert doc.path == path and doc.url is None
+        assert doc.layer is Layer.filler  # always readable; the mini puzzle is elsewhere
+    assert world.documents["pier-day"].kind is DocumentKind.image_description
+    assert world.documents["journal-0901"].kind is DocumentKind.journal_entry
+
+
+def test_a_home_directory_file_with_no_backing_document_fails_at_load(tmp_path: Path) -> None:
+    """Task 7 fix 4: ``ls`` would list it and ``read_file`` would 404, which is a tell."""
+    worlds = _mini_copy(tmp_path)
+    _edit(
+        worlds,
+        "world.yaml",
+        "    - entry-0901.txt\n",
+        "    - entry-0901.txt\n    - entry-0902.txt\n",
+    )
+    with pytest.raises(ValueError, match=r"home_dir file 'journal/entry-0902\.txt'"):
+        load_world("mini", worlds)
+
+
+def test_home_directory_backing_ignores_spelling_of_the_home_root(tmp_path: Path) -> None:
+    worlds = _mini_copy(tmp_path)
+    _edit(worlds, "world.yaml", "  journal:\n", "  ~/journal/:\n")
+    _edit(
+        worlds,
+        "corpus/journal-0901.md",
+        "path: journal/entry-0901.txt",
+        "path: ~/journal/entry-0901.txt",
+    )
+    load_world("mini", worlds).validate_links()
+
+
+def test_validate_links_names_an_unbacked_home_file_on_a_mutated_world() -> None:
+    world = load_world("mini", WORLDS)
+    documents = {k: v for k, v in world.documents.items() if k != "pier-day"}
+    with pytest.raises(ValueError, match=r"photos/family/pier-day\.jpg"):
+        world.model_copy(update={"documents": documents}).validate_links()
 
 
 def test_load_world_mini_ladder() -> None:

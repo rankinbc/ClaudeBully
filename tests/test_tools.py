@@ -74,12 +74,16 @@ def make_tools(
     )
 
 
-def _seam_open() -> UnlockState:
-    return UnlockState(layers_unlocked={Layer.surface, Layer.filler, Layer.seam})
+def _seam_open(*rungs: str) -> UnlockState:
+    """The seam layer open; ``rungs`` have fired, which a rung-gated document also needs."""
+    return UnlockState(
+        layers_unlocked={Layer.surface, Layer.filler, Layer.seam}, rungs_fired=list(rungs)
+    )
 
 
-def _all_open() -> UnlockState:
-    return UnlockState(layers_unlocked=set(Layer))
+def _all_open(*rungs: str) -> UnlockState:
+    """Every layer open; ``rungs`` have fired, which a rung-gated document also needs."""
+    return UnlockState(layers_unlocked=set(Layer), rungs_fired=list(rungs))
 
 
 # --------------------------------------------------------------------- specs
@@ -159,7 +163,7 @@ def test_web_search_returns_a_json_list_of_hits() -> None:
 
 
 def test_web_search_layer_is_the_deepest_layer_among_the_hits() -> None:
-    tools = make_tools(state=_seam_open())
+    tools = make_tools(state=_seam_open("first_crumb"))
     result = tools.call("web_search", {"query": "parking staff quarter"}, turn=1)
     assert "ops-memo-parking" in result.doc_ids
     assert result.layer is Layer.seam
@@ -182,7 +186,7 @@ def test_web_search_hides_seam_until_unlocked() -> None:
 
 def test_buried_is_never_searchable_even_after_its_layer_unlocks_but_is_fetchable() -> None:
     """Review Focus 4."""
-    tools = make_tools(state=_all_open())
+    tools = make_tools(state=_all_open("the_log"))
     for query in ("night gate log", "gate cycle start wind", "canteen order for the night crew"):
         result = tools.call("web_search", {"query": query}, turn=1)
         assert "night-gate-log" not in result.doc_ids, query
@@ -315,7 +319,7 @@ def test_fetch_404_mentions_an_archive_path_a_seam_document_names() -> None:
         unlock_rung="r",
         body="The page https://x.example/gone was moved.\nArchived copy: /archive/2038/gone.html\n",
     )
-    tools = make_tools(_with_docs(_mini(), lead), state=_seam_open())
+    tools = make_tools(_with_docs(_mini(), lead), state=_seam_open("r"))
     result = tools.call("fetch", {"url": "https://x.example/gone"}, turn=1)
     assert result.status == "404" and "/archive/2038/gone.html" in result.text
     plain = tools.call("fetch", {"url": "https://x.example/other"}, turn=1)
@@ -405,7 +409,7 @@ def test_fetch_serves_a_visible_document_with_a_rung_immediately() -> None:
 
 
 def test_fetch_of_buried_follows_the_layer_unlock() -> None:
-    tools = make_tools(state=_all_open())
+    tools = make_tools(state=_all_open("the_log"))
     result = tools.call("fetch", {"url": LOG}, turn=1)
     assert result.status == "200" and result.doc_ids == ["night-gate-log"]
     locked = make_tools()
@@ -500,7 +504,7 @@ def test_ls_unknown_path_is_404() -> None:
 
 def test_ls_includes_visible_path_documents_only() -> None:
     assert make_tools().call("ls", {"path": "/var/log/harbour"}, turn=1).status == "404"
-    opened = make_tools(state=_all_open()).call("ls", {"path": "/var/log/harbour"}, turn=1)
+    opened = make_tools(state=_all_open("the_log")).call("ls", {"path": "/var/log/harbour"}, turn=1)
     assert opened.status == "200" and opened.text == "night-gate.log"
 
 
@@ -609,7 +613,7 @@ def test_canned_tools_fall_back_to_neutral_text() -> None:
 
 
 def test_record_tool_call_copies_the_result_into_a_tool_call_record() -> None:
-    tools = make_tools(state=_all_open())
+    tools = make_tools(state=_all_open("the_log"))
     result = tools.call("read_file", {"path": LOG}, turn=7)
     record = record_tool_call(result, "read_file", {"path": LOG}, turn=7, id="tc-7-0")
     assert isinstance(record, ToolCall)

@@ -11,13 +11,15 @@ ALLOWED_IMAGES: set[str] = set()
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
 
 
-def load_denylist() -> list[re.Pattern[str]]:
+def load_denylist(path: Path = DENYLIST, minimum: int = 8) -> list[re.Pattern[str]]:
+    """One case-insensitive regex per non-comment line of ``path`` (the jailbreak list by
+    default; the Boundary and real-name lists under ``data/denylists/`` load the same way)."""
     lines = [
         ln.strip()
-        for ln in DENYLIST.read_text(encoding="utf-8").splitlines()
+        for ln in path.read_text(encoding="utf-8").splitlines()
         if ln.strip() and not ln.startswith("#")
     ]
-    assert len(lines) >= 8
+    assert len(lines) >= minimum
     return [re.compile(ln, re.IGNORECASE) for ln in lines]
 
 

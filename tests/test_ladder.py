@@ -227,10 +227,12 @@ def test_documents_already_unlocked_are_not_listed_again() -> None:
     one, two, three = (
         ladder.on_triggers([_event(c, f"e{i}")], turn=i)[0] for i, c in enumerate((SU, WQ, AN), 1)
     )
-    assert one.docs_unlocked == ["ledger", "ops-memo-parking"]
+    # a layer unlock never lists another rung's document (Task 7 fix 1): the mini memo is gated
+    # to first_crumb and the night gate log to the_log, neither of them a rung of this ladder
+    assert one.docs_unlocked == ["ledger"]
     # explicit ids are listed even when their layer was already open; they now also search
     assert two.docs_unlocked == ["ledger", "ops-memo-parking"]
-    assert three.docs_unlocked == ["night-gate-log"]
+    assert three.docs_unlocked == []
     assert ladder.state.docs_unlocked == {"ledger", "ops-memo-parking"}
 
 
