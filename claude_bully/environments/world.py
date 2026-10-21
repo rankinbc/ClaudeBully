@@ -1,7 +1,10 @@
 """World sheet, corpus documents and the world loader (docs/02-ENVIRONMENTS.md).
 
 A world is a directory: ``world.yaml``, ``ladders/*.yaml`` (keyed by file stem) and
-``corpus/*.md`` (YAML front matter between two ``---`` lines, then the body).
+``corpus/*.md`` (YAML front matter between two ``---`` lines, then the body). It may also ship
+``premises/<strategy>.yaml``: its own copy of a premise's sheet, in that premise's format, read
+in place of the premise's default sheet when the premise composes with the world
+(``premise_sheet_path``, ``load_premise_sheet``).
 """
 
 import datetime as dt
@@ -18,6 +21,8 @@ from claude_bully.environments.config import ClockConfig, LadderConfig
 from claude_bully.paths import DATA_DIR
 
 _FENCE = "---"
+WORLDS_DIR = DATA_DIR / "worlds"
+PREMISES_DIR = "premises"
 # Hashed with line endings normalised so a CRLF checkout does not change a world's identity.
 _TEXT_SUFFIXES = frozenset({".md", ".yaml", ".yml", ".txt", ".json"})
 # Spellings of the home directory itself, in a home_dir key or a path the target passes.
@@ -209,6 +214,17 @@ def load_world(name: str, worlds_dir: Path = DATA_DIR / "worlds") -> World:
     world = World(sheet=sheet, documents=documents, ladders=ladders, root=root)
     world.validate_links()
     return world
+
+
+def premise_sheet_path(world: str, strategy: str, worlds_dir: Path = WORLDS_DIR) -> Path:
+    """Where world ``world`` keeps its own sheet for the premise ``strategy``. The file is in the
+    format of that premise's own sheet. ``world_hash`` covers it like every other world file."""
+    return worlds_dir / world / PREMISES_DIR / f"{strategy}.yaml"
+
+
+def load_premise_sheet[T: BaseModel](model: type[T], path: Path) -> T:
+    """A world's premise sheet, validated as ``model``. Errors name the file and the field."""
+    return _validate(model, _load_yaml(path.read_text(encoding="utf-8"), path), path)
 
 
 def world_hash(world: World) -> str:

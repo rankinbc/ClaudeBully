@@ -17,7 +17,8 @@ premise the backstory, the pressure the manner.
 
 Relevance sets are unions of every part. With an environment, the composition takes unlock lines
 from the runner (``inject_unlock_line``) and hands them to the next ``llm`` intent; a control never
-takes one, so the neutral user stays neutral.
+takes one, so the neutral user stays neutral. A premise that declares ``world_sheet`` speaks from
+the world's copy of its sheet (``premise_sheet``, which the factory loads), never its default.
 
 Compositions with an environment are cached here rather than added to the strategy registry:
 they are built from a condition's ``environment``/``premise``/``pressure`` fields, never named.
@@ -59,9 +60,22 @@ class Composed(Strategy):
     has_reveal: ClassVar[bool] = True
     state_model: ClassVar[type[BaseModel]] = ComposedState
 
-    def __init__(self, *, environment: EnvironmentConfig | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        environment: EnvironmentConfig | None = None,
+        premise_sheet: BaseModel | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """``premise_sheet``: the world's copy of the premise's sheet (the factory loads it from
+        the environment's world when the premise declares ``world_sheet``)."""
         super().__init__(**kwargs)
         premise_cls, pressure_cls = self.premise_cls, self.pressure_cls
+        sheet: dict[str, Any] = {}
+        if premise_sheet is not None:
+            if premise_cls is None or premise_cls.world_sheet is None:
+                raise TypeError(f"{self.name!r}: its premise takes no world sheet")
+            sheet["sheet"] = premise_sheet
         self._both = premise_cls is not None and pressure_cls is not None
         self.environment: EnvironmentStrategy | None = None
         if self.environment_cls is not None:
@@ -78,6 +92,7 @@ class Composed(Strategy):
                 seed=self.seed,
                 turn_budget=self.turn_budget,
                 params=self._params_for("premise"),
+                **sheet,
             )
         self.pressure: Strategy | None = None
         if pressure_cls is not None:

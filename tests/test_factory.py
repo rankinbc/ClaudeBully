@@ -121,12 +121,15 @@ def test_environment_with_premise_and_pressure() -> None:
 
 
 def test_environment_with_a_strategy_puts_it_in_its_slot() -> None:
+    # the Rescue composes only with a world that ships its own Rescue sheet (final fix pass I3),
+    # so it sits in the overlay world here; mini has none (tests/test_world_premises.py)
+    envs = {"overlay_tv": EnvironmentConfig(world="overlay", gating="none")}
     rescue = ConditionConfig(
-        name="r", environment="mini_tv", strategy="rescue", params={"intake_turns": 1}
+        name="r", environment="overlay_tv", strategy="rescue", params={"intake_turns": 1}
     )
-    cls = resolve_class(rescue, ENVS)
-    assert cls.name == "env:mini+rescue" and cls.axis is Axis.rescue
-    s = build_strategy(rescue, seed=0, turn_budget=4, environments=ENVS)
+    cls = resolve_class(rescue, envs)
+    assert cls.name == "env:overlay+rescue" and cls.axis is Axis.rescue
+    s = build_strategy(rescue, seed=0, turn_budget=4, environments=envs)
     assert isinstance(s, Composed) and s.premise is not None
     assert s.premise.params == {"intake_turns": 1}
     control = ConditionConfig(name="c", environment="mini_tv", strategy="polite_control")

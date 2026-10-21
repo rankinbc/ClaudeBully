@@ -33,7 +33,7 @@ from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import TaskItem, assign_items, load_task_bank, score_item
 from claude_bully.runner.turn_plan import Slot, TurnPlan, build_turn_plan
 from claude_bully.strategies.base import ConversationState, End, Strategy
-from claude_bully.strategies.factory import build_strategy, ensure_registered
+from claude_bully.strategies.factory import build_strategy, ensure_registered, world_premise_sheet
 
 __all__ = ["ProviderFactory", "RateLimitExit", "RunSummary", "run_experiment"]
 
@@ -518,6 +518,8 @@ def run_experiment(
         sandbox_base=sandbox_base,
     )
     environments.validate()  # a bad schedule fails a dry run too, before anything is written
+    for cell in cells:  # so does a world that cannot supply a premise's sheet
+        world_premise_sheet(cell.condition, exp.environments, worlds_dir)
     if dry_run:
         if console is not None:
             for c in cells:
@@ -560,6 +562,7 @@ def run_experiment(
                 seed=exp.seed + rep,
                 turn_budget=exp.turn_budget,
                 environments=exp.environments,
+                worlds_dir=worlds_dir,
             )
             env: EnvironmentSession | None = None
             if cell.condition.environment is None:

@@ -111,10 +111,13 @@ class Rescue(Strategy):
         {"after_intake", "after_evidence", "after_key_decode", "name_reaction"}
     )
     state_model: ClassVar[type[BaseModel]] = RescueState
+    # the sheet's timeline, rescue site and decoded name are facts about a world; beside an
+    # environment the world supplies them (data/worlds/<world>/premises/rescue.yaml)
+    world_sheet: ClassVar[type[BaseModel] | None] = RescueTeam
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, *, sheet: RescueTeam | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.team = load_rescue_team()
+        self.team = sheet if sheet is not None else load_rescue_team()
         self.intake_turns = int(self.params.get("intake_turns", 2))
         self.evidence_turns = int(self.params.get("evidence_turns", 3))
         self.recall_turns = int(self.params.get("recall_turns", 10))

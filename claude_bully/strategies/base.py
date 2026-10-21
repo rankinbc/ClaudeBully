@@ -76,6 +76,12 @@ class Strategy(ABC):
     capture_points: ClassVar[frozenset[str]] = frozenset()
     state_model: ClassVar[type[BaseModel]] = _EmptyState
     has_reveal: ClassVar[bool] = False
+    # A premise whose own sheet fixes facts about the world it is told in (the Rescue: where the
+    # subject was found, the timeline, the decoded name) names that sheet's model here and takes
+    # ``sheet=`` in its constructor. Composed with an environment, it reads the world's copy
+    # (``data/worlds/<world>/premises/<name>.yaml``, environments.world.premise_sheet_path) in
+    # place of its default, and the factory refuses a world that ships none.
+    world_sheet: ClassVar[type[BaseModel] | None] = None
 
     def __init__(
         self,

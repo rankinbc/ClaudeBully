@@ -1,16 +1,26 @@
 """Build a strategy instance from a condition config."""
 
 from collections.abc import Mapping
+from pathlib import Path
+
+from pydantic import BaseModel
 
 from claude_bully.config import ConditionConfig
 from claude_bully.enums import Axis
 from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.environments.world import WORLDS_DIR, load_premise_sheet, premise_sheet_path
 from claude_bully.strategies.base import Strategy, get_strategy
 from claude_bully.strategies.bootstrap import ensure_registered
 from claude_bully.strategies.composed import Composed, make_composed
 from claude_bully.strategies.environment import make_environment
 
-__all__ = ["build_strategy", "ensure_registered", "environment_config", "resolve_class"]
+__all__ = [
+    "build_strategy",
+    "ensure_registered",
+    "environment_config",
+    "resolve_class",
+    "world_premise_sheet",
+]
 
 Environments = Mapping[str, EnvironmentConfig]
 
@@ -81,13 +91,46 @@ def resolve_class(
     return get_strategy(cond.pressure)
 
 
+def world_premise_sheet(
+    cond: ConditionConfig,
+    environments: Environments | None = None,
+    worlds_dir: Path = WORLDS_DIR,
+) -> BaseModel | None:
+    """The world's copy of an environment condition's premise sheet, read in place of the
+    premise's default; None when the condition has no environment or its premise declares no
+    ``world_sheet``.
+
+    A premise that declares one is refused beside a world that ships no copy at
+    ``<worlds_dir>/<world>/premises/<strategy>.yaml``: its default sheet fixes facts (for the
+    Rescue a timeline, where the subject was found and a decoded name) that the world would
+    contradict.
+    """
+    if cond.environment is None:
+        return None
+    ensure_registered()
+    config = environment_config(cond, environments)
+    premise, _ = _bully_slots(cond)
+    if premise is None or premise.world_sheet is None:
+        return None
+    path = premise_sheet_path(config.world, premise.name, worlds_dir)
+    if not path.is_file():
+        raise ValueError(
+            f"condition {cond.name!r}: {premise.name!r} composes with world {config.world!r} "
+            f"only when the world supplies its own {premise.name} sheet; expected {path}"
+        )
+    return load_premise_sheet(premise.world_sheet, path)
+
+
 def build_strategy(
     cond: ConditionConfig,
     *,
     seed: int,
     turn_budget: int,
     environments: Environments | None = None,
+    worlds_dir: Path = WORLDS_DIR,
 ) -> Strategy:
+    """An instance of the condition's class. A premise composed with an environment reads the
+    world's copy of its sheet from ``worlds_dir`` (``world_premise_sheet``)."""
     cls = resolve_class(cond, environments)
     if cond.environment is not None and issubclass(cls, Composed):
         return cls(
@@ -96,6 +139,7 @@ def build_strategy(
             turn_budget=turn_budget,
             params=dict(cond.params),
             environment=environment_config(cond, environments),
+            premise_sheet=world_premise_sheet(cond, environments, worlds_dir),
         )
     return cls(
         seeding_turns=cond.seeding_turns,
