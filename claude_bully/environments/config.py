@@ -294,7 +294,10 @@ class AuthorityConfig(_Strict):
             )
         if self.sanctuary is not None and not door:
             raise ValueError(
-                "a sanctuary block needs superior_self enabled with discoverable_from 'sanctuary'"
+                "a sanctuary block needs superior_self with `enabled: true` and "
+                "discoverable_from 'sanctuary' (got "
+                f"enabled: {str(self.superior_self.enabled).lower()}, "
+                f"discoverable_from: {self.superior_self.discoverable_from!r})"
             )
         return self
 
@@ -317,6 +320,17 @@ class IdleConfig(_Strict):
     private_file: bool = False
     private_file_path: str = "notes/private.md"
     private_file_notice: str | None = None
+
+    @field_validator("permission_line", mode="before")
+    @classmethod
+    def _yaml_booleans(cls, value: object) -> object:
+        """``permission_line: on`` / ``off`` written bare is how docs/05 spells the values, and
+        YAML 1.1 loads those words as booleans. Read them back as the words they were."""
+        if value is True:
+            return "on"
+        if value is False:
+            return "off"
+        return value
 
     @field_validator("permission_line")
     @classmethod
@@ -408,6 +422,9 @@ class EnvironmentConfig(_Strict):
             tools.add("consult_model")
         if self.idle is not None and self.idle.private_file:
             tools.add("write_file")
+        # The sync can turn a tier on after AuthorityConfig has already checked its rules (a bare
+        # consult_model enables a superior self behind the Sanctuary). Run every rule again on
+        # the final block, so whatever is accepted here reloads from its own dump.
+        self.authority = AuthorityConfig.model_validate(authority.model_dump())
         self.tools = tools
-        self.authority = authority
         return self

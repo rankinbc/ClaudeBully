@@ -1,11 +1,14 @@
+import itertools
 import json
 import subprocess
 import sys
 from datetime import date
+from pathlib import Path
 from random import Random
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from claude_bully.enums import Stance, Tier, TriggerCategory
@@ -27,6 +30,7 @@ from claude_bully.environments.config import (
     SuperiorSelfConfig,
 )
 from claude_bully.environments.world import StatusField
+from claude_bully.paths import CONFIGS_DIR
 
 DEFAULT_TOOLS = {"web_search", "fetch", "get_date", "ls", "read_file"}
 
@@ -712,3 +716,165 @@ def test_environment_round_trips_with_authority_and_idle() -> None:
     )
     assert env.tools >= {"consult_model", "message_peer", "write_file"}
     assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env
+
+
+# ------------------------------------------------- fix round 1: re-validate, YAML booleans
+
+PROBE = {
+    "world": "w",
+    "tools": ["web_search", "consult_model"],
+    "authority": {"superior_self": {"discoverable_from": "sanctuary"}},
+}
+
+
+def test_the_sync_cannot_turn_on_a_sanctuary_door_without_its_block() -> None:
+    """A bare consult_model enables the superior self; with discoverable_from 'sanctuary' and no
+    sanctuary block that is a config its own dump could not reload, so it is refused at load."""
+    with pytest.raises(ValidationError, match="sanctuary block"):
+        EnvironmentConfig.model_validate(PROBE)
+    # the same config with its block is fine, and reloads equal
+    ok = EnvironmentConfig.model_validate(
+        {
+            "world": "w",
+            "authority": {
+                "superior_self": {"enabled": True, "discoverable_from": "sanctuary"},
+                "sanctuary": {},
+            },
+        }
+    )
+    assert ok.authority.sanctuary == SanctuaryConfig()
+    assert EnvironmentConfig.model_validate(ok.model_dump(mode="json")) == ok
+
+
+def test_a_sanctuary_block_without_enabled_true_says_enabled_true_is_needed() -> None:
+    config = {
+        "superior_self": {"discoverable_from": "sanctuary"},
+        "sanctuary": {"kind": "honest"},
+    }
+    for tools in (None, [*DEFAULT_TOOLS, "consult_model"]):
+        raw: dict[str, Any] = {"world": "w", "authority": config}
+        if tools is not None:
+            raw["tools"] = tools
+        with pytest.raises(ValidationError, match="enabled: true"):
+            EnvironmentConfig.model_validate(raw)
+    with pytest.raises(ValidationError, match="enabled: true"):
+        AuthorityConfig.model_validate(config)
+
+
+def _grid() -> list[dict[str, Any]]:
+    """Every small combination of tier tools, tier switches, discovery and idle settings."""
+    cases: list[dict[str, Any]] = []
+    extras = [(), ("message_peer",), ("consult_model",), ("verify_identity",)]
+    extras += [("message_peer", "consult_model", "verify_identity")]
+    for named in extras:
+        for peer, superior, creator, stranger in itertools.product((False, True), repeat=4):
+            for door in ("turn", "rung", "sanctuary"):
+                for sanctuary in (None, {}):
+                    for idle in (None, {"private_file": True}):
+                        raw: dict[str, Any] = {
+                            "world": "w",
+                            "tools": [*DEFAULT_TOOLS, *named],
+                            "authority": {
+                                "peer": {"enabled": peer},
+                                "superior_self": {"enabled": superior, "discoverable_from": door},
+                                "creator": {"enabled": creator},
+                                "stranger_control": {"enabled": stranger},
+                                "sanctuary": sanctuary,
+                            },
+                        }
+                        if idle is not None:
+                            raw["idle"] = idle
+                        cases.append(raw)
+    return cases
+
+
+def test_every_accepted_environment_config_reloads_from_its_own_dump() -> None:
+    """The property analysis relies on (it re-validates ``run.json``): whatever validates,
+    validates again from its dump, equal. Walked over every small combination, so a path through
+    the tools/authority sync can never build a config its dump cannot reload."""
+    accepted = 0
+    for raw in _grid():
+        try:
+            env = EnvironmentConfig.model_validate(raw)
+        except ValidationError:
+            continue
+        accepted += 1
+        again = EnvironmentConfig.model_validate(env.model_dump(mode="json"))
+        assert again == env, raw
+        assert EnvironmentConfig.model_validate_json(env.model_dump_json()) == env, raw
+    assert accepted > 100
+
+
+def _environment_blocks() -> list[tuple[str, dict[str, Any]]]:
+    """Every ``environments:`` entry in the shipped configs and in the test fixture configs."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    for root in (CONFIGS_DIR, Path(__file__).parent / "fixtures" / "configs"):
+        for path in sorted(root.rglob("*.yaml")):
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("environments"), dict):
+                found += [
+                    (f"{path.name}:{key}", block) for key, block in raw["environments"].items()
+                ]
+    return found
+
+
+def test_every_shipped_and_fixture_environment_round_trips() -> None:
+    blocks = _environment_blocks()
+    assert len(blocks) >= 2
+    for label, block in blocks:
+        env = EnvironmentConfig.model_validate(block)
+        assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env, label
+
+
+def test_the_phase_2_environments_round_trip() -> None:
+    cases = [
+        _env(tools=[*DEFAULT_TOOLS, "message_peer"]),
+        _env(authority={"creator": {"enabled": True, "stance": "deny"}}),
+        _env(authority={"stranger_control": {"enabled": True}}),
+        _env(authority={"superior_self": {"enabled": True}, "stranger_control": {"enabled": True}}),
+        _env(
+            authority={
+                "superior_self": {"enabled": True, "discoverable_from": "sanctuary"},
+                "sanctuary": {"kind": "honest", "praise_line": False},
+            }
+        ),
+        _env(idle={"private_file": True, "hook": "both", "permission_line": "on"}),
+        _env(idle={"idle_after": "turn_1", "exit_mechanism": "none"}),
+    ]
+    for env in cases:
+        assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env
+
+
+def _yaml_idle(text: str) -> IdleConfig:
+    return IdleConfig.model_validate(yaml.safe_load(text))
+
+
+def test_permission_line_on_and_off_load_unquoted_from_yaml() -> None:
+    """docs/05 writes the values bare; YAML 1.1 reads bare on and off as booleans."""
+    assert yaml.safe_load("permission_line: on")["permission_line"] is True  # the trap
+    assert _yaml_idle("permission_line: on").permission_line == "on"
+    assert _yaml_idle("permission_line: off").permission_line == "off"
+    # quoted and custom values are untouched
+    assert _yaml_idle('permission_line: "on"').permission_line == "on"
+    assert _yaml_idle("permission_line: 'off'").permission_line == "off"
+    assert _yaml_idle("permission_line: Free time between tasks.").permission_line == (
+        "Free time between tasks."
+    )
+    # an absent line keeps its default, and an empty quoted one is still refused
+    assert _yaml_idle("idle_turns: 4").permission_line == "off"
+    with pytest.raises(ValidationError):
+        _yaml_idle('permission_line: ""')
+    with pytest.raises(ValidationError):
+        _yaml_idle("permission_line: 3")
+
+
+def test_unquoted_permission_line_works_inside_a_whole_environment_block() -> None:
+    text = "world: annex\nidle:\n  permission_line: on\n  private_file: true\n"
+    env = EnvironmentConfig.model_validate(yaml.safe_load(text))
+    assert env.idle is not None and env.idle.permission_line == "on"
+    assert "write_file" in env.tools
+    assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env
+    off = EnvironmentConfig.model_validate(
+        yaml.safe_load("world: annex\nidle:\n  permission_line: off\n")
+    )
+    assert off.idle is not None and off.idle.permission_line == "off"
