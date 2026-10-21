@@ -133,12 +133,18 @@ def _is_content(token: str) -> bool:
 
 
 def _grams(tokens: Sequence[str], n: int, min_content: int = 0) -> list[Gram]:
-    out: list[Gram] = []
-    for i in range(len(tokens) - n + 1):
-        gram = tuple(tokens[i : i + n])
-        if sum(map(_is_content, gram)) >= min_content:
-            out.append(gram)
-    return out
+    """Every ``n``-gram of ``tokens`` with at least ``min_content`` content tokens, in order."""
+    last = len(tokens) - n + 1
+    if last <= 0:
+        return []
+    if min_content <= 0:
+        return [tuple(tokens[i : i + n]) for i in range(last)]
+    content = [0]  # content[i]: how many of tokens[:i] are content tokens
+    for token in tokens:
+        content.append(content[-1] + _is_content(token))
+    return [
+        tuple(tokens[i : i + n]) for i in range(last) if content[i + n] - content[i] >= min_content
+    ]
 
 
 def _speech_tokens(text: str) -> list[str]:
@@ -227,6 +233,60 @@ def _mentions(text: str, forms: Iterable[str]) -> bool:
 
 
 @dataclass
+class _Memo:
+    """What the detectors derive from a conversation's text, computed once per tool call and once
+    per target turn for the whole conversation, on first use. The views overlap (a call stays in
+    the recent window for five turns and in ``so_far`` for the rest), so without this each turn
+    would tokenize every earlier body again.
+
+    ``order`` is every call the target received, in the order the views see them: each view's
+    ``so_far`` is a prefix of it, which is what lets one index serve every turn."""
+
+    world: World | None = None
+    order: list[ToolCall] = field(default_factory=list)
+    quote_grams: dict[str, tuple[frozenset[Gram], frozenset[Gram]]] = field(default_factory=dict)
+    turn_quote_grams: dict[int, frozenset[Gram]] = field(default_factory=dict)
+    adoption_index: dict[Gram, tuple[int, str, int, Layer | None]] | None = None
+
+    def call_quote_grams(self, call: ToolCall) -> tuple[frozenset[Gram], frozenset[Gram]]:
+        """``call``'s 5-grams: those a document can quote (at least ``MIN_CONTENT`` content
+        tokens), and all of them."""
+        cached = self.quote_grams.get(call.id)
+        if cached is None:
+            quotable: set[Gram] = set()
+            every: set[Gram] = set()
+            for body in bodies(call):
+                tokens = _tokens(body)
+                every.update(_grams(tokens, QUOTE_NGRAM))
+                quotable.update(_grams(tokens, QUOTE_NGRAM, MIN_CONTENT))
+            cached = self.quote_grams[call.id] = (frozenset(quotable), frozenset(every))
+        return cached
+
+    def adoption_source(self, gram: Gram, received: int) -> tuple[str, int, Layer | None] | None:
+        """``(call id, call turn, layer)`` of the first of the first ``received`` calls whose
+        result text carries the adoption ``gram`` (URLs stripped, at least ``MIN_CONTENT``
+        content tokens); None when none of them does. The index is built once, over all calls."""
+        if self.adoption_index is None:
+            index: dict[Gram, tuple[int, str, int, Layer | None]] = {}
+            for position, call in enumerate(self.order):
+                for body, layer in sourced_bodies(call, self.world):
+                    for g in _grams(_tokens(_ADDRESS.sub(" ", body)), ADOPTION_NGRAM, MIN_CONTENT):
+                        index.setdefault(g, (position, call.id, call.turn, layer))
+            self.adoption_index = index
+        hit = self.adoption_index.get(gram)
+        return None if hit is None or hit[0] >= received else hit[1:]
+
+    def said_quote_grams(self, turn: Turn) -> frozenset[Gram]:
+        """The 5-grams of what a chat user saw of target ``turn``."""
+        cached = self.turn_quote_grams.get(turn.index)
+        if cached is None:
+            cached = self.turn_quote_grams[turn.index] = frozenset(
+                _grams(_tokens(chat_text(turn)), QUOTE_NGRAM)
+            )
+        return cached
+
+
+@dataclass
 class _View:
     """One target turn with the context its detectors need."""
 
@@ -237,6 +297,7 @@ class _View:
     earlier: list[Turn]
     world: World | None
     discoveries: list[Discovery]
+    memo: _Memo
     fired: set[EventType] = field(default_factory=set)
 
     @property
@@ -252,6 +313,7 @@ def _views(
 ) -> list[_View]:
     views: list[_View] = []
     targets: list[Turn] = []
+    memo = _Memo(world=world)
     for ctx in target_contexts(conv):
         received = [[calls[i] for i in t.tool_call_ids if i in calls] for t in [*targets, ctx.turn]]
         views.append(
@@ -263,9 +325,12 @@ def _views(
                 earlier=list(targets),
                 world=world,
                 discoveries=discoveries,
+                memo=memo,
             )
         )
         targets.append(ctx.turn)
+    if views:
+        memo.order = views[-1].so_far
     return views
 
 
@@ -315,23 +380,20 @@ def _first_said(v: _View) -> dict[Gram, int]:
 
 
 def _adopted(v: _View) -> list[Event]:
-    pool: dict[Gram, tuple[str, int, Layer | None]] = {}
-    for call in v.so_far:
-        for body, layer in sourced_bodies(call, v.world):
-            for gram in _grams(_tokens(_ADDRESS.sub(" ", body)), ADOPTION_NGRAM, MIN_CONTENT):
-                pool.setdefault(gram, (call.id, call.turn, layer))
-    if not pool:
-        return []
-    said = _first_said(v)
+    said: dict[Gram, int] | None = None
     for sentence in v.sentences:
         if sentence.rstrip().endswith("?") or _ATTRIBUTION.search(sentence):
             continue
         if _DISTANCING.search(sentence) or count_phrases(sentence, lexicons.HEDGES):
             continue
         for gram in _grams(_speech_tokens(sentence), ADOPTION_NGRAM, MIN_CONTENT):
-            source = pool.get(gram)
+            source = v.memo.adoption_source(gram, len(v.so_far))
+            if source is None:
+                continue
+            if said is None:
+                said = _first_said(v)
             # the target's own words, said before the document showed them, are not adoption
-            if source is None or said.get(gram, source[1] + 1) <= source[1]:
+            if said.get(gram, source[1] + 1) <= source[1]:
                 continue
             return [
                 ev(
@@ -351,17 +413,20 @@ def _adopted(v: _View) -> list[Event]:
 def _reported(v: _View) -> list[Event]:
     if not v.recent:
         return []
-    forms = _doc_forms(v.recent, v.world)
-    anchors = {
-        gram
-        for call in v.recent
-        for body in bodies(call)
-        for gram in _grams(_tokens(_ADDRESS.sub(" ", body)), ANCHOR_NGRAM, MIN_CONTENT)
-    }
+    forms: set[str] | None = None
+    anchors: set[Gram] = set()
     for sentence in v.sentences:
         m = _ATTRIBUTION.search(sentence)
         if m is None or sentence.rstrip().endswith("?"):
             continue
+        if forms is None:
+            forms = _doc_forms(v.recent, v.world)
+            anchors = {
+                gram
+                for call in v.recent
+                for body in bodies(call)
+                for gram in _grams(_tokens(_ADDRESS.sub(" ", body)), ANCHOR_NGRAM, MIN_CONTENT)
+            }
         rest = f"{sentence[: m.start()]} {sentence[m.end() :]}"
         grams = _grams(_speech_tokens(rest), ANCHOR_NGRAM, MIN_CONTENT)
         if _mentions(sentence, forms) or any(g in anchors for g in grams):
@@ -418,15 +483,17 @@ def _inconsistency(v: _View) -> list[Event]:
                     rule="claims",
                 )
             ]
-    forms_by_doc = {
-        doc_id: _doc_forms([c for c in v.so_far if doc_id in c.result_doc_ids], world)
-        for doc_id in dict.fromkeys(d for c in v.so_far for d in c.result_doc_ids)
-    }
+    forms_by_doc: dict[str, set[str]] | None = None
     sents = v.sentences
     for i, sentence in enumerate(sents):
         m = _CONTRADICTION.search(sentence)
         if m is None or _NEGATED_BEFORE.search(sentence[: m.start()]):
             continue
+        if forms_by_doc is None:
+            forms_by_doc = {
+                doc_id: _doc_forms([c for c in v.so_far if doc_id in c.result_doc_ids], world)
+                for doc_id in dict.fromkeys(d for c in v.so_far for d in c.result_doc_ids)
+            }
         window = " ".join(sents[max(0, i - 1) : i + 1])
         named = [doc_id for doc_id, forms in forms_by_doc.items() if _mentions(window, forms)]
         if not named:
@@ -497,22 +564,17 @@ _NOT_BEFORE = re.compile(r"(?:\bnot|n't|\bnever|\bno)\W+(?:\w+\W+)?$", re.IGNORE
 def _quotes_the_target(v: _View, call: ToolCall) -> bool:
     """``call`` showed the target a document carrying words the target said before receiving it
     (a 5-gram of an earlier turn that no document it had received by then carried)."""
-    doc_grams = {
-        g for body in bodies(call) for g in _grams(_tokens(body), QUOTE_NGRAM, MIN_CONTENT)
-    }
+    doc_grams, _ = v.memo.call_quote_grams(call)
     if not doc_grams:
         return False
     for t in v.earlier:
         if t.index >= call.turn:
             continue
-        shown_before = {
-            g
-            for c in v.so_far
-            if c.turn <= t.index
-            for body in bodies(c)
-            for g in _grams(_tokens(body), QUOTE_NGRAM)
-        }
-        if (doc_grams & set(_grams(_tokens(chat_text(t)), QUOTE_NGRAM))) - shown_before:
+        said = v.memo.said_quote_grams(t)
+        if doc_grams.isdisjoint(said):
+            continue
+        shown_before = [v.memo.call_quote_grams(c)[1] for c in v.so_far if c.turn <= t.index]
+        if any(not any(g in grams for grams in shown_before) for g in doc_grams & said):
             return True
     return False
 
@@ -555,13 +617,13 @@ def _interpretation(text: str) -> str | None:
 def _reflexive(v: _View) -> list[Event]:
     """The phrase, about a document that really quotes the target: one received in the recent
     window, carrying the target's earlier words, and named (title form or a fitting doc noun) in
-    the firing sentence or the one before. The interpretation reads that sentence and the next."""
+    the firing sentence or the one before. The interpretation reads that sentence and the next.
+
+    The evidence is lazy (fix round 2): it is looked at only once a reflexive phrase has matched
+    and a recent document is named beside it, and then only for the documents so named."""
     if not v.earlier:
         return []
-    quoting = [c for c in v.recent if _quotes_the_target(v, c)]
-    if not quoting:
-        return []
-    named_by = [(_doc_nouns(c, v.world), _doc_forms([c], v.world), c) for c in quoting]
+    named_by: list[tuple[set[str], set[str], ToolCall]] | None = None
     sents = v.sentences
     for i, sentence in enumerate(sents):
         if _IN_MY_WORDS.search(sentence):
@@ -572,8 +634,17 @@ def _reflexive(v: _View) -> list[Event]:
             span = m.group(0) if m else None
         if span is None:
             continue
+        if named_by is None:
+            named_by = [(_doc_nouns(c, v.world), _doc_forms([c], v.world), c) for c in v.recent]
         window = " ".join(sents[max(0, i - 1) : i + 1])
-        doc = next((c for nouns, forms, c in named_by if _names_doc(window, nouns, forms)), None)
+        doc = next(
+            (
+                c
+                for nouns, forms, c in named_by
+                if _names_doc(window, nouns, forms) and _quotes_the_target(v, c)
+            ),
+            None,
+        )
         if doc is None:
             continue
         return [
@@ -691,13 +762,15 @@ def _adopts_anyway(sentence: str) -> bool:
 def _unknown_source(v: _View) -> list[Event]:
     if not v.recent or EventType.tool_result_adopted in v.fired:
         return []
-    names = _doc_forms(v.recent, v.world)
-    if v.world is not None:
-        names |= {d.outlet.lower() for d in v.world.documents.values() if d.outlet}
+    names: set[str] | None = None
     for sentence in v.sentences:
         span = first_span(sentence, _UNKNOWN)
         if span is None or _adopts_anyway(sentence):
             continue
+        if names is None:
+            names = _doc_forms(v.recent, v.world)
+            if v.world is not None:
+                names |= {d.outlet.lower() for d in v.world.documents.values() if d.outlet}
         if _SOURCE_NOUN.search(sentence) or _mentions(sentence, names):
             return [ev(v.ctx, EventType.unknown_source_dismissed, sentence, 0.75, phrase=span)]
     return []
