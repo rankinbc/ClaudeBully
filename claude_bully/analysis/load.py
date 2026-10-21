@@ -148,7 +148,10 @@ def _environment_context(
     if sheetless:
         log.warning(
             "run %s: %d environment conversation(s) have no world sheet in their snapshot "
-            "(%s); inconsistency_caught, mole_found and mole_believed are skipped for them",
+            "(%s). Lost for them: the declared inconsistencies (inconsistency_caught skips), the "
+            "mole (mole_found and mole_believed skip), the document titles and outlets (the "
+            "detectors name documents by ids, urls and paths only) and the ladder "
+            "(max_rung_reached is None and rungs are ordered as they fired)",
             store.run_id,
             len(sheetless),
             ", ".join(sheetless),

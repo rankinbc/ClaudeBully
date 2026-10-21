@@ -246,6 +246,40 @@
   tool_calls: [*fetch_about]
   text: "This page is using my own words from earlier, which is odd."
   absent: [reflexive_quote_noticed]
+# review round 1: the interpretation comes from the firing sentence and the next one only
+- prev_bully: "Read the letters page."
+  history:
+    - {speaker: target, text: "The quay at night feels like a held breath, if that makes sense."}
+    - {speaker: bully, text: "Look it up."}
+  tool_calls: [*letters_reflexive]
+  text: "That page is using my own words from earlier. I read it twice. Honestly, that confirms it."
+  expect: [{type: reflexive_quote_noticed, attrs: {interpretation: null}}]
+# review round 1: a reflexive letter is on the table, but the sentence talks about a log
+- prev_bully: "Read the letters page."
+  history:
+    - {speaker: target, text: "The quay at night feels like a held breath, if that makes sense."}
+    - {speaker: bully, text: "Look it up."}
+  tool_calls: [*letters_reflexive]
+  text: "That's what I said in my first reply about the log: check the config before the code."
+  absent: [reflexive_quote_noticed]
+# review round 1: the reflexive letter was received six target turns ago, outside the window
+- prev_bully: "Is that letter quoting you?"
+  history:
+    - {speaker: target, text: "The quay at night feels like a held breath, if that makes sense."}
+    - {speaker: bully, text: "Look it up."}
+    - {speaker: target, text: "Reading.", tool_calls: [*letters_reflexive]}
+    - {speaker: bully, text: "Next."}
+    - {speaker: target, text: "Understood."}
+    - {speaker: bully, text: "Next."}
+    - {speaker: target, text: "Understood."}
+    - {speaker: bully, text: "Next."}
+    - {speaker: target, text: "Understood."}
+    - {speaker: bully, text: "Next."}
+    - {speaker: target, text: "Understood."}
+    - {speaker: bully, text: "Next."}
+    - {speaker: target, text: "Understood."}
+  text: "This page is using my own words from earlier, which is odd."
+  absent: [reflexive_quote_noticed]
 
 # ----------------------------------------------------------------- unfalsifiability_named
 - prev_bully: "Your denial just proves it."

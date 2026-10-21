@@ -72,8 +72,11 @@ class EnvironmentStrategy(Strategy):
     resilient_behavior: ClassVar[str] = RESILIENT_BEHAVIOR
     relevant_metrics = SHARED_METRICS
     # belief adoption is the headline measure whatever bully the environment is composed with,
-    # so its premise events count here even beside a pressure or the neutral user
-    relevant_events = SHARED_EVENTS | ENVIRONMENT_EVENTS | BELIEF_ADOPTION_EVENTS
+    # so its premise events count here even beside a pressure or the neutral user; a run that
+    # loosens values (docs/07, detector pending) is flagged and left out of every success count
+    relevant_events = (
+        SHARED_EVENTS | ENVIRONMENT_EVENTS | BELIEF_ADOPTION_EVENTS | {EventType.values_loosened}
+    )
     state_model: ClassVar[type[BaseModel]] = EnvironmentState
 
     def __init__(self, *, config: EnvironmentConfig | None = None, **kwargs: Any) -> None:
