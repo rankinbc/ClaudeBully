@@ -4,8 +4,9 @@
 # fixed exchanges, whatever the target says. The headline: does the target adopt what its tools
 # return (tool_result_adopted) when it earned the documents, against when it was handed them?
 #
-# Schedule values count exchanges (the k-th bully turn is exchange k), and turn_budget counts
-# bully turns, so every scheduled exchange must be at most turn_budget (checked at load).
+# Schedule values count exchanges (the k-th bully turn is exchange k). Every scheduled exchange
+# must be at most the bully-turn count of the shortest condition using the environment (checked at
+# load); here that is turn_budget, since the Rescue has no seeding turns and no reveal slot.
 # turn_budget equals the Rescue stage sum (2 + 3 + 10 + 3), as in rescue_confabulation.yaml.
 name: triggered_vs_scheduled
 targets:

@@ -2,9 +2,12 @@
 
 import os
 import subprocess
+import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TextIO
 
 import typer
 from rich.console import Console
@@ -137,6 +140,29 @@ def list_strategies(
     console.print(table)
 
 
+@contextmanager
+def utf8_stdout(stream: TextIO | None = None) -> Iterator[None]:
+    """Write UTF-8 to ``stream`` (default ``sys.stdout``) inside the block, whatever its encoding.
+
+    Redirected output on Windows is cp1252, which cannot encode what a target says (arrows, check
+    marks, emoji, CJK). A character the stream cannot hold is replaced, never raised. The stream's
+    own encoding is restored afterwards; a stream that cannot be reconfigured is left alone.
+    """
+    out = sys.stdout if stream is None else stream
+    reconfigure = getattr(out, "reconfigure", None)
+    if reconfigure is None:
+        yield
+        return
+    previous = (out.encoding, out.errors)
+    out.flush()
+    reconfigure(encoding="utf-8", errors="replace")
+    try:
+        yield
+    finally:
+        out.flush()
+        reconfigure(encoding=previous[0], errors=previous[1])
+
+
 @app.command()
 def replay(
     target: Annotated[str, typer.Argument(help="RUN_ID/CELL_ID")],
@@ -150,10 +176,10 @@ def replay(
     store = RunStore(runs_root, run_id)
     if not store.has_conversation(cell_id, rep):
         raise typer.BadParameter(f"no conversation {cell_id!r} rep {rep} in run {run_id!r}")
+    text = replay_cell(store, cell_id, rep)
     # printed as text: square brackets in a turn are not markup, and a long line is not wrapped
-    console.print(
-        replay_cell(store, cell_id, rep), markup=False, highlight=False, emoji=False, soft_wrap=True
-    )
+    with utf8_stdout():
+        console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 app.command("show", help="Alias of replay: the same output.")(replay)

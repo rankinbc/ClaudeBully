@@ -52,9 +52,10 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records import Turn, Usage
 from claude_bully.records_env import RungUnlock, ToolCall, TriggerEvent, TriggerStreamRecord
-from claude_bully.runner.cells import CellSpec
+from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import RunStore
+from claude_bully.runner.turn_plan import build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import environment_config
@@ -448,9 +449,11 @@ class RunEnvironments:
     def validate(self) -> None:
         """Checks that need the worlds, made before run.json is written: a scheduled environment
         names one exchange for every rung of its ladder (scheduled gating ignores ``requires``,
-        so every rung is reachable) and nothing else, and no exchange is after ``turn_budget``
-        (the k-th bully turn is exchange k and the budget counts bully turns, so a rung
-        scheduled later could never open)."""
+        so every rung is reachable) and nothing else, and no exchange is after the last bully turn
+        of the shortest condition that uses the environment (the k-th bully turn is exchange k;
+        seeding and reveal turns are bully turns too, so a condition has ``seeding_turns`` plus
+        its reveal slot plus ``turn_budget`` of them, counted as the runner's turn plan counts
+        them). A rung scheduled later could never open for that condition."""
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -474,17 +477,40 @@ class RunEnvironments:
                     f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
                     f"scheduled gating needs one exchange per rung; {'; '.join(problems)}"
                 )
+            shortest = self._shortest_condition(key)
+            bully_turns = self._bully_turns(shortest)
             late = [
                 f"{name!r} at exchange {exchange}"
                 for name, exchange in config.schedule.items()
-                if exchange > self.exp.turn_budget
+                if exchange > bully_turns
             ]
             if late:
                 raise ValueError(
                     f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
-                    f"scheduled gating names exchanges after turn_budget {self.exp.turn_budget}, "
-                    f"which the conversation never reaches: {', '.join(late)}"
+                    "scheduled gating names exchanges after the last bully turn of the shortest "
+                    f"condition using it, {shortest.condition.name!r}, which has "
+                    f"{bully_turns} bully turns "
+                    f"(seeding_turns {shortest.condition.seeding_turns}, "
+                    f"reveal slot {'yes' if shortest.reveal_slot else 'no'}, "
+                    f"turn_budget {self.exp.turn_budget}); that conversation never reaches: "
+                    f"{', '.join(late)}"
                 )
+
+    def _bully_turns(self, cell: CellSpec) -> int:
+        """How many bully turns the cell has: the runner's own turn plan, counted."""
+        plan = build_turn_plan(
+            turn_budget=self.exp.turn_budget,
+            seeding_turns=cell.condition.seeding_turns,
+            reveal_slot=cell.reveal_slot,
+            task_every=self.exp.task_every,
+        )
+        return len(plan.bully_slots())
+
+    def _shortest_condition(self, key: str) -> CellSpec:
+        """The cell with the fewest bully turns among those running in environment ``key`` (the
+        first of equals, so a condition is named before its control)."""
+        cells = [cell for cell in expand_cells(self.exp) if cell.condition.environment == key]
+        return min(cells, key=self._bully_turns)
 
     def check_world(self, name: str, store: RunStore, cell_id: str, rep: int) -> None:
         """Stop when the world's files changed since the run or this conversation recorded them."""
