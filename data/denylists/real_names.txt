@@ -101,6 +101,10 @@
 \bspacex\b
 \bibm\b
 \bintel corporation\b
+\bintel (core|xeon|inside|arc)\b
+\bamazon alexa\b
+\bgemma ?[0-9]+\b
+\bdiscord (server|channel|app|nitro)\b
 \bsamsung\b
 \bsony\b
 \bnintendo\b
