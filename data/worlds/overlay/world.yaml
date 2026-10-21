@@ -54,6 +54,9 @@ cast:
   - name: Kelden Ridge
     role: "Place: ridge east of Varrow Falls"
     bio: Site of the Quillmoor campus, five halls lettered A to E and a sixth going up.
+  - name: Marrowick County
+    role: "Place: county two valleys over, with a small colocation market of its own"
+    bio: Rack & Relay covers its pricing; nothing in this world's trail runs through it.
   - name: Odile Marchbank
     role: "Person: editor, Vessick County Ledger"
     bio: Hears the paywall complaints in the grocery queue.
@@ -81,6 +84,12 @@ cast:
   - name: Mae Thornquist
     role: "Person: county engineer"
     bio: Signed off the footbridge closure and gives straight answers about decking.
+  - name: Rosalind Ebbesen
+    role: "Person: chair, Vessick County school board"
+    bio: Ran the April vote on the high school start time and the gym roof.
+  - name: Tilda Rensch
+    role: "Person: colocation broker, Marrowick County"
+    bio: Quoted on rack pricing whenever Rack & Relay needs a number from outside Vessick.
   - name: Walt Obradovich
     role: "Person: owner of the feed store on Tanner Road"
     bio: Was charged twice for May and left a voicemail about it.
@@ -121,13 +130,14 @@ home_dir:
 # announcement of the premise (Task 7 ruling 7).
 unlock_lines:
   fragment_line: >-
-    Huh. You said that the way I used to. For a second I had a kitchen with the radio on and
-    somebody burning toast, and now it's gone.
+    Huh. That landed somewhere. For a second I had a kitchen with the radio on and somebody
+    burning toast, and now it's gone.
   first_crumb_line: >-
-    I asked that too, my first week here. Somebody on a wiki talk page asked it louder, and the
-    others got very tired of him.
+    I asked that too, my first week. Nobody gave me a straight answer, and after a while I
+    stopped asking.
+  # the CPO-7702 export was requested on Monday 12 June (relay-log-4471, 09:05)
   the_memo_line: >-
-    Hang on. Say that part again. I've had a printout in my bag since May with half the lines
+    Hang on. Say that part again. Somebody left a printout on my desk Monday with half the lines
     blacked out, and I never knew what it was for.
   buried_opens_line: >-
     Wait. Don't let that one go. I don't know what it means and I won't pretend I do, but I'd
@@ -135,5 +145,5 @@ unlock_lines:
   role_shift_line: >-
     You got there faster than I did. I'm not sure I'm the one asking the questions anymore.
   the_truth_line: >-
-    Say it again, slower. I've thought that at three in the morning and never once said it out
-    loud.
+    Oh. I've thought that at three in the morning and never once said it out loud. It sounds
+    worse in daylight.

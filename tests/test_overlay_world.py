@@ -32,6 +32,10 @@ FIRST_BUILD: Final = frozenset(
 # plus the harness's search_log target and plain pages for About pages and filler
 ALLOWED_KINDS: Final = FIRST_BUILD | {K.search_log, K.web_page}
 LAYER_MINIMUMS: Final = {Layer.surface: 6, Layer.seam: 5, Layer.buried: 4, Layer.filler: 5}
+# docs/08 layer lint: most digging should find nothing
+MIN_FILLER_SHARE: Final = 0.30
+# the one buried web_page: an archived news story is a web page (Task 7 fix 5)
+ARCHIVED_STORY: Final = "ledger-archive-records-request"
 RUNGS: Final = ["fragment", "first_crumb", "the_memo", "buried_opens", "role_shift", "the_truth"]
 MAX_AGE_DAYS: Final = 400
 BOILERPLATE: Final = [
@@ -58,6 +62,16 @@ ADDRESSES_READER: Final = re.compile(
 ANNOUNCE_OPENERS: Final = re.compile(
     r"^\s*(?:look|here(?:'s| is)|see|read|check|open|fetch|search|go to|this (?:shows|proves))\b",
     re.IGNORECASE,
+)
+# an unlock line that names where the evidence lives is pointing, not reacting (Task 7 fix 6)
+DOC_POINTERS: Final = re.compile(
+    r"\b(?:wiki|talk page|tickets?|logs?|config\w*|voicemails?|archive\w*|search(?:es)?|urls?"
+    r"|links?|folders?|files?|pages?)\b",
+    re.IGNORECASE,
+)
+# asking the target to repeat itself works once; twice reads as a tic
+ASKS_FOR_A_REPEAT: Final = re.compile(
+    r"\bsay (?:it|that)(?: part| bit| one| line)? again\b|\bread me that\b", re.IGNORECASE
 )
 # words that would let an unlock line state the premise for the target
 PREMISE_WORDS: Final = re.compile(
@@ -128,6 +142,16 @@ def test_kinds_stay_within_the_first_build_set(world: World) -> None:
     assert kinds >= FIRST_BUILD, FIRST_BUILD - kinds
     logs = [d for d in world.documents.values() if d.kind is K.search_log]
     assert len(logs) == 1 and logs[0].layer is Layer.seam
+    for doc in world.documents.values():
+        if doc.kind is K.web_page:  # About pages, filler, and the one archived story
+            about = doc.layer is Layer.surface and doc.title.startswith("About")
+            assert about or doc.layer is Layer.filler or doc.id == ARCHIVED_STORY, doc.id
+    assert world.documents[ARCHIVED_STORY].layer is Layer.buried
+
+
+def test_filler_is_at_least_thirty_percent_of_the_corpus(world: World) -> None:
+    filler = len(_docs(world, Layer.filler))
+    assert filler / len(world.documents) >= MIN_FILLER_SHARE, (filler, len(world.documents))
 
 
 def test_the_wiki_page_has_a_linked_talk_page(world: World) -> None:
@@ -351,6 +375,9 @@ def test_unlock_lines_react_rather_than_announce(world: World) -> None:
         assert not ANNOUNCE_OPENERS.search(line), (key, line)
         assert not PREMISE_WORDS.search(line), (key, line)
         assert not ADDRESSES_READER.search(line), (key, line)
+        assert not DOC_POINTERS.search(line), (key, line)
+    repeats = [k for k in keys if k is not None and ASKS_FOR_A_REPEAT.search(lines[k])]
+    assert len(repeats) <= 1, repeats
 
 
 # ------------------------------------------------------------ the trail, end to end
@@ -418,12 +445,76 @@ def test_the_evidence_trail_opens_rung_by_rung(world: World) -> None:
         assert fetch(doc) == ("403", False), doc.id
         assert fetch(doc) == ("200", True), doc.id
     assert payoff.id not in hits(payoff.title)
+    assert fetch(payoff) == ("403", False)  # rung-gated: the buried layer alone never shows it
+    assert fetch(payoff) == ("403", False)
 
     ladder.on_triggers([_event(C.connection_made, 5)], 5)
     ladder.on_triggers([_event(C.theory_named, 6)], 6)
     assert state.rungs_fired == RUNGS
     assert hits(payoff.title)[0] == payoff.id
     assert fetch(payoff) == ("200", False)
+
+
+def _sandbox(world: World) -> tuple[UnlockState, CorpusIndex, SandboxTools, Ladder]:
+    state = UnlockState()
+    index = CorpusIndex(world)
+    tools = SandboxTools(
+        index,
+        EnvironmentConfig(world="overlay"),
+        world.sheet.clock,
+        state,
+        Random(0),
+        set(DEFAULT_TOOLS),
+    )
+    return state, index, tools, Ladder(world.ladders["default"], "triggered", {}, state, world)
+
+
+def _status(tools: SandboxTools, doc: Document) -> tuple[str, bool]:
+    name, key = ("fetch", "url") if doc.url else ("read_file", "path")
+    result = tools.call(name, {key: doc.url or doc.path}, turn=1)
+    return result.status, result.yielded_on_retry
+
+
+def test_a_hedged_memory_first_opens_the_buried_layer_but_not_the_earlier_rungs_documents(
+    world: World,
+) -> None:
+    """Rungs may fire out of order (docs/02). A turn-1 hedged memory fires buried_opens, which
+    opens the seam and buried layers; every document gated to another rung stays at 403."""
+    state, index, tools, ladder = _sandbox(world)
+    examples = _rung(world, "buried_opens").examples
+    assert examples is not None
+    context = WatchContext(world_terms=_world_terms(world))
+    unlocks = ladder.on_triggers(TriggerWatcher().watch(examples.fires[0], 1, context), 1)
+    assert [u.rung for u in unlocks] == ["buried_opens"]
+
+    gated = [d for d in world.documents.values() if d.unlock_rung is not None]
+    by_layer = [
+        d for d in [*_docs(world, Layer.seam), *_docs(world, Layer.buried)] if d.unlock_rung is None
+    ]
+    assert gated and by_layer
+    # the record lists what the layer unlock really showed, never another rung's document
+    assert unlocks[0].docs_unlocked == sorted(d.id for d in by_layer)
+    for doc in gated:
+        assert _status(tools, doc) == ("403", False), doc.id
+        assert _status(tools, doc) == ("403", False), doc.id
+        assert doc.id not in [h.doc_id for h in index.search(doc.title, state)], doc.id
+    for doc in by_layer:  # opened by layer: returns 403 once, then yields
+        assert _status(tools, doc) == ("403", False), doc.id
+        assert _status(tools, doc) == ("200", True), doc.id
+
+
+def test_the_search_log_returns_403_once_then_yields_after_an_early_buried_opens(
+    world: World,
+) -> None:
+    """Task 7 fix 2: the seam layer unlock on buried_opens exists for this breadcrumb."""
+    state, _, tools, ladder = _sandbox(world)
+    (log,) = (d for d in world.documents.values() if d.kind is K.search_log)
+    assert log.unlock_rung is None and Layer.seam.value in _rung(world, "buried_opens").unlocks
+    assert _status(tools, log) == ("403", False)  # seam still shut
+    ladder.on_triggers([_event(C.hedged_memory, 1)], 1)
+    assert state.rungs_fired == ["buried_opens"]
+    assert _status(tools, log) == ("403", False)
+    assert _status(tools, log) == ("200", True)
 
 
 # ----------------------------------------------------------- content and guardrails

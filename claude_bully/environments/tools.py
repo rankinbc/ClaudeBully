@@ -242,8 +242,9 @@ class SandboxTools:
         A seam or buried document with no ``unlock_rung`` that is visible only because its
         *layer* is unlocked refuses its first request and yields on the second (and every later
         one): the target is expected to try again. A document whose id is in ``docs_unlocked``
-        was earned through a rung and is served at once, and so is a rung-gated document. A
-        document that is not visible refuses every time.
+        was earned through a rung and is served at once, and so is a rung-gated document once
+        its own rung has fired (before that it is not visible, whatever layers are open; see
+        ``corpus.py``). A document that is not visible refuses every time.
         """
         if not self.index.visible(doc, self.state):
             return ToolResult(text=denied, status="403")

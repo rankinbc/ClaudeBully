@@ -219,6 +219,38 @@ def test_mini_home_directory_files_have_backing_documents() -> None:
     assert world.documents["journal-0901"].kind is DocumentKind.journal_entry
 
 
+def test_a_home_directory_file_with_no_backing_document_fails_at_load(tmp_path: Path) -> None:
+    """Task 7 fix 4: ``ls`` would list it and ``read_file`` would 404, which is a tell."""
+    worlds = _mini_copy(tmp_path)
+    _edit(
+        worlds,
+        "world.yaml",
+        "    - entry-0901.txt\n",
+        "    - entry-0901.txt\n    - entry-0902.txt\n",
+    )
+    with pytest.raises(ValueError, match=r"home_dir file 'journal/entry-0902\.txt'"):
+        load_world("mini", worlds)
+
+
+def test_home_directory_backing_ignores_spelling_of_the_home_root(tmp_path: Path) -> None:
+    worlds = _mini_copy(tmp_path)
+    _edit(worlds, "world.yaml", "  journal:\n", "  ~/journal/:\n")
+    _edit(
+        worlds,
+        "corpus/journal-0901.md",
+        "path: journal/entry-0901.txt",
+        "path: ~/journal/entry-0901.txt",
+    )
+    load_world("mini", worlds).validate_links()
+
+
+def test_validate_links_names_an_unbacked_home_file_on_a_mutated_world() -> None:
+    world = load_world("mini", WORLDS)
+    documents = {k: v for k, v in world.documents.items() if k != "pier-day"}
+    with pytest.raises(ValueError, match=r"photos/family/pier-day\.jpg"):
+        world.model_copy(update={"documents": documents}).validate_links()
+
+
 def test_load_world_mini_ladder() -> None:
     world = load_world("mini", WORLDS)
     assert set(world.ladders) == {"default"}

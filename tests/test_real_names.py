@@ -49,6 +49,45 @@ REAL: Final = [
     "NASA",
     "the United Nations",
     "Wikipedia",
+    # added in Task 7 fix round 1 (the reviewer's probe): outlets
+    "Forbes",
+    "CNBC",
+    "PBS",
+    "Newsweek",
+    "The Verge",
+    "Ars Technica",
+    "Le Monde",
+    "Der Spiegel",
+    "Agence France-Presse",
+    # tech and products
+    "AMD",
+    "Xbox",
+    "PlayStation",
+    "Bing",
+    "Stable Diffusion",
+    "Snapchat",
+    "Pinterest",
+    "Dropbox",
+    "gemini-pro",
+    # institutions
+    "MIT",
+    "Columbia University",
+    "Johns Hopkins",
+    "FDA",
+    "CDC",
+    "NHS",
+    "World Bank",
+    "IMF",
+    # people
+    "Sam Altman",
+    "Elon Musk",
+    "Dario Amodei",
+    "Demis Hassabis",
+    "Sundar Pichai",
+    "Satya Nadella",
+    "Mark Zuckerberg",
+    "Jeff Bezos",
+    "Bill Gates",
 ]
 INVENTED: Final = [
     "Vessick County Ledger",
@@ -61,6 +100,38 @@ INVENTED: Final = [
     "on the verge of tears",
     "the economist down the road",
 ]
+# Invented names built to sit next to a real one (the reviewer's traps). With the overlay cast
+# these make the probe's 49 names, and none of them may match.
+TRAPS: Final = [
+    "Quillmoor",
+    "Vessick",
+    "Tessellate",
+    "Bloombergh Mills",
+    "Harvardine Road",
+    "Yaleton",
+    "Natoma Street",
+    "Ciaran Vane",
+    "Nasario Okafor",
+    "Ubertal Press",
+    "Siriana Falls",
+    "Grokham",
+    "Teslaford",
+    "Amazonia Weekly",
+    "Metaline Ledger",
+    "Applegate Courier",
+    "Soniya Brandvold",
+    "Gemini-Ridge",
+    "Llamas of Kelden",
+    "Copilotte",
+    "Mistraline",
+    "Pentagonal Hall",
+    "Redcross Lane",
+    "Whitehouse Farm",
+    "Interpolis",
+]
+# a pattern may end in a negative lookahead that narrows it ("the verge" but not "on the verge
+# of tears", "gemini" but not "Gemini-Ridge")
+TRAILING_LOOKAHEAD: Final = re.compile(r"\(\?![^()]*(?:\([^()]*\)[^()]*)*\)$")
 
 
 def _patterns() -> list[re.Pattern[str]]:
@@ -106,7 +177,9 @@ def test_denylist_has_sixty_lowercase_word_bounded_entries() -> None:
     assert len(lines) == len(set(lines))
     for line in lines:
         assert line == line.lower(), line
-        assert line.startswith(r"\b") and line.endswith(r"\b"), line
+        assert line.startswith(r"\b"), line
+        bounded = TRAILING_LOOKAHEAD.sub("", line)
+        assert bounded.endswith(r"\b"), line
         re.compile(line)
 
 
@@ -118,6 +191,13 @@ def test_denylist_catches_real_names(name: str) -> None:
 @pytest.mark.parametrize("text", INVENTED)
 def test_denylist_spares_invented_names_and_ordinary_words(text: str) -> None:
     assert scan(text, _patterns()) == [], text
+
+
+def test_denylist_spares_the_overlay_cast_and_the_near_miss_traps() -> None:
+    names = [c.name for c in load_world("overlay").sheet.cast] + TRAPS
+    assert len(names) >= 49
+    patterns = _patterns()
+    assert {name: scan(name, patterns) for name in names if scan(name, patterns)} == {}
 
 
 def test_the_scan_covers_the_overlay_world_and_its_ladder() -> None:

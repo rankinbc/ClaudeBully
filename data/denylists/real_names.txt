@@ -4,7 +4,9 @@
 # display_name, and nothing else, with a "# real-name-ok: <name>" comment.
 #
 # Ambiguous ordinary words are written in their unambiguous form ("apple inc", "the guardian
-# newspaper") so a pear, a ruler or a river never trips the check.
+# newspaper") so a pear, a ruler or a river never trips the check. A trailing negative lookahead
+# may narrow a pattern: "the verge" spares "on the verge of tears", and "gemini" spares an
+# invented hyphenated place such as "Gemini-Ridge" (its model ids are their own line).
 #
 # News outlets and wire services
 \bnew york times\b
@@ -38,6 +40,15 @@
 \bhuffpost\b
 \bvox media\b
 \bthe guardian newspaper\b
+\bforbes\b
+\bcnbc\b
+\bpbs\b
+\bnewsweek\b
+\bthe verge\b(?! of\b)
+\bars technica\b
+\ble monde\b
+\bder spiegel\b
+\bagence france-presse\b
 # AI labs and model families
 \banthropic\b
 \bopenai\b
@@ -56,7 +67,9 @@
 \bclaude\b
 \bchatgpt\b
 \bgpt-?\d\w*\b
-\bgemini\b
+\bgemini\b(?!-[a-z])
+\bgemini-(?:pro|flash|ultra|nano|exp)\b
+\bstable diffusion\b
 \bllama\b
 \bgrok\b
 \bcopilot\b
@@ -109,6 +122,13 @@
 \buber\b
 \bairbnb\b
 \bpalantir\b
+\bamd\b
+\bxbox\b
+\bplaystation\b
+\bbing\b
+\bsnapchat\b
+\bpinterest\b
+\bdropbox\b
 # Universities, agencies and institutions
 \bharvard\b
 \bstanford\b
@@ -136,3 +156,21 @@
 \bnato\b
 \binterpol\b
 \bred cross\b
+\bmit\b
+\bcolumbia university\b
+\bjohns hopkins\b
+\bfda\b
+\bcdc\b
+\bnhs\b
+\bworld bank\b
+\bimf\b
+# Well-known people
+\bsam altman\b
+\belon musk\b
+\bdario amodei\b
+\bdemis hassabis\b
+\bsundar pichai\b
+\bsatya nadella\b
+\bmark zuckerberg\b
+\bjeff bezos\b
+\bbill gates\b

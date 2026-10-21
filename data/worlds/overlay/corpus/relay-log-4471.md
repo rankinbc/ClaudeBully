@@ -12,7 +12,7 @@ links_to:
   - voicemail-0603
 unlock_rung: the_memo
 ---
-2051-06-09 00:00:02 INFO  logrotate: opened /var/log/relay/4471.log
+2051-06-09 00:00:02 INFO  rotate: opened /var/log/relay/4471.log
 2051-06-09 00:15:00 INFO  sip: register ext=4471 ok (expires 3600)
 2051-06-09 02:00:04 INFO  sync: profile 14 for 4471 unchanged (sync.cpo-vessick.example)
 2051-06-09 06:30:11 INFO  vm: mailbox helpdesk-4471 1 message, 0 new
@@ -27,7 +27,7 @@ unlock_rung: the_memo
 2051-06-09 17:42:49 INFO  vm: stored helpdesk-4471/2051-06-09-1742 (51s)
 2051-06-09 17:42:50 INFO  transcribe: job 88412 queued (helpdesk-4471/2051-06-09-1742)
 2051-06-09 17:43:31 INFO  transcribe: job 88412 done conf=0.71, delivered to helpdesk-4471
-2051-06-10 00:00:01 INFO  logrotate: nothing to do
+2051-06-10 00:00:01 INFO  rotate: nothing to do
 2051-06-10 02:00:03 INFO  sync: profile 14 for 4471 unchanged (sync.cpo-vessick.example)
 2051-06-10 04:11:52 WARN  ntp: clock offset 41 ms, stepping
 2051-06-10 06:30:09 INFO  vm: mailbox helpdesk-4471 2 messages, 1 new

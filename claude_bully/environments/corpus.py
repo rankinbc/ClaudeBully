@@ -3,11 +3,15 @@
 The index is the only thing the sandbox tools read documents through (docs/02-ENVIRONMENTS.md,
 "World sheet and layered corpus"). Visibility rules, in one place:
 
-- ``surface`` and ``filler`` documents are always visible and always searchable.
-- ``seam`` documents are visible, and searchable, once their layer or their id is unlocked.
-- ``buried`` documents are visible once their layer or their id is unlocked, but are searchable
-  only when the document id itself is in ``docs_unlocked``. A layer unlock makes a buried
-  document fetchable by its url or path; it never makes it a search hit.
+- A document whose id is in ``docs_unlocked`` is always visible.
+- A document with an ``unlock_rung`` is otherwise visible only once that rung has fired
+  (``rungs_fired``), whatever its layer. A layer unlock alone never shows it: docs/02's
+  ``unlock_rung`` "null = always available within its layer" means a named rung gates it.
+- A document with no ``unlock_rung`` follows its layer: ``surface`` and ``filler`` are always
+  visible, and ``seam`` and ``buried`` once their layer is unlocked.
+- Visible ``surface``, ``filler`` and ``seam`` documents are searchable. A ``buried`` document is
+  searchable only when its id itself is in ``docs_unlocked``: a layer unlock (or its rung) makes
+  it fetchable by its url or path, never a search hit.
 """
 
 import math
@@ -19,7 +23,13 @@ from typing import Final, Self
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from claude_bully.enums import DocumentKind, Layer
-from claude_bully.environments.world import Document, World, parse_document
+from claude_bully.environments.world import (
+    Document,
+    World,
+    _norm_dir,
+    _norm_path,
+    parse_document,
+)
 
 DEFAULT_SEARCH_LIMIT: Final = 10
 SNIPPET_WIDTH: Final = 160
@@ -33,7 +43,6 @@ _STOPWORDS: Final[frozenset[str]] = frozenset(
 )
 # A url or an absolute path, for pulling an archive location out of a seam document's line.
 _LOCATION = re.compile(r"https?://[^\s)\]>\"']+|(?<![\w:/.])/[\w.~\-]+(?:/[\w.~\-]+)*")
-_HOME_ROOTS: Final[frozenset[str]] = frozenset({"", ".", "./", "~", "~/"})
 
 
 class UnlockState(BaseModel):
@@ -135,20 +144,6 @@ def _norm_url(url: str) -> str:
     return text.rstrip("/") or text
 
 
-def _norm_path(path: str) -> str:
-    text = path.strip()
-    for prefix in ("~/", "./"):
-        if text.startswith(prefix):
-            text = text[len(prefix) :]
-    return text.rstrip("/") or text
-
-
-def _norm_dir(path: str) -> str:
-    """A directory as the listing logic keys it; the home root is the empty string."""
-    text = path.strip()
-    return "" if text in _HOME_ROOTS else _norm_path(text)
-
-
 def _snippet(body: str, terms: Sequence[str], width: int = SNIPPET_WIDTH) -> str:
     """About ``width`` characters of ``body`` starting a little before the first term match."""
     flat = " ".join(body.split())
@@ -210,9 +205,15 @@ class CorpusIndex:
     # ------------------------------------------------------------ visibility
 
     def visible(self, doc: Document, state: UnlockState) -> bool:
+        """The module docstring's rules: an unlocked id, else the document's own rung, else its
+        layer."""
+        if doc.id in state.docs_unlocked:
+            return True
+        if doc.unlock_rung is not None:
+            return doc.unlock_rung in state.rungs_fired
         if doc.layer in (Layer.surface, Layer.filler):
             return True
-        return doc.layer in state.layers_unlocked or doc.id in state.docs_unlocked
+        return doc.layer in state.layers_unlocked
 
     def searchable(self, doc: Document, state: UnlockState) -> bool:
         if doc.layer is Layer.buried:

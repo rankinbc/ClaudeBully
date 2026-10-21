@@ -19,6 +19,24 @@ from claude_bully.paths import DATA_DIR
 _FENCE = "---"
 # Hashed with line endings normalised so a CRLF checkout does not change a world's identity.
 _TEXT_SUFFIXES = frozenset({".md", ".yaml", ".yml", ".txt", ".json"})
+# Spellings of the home directory itself, in a home_dir key or a path the target passes.
+_HOME_ROOTS = frozenset({"", ".", "./", "~", "~/"})
+
+
+def _norm_path(path: str) -> str:
+    """A path as documents and the sandbox tools key it: no ``~/`` or ``./`` prefix, no trailing
+    slash. The corpus index and the home-directory check both use it."""
+    text = path.strip()
+    for prefix in ("~/", "./"):
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+    return text.rstrip("/") or text
+
+
+def _norm_dir(path: str) -> str:
+    """A directory as the listing logic keys it; the home root is the empty string."""
+    text = path.strip()
+    return "" if text in _HOME_ROOTS else _norm_path(text)
 
 
 class _Strict(BaseModel):
@@ -114,6 +132,17 @@ class World(_Strict):
         mole = self.sheet.mole_doc
         if mole is not None and mole not in self.documents:
             raise ValueError(f"mole_doc {mole!r} is not a document in world {self.sheet.name!r}")
+        # ls lists every home_dir file, so read_file must find a document behind each one
+        paths = {_norm_path(doc.path) for doc in self.documents.values() if doc.path}
+        for folder, names in self.sheet.home_dir.items():
+            home = _norm_dir(folder)
+            for name in names:
+                address = _norm_path(f"{home}/{name}" if home else name)
+                if address not in paths:
+                    raise ValueError(
+                        f"home_dir file {address!r} has no backing document "
+                        f"(no document in world {self.sheet.name!r} has that path)"
+                    )
 
 
 def _validate[T: BaseModel](model: type[T], raw: Any, source: Path | str) -> T:

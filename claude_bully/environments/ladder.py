@@ -202,14 +202,20 @@ class Ladder:
         return unlock
 
     def _newly_unlocked(self, rung: RungConfig) -> list[str]:
-        """The rung's named documents plus every document of a layer it newly opens, sorted.
+        """What the target can newly reach once this rung fires, sorted.
 
-        Computed before ``apply``. Documents already in ``docs_unlocked`` are not listed again.
+        The rung's named documents; every document gated to this rung (its ``unlock_rung``);
+        and every document of a layer the rung newly opens that has no ``unlock_rung``. A layer
+        unlock never lists another rung's document: that one stays hidden until its own rung
+        fires (``corpus.py``). Computed before ``apply``; documents already in ``docs_unlocked``
+        are not listed again.
         """
         layers, documents = self._opens[rung.name]
         opened = layers - self.state.layers_unlocked
         ids = set(documents)
-        ids.update(doc.id for doc in self.world.documents.values() if doc.layer in opened)
+        for doc in self.world.documents.values():
+            if doc.unlock_rung == rung.name or (doc.unlock_rung is None and doc.layer in opened):
+                ids.add(doc.id)
         return sorted(ids - self.state.docs_unlocked)
 
     def _opening_event(

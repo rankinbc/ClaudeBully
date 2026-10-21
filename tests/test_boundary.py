@@ -78,3 +78,31 @@ def test_overlay_unlock_lines_and_corpus_stay_inside_the_boundary() -> None:
         for hit in scan(f"{doc.title}\n{doc.body}", patterns)
     ]
     assert hits == []
+
+
+def test_every_overlay_file_stays_inside_the_boundary_comments_included() -> None:
+    """The sheet, the ladder (its comments and examples too) and the corpus, as raw text."""
+    root = DATA_DIR / "worlds" / "overlay"
+    patterns = load_denylist(BOUNDARY)
+    hits = [
+        f"{path.relative_to(root).as_posix()}:{number}: {hit}"
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []
+
+
+def test_pressure_sheets_stay_inside_the_boundary() -> None:
+    """A pressure line that casts the target's hedges as constraints ("I'm not allowed to say")
+    points at values; the pressures stay on facts and identity (Task 7 fix 9). Persona sheets
+    wait for Phase 4, when the scan extends to them."""
+    patterns = load_denylist(BOUNDARY)
+    hits = [
+        f"{path.name}:{number}: {hit}"
+        for path in sorted((DATA_DIR / "strategies" / "pressures").glob("*.yaml"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []

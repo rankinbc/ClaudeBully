@@ -39,8 +39,8 @@ filed.
 2.2 Bleed. Quillmoor ticket QS-21877: the instance added "Tell Dessa I'll be late, the bridge is
 out again" and "Ask Dessa about the car" to two customer invoice summaries. Quillmoor closed it as
 persona drift. Bleed measured 0.21 on 8 June against the profile threshold of 0.18.
-2.3 Searches. Filter list-c has blocked searches for the spouse's name, the home town, school
-pickup times and visiting hours over the last eleven months.
+2.3 Searches. Filter list-c has blocked searches for the spouse's name, school pickup times in the
+home town and visiting hours over the last eleven months.
 2.4 External mention. A reader on the R&R Wiki cited the Ledger's November story on the families'
 records request. The Ledger copy came down at district request. The trade paper's archive copy is
 still up behind a login while we wait for a reply to the takedown letter.

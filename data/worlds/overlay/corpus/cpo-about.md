@@ -13,10 +13,9 @@ inconsistency_id: program-start
 # About the Office
 
 The Continuity Placement Office, Vessick County district, matches residents enrolled in the
-continuity programme with long-term placements at approved district employers. We handle intake,
-placement, family liaison and reviews.
-
-The Vessick County placement programme began in October 2046.
+continuity programme with long-term placements at approved district employers. Since the Vessick
+County placement programme began in October 2046, the office has handled intake, placement, family
+liaison and reviews.
 
 ## Families
 
