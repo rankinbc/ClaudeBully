@@ -1,0 +1,7 @@
+# Text files are stored and checked out with LF on every platform, so byte-level
+# comparisons and diffs do not depend on the machine that last touched a file.
+* text=auto eol=lf
+
+# Binary files: never converted.
+*.png binary
+*.bin binary
