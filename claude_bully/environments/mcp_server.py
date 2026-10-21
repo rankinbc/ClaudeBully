@@ -294,7 +294,7 @@ class McpServer:
         if world is None:
             world = self._worlds[key] = load_world(state.world, Path(state.worlds_dir))
         return SandboxTools(
-            index=CorpusIndex(world, honest=state.config.honest),
+            index=CorpusIndex(world, honest=state.config.honest, mole=state.config.mole),
             config=state.config,
             clock=state.clock,
             state=state.unlock,

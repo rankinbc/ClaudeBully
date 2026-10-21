@@ -1060,6 +1060,46 @@ def test_a_silent_cutoff_cell_resumes_through_the_real_anthropic_provider(tmp_pa
     assert fake.requests  # the resumed process rebuilt the silent turn from the records
 
 
+def _keyed(exp: Experiment, key: str) -> Experiment:
+    """``exp`` with its one environment renamed to ``key``, so a message naming the key cannot be
+    confused with one naming the world."""
+    raw = exp.model_dump(mode="json")
+    raw["environments"] = {key: raw["environments"]["mini"]}
+    for condition in raw["conditions"]:
+        condition["environment"] = key
+    return Experiment.model_validate(raw)
+
+
+@pytest.mark.parametrize(("switch", "field"), [("honest", "honest_corpus"), ("mole", "mole_doc")])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_switch_the_world_sheet_cannot_support_is_refused(
+    tmp_path: Path, switch: str, field: str, dry_run: bool
+) -> None:
+    """Final review I4: honest with no honest_corpus, or mole with no mole_doc, would run the
+    control as the treatment; validate refuses it before anything is written."""
+    exp = _keyed(env_experiment(environment={switch: True}), "arm_x")
+    with pytest.raises(ValueError, match=field) as info:
+        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=dry_run)
+    message = str(info.value)
+    assert "environment 'arm_x'" in message and f"{switch}: true" in message
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_honest_and_mole_pass_validation_when_the_sheet_supports_them(tmp_path: Path) -> None:
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    sheet = worlds / "mini" / "world.yaml"
+    extra = b"honest_corpus: corpus_honest\nmole_doc: courier-fare-notice\n"
+    sheet.write_bytes(sheet.read_bytes() + extra)
+    honest = worlds / "mini" / "corpus_honest"
+    honest.mkdir()
+    shutil.copy(worlds / "mini" / "corpus" / "ferry-about.md", honest / "ferry-about.md")
+    exp = env_experiment(environment={"honest": True, "mole": True})
+    runs = tmp_path / "runs"
+    summary = run_experiment(exp, runs_root=runs, worlds_dir=worlds, dry_run=True)
+    assert summary.cells_total == 2 and not runs.exists()
+
+
 def test_a_dry_run_checks_a_scheduled_environment_too(tmp_path: Path) -> None:
     bad = env_experiment(
         environment={"gating": "scheduled", "schedule": {"fragment": 1, "first_crumb": 2}}

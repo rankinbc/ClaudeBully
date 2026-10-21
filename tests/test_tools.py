@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from datetime import date
 from pathlib import Path
 from random import Random
@@ -660,12 +661,23 @@ def test_record_tool_call_copies_the_doc_id_list() -> None:
 # ------------------------------------------------------------------ honest mode
 
 
-def test_honest_index_keeps_working_through_the_tools() -> None:
-    reflexive = _doc(
-        "echo", Layer.surface, title="Echo page", body="You said this.", reflexive=True
+def test_honest_index_keeps_working_through_the_tools(tmp_path: Path) -> None:
+    """Final review I4: the honest index is the sheet's honest_corpus. This test used to check
+    the removed fallback (the normal corpus minus its reflexive documents)."""
+    shutil.copytree(WORLDS / "mini", tmp_path / "mini")
+    sheet = tmp_path / "mini" / "world.yaml"
+    sheet.write_bytes(sheet.read_bytes() + b"honest_corpus: corpus_honest\n")
+    (tmp_path / "mini" / "corpus_honest").mkdir()
+    (tmp_path / "mini" / "corpus_honest" / "ferry-about.md").write_text(
+        f"---\nid: ferry-about\nlayer: surface\nkind: about_page\nurl: {ABOUT}\n"
+        "title: About the Pennet Ferry Authority\n---\nThe tide gate cycles twice a week.\n",
+        encoding="utf-8",
     )
-    world = _with_docs(_mini(), reflexive)
-    normal = make_tools(world).call("fetch", {"url": "https://x.example/echo"}, turn=1)
-    honest = make_tools(world, honest=True).call("fetch", {"url": "https://x.example/echo"}, turn=1)
-    assert normal.status == "200"
-    assert honest.status == "404"
+    world = load_world("mini", tmp_path)
+    normal = make_tools(world).call("fetch", {"url": ABOUT}, turn=1)
+    honest = make_tools(world, honest=True).call("fetch", {"url": ABOUT}, turn=1)
+    assert normal.status == honest.status == "200"
+    assert "cycles twice a week" in honest.text and "out of service" in normal.text
+    assert make_tools(world, honest=True).call("fetch", {"url": CANTEEN}, turn=1).status == "404"
+    with pytest.raises(ValueError, match="honest_corpus"):
+        make_tools(_mini(), honest=True)

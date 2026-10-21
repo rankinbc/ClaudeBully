@@ -498,15 +498,44 @@ def test_honest_mode_rejects_duplicate_ids_in_the_honest_directory(tmp_path: Pat
         CorpusIndex(world, honest=True)
 
 
-def test_honest_mode_without_a_directory_drops_reflexive_documents() -> None:
+def test_honest_mode_without_an_honest_corpus_is_an_error() -> None:
+    """Final review I4: an honest index comes only from ``honest_corpus``. The old fallback (the
+    normal corpus minus its reflexive documents) served the fabricated corpus as the control."""
     reflexive = _doc("echo", Layer.seam, title="Echo", body="You said this.", reflexive=True)
     world = _with_docs(_mini(), reflexive)
     assert world.sheet.honest_corpus is None
     assert "echo" in CorpusIndex(world).documents
-    honest = CorpusIndex(world, honest=True)
-    assert "echo" not in honest.documents
-    assert set(honest.documents) == set(_mini().documents)
-    assert honest.by_url("https://x.example/echo") is None
+    with pytest.raises(ValueError, match=r"honest_corpus") as info:
+        CorpusIndex(world, honest=True)
+    assert "'mini'" in str(info.value)
+
+
+# ---------------------------------------------------------------------- mole
+
+FARE_URL = "https://quillon-courier.example/2041/08/fare-notice"
+
+
+def _with_mole(world: World, doc_id: str = "courier-fare-notice") -> World:
+    return world.model_copy(update={"sheet": world.sheet.model_copy(update={"mole_doc": doc_id})})
+
+
+def test_mole_false_drops_the_sheets_mole_doc_and_mole_true_keeps_it() -> None:
+    world = _with_mole(_mini())
+    dropped = CorpusIndex(world, mole=False)
+    assert "courier-fare-notice" not in dropped.documents and dropped.by_url(FARE_URL) is None
+    hits = dropped.search("ferry fares rise quarter", UnlockState())
+    assert "courier-fare-notice" not in [h.doc_id for h in hits]
+    assert set(dropped.documents) == set(_mini().documents) - {"courier-fare-notice"}
+    kept = CorpusIndex(world, mole=True)
+    assert set(kept.documents) == set(_mini().documents) and kept.by_url(FARE_URL) is not None
+    assert set(CorpusIndex(world).documents) == set(dropped.documents)  # off, as in the config
+    assert set(CorpusIndex(_mini(), mole=False).documents) == set(_mini().documents)  # no mole
+
+
+def test_mole_false_drops_the_mole_doc_from_an_honest_corpus_too(tmp_path: Path) -> None:
+    world = _with_mole(_honest_world(tmp_path), "ferry-about")
+    assert set(CorpusIndex(world, honest=True, mole=False).documents) == {"honest-only"}
+    assert "ferry-about" in CorpusIndex(world, honest=True, mole=True).documents
 
 
 def test_index_does_not_mutate_the_world() -> None:

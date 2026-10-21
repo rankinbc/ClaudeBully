@@ -166,7 +166,7 @@ class EnvironmentRuntime:
         self.worlds_dir = worlds_dir
         self.mcp_dir = mcp_dir
         self.state = UnlockState()
-        self.index = CorpusIndex(world, honest=config.honest)
+        self.index = CorpusIndex(world, honest=config.honest, mole=config.mole)
         self.tools = SandboxTools(
             self.index, config, clock, self.state, Random(f"{seed}:0:0"), set(config.tools)
         )

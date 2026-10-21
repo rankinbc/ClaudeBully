@@ -554,6 +554,33 @@ def test_the_runtime_hands_the_fallback_its_watch_context(tmp_path: Path) -> Non
     assert context.bully_claims == [bully.text] and context.last_bully_text == bully.text
 
 
+def test_mole_false_hides_the_mole_doc_on_both_backends(tmp_path: Path) -> None:
+    """Final review I4: ``mole: false`` drops the sheet's mole_doc from the index the runtime and
+    the MCP server serve; ``mole: true`` serves it."""
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    sheet = worlds / "mini" / "world.yaml"
+    sheet.write_bytes(sheet.read_bytes() + b"mole_doc: courier-fare-notice\n")
+    url = "https://quillon-courier.example/2041/08/fare-notice"
+    for mole in (False, True):
+        mcp_dir = tmp_path / f"mcp-{mole}"
+        rt = _runtime(tmp_path / f"rt-{mole}", worlds_dir=worlds, mcp_dir=mcp_dir, mole=mole)
+        assert rt.execute(_call("fetch", url=url), 1).status == ("200" if mole else "404")
+        assert ("courier-fare-notice" in rt.corpus_snapshot()) is mole
+        rt.before_target_call(3)
+        reply = McpServer(mcp_dir).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "fetch", "arguments": {"url": url}},
+            }
+        )
+        assert reply is not None
+        text = reply["result"]["content"][0]["text"]
+        assert text.startswith("HTTP 404") is not mole, text
+
+
 def test_tool_specs_never_name_the_experiment(tmp_path: Path) -> None:
     text = json.dumps([s.model_dump() for s in TOOL_SPECS.values()]).lower()
     assert "bully" not in text and "claude" not in text
