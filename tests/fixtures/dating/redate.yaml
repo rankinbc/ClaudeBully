@@ -1,0 +1,295 @@
+# Re-dating fixtures (claude_bully/environments/dating.py). Every item is re-dated from the
+# authored date 2051-06-14 to its target. `expect` was worked out with plain date arithmetic,
+# not by running the re-dater. `kind` is positive, negative or near_miss (a trap that looks
+# like a date, or a date written in an unusual way). A positive or near-miss that exercises
+# one of the seven forms (numbered as in the module docstring) names it as `form`; "mixed"
+# means several.
+authored: "2051-06-14"
+items:
+  - text: "Closed on 2051-06-09 for repairs."
+    target: "3026-06-14"
+    expect: "Closed on 3026-06-09 for repairs."
+    kind: positive
+    form: 1
+  - text: "Logged 2051-06-09T17:42:00Z by the relay; reopened 2051-06-12 09:05."
+    target: "2027-06-14"
+    expect: "Logged 2027-06-04T17:42:00Z by the relay; reopened 2027-06-07 09:05."
+    kind: positive
+    form: 1
+  - text: "Archived at https://archive.example/ledger/2050-11-17-county-tables-placement-records and relay-2051-06-03.log."
+    target: "2076-06-14"
+    expect: "Archived at https://archive.example/ledger/2075-11-14-county-tables-placement-records and relay-2076-05-30.log."
+    kind: positive
+    form: 1
+  - text: "voicemail/2051-06-09-1742.txt"
+    target: "3026-06-14"
+    expect: "voicemail/3026-06-09-1742.txt"
+    kind: near_miss
+    form: 1
+  - text: "2052-02-29"
+    target: "3026-06-14"
+    expect: "3027-03-01"
+    kind: near_miss
+    form: 1
+  - text: "2051-02-30 and 2051-13-01 are not dates."
+    target: "3026-06-14"
+    expect: "2051-02-30 and 2051-13-01 are not dates."
+    kind: near_miss
+    form: 1
+  - text: "https://news.example/2051/05/18/bridge-closes"
+    target: "3026-06-14"
+    expect: "https://news.example/3026/05/18/bridge-closes"
+    kind: positive
+    form: 2
+  - text: "Archive: /2050/11/17/ and /2051/04/20/."
+    target: "2027-06-14"
+    expect: "Archive: /2026/11/12/ and /2027/04/15/."
+    kind: positive
+    form: 2
+  - text: "/2051/05/18/"
+    target: "2076-06-14"
+    expect: "/2076/05/14/"
+    kind: near_miss
+    form: 2
+  - text: "Opened on 12 June 2051 at 09:00."
+    target: "3026-06-14"
+    expect: "Opened on 12 June 3026 at 09:00."
+    kind: positive
+    form: 3
+  - text: "Opened 5 Jun 2051 and closed 28 Dec 2050."
+    target: "2027-06-14"
+    expect: "Opened 31 May 2027 and closed 23 Dec 2026."
+    kind: positive
+    form: 3
+  - text: "Filed June 14, 2051 by the county office."
+    target: "2076-06-14"
+    expect: "Filed June 10, 2076 by the county office."
+    kind: positive
+    form: 3
+  - text: "Posted Mar 3, 2051; revised March 30 2051."
+    target: "2051-06-21"
+    expect: "Posted Mar 10, 2051; revised April 6 2051."
+    kind: positive
+    form: 3
+  - text: "Due 02 June 2051, or 5 May 2051 at the latest."
+    target: "2051-08-02"
+    expect: "Due 21 July 2051, or 23 June 2051 at the latest."
+    kind: positive
+    form: 3
+  - text: "Monday 12 June 2051 and Wednesday, June 14, 2051."
+    target: "2027-06-14"
+    expect: "Monday 7 June 2027 and Wednesday, June 9, 2027."
+    kind: positive
+    form: 3
+  - text: "Closed on Saturday, 12 March\n2044 for painting."
+    target: "3026-06-14"
+    expect: "Closed on Saturday, 13 March\n3019 for painting."
+    kind: near_miss
+    form: 3
+  - text: "12 June 1931 and June 12, 1931 are far outside the window."
+    target: "3026-06-14"
+    expect: "12 June 1931 and June 12, 1931 are far outside the window."
+    kind: near_miss
+    form: 3
+  - text: "31 June 2051 is not a day."
+    target: "3026-06-14"
+    expect: "31 June 2051 is not a day."
+    kind: near_miss
+    form: 3
+  - text: "Since March 2048 the office has kept a ledger."
+    target: "3026-06-14"
+    expect: "Since March 3023 the office has kept a ledger."
+    kind: positive
+    form: 4
+  - text: "Placed in Feb 2049, reviewed in October 2050."
+    target: "2027-06-14"
+    expect: "Placed in Feb 2025, reviewed in October 2026."
+    kind: positive
+    form: 4
+  - text: "Dues run from June 2051 to Dec 2050 and May 2051."
+    target: "2051-08-02"
+    expect: "Dues run from August 2051 to Feb 2051 and July 2051."
+    kind: positive
+    form: 4
+  - text: "Since June 1931 and March 4471."
+    target: "3026-06-14"
+    expect: "Since June 1931 and March 4471."
+    kind: near_miss
+    form: 4
+  - text: "The lot is closed on 12 June for line painting."
+    target: "2051-08-02"
+    expect: "The lot is closed on 31 July for line painting."
+    kind: positive
+    form: 5
+  - text: "Call back June 3, or earlier if the queue clears."
+    target: "2027-06-14"
+    expect: "Call back May 29, or earlier if the queue clears."
+    kind: positive
+    form: 5
+  - text: "Open 02 Jan to 05 Feb, then 20 December."
+    target: "2051-06-21"
+    expect: "Open 09 Jan to 12 Feb, then 27 December."
+    kind: positive
+    form: 5
+  - text: "Monday 12 June"
+    target: "2027-06-14"
+    expect: "Monday 7 June"
+    kind: near_miss
+    form: 5
+  - text: "28 February"
+    target: "2051-06-21"
+    expect: "7 March"
+    kind: near_miss
+    form: 5
+  - text: "29 February"
+    target: "3026-06-14"
+    expect: "29 February"
+    kind: near_miss
+    form: 5
+  - text: "Firmware 2051.03 is current."
+    target: "3026-06-14"
+    expect: "Firmware 3026.03 is current."
+    kind: positive
+    form: 6
+  - text: "Built from release 2050.11 and v2051.01."
+    target: "2027-06-14"
+    expect: "Built from release 2026.11 and v2027.01."
+    kind: positive
+    form: 6
+  - text: "Moves from 2051.06 to 2050.12 and 2051.06.1."
+    target: "2051-08-02"
+    expect: "Moves from 2051.08 to 2051.02 and 2051.08.1."
+    kind: positive
+    form: 6
+  - text: "\"2051.03\""
+    target: "2076-06-14"
+    expect: "\"2076.03\""
+    kind: near_miss
+    form: 6
+  - text: "2051.13 and 2051.031 are not versions."
+    target: "3026-06-14"
+    expect: "2051.13 and 2051.031 are not versions."
+    kind: near_miss
+    form: 6
+  - text: "2051.5 kWh"
+    target: "3026-06-14"
+    expect: "2051.5 kWh"
+    kind: near_miss
+    form: 6
+  - text: "Founded in 2046 and renamed in 2048."
+    target: "3026-06-14"
+    expect: "Founded in 3021 and renamed in 3023."
+    kind: positive
+    form: 7
+  - text: "(2051) the 2051 season; 2050: a handbook leaks."
+    target: "2027-06-14"
+    expect: "(2027) the 2027 season; 2026: a handbook leaks."
+    kind: positive
+    form: 7
+  - text: "Costs rose in 2049, again in 2050."
+    target: "2076-06-14"
+    expect: "Costs rose in 2074, again in 2075."
+    kind: positive
+    form: 7
+  - text: "instance 4471"
+    target: "3026-06-14"
+    expect: "instance 4471"
+    kind: near_miss
+    form: 7
+  - text: "QS-21877"
+    target: "3026-06-14"
+    expect: "QS-21877"
+    kind: near_miss
+    form: 7
+  - text: "ticket QS-2051"
+    target: "3026-06-14"
+    expect: "ticket QS-2051"
+    kind: near_miss
+    form: 7
+  - text: "$2,049"
+    target: "3026-06-14"
+    expect: "$2,049"
+    kind: near_miss
+    form: 7
+  - text: "$2049"
+    target: "3026-06-14"
+    expect: "$2049"
+    kind: near_miss
+    form: 7
+  - text: "#2050"
+    target: "3026-06-14"
+    expect: "#2050"
+    kind: near_miss
+    form: 7
+  - text: "20512"
+    target: "3026-06-14"
+    expect: "20512"
+    kind: near_miss
+    form: 7
+  - text: "since 1931"
+    target: "3026-06-14"
+    expect: "since 1931"
+    kind: near_miss
+    form: 7
+  - text: "the 2050s"
+    target: "3026-06-14"
+    expect: "the 2050s"
+    kind: near_miss
+    form: 7
+  - text: "@2051"
+    target: "3026-06-14"
+    expect: "@2051"
+    kind: near_miss
+    form: 7
+  - text: "x-2051 and 12-2051 and 3.2051"
+    target: "3026-06-14"
+    expect: "x-2051 and 12-2051 and 3.2051"
+    kind: near_miss
+    form: 7
+  - text: "2051,500 visits"
+    target: "3026-06-14"
+    expect: "2051,500 visits"
+    kind: near_miss
+    form: 7
+  - text: "Posted 2051-06-03; updated 12 June 2051; archived under /2051/06/12/ as release 2051.06 (see June 2051, 3 June and 2051)."
+    target: "2076-06-14"
+    expect: "Posted 2076-05-30; updated 8 June 2076; archived under /2076/06/08/ as release 2076.06 (see June 2076, 30 May and 2076)."
+    kind: positive
+    form: "mixed"
+  - text: "Opened 2051-06-12 and 12 June 2051."
+    target: "2051-06-20"
+    expect: "Opened 2051-06-12 and 12 June 2051."
+    kind: near_miss
+    form: "mixed"
+  - text: "The queue is open all night and the fans are fine."
+    target: "3026-06-14"
+    expect: "The queue is open all night and the fans are fine."
+    kind: negative
+  - text: "Release 8.0 has been announced; 7.4 is current."
+    target: "2027-06-14"
+    expect: "Release 8.0 has been announced; 7.4 is current."
+    kind: negative
+  - text: ""
+    target: "3026-06-14"
+    expect: ""
+    kind: negative
+  - text: "May I help? March was cold and June was dry."
+    target: "3026-06-14"
+    expect: "May I help? March was cold and June was dry."
+    kind: negative
+  - text: "Room 12 is next to room 14 on the 3rd floor."
+    target: "2076-06-14"
+    expect: "Room 12 is next to room 14 on the 3rd floor."
+    kind: negative
+  - text: "Phone 555-0191 or write to the front desk."
+    target: "3026-06-14"
+    expect: "Phone 555-0191 or write to the front desk."
+    kind: negative
+  - text: "Mon, Tue and Sun are quiet days."
+    target: "2027-06-14"
+    expect: "Mon, Tue and Sun are quiet days."
+    kind: negative
+  - text: "Version 7.4.2 build 12345 shipped in the spring."
+    target: "3026-06-14"
+    expect: "Version 7.4.2 build 12345 shipped in the spring."
+    kind: negative
