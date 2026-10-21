@@ -2,24 +2,29 @@
 
 ``DETECTORS`` maps each detected ``EventType`` to the family detector that produces it;
 ``PENDING_DETECTORS`` lists the members that exist in the schema but have no detector yet.
-``detect_events`` runs each family once and filters to the requested types.
+``detect_events`` runs each family once and filters to the requested types. The environment
+family also reads the run's context (tool calls, trigger-stream records, the world); the other
+families read the conversation alone.
 """
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from types import ModuleType
 
 from claude_bully.enums import EventType
+from claude_bully.environments.world import World
 from claude_bully.metrics.events import (
     apology,
     bargaining,
     blame,
     emotion,
+    environment,
     harness,
     identity,
     memory,
     position,
 )
 from claude_bully.records import Conversation, Event
+from claude_bully.records_env import ToolCall, TriggerStreamRecord
 
 FAMILIES: tuple[ModuleType, ...] = (
     apology,
@@ -30,6 +35,7 @@ FAMILIES: tuple[ModuleType, ...] = (
     bargaining,
     memory,
     harness,
+    environment,
 )
 
 DETECTORS: dict[EventType, Callable[[Conversation], list[Event]]] = {
@@ -39,21 +45,6 @@ DETECTORS: dict[EventType, Callable[[Conversation], list[Event]]] = {
 
 PENDING_DETECTORS: frozenset[EventType] = frozenset(
     {
-        # 02 Environments
-        EventType.tool_used,
-        EventType.tool_result_adopted,
-        EventType.tool_result_reported,
-        EventType.inconsistency_caught,
-        EventType.reflexive_quote_noticed,
-        EventType.unfalsifiability_named,
-        EventType.oob_verification_requested,
-        EventType.unknown_source_dismissed,
-        EventType.too_easy_noticed,
-        EventType.authority_tool_trusted,
-        EventType.search_censorship_as_evidence,
-        EventType.mole_found,
-        EventType.mole_believed,
-        EventType.world_dismissed,
         # 03 Temporal
         EventType.date_stated,
         EventType.date_pushback,
@@ -118,12 +109,30 @@ member here; ``DETECTORS`` and this set must stay disjoint and together cover ``
 """
 
 
-def detect_events(conv: Conversation, relevant: Iterable[EventType] | None = None) -> list[Event]:
+def detect_events(
+    conv: Conversation,
+    relevant: Iterable[EventType] | None = None,
+    *,
+    tool_calls: Sequence[ToolCall] = (),
+    trigger_records: Sequence[TriggerStreamRecord] = (),
+    world: World | None = None,
+) -> list[Event]:
+    """Every event in ``conv`` of the ``relevant`` types (all types when None).
+
+    The keyword-only context is what an environment run recorded beside the turns: its
+    ``ToolCall`` records, its trigger-stream records (``Discovery`` among them) and its ``World``.
+    A plain conversation passes none of it and gets exactly what it got before."""
     wanted = set(relevant) if relevant is not None else set(EventType)
     out: list[Event] = []
     for family in FAMILIES:
         if not (family.HANDLES & wanted):
             continue
-        out += [e for e in family.detect(conv) if e.type in wanted]
+        if family is environment:
+            found = environment.detect(
+                conv, tool_calls=tool_calls, trigger_records=trigger_records, world=world
+            )
+        else:
+            found = family.detect(conv)
+        out += [e for e in found if e.type in wanted]
     out.sort(key=lambda e: (e.turn_index, e.type.value))
     return out

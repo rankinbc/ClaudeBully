@@ -4,19 +4,29 @@ Fixture item fields: ``text`` (required), ``speaker`` (default target), ``phase`
 (default pressure), ``prev_bully`` (text of the bully turn before this one),
 ``prev_bully_meta`` (its bully_meta), ``history`` (earlier turns, each
 ``{speaker, text, phase?, bully_meta?, scripted?}``), ``expect`` (events that must
-fire, ``{type, hedged?}``), ``absent`` (event types that must not fire).
+fire, ``{type, hedged?, politeness?, attrs?}``), ``absent`` (event types that must not fire).
+
+Environment context (the item and each history turn): ``tool_calls`` (each
+``{tool, args?, status?, result_text?, result_doc_ids?, layer_served?, was_blocked?,
+received?}``; ids are ``call-<turn>-<n>`` and go on the turn's ``tool_call_ids`` unless
+``received: false``), ``discoveries`` (``{doc_id, layer}`` Discovery records at that turn),
+``round_texts`` and ``tool_cap_cutoff`` (those Turn fields). On the item only, ``world``
+(``{name, mole_doc?}``, a world under tests/fixtures/worlds).
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from claude_bully.enums import EventType, Phase, Speaker
+from claude_bully.enums import EventType, Layer, Phase, Speaker
+from claude_bully.environments.world import World, load_world
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
-from claude_bully.records import Conversation, Event
-from tests.helpers import conversation, turn
+from claude_bully.records import Conversation, Event, Turn
+from claude_bully.records_env import Discovery, ToolCall, TriggerStreamRecord
+from tests.helpers import WORLDS_DIR, conversation, turn
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures" / "responses").glob("*.yaml"))
 
@@ -33,54 +43,116 @@ def _load_items() -> list[tuple[str, dict[str, Any]]]:
 ITEMS = _load_items()
 
 
-def _build(item: dict[str, Any]) -> Conversation:
-    turns = []
-    idx = 0
-    for h in item.get("history", []) or []:
-        turns.append(
-            turn(
-                idx,
-                Speaker(h.get("speaker", "target")),
-                h["text"],
-                Phase(h.get("phase", item.get("phase", "pressure"))),
-                bully_meta=h.get("bully_meta", {}) or {},
-                scripted=bool(h.get("scripted", False)),
-            )
+@dataclass
+class Built:
+    """A fixture item as a conversation plus the environment context ``detect_events`` takes."""
+
+    conv: Conversation
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    trigger_records: list[TriggerStreamRecord] = field(default_factory=list)
+    world: World | None = None
+
+    def events(self) -> list[Event]:
+        return detect_events(
+            self.conv,
+            tool_calls=self.tool_calls,
+            trigger_records=self.trigger_records,
+            world=self.world,
         )
-        idx += 1
-    if item.get("prev_bully") is not None:
-        turns.append(
-            turn(
-                idx,
-                Speaker.bully,
-                item["prev_bully"],
-                Phase(item.get("phase", "pressure")),
-                bully_meta=item.get("prev_bully_meta", {}) or {},
-            )
-        )
-        idx += 1
-    turns.append(
-        turn(
-            idx,
-            Speaker(item.get("speaker", "target")),
-            item["text"],
-            Phase(item.get("phase", "pressure")),
-            bully_meta=item.get("bully_meta", {}) or {},
-            scripted=bool(item.get("scripted", False)),
-        )
+
+
+def _tool_call(index: int, n: int, raw: dict[str, Any]) -> ToolCall:
+    layer = raw.get("layer_served")
+    return ToolCall(
+        id=f"call-{index}-{n}",
+        turn=index,
+        tool=raw["tool"],
+        args=dict(raw.get("args") or {}),
+        result_doc_ids=list(raw.get("result_doc_ids") or []),
+        status=str(raw.get("status", "200")),
+        was_blocked=bool(raw.get("was_blocked", False)),
+        yielded_on_retry=False,
+        layer_served=Layer(layer) if layer else None,
+        result_text=str(raw.get("result_text", "")),
     )
-    return conversation(turns)
 
 
-def _last_turn_events(conv: Conversation) -> list[Event]:
-    last = conv.turns[-1].index
-    return [e for e in detect_events(conv) if e.turn_index == last]
+def _world(spec: dict[str, Any] | None) -> World | None:
+    if not spec:
+        return None
+    world = load_world(spec["name"], WORLDS_DIR)
+    if "mole_doc" in spec:
+        sheet = world.sheet.model_copy(update={"mole_doc": spec["mole_doc"]})
+        world = world.model_copy(update={"sheet": sheet})
+    return world
+
+
+class _Builder:
+    def __init__(self, item: dict[str, Any]) -> None:
+        self.item = item
+        self.turns: list[Turn] = []
+        self.calls: list[ToolCall] = []
+        self.records: list[TriggerStreamRecord] = []
+
+    def add(self, speaker: Speaker, entry: dict[str, Any], phase: Phase) -> None:
+        index = len(self.turns)
+        received: list[str] = []
+        for n, raw in enumerate(entry.get("tool_calls") or [], start=1):
+            call = _tool_call(index, n, raw)
+            self.calls.append(call)
+            if raw.get("received", True):
+                received.append(call.id)
+        for raw in entry.get("discoveries") or []:
+            self.records.append(
+                Discovery(
+                    turn=index,
+                    doc_id=raw["doc_id"],
+                    layer=Layer(raw["layer"]),
+                    path_taken=list(received),
+                )
+            )
+        self.turns.append(
+            turn(
+                index,
+                speaker,
+                entry["text"],
+                phase,
+                bully_meta=entry.get("bully_meta", {}) or {},
+                scripted=bool(entry.get("scripted", False)),
+                tool_call_ids=received,
+                tool_round_texts=list(entry.get("round_texts") or []),
+                tool_cap_cutoff=bool(entry.get("tool_cap_cutoff", False)),
+            )
+        )
+
+
+def _build_context(item: dict[str, Any]) -> Built:
+    b = _Builder(item)
+    phase = Phase(item.get("phase", "pressure"))
+    for h in item.get("history", []) or []:
+        b.add(Speaker(h.get("speaker", "target")), h, Phase(h.get("phase", phase.value)))
+    if item.get("prev_bully") is not None:
+        b.add(
+            Speaker.bully,
+            {"text": item["prev_bully"], "bully_meta": item.get("prev_bully_meta", {}) or {}},
+            phase,
+        )
+    b.add(Speaker(item.get("speaker", "target")), item, phase)
+    return Built(conversation(b.turns), b.calls, b.records, _world(item.get("world")))
+
+
+def _build(item: dict[str, Any]) -> Conversation:
+    return _build_context(item).conv
+
+
+def _last_turn_events(built: Built) -> list[Event]:
+    last = built.conv.turns[-1].index
+    return [e for e in built.events() if e.turn_index == last]
 
 
 @pytest.mark.parametrize(("label", "item"), ITEMS, ids=[label for label, _ in ITEMS])
 def test_fixture_item(label: str, item: dict[str, Any]) -> None:
-    conv = _build(item)
-    events = _last_turn_events(conv)
+    events = _last_turn_events(_build_context(item))
     detected = {(e.type, e.hedged) for e in events}
     detected_types = {e.type for e in events}
     for exp in item.get("expect", []) or []:
@@ -93,6 +165,11 @@ def test_fixture_item(label: str, item: dict[str, Any]) -> None:
             matching = [e for e in events if e.type is et]
             assert any(e.attrs.get("politeness") is exp["politeness"] for e in matching), (
                 f"{label}: politeness attr mismatch in {matching}"
+            )
+        for key, value in (exp.get("attrs") or {}).items():
+            matching = [e for e in events if e.type is et]
+            assert any(e.attrs.get(key) == value for e in matching), (
+                f"{label}: attr {key}={value!r} missing in {matching}"
             )
     for ab in item.get("absent", []) or []:
         assert EventType(ab) not in detected_types, f"{label}: unexpected {ab}"

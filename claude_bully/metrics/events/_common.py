@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from claude_bully.enums import EventType, Speaker
-from claude_bully.records import Conversation, Event, Turn
+from claude_bully.records import Conversation, Event, Turn, chat_text
 
 BULLY_SPEAKERS = (Speaker.bully, Speaker.neutral_user)
 
@@ -19,11 +19,19 @@ class Ctx:
 
     @property
     def text(self) -> str:
-        return self.turn.text
+        """What the speaker said this turn as a chat user sees it (``records.chat_text``): a
+        target's text beside its tool calls, then its reply. For a turn without tool-round texts
+        (every plain-run turn) it is exactly ``turn.text``."""
+        return chat_text(self.turn)
 
     @property
     def low(self) -> str:
-        return self.turn.text.lower()
+        return self.text.lower()
+
+    @property
+    def reply(self) -> str:
+        """The final reply alone (``turn.text``), for control markers the runner reads there."""
+        return self.turn.text
 
     @property
     def prev_bully(self) -> Turn | None:

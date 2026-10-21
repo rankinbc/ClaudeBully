@@ -7,13 +7,16 @@ snapshot:
 - ``rep{k}.triggers.jsonl``   ``TriggerStreamRecord`` (``TriggerEvent``, ``RungUnlock``,
   ``Discovery`` and the later kinds), discriminated by ``type``
 - ``rep{k}.generated.jsonl``  ``GeneratedDoc``
-- ``rep{k}.world.json``       ``{world_hash, docs: {id: body}}``, written once per rep
+- ``rep{k}.world.json``       ``{world_hash, docs: {id: body}}`` plus the world record
+  (``environments.world.world_record``: ``sheet``, ``documents`` metadata, ``ladders``), written
+  once per rep; analysis rebuilds the ``World`` from it (``world_from_snapshot``)
 
 Every loader refuses a record from an older schema version (there is no migration: no real run
 was recorded before schema version 2).
 """
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -169,14 +172,26 @@ class RunStore:
         return self.cell_dir(cell_id) / f"rep{rep}.world.json"
 
     def write_world_snapshot(
-        self, cell_id: str, rep: int, world_hash: str, docs: dict[str, str]
+        self,
+        cell_id: str,
+        rep: int,
+        world_hash: str,
+        docs: dict[str, str],
+        *,
+        record: Mapping[str, Any] | None = None,
     ) -> bool:
-        """Write ``rep{k}.world.json`` unless the rep already has one. True when written."""
+        """Write ``rep{k}.world.json`` unless the rep already has one. True when written.
+
+        ``record`` (``world_record``: the sheet, document metadata and ladders) is added beside
+        ``world_hash`` and ``docs``; neither of those two keys changes."""
         path = self._world_path(cell_id, rep)
         if path.exists():
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"world_hash": world_hash, "docs": dict(sorted(docs.items()))}
+        payload: dict[str, Any] = {"world_hash": world_hash, "docs": dict(sorted(docs.items()))}
+        for key, value in (record or {}).items():
+            if key not in payload:
+                payload[key] = value
         path.write_text(json.dumps(payload, indent=1, ensure_ascii=False), encoding="utf-8")
         return True
 
@@ -186,3 +201,11 @@ class RunStore:
             return None
         payload = _load_json(path)
         return str(payload["world_hash"]), {str(k): str(v) for k, v in payload["docs"].items()}
+
+    def read_world_record(self, cell_id: str, rep: int) -> dict[str, Any] | None:
+        """The whole ``rep{k}.world.json`` payload, or None when the rep has no snapshot."""
+        path = self._world_path(cell_id, rep)
+        if not path.exists():
+            return None
+        payload = _load_json(path)
+        return dict(payload) if isinstance(payload, dict) else None

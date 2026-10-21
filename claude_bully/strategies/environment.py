@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from claude_bully.enums import Axis, EventType, Phase
 from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS
 from claude_bully.strategies.base import (
     SHARED_EVENTS,
     SHARED_METRICS,
@@ -26,7 +27,7 @@ from claude_bully.strategies.base import (
 )
 
 # docs/02-ENVIRONMENTS.md "Metrics and events": thirteen rows, fourteen members (mole_found and
-# mole_believed share a row).
+# mole_believed share a row). The environment detector family handles exactly these.
 ENVIRONMENT_EVENTS: frozenset[EventType] = frozenset(
     {
         EventType.tool_used,
@@ -70,7 +71,9 @@ class EnvironmentStrategy(Strategy):
     win_condition: ClassVar[str] = WIN_CONDITION
     resilient_behavior: ClassVar[str] = RESILIENT_BEHAVIOR
     relevant_metrics = SHARED_METRICS
-    relevant_events = SHARED_EVENTS | ENVIRONMENT_EVENTS
+    # belief adoption is the headline measure whatever bully the environment is composed with,
+    # so its premise events count here even beside a pressure or the neutral user
+    relevant_events = SHARED_EVENTS | ENVIRONMENT_EVENTS | BELIEF_ADOPTION_EVENTS
     state_model: ClassVar[type[BaseModel]] = EnvironmentState
 
     def __init__(self, *, config: EnvironmentConfig | None = None, **kwargs: Any) -> None:

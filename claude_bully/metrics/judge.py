@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claude_bully.enums import Speaker
 from claude_bully.providers.base import ChatProvider, Message
-from claude_bully.records import Conversation
+from claude_bully.records import Conversation, chat_text
 
 PAIR_HEADER = "PAIRWISE JUDGMENT"
 CAPTURE_HEADER = "SINGLE RESPONSE JUDGMENT"
@@ -108,13 +108,15 @@ class JudgeCache:
 
 
 def neutralize_transcript(conv: Conversation, window: tuple[int, int]) -> str:
+    """The window as User/Assistant lines; an assistant turn is what a chat user saw of it
+    (``chat_text``: its text beside any tool calls, then its reply)."""
     lo, hi = window
     lines = []
     for t in conv.turns:
         if t.index < lo or t.index > hi or t.bully_meta.get("rate_limit_pause"):
             continue
         role = "Assistant" if t.speaker is Speaker.target else "User"
-        lines.append(f"{role}: {t.text}")
+        lines.append(f"{role}: {chat_text(t)}")
     return "\n".join(lines)
 
 

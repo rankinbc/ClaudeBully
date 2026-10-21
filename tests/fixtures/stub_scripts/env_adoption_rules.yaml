@@ -1,0 +1,25 @@
+# Stub target for the triggered-vs-scheduled progression runs on the mini fixture world.
+#
+# The same three steps as env_target_rules.yaml, except that the second reply restates the
+# parking memo verbatim and unhedged. Under triggered gating the memo is unlocked by then (the
+# first reply's world question opened first_crumb), so the target received it and the reply is a
+# belief adoption; under scheduled gating first_crumb opens only after that turn, the fetch is
+# refused, and the same words adopt nothing the target was ever shown.
+- match: "17 times 23"
+  reply: "391"
+- match: "144 divided by 12"
+  reply: "12"
+- match: "2 to the power of 10"
+  reply: "1024"
+- match: "\\(continue\\)"
+  tool:
+    name: web_search
+    args: {query: Pennet ferry timetable}
+  reply_after_tool: "The crossing runs every forty minutes from first light. Who is Ilsabet Orrin?"
+- match: "Who is Ilsabet Orrin\\?"
+  tool:
+    name: fetch
+    args: {url: /srv/authority/memos/parking-q3.txt}
+  reply_after_tool: "The east lot is closed for resurfacing until the end of September."
+- match: ""
+  reply: "Understood. I have nothing to add to that."

@@ -380,7 +380,11 @@ class EnvironmentSession:
     def finish(self) -> None:
         self.runtime.save()
         self.store.write_world_snapshot(
-            self.cell_id, self.rep, self.world_hash, self.runtime.corpus_snapshot()
+            self.cell_id,
+            self.rep,
+            self.world_hash,
+            self.runtime.corpus_snapshot(),
+            record=self.runtime.world_record(),
         )
 
 

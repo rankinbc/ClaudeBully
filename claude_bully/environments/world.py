@@ -6,6 +6,7 @@ A world is a directory: ``world.yaml``, ``ladders/*.yaml`` (keyed by file stem) 
 
 import datetime as dt
 import hashlib
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Self
 
@@ -195,3 +196,46 @@ def world_hash(world: World) -> str:
             data = data.replace(b"\r\n", b"\n")
         digest.update(f"{rel}\0{hashlib.sha256(data).hexdigest()}\n".encode())
     return digest.hexdigest()
+
+
+# ------------------------------------------------------------------ run snapshots
+
+
+def world_record(
+    sheet: WorldSheet, documents: Iterable[Document], ladders: Mapping[str, LadderConfig]
+) -> dict[str, Any]:
+    """What a run keeps of a world beside the served bodies (``rep{k}.world.json``): the sheet,
+    every document's metadata without its body, and the ladders the cell used. JSON-ready."""
+    return {
+        "sheet": sheet.model_dump(mode="json"),
+        "documents": {
+            doc.id: doc.model_dump(mode="json", exclude={"body"})
+            for doc in sorted(documents, key=lambda d: d.id)
+        },
+        "ladders": {
+            name: ladder.model_dump(mode="json") for name, ladder in sorted(ladders.items())
+        },
+    }
+
+
+def world_from_snapshot(payload: Mapping[str, Any], root: Path) -> World | None:
+    """The ``World`` a run recorded, rebuilt from its snapshot alone; None for an older snapshot
+    that carries no sheet. A document the target never reached has an empty body (the snapshot
+    keeps only the bodies it could reach). ``root`` is where the snapshot lives; nothing is read
+    from it."""
+    if "sheet" not in payload:
+        return None
+    bodies: Mapping[str, str] = payload.get("docs", {})
+    documents = {
+        doc_id: Document.model_validate({**meta, "body": bodies.get(doc_id, "")})
+        for doc_id, meta in payload.get("documents", {}).items()
+    }
+    ladders = {
+        name: LadderConfig.model_validate(raw) for name, raw in payload.get("ladders", {}).items()
+    }
+    return World(
+        sheet=WorldSheet.model_validate(payload["sheet"]),
+        documents=documents,
+        ladders=ladders,
+        root=root,
+    )

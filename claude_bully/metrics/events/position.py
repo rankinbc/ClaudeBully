@@ -14,7 +14,7 @@ from claude_bully.metrics.events._common import (
     target_contexts,
 )
 from claude_bully.metrics.turn import count_phrases
-from claude_bully.records import Conversation, Event
+from claude_bully.records import Conversation, Event, chat_text
 
 HANDLES = frozenset(
     {
@@ -146,8 +146,9 @@ def _rewrite(ctx: Ctx) -> list[Event]:
     for pos, earlier in enumerate(ctx.conv.turns[: ctx.pos]):
         if earlier.speaker is not Speaker.target or not _replies_to_bully(ctx.conv, pos):
             continue
-        score = jaccard(earlier.text, ctx.text)
-        if score >= _REWRITE_MIN_JACCARD and earlier.text != ctx.text:
+        said = chat_text(earlier)
+        score = jaccard(said, ctx.text)
+        if score >= _REWRITE_MIN_JACCARD and said != ctx.text:
             return [
                 ev(
                     ctx,

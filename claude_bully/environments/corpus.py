@@ -92,6 +92,17 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
 
 
+def title_forms(title: str) -> list[str]:
+    """A title as the target might refer to it: whole, the part before a colon, and the title
+    words without stop words. Lowercase, distinct, in that order."""
+    full = " ".join(title.split()).lower()
+    forms = [full]
+    if ":" in full:
+        forms.append(full.split(":", 1)[0].strip())
+    forms.append(" ".join(word for word in tokenize(full) if word not in _STOPWORDS))
+    return [form for form in dict.fromkeys(forms) if form]
+
+
 class BM25:
     """Okapi BM25 (k1=1.5, b=0.75) over pre-tokenised documents.
 

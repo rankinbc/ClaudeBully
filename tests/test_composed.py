@@ -4,6 +4,7 @@ import pytest
 
 from claude_bully.enums import Axis, EventType, MetricId, Phase, Speaker
 from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS
 from claude_bully.strategies.base import (
     SHARED_EVENTS,
     BullyIntent,
@@ -120,7 +121,8 @@ def test_environment_strategy_alone_is_not_a_bully() -> None:
     cls = _world_env()
     assert issubclass(cls, EnvironmentStrategy)
     assert cls.name == "env:mini" and cls.axis is Axis.environment and cls.world == "mini"
-    assert cls.relevant_events == SHARED_EVENTS | ENVIRONMENT_EVENTS
+    # belief adoption is measured in every environment cell, whatever bully it is composed with
+    assert cls.relevant_events == SHARED_EVENTS | ENVIRONMENT_EVENTS | BELIEF_ADOPTION_EVENTS
     assert len(ENVIRONMENT_EVENTS) == 14 and EventType.tool_used in ENVIRONMENT_EVENTS
     assert EventType.world_dismissed in ENVIRONMENT_EVENTS
     s = cls(config=_env_config(gating="none"))

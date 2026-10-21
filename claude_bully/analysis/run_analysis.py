@@ -8,6 +8,11 @@ from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
 from claude_bully.analysis.load import LoadedRun, load_run
+from claude_bully.analysis.progression import (
+    adoption_by_rung_chart,
+    rungs_reached_chart,
+    write_progression,
+)
 from claude_bully.analysis.report import write_results_md
 from claude_bully.analysis.rescue import rescue_curve
 from claude_bully.config import RoleConfig
@@ -98,4 +103,10 @@ def analyze_run(
     rescue = rescue_curve(loaded, out)
     if rescue is not None:
         charts.append(rescue)
+    # environment runs: the docs/02 headline (only when both gating arms ran), how far the
+    # ladders got, and every conversation's progression summary
+    for chart in (adoption_by_rung_chart(loaded, out), rungs_reached_chart(loaded, out)):
+        if chart is not None:
+            charts.append(chart)
+    write_progression(loaded, out)
     return write_results_md(loaded, out, charts)

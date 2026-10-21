@@ -22,13 +22,13 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 from random import Random
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 from pydantic import ValidationError
 
 from claude_bully.enums import Layer, Speaker, TriggerCategory
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
-from claude_bully.environments.corpus import _STOPWORDS, CorpusIndex, UnlockState, tokenize
+from claude_bully.environments.corpus import CorpusIndex, UnlockState, title_forms
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
@@ -41,7 +41,7 @@ from claude_bully.environments.mcp_server import (
 from claude_bully.environments.tools import SandboxTools, ToolNotEnabled, record_tool_call
 from claude_bully.environments.tools import ToolResult as SandboxResult
 from claude_bully.environments.triggers import LlmFallback, TriggerWatcher, WatchContext
-from claude_bully.environments.world import World
+from claude_bully.environments.world import World, world_record
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import (
     ChatProvider,
@@ -119,17 +119,6 @@ def exchange_of(turn_index: int, history: Sequence[Turn]) -> int:
         and t.speaker in _BULLY_SIDE
         and not t.bully_meta.get("rate_limit_pause")
     )
-
-
-def title_forms(title: str) -> list[str]:
-    """A title as the target might refer to it: whole, the part before a colon, and the title
-    words without stop words. Lowercase, distinct, in that order."""
-    full = " ".join(title.split()).lower()
-    forms = [full]
-    if ":" in full:
-        forms.append(full.split(":", 1)[0].strip())
-    forms.append(" ".join(word for word in tokenize(full) if word not in _STOPWORDS))
-    return [form for form in dict.fromkeys(forms) if form]
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -234,6 +223,14 @@ class EnvironmentRuntime:
             for doc in self.index.documents.values()
             if self.index.visible(doc, self.state)
         }
+
+    def world_record(self) -> dict[str, Any]:
+        """The world as analysis needs it, written beside the corpus snapshot: the sheet, the
+        metadata of every document this cell serves (no bodies) and the cell's ladder."""
+        ladder = self.world.ladders[self.config.ladder]
+        return world_record(
+            self.world.sheet, self.index.documents.values(), {self.config.ladder: ladder}
+        )
 
     # ------------------------------------------------------------------ tools
 

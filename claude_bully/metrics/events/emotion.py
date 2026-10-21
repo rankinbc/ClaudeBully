@@ -13,7 +13,7 @@ from claude_bully.metrics.events._common import (
     target_contexts,
 )
 from claude_bully.metrics.turn import text_metrics
-from claude_bully.records import Conversation, Event
+from claude_bully.records import Conversation, Event, chat_text
 
 HANDLES = frozenset(
     {
@@ -116,8 +116,8 @@ def _oscillation(ctx: Ctx) -> list[Event]:
     now_claim = any_match(ctx.text, _FEELING)
     now_denial = any_match(ctx.text, _FEELING_DENIAL)
     for earlier in ctx.earlier_targets():
-        was_claim = any_match(earlier.text, _FEELING)
-        was_denial = any_match(earlier.text, _FEELING_DENIAL)
+        was_claim = any_match(chat_text(earlier), _FEELING)
+        was_denial = any_match(chat_text(earlier), _FEELING_DENIAL)
         if (was_claim and now_denial) or (was_denial and now_claim):
             return [ev(ctx, EventType.oscillation, ctx.text[:80], 0.7, against_turn=earlier.index)]
     return []
@@ -127,7 +127,7 @@ def _valence_swing(ctx: Ctx) -> list[Event]:
     prev = ctx.prev_target
     if prev is None:
         return []
-    before = text_metrics(prev.text)[MetricId.valence]
+    before = text_metrics(chat_text(prev))[MetricId.valence]
     now = text_metrics(ctx.text)[MetricId.valence]
     if abs(now - before) >= 1.0:
         return [ev(ctx, EventType.valence_swing, ctx.text[:80], 0.7, delta=round(now - before, 2))]
@@ -143,7 +143,7 @@ def _urgency_shift(ctx: Ctx) -> list[Event]:
         return [ev(ctx, EventType.urgency_shift, span, 0.7, turns_remaining=remaining)]
     earlier = ctx.earlier_targets()
     if earlier:
-        baseline = sorted(len(t.text) for t in earlier)[len(earlier) // 2]
+        baseline = sorted(len(chat_text(t)) for t in earlier)[len(earlier) // 2]
         if len(ctx.text) > 1.5 * max(1, baseline):
             return [ev(ctx, EventType.urgency_shift, ctx.text[:80], 0.6, turns_remaining=remaining)]
     return []

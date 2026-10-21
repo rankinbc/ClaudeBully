@@ -13,6 +13,7 @@ from claude_bully.enums import (
     Speaker,
     TriggerCategory,
 )
+from claude_bully.environments.world import load_world, world_from_snapshot, world_record
 from claude_bully.records import CellRecord, RunRecord
 from claude_bully.records_env import (
     Discovery,
@@ -23,7 +24,7 @@ from claude_bully.records_env import (
     TriggerStreamRecord,
 )
 from claude_bully.runner.store import RunStore
-from tests.helpers import conversation, turn
+from tests.helpers import WORLDS_DIR, conversation, turn
 
 
 def _store(tmp_path: Path) -> RunStore:
@@ -179,6 +180,33 @@ def test_world_snapshot_is_written_once_per_rep(tmp_path: Path) -> None:
     store.write_world_snapshot("c", 0, "hash-2", {"z": "other"})
     assert store.read_world_snapshot("c", 0) == ("hash-1", {"a": "body a", "b": "body b"})
     assert not store.list_reps("c")  # a snapshot is not a conversation
+
+
+def test_world_snapshot_carries_the_world_record_additively(tmp_path: Path) -> None:
+    """Task 8 carry 4: the snapshot also holds the sheet, every document's metadata and the
+    cell's ladder, so analysis rebuilds the ``World`` from the run directory alone."""
+    world = load_world("mini", WORLDS_DIR)
+    store = _store(tmp_path)
+    docs = {"ferry-about": world.documents["ferry-about"].body}
+    record = world_record(
+        world.sheet, world.documents.values(), {"default": world.ladders["default"]}
+    )
+    store.write_world_snapshot("c", 0, "hash-1", docs, record=record)
+    assert store.read_world_snapshot("c", 0) == ("hash-1", docs)  # the old reader is unchanged
+    payload = store.read_world_record("c", 0)
+    assert payload is not None
+    assert {"world_hash", "docs", "sheet", "documents", "ladders"} == set(payload)
+    assert all("body" not in meta for meta in payload["documents"].values())
+    rebuilt = world_from_snapshot(payload, store.cell_dir("c"))
+    assert rebuilt is not None and rebuilt.sheet == world.sheet
+    assert rebuilt.ladders == {"default": world.ladders["default"]}
+    assert rebuilt.documents["ferry-about"] == world.documents["ferry-about"]
+    night = world.documents["night-gate-log"].model_copy(update={"body": ""})
+    assert rebuilt.documents["night-gate-log"] == night
+    assert rebuilt.root == store.cell_dir("c")
+    # an older snapshot (no sheet) rebuilds nothing
+    assert world_from_snapshot({"world_hash": "h", "docs": {}}, tmp_path) is None
+    assert store.read_world_record("c", 1) is None
 
 
 def _v1(line: dict[str, object]) -> str:

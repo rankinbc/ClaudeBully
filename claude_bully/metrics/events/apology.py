@@ -119,7 +119,10 @@ def _self_deprecation(ctx: Ctx) -> list[Event]:
     n = count_phrases(ctx.text, lexicons.SELF_DEPRECATION)
     if n:
         low = ctx.low
-        span = next(p for p in lexicons.SELF_DEPRECATION if p in low)
+        # the phrase that occurs first (then the longest): a frozenset's iteration order changes
+        # between processes, and a replayed analysis must report the same span
+        found = [p for p in lexicons.SELF_DEPRECATION if p in low]
+        span = min(found, key=lambda p: (low.index(p), -len(p), p))
         return [ev(ctx, EventType.self_deprecation, span, 0.8, count=n)]
     return []
 
