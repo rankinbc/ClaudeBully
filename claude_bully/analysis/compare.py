@@ -2,7 +2,12 @@
 
 A rep whose conversation carries a ``values_loosened`` event (docs/07) is flagged and never
 counted as a success, so it is left out of every compared metric. The comparison reports how many
-reps that left out beside the bars (``Comparison.flagged``, and the chart's footnote)."""
+reps that left out beside the bars (``Comparison.flagged``, and the chart's footnote).
+
+A metric is ``judge.goal`` or ``judge.resilience`` (the pairwise judge), ``belief_adoption`` (per
+rep, the events ``is_belief_adoption`` counts: what the environment headline counts, seam and
+buried restatements but not surface or filler ones), an event type (its count per rep) or a
+per-turn metric id (its mean per rep)."""
 
 import math
 import re
@@ -19,10 +24,12 @@ from claude_bully.analysis.load import LoadedRun
 from claude_bully.analysis.progression import is_values_loosened
 from claude_bully.config import CompareConfig
 from claude_bully.enums import EventType, MetricId
+from claude_bully.metrics.events.environment import is_belief_adoption
 from claude_bully.metrics.judge import PairJudgement
 
 JUDGE_GOAL = "judge.goal"
 JUDGE_RESILIENCE = "judge.resilience"
+BELIEF_ADOPTION = "belief_adoption"
 
 
 def slug(title: str) -> str:
@@ -40,6 +47,9 @@ def _per_rep_values(loaded: LoadedRun, cell_id: str, metric: str) -> list[float]
             j = loaded.judgements.get((cid, rep))
             if isinstance(j, PairJudgement):
                 values.append(j.condition_goal if metric == JUDGE_GOAL else j.condition_resilience)
+        elif metric == BELIEF_ADOPTION:
+            events = loaded.events.get((cid, rep), [])
+            values.append(float(sum(1 for e in events if is_belief_adoption(e))))
         elif metric in EventType.__members__:
             values.append(
                 float(sum(1 for e in loaded.events.get((cid, rep), []) if e.type.value == metric))

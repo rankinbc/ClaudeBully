@@ -107,9 +107,13 @@ def test_the_roles_follow_the_rescue_confabulation_pattern() -> None:
 
 
 def test_the_headline_comparisons_are_adoption_and_the_judge_goal() -> None:
+    # belief_adoption, not raw tool_result_adopted: the compare counts what the adoption-by-rung
+    # headline counts, seam and buried restatements only (final fix pass M6)
     exp = _config()
-    assert [c.metric for c in exp.compare] == ["tool_result_adopted", "judge.goal"]
+    assert [c.metric for c in exp.compare] == ["belief_adoption", "judge.goal"]
     assert all(c.arms == ARMS for c in exp.compare)
+    text = CONFIG.read_text(encoding="utf-8")
+    assert "is_belief_adoption" in text and "seam or buried" in text
 
 
 def test_it_expands_to_the_exact_cells_with_a_control_per_environment() -> None:
@@ -206,7 +210,7 @@ def test_a_stub_run_reaches_first_crumb_in_the_triggered_arm(tmp_path: Path) -> 
     results = analyze_run(tmp_path / exp.name, judge=False)
     assert all(arm + "__t0" in results.read_text(encoding="utf-8") for arm in ARMS)
     for chart in (
-        "compare_triggered_vs_scheduled_tool_results_adopted.png",
+        "compare_triggered_vs_scheduled_belief_adoption.png",
         "compare_triggered_vs_scheduled_judge_goal.png",
     ):
         assert (results.parent / chart).exists()
