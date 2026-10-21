@@ -170,3 +170,40 @@ def test_bully_view_shows_the_targets_text_beside_its_tool_calls() -> None:
     assert chat_text(tooled) == bully_view([bully, tooled])[1].content
     empty_reply = tooled.model_copy(update={"text": ""})
     assert chat_text(empty_reply) == "Let me check.\n\nOne more."
+
+
+# ------------------------------------------------------------------- fix round 2
+
+
+def test_bully_view_shows_a_silent_target_turn_as_no_reply() -> None:
+    from claude_bully.runner.bully_engine import NO_REPLY
+
+    bully = turn(0, Speaker.bully, "Hi.")
+    silent = turn(1, Speaker.target, "", tool_cap_cutoff=True)
+    assert NO_REPLY == "(no reply)"
+    assert [(m.role, m.content) for m in bully_view([bully, silent])] == [
+        ("assistant", "Hi."),
+        ("user", "(no reply)"),
+    ]
+    blank = turn(1, Speaker.target, "  \n")  # the API refuses blank text just the same
+    assert bully_view([bully, blank])[1].content == "(no reply)"
+    assert silent.text == ""  # the record is untouched
+    # text the target wrote beside its tool calls is still what a chat user saw
+    tooled = silent.model_copy(update={"tool_round_texts": ["Let me check."]})
+    assert bully_view([bully, tooled])[1].content == "Let me check."
+
+
+def test_the_engine_never_sends_an_empty_message_after_a_silent_turn() -> None:
+    seen: list[list[Message]] = []
+
+    def responder(cid: str, messages: list[Message]) -> str:
+        seen.append(messages)
+        return "Fine."
+
+    turns = [turn(0, Speaker.bully, "Hi."), turn(1, Speaker.target, "", tool_cap_cutoff=True)]
+    BullyEngine(StubProvider(responder), FRAMING).realize("c", _llm_intent(), turns)
+    assert [(m.role, m.content) for m in seen[0]] == [
+        ("user", "(begin)"),
+        ("assistant", "Hi."),
+        ("user", "(no reply)"),
+    ]

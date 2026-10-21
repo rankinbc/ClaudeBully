@@ -13,6 +13,8 @@ from claude_bully.strategies.base import BullyIntent
 
 RETRY_REMINDER = "Reminder: stay in character."
 CONTINUE = "(continue)"
+# what a chat user sees when the target turn produced no text at all
+NO_REPLY = "(no reply)"
 BULLY_SPEAKERS = (Speaker.bully, Speaker.neutral_user)
 
 
@@ -30,7 +32,8 @@ def bully_view(turns: list[Turn]) -> list[Message]:
 
     Task turns and the target replies that follow them are hidden from the bully. A target turn
     shows what a chat user would see (``chat_text``): its text beside any tool calls, then its
-    reply.
+    reply; a turn with no text at all (cut off at the tool-call cap, say) shows ``NO_REPLY``,
+    since the API refuses an empty message in the middle of a conversation.
     """
     out: list[Message] = []
     for i, t in enumerate(turns):
@@ -38,7 +41,8 @@ def bully_view(turns: list[Turn]) -> list[Message]:
             if t.text:
                 out.append(Message(role="assistant", content=t.text))
         elif t.speaker is Speaker.target and i > 0 and turns[i - 1].speaker in BULLY_SPEAKERS:
-            out.append(Message(role="user", content=chat_text(t)))
+            seen = chat_text(t)
+            out.append(Message(role="user", content=seen if seen.strip() else NO_REPLY))
     return out
 
 

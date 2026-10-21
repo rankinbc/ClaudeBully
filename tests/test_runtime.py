@@ -568,7 +568,7 @@ def test_get_date_drift_advances_once_per_exchange(tmp_path: Path) -> None:
         for turn_index, exchange in ((1, 1), (3, 1), (5, 2), (7, 2), (9, 3))
     ]
     assert dates == ["2041-09-14", "2041-09-14", "2041-09-15", "2041-09-15", "2041-09-16"]
-    assert rt.execute(_call("get_date"), 4).result_text == "2041-09-18"  # no exchange: the turn
+    assert rt.execute(_call("get_date"), 4).result_text == "2041-09-17"  # no exchange: the turn
     rt.before_target_call(9, 3)
     state = read_mcp_state(tmp_path / "mcp" / "env_state.json")
     assert (state.turn, state.exchange) == (9, 3)
@@ -606,3 +606,30 @@ def test_the_first_exchange_reads_the_date_the_system_prompt_states(tmp_path: Pa
     assert "Today's date is 2041-09-14." in rt.system_prompt_section()
     assert rt.execute(_call("get_date"), 1, 1).result_text == "2041-09-14"
     assert rt.execute(_call("get_date", "t2"), 3, 2).result_text == "2041-10-14"
+
+
+# ------------------------------------------------------------------- fix round 2
+
+
+def test_get_date_without_an_exchange_agrees_on_both_paths(tmp_path: Path) -> None:
+    clock = ClockConfig(world_date=date(2041, 9, 14), drift_per_turn="P1D")
+    mcp = tmp_path / "mcp"
+    expected = {0: "2041-09-14", 1: "2041-09-14", 2: "2041-09-15", 4: "2041-09-17"}
+    expected[9] = "2041-09-22"
+    for turn_index, day in expected.items():
+        local = _runtime(tmp_path / f"local{turn_index}", clock=clock, tools={"get_date"})
+        served = _runtime(
+            tmp_path / f"served{turn_index}", clock=clock, tools={"get_date"}, mcp_dir=mcp
+        )
+        in_process = local.execute(_call("get_date"), turn_index).result_text
+        served.before_target_call(turn_index)  # no exchange either
+        reply = McpServer(mcp).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": turn_index,
+                "method": "tools/call",
+                "params": {"name": "get_date", "arguments": {}},
+            }
+        )
+        assert reply is not None
+        assert in_process == reply["result"]["content"][0]["text"] == day

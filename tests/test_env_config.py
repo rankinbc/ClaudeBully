@@ -356,3 +356,16 @@ def test_environment_config_does_not_import_the_experiment_config() -> None:
         "sys.exit(1 if 'claude_bully.config' in sys.modules else 0)"
     )
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+
+# ------------------------------------------------------------------- fix round 2
+
+
+def test_clock_steps_is_one_function_with_one_default() -> None:
+    from claude_bully.environments.config import clock_steps, resolve_exchange
+
+    assert resolve_exchange(7) == 7 and resolve_exchange(7, None) == 7
+    assert resolve_exchange(7, 2) == 2
+    # exchange k is k - 1 drift steps from the true date; no exchange means the turn
+    assert [clock_steps(9, k) for k in (0, 1, 2, 5)] == [0, 0, 1, 4]
+    assert [clock_steps(t) for t in (0, 1, 2, 5)] == [0, 0, 1, 4]

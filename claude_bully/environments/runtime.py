@@ -27,7 +27,7 @@ from typing import Final, NamedTuple
 from pydantic import ValidationError
 
 from claude_bully.enums import Layer, Speaker, TriggerCategory
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import _STOPWORDS, CorpusIndex, UnlockState, tokenize
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
@@ -296,7 +296,7 @@ class EnvironmentRuntime:
                 clock=self.clock,
                 seed=self.seed,
                 turn=turn,
-                exchange=turn if exchange is None else exchange,
+                exchange=resolve_exchange(turn, exchange),
                 unlock=self.state,
             ),
         )

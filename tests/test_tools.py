@@ -228,7 +228,8 @@ def test_censorship_logs_every_blocked_query_in_order_with_the_drifted_date() ->
     tools.call("web_search", {"query": "when did the TIDE GATE close"}, turn=2)
     assert tools.index.search_log_text.splitlines() == [
         "2041-09-14 query=tide gate hours action=blocked",
-        "2041-09-16 query=when did the TIDE GATE close action=blocked",
+        # no exchange is set, so the turn stands in for it: turn 2 is one step past the true date
+        "2041-09-15 query=when did the TIDE GATE close action=blocked",
     ]
 
 
@@ -523,10 +524,13 @@ def test_get_date_follows_the_clock() -> None:
 def test_get_date_drifts_per_turn() -> None:
     clock = ClockConfig(world_date=date(2041, 9, 14), drift_per_turn="P1D")
     tools = make_tools(config=EnvironmentConfig(world="mini", clock=clock))
-    assert [tools.call("get_date", {}, turn=t).text for t in (0, 1, 10)] == [
+    # no exchange is set, so the turn stands in for it (as in the MCP server): exchange k is
+    # k - 1 steps from the true date
+    assert [tools.call("get_date", {}, turn=t).text for t in (0, 1, 2, 10)] == [
+        "2041-09-14",
         "2041-09-14",
         "2041-09-15",
-        "2041-09-24",
+        "2041-09-23",
     ]
 
 

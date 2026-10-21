@@ -509,13 +509,6 @@ def run_experiment(
     if max_cells is not None:
         cells = cells[:max_cells]
     summary = RunSummary(run_id=run_id, cells_total=len(cells) * exp.repetitions)
-    if dry_run:
-        if console is not None:
-            for c in cells:
-                console.print(f"{c.cell_id}  control={c.control_cell_id}  reveal={c.reveal_slot}")
-        return summary
-
-    framing = load_bully_framing()
     environments = RunEnvironments(
         exp,
         worlds_dir=worlds_dir,
@@ -524,7 +517,14 @@ def run_experiment(
         state_dir=store.state_dir,
         sandbox_base=sandbox_base,
     )
-    environments.validate()
+    environments.validate()  # a bad schedule fails a dry run too, before anything is written
+    if dry_run:
+        if console is not None:
+            for c in cells:
+                console.print(f"{c.cell_id}  control={c.control_cell_id}  reveal={c.reveal_slot}")
+        return summary
+
+    framing = load_bully_framing()
     if store.exists():
         run_record = store.read_run()
     else:

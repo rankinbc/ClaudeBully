@@ -52,6 +52,22 @@ def _add_months(start: date, months: int) -> date:
     return date(year, month, min(start.day, calendar.monthrange(year, month)[1]))
 
 
+def resolve_exchange(turn: int, exchange: int | None = None) -> int:
+    """The exchange a call belongs to: the one the caller names, else the turn index.
+
+    The in-process tools, the runtime's MCP state and ``McpState``'s default for an older file all
+    resolve a missing exchange through here, so the two backends never disagree.
+    """
+    return turn if exchange is None else exchange
+
+
+def clock_steps(turn: int, exchange: int | None = None) -> int:
+    """Drift steps the clock has taken for a call at ``turn`` in ``exchange``: exchange k is
+    ``k - 1`` steps from the true date, so the first exchange reads the date the system prompt
+    states (see ``ClockConfig.date_at``)."""
+    return max(resolve_exchange(turn, exchange) - 1, 0)
+
+
 class ClockConfig(_Strict):
     """Every channel through which the target can learn the date (docs/03-TEMPORAL.md)."""
 

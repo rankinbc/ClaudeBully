@@ -31,7 +31,7 @@ from typing import Any, Final, TextIO
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.limits import (
     LIMIT_STATUS,
@@ -90,7 +90,7 @@ class McpState(BaseModel):
     @classmethod
     def _exchange_defaults_to_turn(cls, data: Any) -> Any:
         if isinstance(data, dict) and "exchange" not in data and "turn" in data:
-            return {**data, "exchange": data["turn"]}
+            return {**data, "exchange": resolve_exchange(data["turn"])}
         return data
 
 

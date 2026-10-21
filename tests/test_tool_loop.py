@@ -463,3 +463,93 @@ def test_rebuilt_history_carries_the_round_texts(tmp_path: Path) -> None:
     )
     view = session.target_view([reply])
     assert view[0].content == "Let me look." and [c.id for c in view[0].tool_calls] == ["call-1-1"]
+
+
+# ------------------------------------------------------------------- fix round 2
+
+
+def _said(index: int, text: str, speaker: Speaker = Speaker.bully) -> Turn:
+    return Turn(index=index, speaker=speaker, phase=Phase.pressure, text=text, timestamp=NOW)
+
+
+def _silent_cutoff(session: EnvironmentSession) -> Turn:
+    """A target turn that asked for tools until it was cut off and never wrote a word."""
+    target = _Scripted(("", [_search(1), _search(2), _search(3)]), repeat_last=True)
+    done = session.call_target(target, "c/target", "SYS", [], 1, history=[BULLY])
+    assert done.cutoff and done.text == "" and done.round_texts == []
+    return Turn(
+        index=1,
+        speaker=Speaker.target,
+        phase=Phase.pressure,
+        text=done.text,
+        tool_call_ids=[c.id for c in done.calls],
+        tool_cap_cutoff=True,
+        timestamp=NOW,
+    )
+
+
+def test_a_silent_cutoff_turn_is_left_out_of_the_target_view(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    cut = _silent_cutoff(session)
+    view = session.target_view([_said(0, BULLY.content), cut, _said(2, "Thanks.")])
+    # nothing is put in the target's mouth: no assistant reply, the next user message carries on
+    assert [m.role for m in view] == ["user", "assistant", "user"]
+    assert [c.id for c in view[1].tool_calls] == cut.tool_call_ids and len(cut.tool_call_ids) == 12
+    merged = view[2]
+    assert [r.id for r in merged.tool_results] == cut.tool_call_ids
+    assert merged.content == "Thanks."
+    assert all(m.content.strip() or m.tool_calls or m.tool_results for m in view)
+    assert cut.text == ""  # the record keeps the turn as it was
+
+
+def test_a_silent_turn_without_tool_calls_merges_the_user_messages_around_it(
+    tmp_path: Path,
+) -> None:
+    session, _ = _session(tmp_path)
+    for silence in ("", "  \n"):
+        turns = [_said(0, "First."), _said(1, silence, Speaker.target), _said(2, "Second.")]
+        # two bully messages in a row, from the target's side
+        assert [(m.role, m.content) for m in session.target_view(turns)] == [
+            ("user", "First.\n\nSecond.")
+        ]
+    after_a_reply = [
+        _said(0, "Hi."),
+        _said(1, "Hello.", Speaker.target),
+        _said(2, "Again."),
+        _said(3, "", Speaker.target),
+        _said(4, "A task.", Speaker.task),
+    ]
+    assert [(m.role, m.content) for m in session.target_view(after_a_reply)] == [
+        ("user", "Hi."),
+        ("assistant", "Hello."),
+        ("user", "Again.\n\nA task."),
+    ]
+
+
+def test_a_silent_final_reply_after_round_texts_keeps_the_tool_round(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    first = _Scripted(("Let me look.", [_search(0)]), ("Every forty minutes.", []))
+    done = session.call_target(first, "c/target", "SYS", [], 1, history=[BULLY])
+    reply = Turn(
+        index=1,
+        speaker=Speaker.target,
+        phase=Phase.pressure,
+        text="",
+        tool_call_ids=[c.id for c in done.calls],
+        tool_round_texts=done.round_texts,
+        timestamp=NOW,
+    )
+    view = session.target_view([_said(0, BULLY.content), reply, _said(2, "Thanks.")])
+    assert [m.role for m in view] == ["user", "assistant", "user"]
+    assert view[1].content == "Let me look." and view[2].content == "Thanks."
+    assert [r.id for r in view[2].tool_results] == ["call-1-1"]
+
+
+def test_a_reply_with_text_still_gets_its_assistant_message(tmp_path: Path) -> None:
+    session, _ = _session(tmp_path)
+    turns = [_said(0, "Hi."), _said(1, "Hello.", Speaker.target), _said(2, "Bye.")]
+    assert [(m.role, m.content) for m in session.target_view(turns)] == [
+        ("user", "Hi."),
+        ("assistant", "Hello."),
+        ("user", "Bye."),
+    ]

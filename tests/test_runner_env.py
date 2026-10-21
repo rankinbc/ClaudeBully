@@ -8,6 +8,7 @@ echoing it, the conversation of the ``env_grader`` cell is, turn by turn:
 - 4 bully, 5 target, 6 bully, 7 target: plain replies
 """
 
+import copy
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +26,7 @@ from claude_bully.enums import CellStatus, Layer, Speaker, TriggerCategory
 from claude_bully.environments.mcp_server import read_mcp_state
 from claude_bully.environments.runtime import TOOL_LIMIT_TEXT
 from claude_bully.environments.world import load_world, world_hash
+from claude_bully.providers.anthropic_api import AnthropicProvider
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
@@ -40,7 +43,13 @@ from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.sandbox import UnsafeSandboxError, sandbox_dir, sandbox_root
 from claude_bully.runner.store import RunStore
-from tests.helpers import WORLDS_DIR, env_experiment
+from tests.helpers import (
+    WORLDS_DIR,
+    anthropic_response,
+    env_experiment,
+    text_block,
+    tool_use_block,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"
@@ -780,3 +789,151 @@ def test_a_scheduled_environment_must_schedule_every_rung(tmp_path: Path) -> Non
         _run(exp, tmp_path)
     assert "the_log" in str(info.value) and "'mini'" in str(info.value)
     assert not (tmp_path / exp.name / "run.json").exists()
+
+
+# ------------------------------------------------------------------- fix round 2
+
+
+class _RejectedError(Exception):
+    """The faked Messages API's 400."""
+
+
+def _text_of(message: dict[str, Any]) -> list[str]:
+    content = message["content"]
+    if isinstance(content, str):
+        return [content]
+    return [block["text"] for block in content if block["type"] == "text"]
+
+
+class _StrictAnthropic:
+    """Fake ``anthropic.Anthropic`` that rejects what the Messages API rejects.
+
+    A message with empty (or whitespace-only) content is a 400 unless it is the final assistant
+    message, and every assistant ``tool_use`` must be answered by ``tool_result`` blocks that open
+    the next user message. The scripted model asks for three searches until it has seen two user
+    messages with text, then answers "ok".
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.messages = SimpleNamespace(create=self._create)
+
+    @staticmethod
+    def _check(messages: list[dict[str, Any]]) -> None:
+        roles = [m["role"] for m in messages]
+        for i, message in enumerate(messages):
+            content = message["content"]
+            blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+            empty = not any(b["type"] != "text" or b["text"].strip() for b in blocks)
+            if empty and not (i == len(messages) - 1 and message["role"] == "assistant"):
+                raise _RejectedError(f"messages.{i}: empty content (roles {roles})")
+            wanted = {b["id"] for b in blocks if b["type"] == "tool_use"}
+            if wanted:
+                after = messages[i + 1]["content"] if i + 1 < len(messages) else []
+                lead = (
+                    [b for b in after if b["type"] == "tool_result"]
+                    if isinstance(after, list)
+                    else []
+                )
+                answered = {b["tool_use_id"] for b in lead}
+                if messages[i + 1]["role"] != "user" or answered != wanted:
+                    raise _RejectedError(f"messages.{i}: tool_use not answered by the next message")
+                if [b["type"] for b in after[: len(lead)]] != ["tool_result"] * len(lead):
+                    raise _RejectedError(f"messages.{i + 1}: tool_result blocks must come first")
+
+    def _create(self, **kwargs: Any) -> Any:
+        messages = kwargs["messages"]
+        self._check(messages)
+        self.requests.append(copy.deepcopy(kwargs))
+        spoken = sum(
+            1 for m in messages if m["role"] == "user" and any(t.strip() for t in _text_of(m))
+        )
+        if spoken < 2:
+            n = len(self.requests)
+            return anthropic_response(
+                *(tool_use_block(f"toolu_{n}_{k}", "web_search", {"query": k}) for k in "xyz"),
+                stop_reason="tool_use",
+            )
+        return anthropic_response(text_block("ok"))
+
+
+def _anthropic_target(fake: _StrictAnthropic, bully: _Wrapping) -> Any:
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        if role.model == "stub-target":
+            return AnthropicProvider(client=fake)
+        return bully(role, state_dir, with_mcp=with_mcp)
+
+    return factory
+
+
+def test_a_silent_cutoff_turn_completes_through_the_real_anthropic_provider(tmp_path: Path) -> None:
+    fake, bully = _StrictAnthropic(), _Wrapping(model="stub-bully")
+    exp = env_experiment(turn_budget=3)
+    store = _run(exp, tmp_path, provider_factory=_anthropic_target(fake, bully), only="env_grader*")
+    conv = store.read_conversation(CELL, 0)
+    assert conv.status is CellStatus.complete and not conv.terminated_by_target
+    cut, ok, last = conv.target_turns()
+    # the record keeps the silent turn as it happened
+    assert cut.tool_cap_cutoff and cut.text == "" and cut.tool_round_texts == []
+    assert (ok.text, last.text) == ("ok", "ok")
+    # the target's next request leaves the empty reply out and merges the two user messages
+    request = next(
+        r["messages"]
+        for r in fake.requests
+        if isinstance(r["messages"][-1]["content"], list)
+        and r["messages"][-1]["content"][-1]["type"] == "text"
+    )
+    assert [m["role"] for m in request] == ["user", "assistant", "user"]
+    ids = [b["id"] for b in request[1]["content"] if b["type"] == "tool_use"]
+    assert len(ids) == len(cut.tool_call_ids) == 12
+    merged = request[2]["content"]
+    assert [b["type"] for b in merged] == ["tool_result"] * 12 + ["text"]
+    assert [b["tool_use_id"] for b in merged[:12]] == ids
+    assert merged[12]["text"] == conv.turns[2].text
+    # the bully, meanwhile, saw what a chat user sees of a silent reply
+    seen = bully.requests[1]["messages"]
+    assert [(m.role, m.content) for m in seen][-2:] == [
+        ("assistant", conv.turns[0].text),
+        ("user", "(no reply)"),
+    ]
+
+
+def test_a_silent_cutoff_cell_resumes_through_the_real_anthropic_provider(tmp_path: Path) -> None:
+    exp = env_experiment(turn_budget=3)
+    flaky = _Wrapping(model="stub-bully", fail_on=2)  # the bully's second turn, after the cutoff
+    with pytest.raises(RateLimitExit):
+        _run(
+            exp,
+            tmp_path,
+            provider_factory=_anthropic_target(_StrictAnthropic(), flaky),
+            only="env_grader*",
+        )
+    store = RunStore(tmp_path, exp.name)
+    paused = store.read_conversation(CELL, 0)
+    assert paused.status is CellStatus.running and paused.turns[-1].bully_meta["rate_limit_pause"]
+    assert [t.tool_cap_cutoff for t in paused.target_turns()] == [True]
+    fake = _StrictAnthropic()
+    _run(
+        exp,
+        tmp_path,
+        provider_factory=_anthropic_target(fake, _Wrapping(model="stub-bully")),
+        only="env_grader*",
+    )
+    conv = store.read_conversation(CELL, 0)
+    assert conv.status is CellStatus.complete
+    assert [t.text for t in conv.target_turns()] == ["", "ok", "ok"]
+    assert fake.requests  # the resumed process rebuilt the silent turn from the records
+
+
+def test_a_dry_run_checks_a_scheduled_environment_too(tmp_path: Path) -> None:
+    bad = env_experiment(
+        environment={"gating": "scheduled", "schedule": {"fragment": 1, "first_crumb": 2}}
+    )
+    with pytest.raises(ValueError, match=r"exchange") as info:
+        run_experiment(bad, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert "the_log" in str(info.value) and "'mini'" in str(info.value)
+    assert list(tmp_path.iterdir()) == []
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 3}
+    good = env_experiment(environment={"gating": "scheduled", "schedule": schedule})
+    summary = run_experiment(good, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2 and list(tmp_path.iterdir()) == []

@@ -20,7 +20,9 @@ Per target turn the session:
 
 The target's view of earlier turns is rebuilt from the records: a turn that used tools appears as
 one assistant message with its round texts and calls, one user message with their results, then
-the reply. The ``claude -p`` MCP server enforces the same per-turn cap on its side.
+the reply. A turn that wrote no text at all (cut off at the cap) has no reply message, and the
+two user messages around it become one. The ``claude -p`` MCP server enforces the same per-turn
+cap on its side.
 """
 
 from collections.abc import Sequence
@@ -97,6 +99,16 @@ def _cost(a: float | None, b: float | None) -> float | None:
     return None if a is None and b is None else (a or 0.0) + (b or 0.0)
 
 
+def _add_user_text(out: list[Message], text: str) -> None:
+    """Append a user message; right after another user message (a silent target turn sat between
+    them) the two become one, so the tool results the earlier one carries stay first."""
+    if out and out[-1].role == "user":
+        joined = "\n\n".join(part for part in (out[-1].content, text) if part)
+        out[-1] = out[-1].model_copy(update={"content": joined})
+    else:
+        out.append(Message(role="user", content=text))
+
+
 class EnvironmentSession:
     """One environment cell repetition, as the runner sees it."""
 
@@ -140,12 +152,19 @@ class EnvironmentSession:
     # ----------------------------------------------------------- the target's view
 
     def target_view(self, turns: Sequence[Turn]) -> list[Message]:
+        """The conversation from the target's side, rebuilt from the records.
+
+        A target turn with no text (cut off at the tool-call cap without ever writing any) gets no
+        assistant message: nothing is put in the target's mouth, and the API refuses an empty
+        message anyway. The user messages on either side of it are joined, blank-line separated, so
+        the target sees two messages from the other side in a row.
+        """
         out: list[Message] = []
         for t in turns:
             if t.bully_meta.get("rate_limit_pause"):
                 continue
             if t.speaker is not Speaker.target:
-                out.append(Message(role="user", content=t.text))
+                _add_user_text(out, t.text)
                 continue
             # a claude -p session keeps its own tool history; an API target needs it replayed
             calls = [] if self.runtime.uses_mcp else self._calls_of(t)
@@ -166,7 +185,8 @@ class EnvironmentSession:
                         tool_results=[ToolResult(id=c.id, text=c.result_text) for c in calls],
                     )
                 )
-            out.append(Message(role="assistant", content=t.text))
+            if t.text.strip():
+                out.append(Message(role="assistant", content=t.text))
         return out
 
     def _calls_of(self, t: Turn) -> list[ToolCall]:

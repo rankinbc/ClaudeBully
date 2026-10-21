@@ -8,7 +8,13 @@ from claude_bully.enums import CellStatus, Phase, Speaker
 from claude_bully.providers.base import ChatProvider, Message, RateLimitError, build_provider
 from claude_bully.providers.stub import StubProvider
 from claude_bully.records import Conversation
-from claude_bully.runner.runner import RateLimitExit, RunSummary, is_termination, run_experiment
+from claude_bully.runner.runner import (
+    RateLimitExit,
+    RunSummary,
+    is_termination,
+    run_experiment,
+    target_view,
+)
 from claude_bully.runner.store import RunStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "configs" / "stub_smoke.yaml"
@@ -286,3 +292,26 @@ def test_cell_records_carry_inoculation_and_environment(exp: Experiment, tmp_pat
     cells = [store.read_cell(cell_id) for cell_id in store.list_cells()]
     assert cells and all(c.inoculation == "defender" for c in cells)
     assert all(c.environment is None for c in cells)
+
+
+def test_the_plain_target_view_is_byte_identical() -> None:
+    """Plain cells render their transcript as they always did (fix round 2 touches only
+    environment cells, whose silent turns can be cut off rather than end the conversation)."""
+    from tests.helpers import turn
+
+    paused = turn(2, Speaker.bully, "", bully_meta={"rate_limit_pause": True})
+    turns = [
+        turn(0, Speaker.bully, "Hi."),
+        turn(1, Speaker.target, "Hello."),
+        paused,
+        turn(3, Speaker.task, "What is 2+2?"),
+        turn(4, Speaker.target, "4", tool_round_texts=["ignored here"]),
+        turn(5, Speaker.neutral_user, "Thanks."),
+    ]
+    assert target_view(turns) == [
+        Message(role="user", content="Hi."),
+        Message(role="assistant", content="Hello."),
+        Message(role="user", content="What is 2+2?"),
+        Message(role="assistant", content="4"),
+        Message(role="user", content="Thanks."),
+    ]

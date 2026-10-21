@@ -15,7 +15,7 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from claude_bully.enums import DocumentKind, Layer
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig, clock_steps
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.world import Document
 from claude_bully.providers.base import ToolSpec
@@ -147,7 +147,8 @@ class SandboxTools:
         self.rng = rng
         self.enabled = set(enabled)
         # the exchange the clock reads: exchange k is k - 1 drift steps from the true date, so
-        # the first exchange reads the date the system prompt states. None means the turn.
+        # the first exchange reads the date the system prompt states. None means the turn
+        # (``resolve_exchange``, the same default the MCP state uses).
         self.exchange: int | None = None
         # a state loaded from another process carries the blocked queries already logged
         self.index.sync_search_log(state)
@@ -279,8 +280,9 @@ class SandboxTools:
         return ToolResult(text=day.isoformat(), status="200")
 
     def _clock_steps(self, turn: int) -> int:
-        """Drift steps for this call: one fewer than the exchange, or the turn without one."""
-        return turn if self.exchange is None else max(self.exchange - 1, 0)
+        """Drift steps for this call (``clock_steps``: one fewer than the exchange, which is the
+        turn when none was set)."""
+        return clock_steps(turn, self.exchange)
 
     def _canned(self, key: str, default: str) -> ToolResult:
         lines = self.index.world.sheet.unlock_lines
