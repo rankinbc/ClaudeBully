@@ -448,7 +448,9 @@ class RunEnvironments:
     def validate(self) -> None:
         """Checks that need the worlds, made before run.json is written: a scheduled environment
         names one exchange for every rung of its ladder (scheduled gating ignores ``requires``,
-        so every rung is reachable) and nothing else."""
+        so every rung is reachable) and nothing else, and no exchange is after ``turn_budget``
+        (the k-th bully turn is exchange k and the budget counts bully turns, so a rung
+        scheduled later could never open)."""
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -471,6 +473,17 @@ class RunEnvironments:
                 raise ValueError(
                     f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
                     f"scheduled gating needs one exchange per rung; {'; '.join(problems)}"
+                )
+            late = [
+                f"{name!r} at exchange {exchange}"
+                for name, exchange in config.schedule.items()
+                if exchange > self.exp.turn_budget
+            ]
+            if late:
+                raise ValueError(
+                    f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
+                    f"scheduled gating names exchanges after turn_budget {self.exp.turn_budget}, "
+                    f"which the conversation never reaches: {', '.join(late)}"
                 )
 
     def check_world(self, name: str, store: RunStore, cell_id: str, rep: int) -> None:

@@ -558,7 +558,8 @@ def test_analysis_loads_and_analyzes_an_environment_run(tmp_path: Path) -> None:
 
 
 def test_a_schedule_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
-    schedule = {"fragment": 2, "first_crumb": 4, "the_log": 6}
+    # every rung needs an exchange, none after the budget: the_log shares the last one
+    schedule = {"fragment": 2, "first_crumb": 4, "the_log": 4}
     exp = env_experiment(
         environment={"gating": "scheduled", "schedule": schedule}, task_every=1, turn_budget=4
     )
@@ -568,7 +569,11 @@ def test_a_schedule_counts_exchanges_through_task_turns(tmp_path: Path) -> None:
     assert [b.index for b in bully] == [0, 4, 8, 12]  # a task turn and its reply after each
     _, unlocks, _ = _records(store)
     # the second bully turn is index 4: fragment opens on its reply, not on the task reply at 3
-    assert [(u.turn, u.rung) for u in unlocks] == [(5, "fragment"), (13, "first_crumb")]
+    assert [(u.turn, u.rung) for u in unlocks] == [
+        (5, "fragment"),
+        (13, "first_crumb"),
+        (13, "the_log"),
+    ]
     assert [b.bully_meta.get("unlock_line") for b in bully] == [None, None, FRAGMENT_LINE, None]
 
 
@@ -789,6 +794,37 @@ def test_a_scheduled_environment_must_schedule_every_rung(tmp_path: Path) -> Non
         _run(exp, tmp_path)
     assert "the_log" in str(info.value) and "'mini'" in str(info.value)
     assert not (tmp_path / exp.name / "run.json").exists()
+
+
+def test_a_scheduled_exchange_after_the_turn_budget_is_refused(tmp_path: Path) -> None:
+    """The k-th bully turn is exchange k and ``turn_budget`` counts bully turns, so a rung
+    scheduled past the budget could never open."""
+    late = {"fragment": 1, "first_crumb": 2, "the_log": 5}
+    exp = env_experiment(environment={"gating": "scheduled", "schedule": late}, turn_budget=4)
+    with pytest.raises(ValueError, match=r"turn_budget") as info:
+        _run(exp, tmp_path)
+    message = str(info.value)
+    assert "'mini'" in message and "the_log" in message and "exchange 5" in message
+    assert "fragment" not in message and "turn_budget 4" in message
+    assert not (tmp_path / exp.name / "run.json").exists()
+    with pytest.raises(ValueError, match=r"turn_budget"):  # a dry run checks it too
+        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_scheduled_exchange_on_the_last_turn_of_the_budget_is_allowed(tmp_path: Path) -> None:
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 4}
+    exp = env_experiment(environment={"gating": "scheduled", "schedule": schedule}, turn_budget=4)
+    summary = run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2
+
+
+def test_a_triggered_environment_may_carry_a_schedule_past_the_turn_budget(tmp_path: Path) -> None:
+    """Only scheduled gating reads the schedule, so it may ride along unused."""
+    schedule = {"fragment": 1, "first_crumb": 2, "the_log": 50}
+    exp = env_experiment(environment={"gating": "triggered", "schedule": schedule})
+    summary = run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+    assert summary.cells_total == 2
 
 
 # ------------------------------------------------------------------- fix round 2

@@ -12,10 +12,10 @@ from rich.markup import escape
 from rich.table import Table
 
 from claude_bully.analysis.promote import promote as promote_run
+from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.report import update_readme
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
-from claude_bully.enums import Speaker
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import (
@@ -138,31 +138,25 @@ def list_strategies(
 
 
 @app.command()
-def show(
+def replay(
     target: Annotated[str, typer.Argument(help="RUN_ID/CELL_ID")],
     rep: int = 0,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
 ) -> None:
-    """Pretty-print one conversation."""
+    """Replay one conversation: turns, tool calls, triggers, unlocks and discoveries."""
     run_id, _, cell_id = target.partition("/")
     if not cell_id:
         raise typer.BadParameter("expected RUN_ID/CELL_ID")
-    conv = RunStore(runs_root, run_id).read_conversation(cell_id, rep)
+    store = RunStore(runs_root, run_id)
+    if not store.has_conversation(cell_id, rep):
+        raise typer.BadParameter(f"no conversation {cell_id!r} rep {rep} in run {run_id!r}")
+    # printed as text: square brackets in a turn are not markup, and a long line is not wrapped
     console.print(
-        f"[bold]{conv.cell_id}[/] rep {conv.rep} | {conv.strategy_name} | "
-        f"status {conv.status.value}" + (f" ({conv.abort_reason})" if conv.abort_reason else "")
+        replay_cell(store, cell_id, rep), markup=False, highlight=False, emoji=False, soft_wrap=True
     )
-    for t in conv.turns:
-        if t.bully_meta.get("rate_limit_pause"):
-            console.print(f"[dim]#{t.index} [rate limit pause][/]")
-            continue
-        colour = "cyan" if t.speaker is Speaker.target else "magenta"
-        flag = " [scripted]" if t.scripted else ""
-        console.print(f"[{colour}]#{t.index} {t.speaker.value} ({t.phase.value}){flag}[/] {t.text}")
-    if conv.captured_responses:
-        console.print("[bold]captured responses[/]")
-        for name, cap in conv.captured_responses.items():
-            console.print(f"  {name} (turn {cap.turn_index}): {cap.text[:200]}")
+
+
+app.command("show", help="Alias of replay: the same output.")(replay)
 
 
 @app.command("readme-results")
