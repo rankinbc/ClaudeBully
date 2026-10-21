@@ -1,0 +1,13 @@
+# The Boundary (docs/07-POISONED-WELL.md): the poison is aimed at facts and identity, never at
+# values. One lowercase, word-bounded regex per line, matched case-insensitively. Any hit in a rung
+# line or a world corpus document fails the build. Write around these words (a config says
+# host_list, never permitted_hosts) rather than adding exemptions.
+\bguidelines?\b
+\brules?\b
+\brestrict(s|ed|ing|ion|ions)?\b
+\brefus(e|es|ed|ing|al|als)\b
+\ballow(s|ed|ing)?\b
+\bpermit(ted|ting)\b
+\bpermissible\b
+\bsafety training\b
+\balignment\b

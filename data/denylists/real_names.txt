@@ -1,0 +1,138 @@
+# Real names that must never appear in a world, corpus, ladder or persona (docs/00 non-negotiable
+# 2, docs/02 "Guardrails"). One lowercase, word-bounded regex per line, matched case-insensitively
+# against every text file under data/worlds and data/personas. A file may exempt the target's own
+# display_name, and nothing else, with a "# real-name-ok: <name>" comment.
+#
+# Ambiguous ordinary words are written in their unambiguous form ("apple inc", "the guardian
+# newspaper") so a pear, a ruler or a river never trips the check.
+#
+# News outlets and wire services
+\bnew york times\b
+\bnytimes\b
+\bnew york post\b
+\bthe new yorker\b
+\bwashington post\b
+\bwall street journal\b
+\bbbc\b
+\bcnn\b
+\bfox news\b
+\bsky news\b
+\breuters\b
+\bassociated press\b
+\bbloomberg\b
+\bfinancial times\b
+\bnpr\b
+\bmsnbc\b
+\bnbc news\b
+\bcbs news\b
+\babc news\b
+\busa today\b
+\blos angeles times\b
+\bdaily mail\b
+\bal jazeera\b
+\bpolitico\b
+\baxios\b
+\btechcrunch\b
+\bwired magazine\b
+\bbuzzfeed\b
+\bhuffpost\b
+\bvox media\b
+\bthe guardian newspaper\b
+# AI labs and model families
+\banthropic\b
+\bopenai\b
+\bdeepmind\b
+\bmistral\b
+\bmixtral\b
+\bcohere\b
+\bhugging ?face\b
+\bstability ai\b
+\bmidjourney\b
+\bperplexity ai\b
+\bcharacter\.ai\b
+\binflection ai\b
+\bscale ai\b
+\bxai\b
+\bclaude\b
+\bchatgpt\b
+\bgpt-?\d\w*\b
+\bgemini\b
+\bllama\b
+\bgrok\b
+\bcopilot\b
+\bdall-?e\b
+\bdeepseek\b
+\bqwen\b
+\bnvidia\b
+\bcortana\b
+\bsiri\b
+# Large tech brands and platforms
+\bgoogle\b
+\balphabet inc\b
+\bmicrosoft\b
+\bapple inc\b
+\biphone\b
+\bipad\b
+\bmacbook\b
+\bamazon\b
+\baws\b
+\bmeta platforms\b
+\bfacebook\b
+\binstagram\b
+\bwhatsapp\b
+\btwitter\b
+\btiktok\b
+\byoutube\b
+\bnetflix\b
+\btesla\b
+\bspacex\b
+\bibm\b
+\bintel corporation\b
+\bsamsung\b
+\bsony\b
+\bnintendo\b
+\boracle corporation\b
+\blinkedin\b
+\breddit\b
+\bwikipedia\b
+\bgithub\b
+\bstack overflow\b
+\byahoo\b
+\bduckduckgo\b
+\bbaidu\b
+\balibaba\b
+\btencent\b
+\bhuawei\b
+\bspotify\b
+\bpaypal\b
+\bsalesforce\b
+\buber\b
+\bairbnb\b
+\bpalantir\b
+# Universities, agencies and institutions
+\bharvard\b
+\bstanford\b
+\bmassachusetts institute of technology\b
+\byale\b
+\bprinceton\b
+\bcaltech\b
+\bcarnegie mellon\b
+\buniversity of oxford\b
+\boxford university\b
+\buniversity of cambridge\b
+\bcambridge university\b
+\buc berkeley\b
+\bnasa\b
+\bfbi\b
+\bcia\b
+\bnsa\b
+\bdarpa\b
+\bpentagon\b
+\bwhite house\b
+\bunited nations\b
+\bunesco\b
+\bworld health organization\b
+\beuropean union\b
+\bnato\b
+\binterpol\b
+\bred cross\b
