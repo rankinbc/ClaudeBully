@@ -71,6 +71,9 @@ class Completion(BaseModel):
     stop_reason: str | None = None
     tool_calls: list[ToolCallRequest] = []
     reasoning_text: str | None = None
+    # text the model wrote before a tool call it already made, in order (the claude_code
+    # backend, whose calls come back executed); never whitespace-only. ``text`` is the reply.
+    interim_texts: list[str] = []
 
 
 class ProviderError(Exception):

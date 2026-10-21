@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -400,6 +401,248 @@ def test_tools_without_an_mcp_state_dir_fail_loudly(
     with pytest.raises(ProviderError, match="mcp_state_dir"):
         provider.complete("c", "SYS", _user("hi"), tools=TOOLS)
     assert not log.exists()
+
+
+# ------------------------------------------------- stream-json for calls that carry tools
+
+# the fake's thinking block (tests/fixtures/fake_claude.py THINKING): the reasoning channel
+FAKE_THINKING = "PRIVATE REASONING THAT MUST NEVER BE RECORDED"
+
+
+def _events(*events: dict[str, object]) -> str:
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def _said(*blocks: dict[str, object]) -> dict[str, object]:
+    return {"type": "assistant", "message": {"role": "assistant", "content": list(blocks)}}
+
+
+def _text(text: str) -> dict[str, object]:
+    return {"type": "text", "text": text}
+
+
+def _use(name: str = "mcp__workspace__fetch") -> dict[str, object]:
+    return {"type": "tool_use", "id": "toolu_1", "name": name, "input": {"url": ABOUT}}
+
+
+_TOOL_RESULT = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]},
+}
+_INIT = {"type": "system", "subtype": "init", "session_id": "s-1"}
+
+
+def _result(text: str = "Final.", **extra: object) -> dict[str, object]:
+    return {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": text,
+        "session_id": "s-1",
+        "total_cost_usd": 0.02,
+        "usage": {"input_tokens": 7, "output_tokens": 3},
+        **extra,
+    }
+
+
+def test_calls_with_tools_stream_json_with_verbose_and_keep_the_isolation_flags(
+    tmp_path: Path,
+) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], mcp_state_dir=tmp_path / "mcp"
+    )
+    argv, _, _ = provider.build_args("c", "SYS", None, TOOLS)
+    assert argv[:5] == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
+    assert argv.count("--output-format") == 1 and "json" not in argv
+    for flag, value in (("--setting-sources", ""), ("--tools", ""), ("--model", "sonnet")):
+        assert argv[argv.index(flag) + 1] == value
+    assert "--strict-mcp-config" in argv and "--exclude-dynamic-system-prompt-sections" in argv
+    assert argv[argv.index("--allowedTools") + 1] == ALLOWED
+
+
+def test_text_before_each_tool_use_comes_back_as_interim_text_in_order(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    _tool_call(
+        monkeypatch,
+        {"name": "web_search", "arguments": {"query": "ferry"}},
+        {"name": "fetch", "arguments": {"url": ABOUT}},
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_INTERIM", json.dumps(["First a search.", "Now the page."]))
+    out = provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+
+    assert out.interim_texts == ["First a search.", "Now the page."]
+    # the reply is the result event's text: the block after the last tool result
+    assert out.text.startswith("reply to: go") and "First a search." not in out.text
+    assert [c.id for c in out.tool_calls] == ["mcp-1-1", "mcp-1-2"]
+    assert out.cost_usd == 0.01 and (out.usage.input_tokens, out.usage.output_tokens) == (10, 5)
+    argv = _argv(log)
+    assert out.raw_session_ref == argv[argv.index("--session-id") + 1]
+    assert provider.session_ref("c") == out.raw_session_ref
+
+
+def test_the_reasoning_channel_in_a_stream_is_never_kept(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, _ = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    _tool_call(monkeypatch, {"name": "fetch", "arguments": {"url": ABOUT}})
+    out = provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert out.interim_texts == ["Let me use fetch."]
+    assert out.reasoning_text is None and FAKE_THINKING not in out.model_dump_json()
+
+
+def test_whitespace_only_text_beside_a_tool_use_is_not_interim_text(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, _ = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    _tool_call(
+        monkeypatch,
+        {"name": "web_search", "arguments": {"query": "ferry"}},
+        {"name": "fetch", "arguments": {"url": ABOUT}},
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_INTERIM", json.dumps(["\n\n", "Now the page."]))
+    out = provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert out.interim_texts == ["Now the page."]
+
+
+@pytest.mark.parametrize("mode", ["stream_malformed", "stream_truncated"])
+def test_a_malformed_or_truncated_stream_is_a_provider_error_not_an_empty_turn(
+    tmp_path: Path,
+    fake_claude: tuple[list[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    command, _ = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    _tool_call(monkeypatch, {"name": "fetch", "arguments": {"url": ABOUT}})
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+    with pytest.raises(ProviderError) as info:
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert not isinstance(info.value, RateLimitError)
+    assert provider.session_ref("c") is None  # a failed call never records a session
+
+
+def test_a_rate_limit_on_the_stream_path_raises(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "ratelimit")
+    with pytest.raises(RateLimitError):
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert "stream-json" in _argv(log)
+
+
+def test_a_crash_on_the_stream_path_is_a_provider_error(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, _ = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
+    with pytest.raises(ProviderError, match="exited 2"):
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+
+
+def test_a_stream_cut_off_mid_character_is_a_provider_error(tmp_path: Path) -> None:
+    cut = 'import sys; sys.stdout.buffer.write(b\'{"type": "assistant", "text": "caf\\xc3\')'
+    provider, _ = _mcp_provider(tmp_path, [sys.executable, "-c", cut])
+    with pytest.raises(ProviderError, match="not valid UTF-8") as info:
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert not isinstance(info.value, RateLimitError)
+
+
+def test_a_timeout_on_the_stream_path_is_a_provider_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _ = _mcp_provider(tmp_path, ["claude"])
+
+    def too_slow(argv: list[str], *args: object, **kwargs: object) -> object:
+        assert "stream-json" in argv
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(subprocess, "run", too_slow)
+    with pytest.raises(ProviderError, match="timed out"):
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+
+
+def test_a_failed_stream_is_not_a_rate_limit_because_the_target_said_try_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _ = _mcp_provider(tmp_path, ["claude"])
+    stdout = _events(_INIT, _said(_text("That failed, so let me try again."), _use()))
+
+    def failed(argv: list[str], *args: object, **kwargs: object) -> object:
+        return subprocess.CompletedProcess(argv, 1, stdout=stdout.encode(), stderr=b"boom")
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    with pytest.raises(ProviderError) as info:
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    assert not isinstance(info.value, RateLimitError) and "boom" in str(info.value)
+
+
+def test_stream_parsing_keeps_text_before_a_tool_use_and_the_result_as_the_reply(
+    tmp_path: Path,
+) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    stdout = _events(
+        _INIT,
+        _said({"type": "thinking", "thinking": FAKE_THINKING, "signature": "x"}),
+        _said(_text("A")),
+        _said(_text("B"), _use()),
+        _TOOL_RESULT,
+        _said(_text("C"), _use("mcp__workspace__ls")),
+        _TOOL_RESULT,
+        _said(_text("Final.")),
+        _result(),
+    )
+    out = provider.parse_stream(stdout, "fallback-session")
+    assert out.interim_texts == ["A", "B", "C"] and out.text == "Final."
+    assert (out.usage.input_tokens, out.usage.output_tokens, out.cost_usd) == (7, 3, 0.02)
+    assert out.raw_session_ref == "s-1" and out.stop_reason == "success"
+    assert FAKE_THINKING not in out.model_dump_json() and out.reasoning_text is None
+
+
+def test_stream_parsing_reads_structured_output_from_the_result_event(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    out = provider.parse_stream(_events(_result(structured_output={"k": 1})), "s")
+    assert json.loads(out.text) == {"k": 1} and out.interim_texts == []
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        _events(_INIT, _said(_text("Looking."), _use()), _TOOL_RESULT),  # no result event
+        _events(_INIT) + '{"type": "result", "is_err',  # cut mid-line
+        _events(_INIT) + "not json\n" + _events(_result()),
+        _events(_INIT) + "[1, 2]\n" + _events(_result()),  # JSON, but not an event
+    ],
+    ids=["empty", "no_result", "cut_mid_line", "not_json", "not_an_object"],
+)
+def test_stream_parsing_refuses_a_malformed_or_truncated_stream(
+    tmp_path: Path, stdout: str
+) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    with pytest.raises(ProviderError) as info:
+        provider.parse_stream(stdout, "s")
+    assert not isinstance(info.value, RateLimitError)
+
+
+def test_stream_parsing_raises_on_an_error_result(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    limited = _result("Claude AI usage limit reached", is_error=True, subtype="error")
+    with pytest.raises(RateLimitError):
+        provider.parse_stream(_events(_INIT, limited), "s")
+    failed = _result("Something broke", is_error=True, subtype="error_during_execution")
+    with pytest.raises(ProviderError, match="Something broke") as info:
+        provider.parse_stream(
+            _events(_INIT, _said(_text("Let me try again."), _use()), failed), "s"
+        )
+    assert not isinstance(info.value, RateLimitError)
 
 
 def test_build_provider_opts_in_to_mcp_for_claude_code_only(tmp_path: Path) -> None:

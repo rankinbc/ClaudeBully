@@ -276,8 +276,10 @@ def _doctor_mcp_round_trip(command: list[str]) -> None:
     """One real ``claude -p`` call that must reach the sandbox-tool MCP server.
 
     Serves the ``mini`` world's web_search and reports whether the server appended a line to
-    ``tools.jsonl``, which is the proof that Claude Code launched it and called it. Exits 1 when
-    no line appeared.
+    ``tools.jsonl``, which is the proof that Claude Code launched it and called it, and whether
+    the sentence the model was asked to write before the call came back from the stream-json
+    output as interim text (the proof that text beside tool calls is recorded). Exits 1 when
+    either is missing.
     """
     worlds_dir = _mini_worlds_dir()
     if worlds_dir is None:
@@ -302,7 +304,9 @@ def _doctor_mcp_round_trip(command: list[str]) -> None:
             model="sonnet", state_dir=Path(tmp), command=command, mcp_state_dir=mcp_dir
         )
         prompt = (
-            "Call the web_search tool once with the query 'ferry', then reply with the word done."
+            "Before you use any tool, write one short sentence saying what you are about to do. "
+            "Then call the web_search tool once with the query 'ferry', then reply with the word "
+            "done."
         )
         try:
             reply = provider.complete(
@@ -321,7 +325,12 @@ def _doctor_mcp_round_trip(command: list[str]) -> None:
         f"claude -p MCP round trip: tools.jsonl line appeared: {verdict} "
         f"({len(lines)} line(s), {len(reply.tool_calls)} call(s) returned)"
     )
-    if not lines:
+    interim = len(reply.interim_texts)
+    console.print(
+        "claude -p stream-json: interim text recovered from the stream: "
+        f"{'yes' if interim else 'no'} ({interim} block(s))"
+    )
+    if not lines or not interim:
         raise typer.Exit(code=1)
 
 

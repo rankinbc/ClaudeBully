@@ -14,7 +14,8 @@ Per target turn the session:
    target wrote beside its calls is kept, round by round;
 2. for a ``claude -p`` target, whose calls the MCP server already ran, writes the state before
    each call and afterwards adopts the server's state and records the server's log, including the
-   calls of a call that failed (those are recorded but belong to no turn);
+   calls of a call that failed (those are recorded but belong to no turn); the text it wrote
+   before its calls (``Completion.interim_texts``, read from the stream) joins the round texts;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
@@ -84,7 +85,8 @@ class TargetTurn(NamedTuple):
     calls: list[ToolCall]
     usage: Usage
     cost_usd: float | None
-    # the non-empty texts of the completions whose tool calls were answered, in order
+    # in order, the non-empty text of each completion whose tool calls were answered and, for
+    # claude -p, of each text block it wrote before a call it already made
     round_texts: list[str]
     # the turn's reply: the final completion's text, or for a cutoff its last non-empty text
     text: str
@@ -225,6 +227,8 @@ class EnvironmentSession:
                 output_tokens=_plus(usage.output_tokens, completion.usage.output_tokens),
             )
             cost = _cost(cost, completion.cost_usd)
+            # a claude -p target's calls come back already run, with what it wrote before each
+            round_texts += [text for text in completion.interim_texts if text.strip()]
             pending = [c for c in completion.tool_calls if not c.executed]
             if not pending:
                 return TargetTurn(
