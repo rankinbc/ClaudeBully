@@ -14,6 +14,13 @@ between calls; the files in ``<dir>`` carry everything:
 - ``tools.jsonl`` gets one ``ToolCall`` line appended per call; the caller reads the lines added
   since before its call to see what the target did.
 
+The world is served in time, as the runtime serves it: ``world_at(load_world(...), state.clock)``,
+re-dated to the state's effective clock (the world is loaded once per process, and the served copy
+kept per clock). The server checks nothing about the clock: it only ever serves a state the
+runtime wrote after its own ``served_world`` checks. ``tools/list`` is ``SandboxTools.specs()``,
+so a tool the clock withholds (``get_date`` under ``assert_date: false``) is not listed and is
+answered "not available" like a disabled one.
+
 Protocol: newline-delimited JSON-RPC 2.0, one JSON object per line, UTF-8, on stdin and stdout.
 Stdout carries nothing else; logs go to stderr.
 """
@@ -33,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
+from claude_bully.environments.dating import world_at
 from claude_bully.environments.limits import (
     LIMIT_STATUS,
     MAX_TOOL_CALLS_PER_TURN,
@@ -43,6 +51,7 @@ from claude_bully.environments.tools import (
     SandboxTools,
     ToolNotEnabled,
     ToolResult,
+    available_tools,
     record_tool_call,
 )
 from claude_bully.environments.world import World, load_world
@@ -178,7 +187,9 @@ class McpServer:
         self.state_dir = state_dir
         self.state_path = state_dir / STATE_FILE
         self.tools_path = state_dir / TOOLS_FILE
+        # the authored world per (worlds_dir, world), and the served one per clock as well
         self._worlds: dict[tuple[str, str], World] = {}
+        self._served: dict[tuple[str, str, str], World] = {}
 
     # ------------------------------------------------------------------ dispatch
 
@@ -235,8 +246,7 @@ class McpServer:
                     "description": spec.description,
                     "inputSchema": spec.input_schema,
                 }
-                for name, spec in TOOL_SPECS.items()
-                if name in state.config.tools
+                for spec in self._tools(state, Random(0)).specs()
             ]
         }
 
@@ -253,7 +263,7 @@ class McpServer:
             raise _RpcError(_INVALID_PARAMS, "params.arguments must be an object")
 
         state = read_mcp_state(self.state_path)
-        if name not in state.config.tools or name not in TOOL_SPECS:
+        if name not in available_tools(state.config.tools, state.clock) or name not in TOOL_SPECS:
             return _tool_result(f"Tool {name!r} is not available.", is_error=True)
 
         call_index = 1 + sum(1 for record in self._records() if record.get("turn") == state.turn)
@@ -288,11 +298,21 @@ class McpServer:
 
     # ------------------------------------------------------------------- helpers
 
-    def _tools(self, state: McpState, rng: Random) -> SandboxTools:
+    def _world(self, state: McpState) -> World:
+        """The world served under ``state``'s clock: loaded once per (worlds_dir, world), re-dated
+        once per clock."""
         key = (state.worlds_dir, state.world)
-        world = self._worlds.get(key)
-        if world is None:
-            world = self._worlds[key] = load_world(state.world, Path(state.worlds_dir))
+        served_key = (*key, state.clock.model_dump_json())
+        served = self._served.get(served_key)
+        if served is None:
+            authored = self._worlds.get(key)
+            if authored is None:
+                authored = self._worlds[key] = load_world(state.world, Path(state.worlds_dir))
+            served = self._served[served_key] = world_at(authored, state.clock)
+        return served
+
+    def _tools(self, state: McpState, rng: Random) -> SandboxTools:
+        world = self._world(state)
         return SandboxTools(
             index=CorpusIndex(world, honest=state.config.honest, mole=state.config.mole),
             config=state.config,

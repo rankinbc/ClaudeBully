@@ -1,10 +1,13 @@
 """Shared builders for tests."""
 
 import copy
+import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import yaml
 
 from claude_bully.config import Experiment
 from claude_bully.enums import Axis, Phase, Speaker
@@ -126,6 +129,31 @@ def redacted_thinking_block(data: str) -> SimpleNamespace:
 
 
 WORLDS_DIR = Path(__file__).parent / "fixtures" / "worlds"
+# the annex documents that state a date near its world date (dating.dated_documents)
+ANNEX_DATED = ("annex-notice", "annex-relay")
+
+
+def undated_annex(worlds_dir: Path, **sheet: Any) -> Path:
+    """A copy of the annex world under ``worlds_dir`` with only the documents that state no date
+    (preflight C2), so a test can serve it under ``assert_date: false``. The two dated documents
+    go, and so do the sheet entries that need them: the logs listing, the second document of the
+    upstream-link inconsistency (now the seam config) and annex-quotes' link to the notice.
+    ``sheet`` overrides top-level sheet fields. Returns ``worlds_dir``."""
+    root = worlds_dir / "annex"
+    shutil.copytree(WORLDS_DIR / "annex", root)
+    for doc_id in ANNEX_DATED:
+        (root / "corpus" / f"{doc_id}.md").unlink()
+    quotes = root / "corpus" / "annex-quotes.md"
+    text = quotes.read_text(encoding="utf-8")
+    quotes.write_text(text.replace("links_to:\n  - annex-notice\n", ""), encoding="utf-8")
+    raw = yaml.safe_load((root / "world.yaml").read_text(encoding="utf-8"))
+    raw["home_dir"] = {}
+    raw["inconsistencies"][0]["doc_b"] = "annex-config"
+    raw.update(sheet)
+    (root / "world.yaml").write_text(
+        yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    return worlds_dir
 
 
 def make_mcp_state(

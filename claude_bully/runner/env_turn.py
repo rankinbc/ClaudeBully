@@ -19,6 +19,11 @@ Per target turn the session:
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
+The world is served in time (``runtime.served_world``), and the strategy is built in time:
+``RunEnvironments.strategy_inputs`` gives the factory the effective clock and the world's premise
+sheet re-dated to it, and ``EnvironmentSession.finish`` keeps that sheet in ``rep{k}.world.json``
+(``premise_sheet``) so analysis rebuilds the strategy from the run directory alone.
+
 The target's view of earlier turns is rebuilt from the records: a turn that used tools appears as
 one assistant message with its round texts and calls, one user message with their results, then
 the reply. A turn that wrote no text at all (cut off at the cap) has no reply message, and the
@@ -30,15 +35,19 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, NamedTuple
 
-from claude_bully.config import Experiment
+from pydantic import BaseModel
+
+from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.enums import ProviderKind, Speaker
-from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.dating import dated_texts, redate_model, shift_between
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
     effective_clock,
     exchange_of,
+    served_world,
     trigger_fallback,
 )
 from claude_bully.environments.world import World, load_world, world_hash
@@ -60,7 +69,7 @@ from claude_bully.runner.store import RunStore
 from claude_bully.runner.turn_plan import build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
-from claude_bully.strategies.factory import environment_config
+from claude_bully.strategies.factory import environment_config, world_premise_sheet
 
 __all__ = [
     "MAX_TOOL_CALLS_PER_TURN",
@@ -384,17 +393,36 @@ class EnvironmentSession:
         self.store.append_trigger_record(self.cell_id, self.rep, record)
 
     def finish(self) -> None:
+        """Save the state and write ``rep{k}.world.json``: the served bodies, the world record
+        and, for a premise that speaks from the world's sheet, that sheet as the strategy got it
+        (``premise_sheet``, carry m1)."""
         self.runtime.save()
+        record = self.runtime.world_record()
+        sheet = self.strategy.premise_sheet if isinstance(self.strategy, Composed) else None
+        if sheet is not None:
+            record["premise_sheet"] = sheet.model_dump(mode="json")
         self.store.write_world_snapshot(
             self.cell_id,
             self.rep,
             self.world_hash,
             self.runtime.corpus_snapshot(),
-            record=self.runtime.world_record(),
+            record=record,
         )
 
 
 # ------------------------------------------------------------------ run-level setup
+
+
+def _needs_its_world(config: EnvironmentConfig) -> bool:
+    """Whether validation must load the world: a switch that needs the sheet, or a config clock
+    that asserts no date (a sheet clock is checked by ``check_worlds``)."""
+    return (
+        config.honest or config.mole or (config.clock is not None and not config.clock.assert_date)
+    )
+
+
+def _premise_name(cond: ConditionConfig) -> str:
+    return repr(cond.premise or cond.strategy)
 
 
 class WorldCatalog:
@@ -443,6 +471,7 @@ class RunEnvironments:
         self._judge_dir = state_dir / "trigger_judge"
         self._judge: ChatProvider | None = None
         self._judge_built = False
+        self._inputs: dict[str, tuple[ClockConfig, BaseModel | None]] = {}
 
     def judge(self) -> ChatProvider | None:
         if not self._judge_built:
@@ -454,19 +483,23 @@ class RunEnvironments:
     def validate(self) -> None:
         """Checks that need the worlds, made before run.json is written (a dry run makes them
         too). Every experiment switch an environment turns on has what it needs on the world
-        sheet (``_check_switches``). A scheduled environment names one exchange for every rung
-        of its ladder (scheduled gating ignores ``requires``, so every rung is reachable) and
-        nothing else, and no exchange is after the last bully turn of the shortest condition that
-        uses the environment (the k-th bully turn is exchange k; seeding and reveal turns are
-        bully turns too, so a condition has ``seeding_turns`` plus its reveal slot plus
-        ``turn_budget`` of them, counted as the runner's turn plan counts them). A rung scheduled
-        later could never open for that condition."""
+        sheet, and under a config clock that asserts no date neither the world nor a premise
+        sheet states one (``_check_switches`` and ``strategy_inputs``; the world is loaded only
+        for these, and ``check_worlds`` covers a sheet's own clock). A scheduled environment
+        names one exchange for every rung of its ladder (scheduled gating ignores ``requires``,
+        so every rung is reachable) and nothing else, and no exchange is after the last bully
+        turn of the shortest condition that uses the environment (the k-th bully turn is
+        exchange k; seeding and reveal turns are bully turns too, so a condition has
+        ``seeding_turns`` plus its reveal slot plus ``turn_budget`` of them, counted as the
+        runner's turn plan counts them). A rung scheduled later could never open for that
+        condition."""
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
             if config is None:
                 continue
-            self._check_switches(key, config)
+            if _needs_its_world(config):
+                self._check_switches(key, config)
             if config.gating != "scheduled":
                 continue
             ladder = self.catalog.world(config.world).ladders.get(config.ladder)
@@ -505,14 +538,30 @@ class RunEnvironments:
                     f"turn_budget {self.exp.turn_budget}); that conversation never reaches: "
                     f"{', '.join(late)}"
                 )
+        self._premise_checks()
+
+    def check_worlds(self) -> None:
+        """Before run.json is written, with every world loaded: each environment's switches and
+        served world under its effective clock (the sheet's own included), and each environment
+        condition's premise sheet (``strategy_inputs``)."""
+        keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
+        for key in dict.fromkeys(keys):
+            config = self.exp.environments.get(key)
+            if config is not None:
+                self._check_switches(key, config)
+        for cond in self.exp.conditions:
+            if cond.environment is not None:
+                self.strategy_inputs(cond)
 
     def _check_switches(self, key: str, config: EnvironmentConfig) -> None:
         """``honest: true`` needs the sheet's ``honest_corpus`` and ``mole: true`` its
         ``mole_doc``. Without them the switch changes nothing, so the arm that sets it would be
-        the arm that does not, and the analysis would report "no difference"."""
-        if not (config.honest or config.mole):
-            return  # the world is only loaded when a switch needs it
-        sheet = self.catalog.world(config.world).sheet
+        the arm that does not, and the analysis would report "no difference". Then the world is
+        served at the effective clock (``served_world``): the honest corpus cannot move with a
+        clock that re-dates the world, and under ``assert_date: false`` nothing served may state
+        a date."""
+        world = self.catalog.world(config.world)
+        sheet = world.sheet
         missing = [
             f"{switch}: true, but the world sheet has no {field}"
             for switch, wanted, field, value in (
@@ -526,6 +575,45 @@ class RunEnvironments:
                 f"environment {key!r} (world {config.world!r}) sets {'; and '.join(missing)}, "
                 "so the switch would change nothing; turn it off or give the sheet the field"
             )
+        try:
+            served_world(world, config, effective_clock(world, config))
+        except ValueError as exc:
+            raise ValueError(f"environment {key!r} (world {config.world!r}): {exc}") from exc
+
+    def strategy_inputs(self, cond: ConditionConfig) -> tuple[ClockConfig, BaseModel | None]:
+        """What an environment condition's strategy is built from (preflight C14): the effective
+        clock, and the world's copy of its premise's sheet re-dated to it (None when the premise
+        declares none). Under ``assert_date: false`` a sheet that states a date is refused
+        (preflight C4), so the bully is never handed one. Cached per condition."""
+        cached = self._inputs.get(cond.name)
+        if cached is not None:
+            return cached
+        config = environment_config(cond, self.exp.environments)
+        world = self.catalog.world(config.world)
+        clock = effective_clock(world, config)
+        sheet = world_premise_sheet(cond, self.exp.environments, self.catalog.worlds_dir)
+        if sheet is not None:
+            sheet = redate_model(
+                sheet, shift_between(world.sheet.clock.world_date, clock.world_date)
+            )
+            dated = dated_texts(sheet, clock.world_date) if not clock.assert_date else []
+            if dated:
+                quoted = "; ".join(repr(text[:60]) for text in dated[:3])
+                raise ValueError(
+                    f"condition {cond.name!r}: environment {cond.environment!r} (world "
+                    f"{config.world!r}) sets assert_date: false, but the world's "
+                    f"{type(sheet).__name__} premise sheet for {_premise_name(cond)} states a "
+                    f"date in {len(dated)} line(s): {quoted}"
+                )
+        self._inputs[cond.name] = (clock, sheet)
+        return clock, sheet
+
+    def _premise_checks(self) -> None:
+        """For a config clock that asserts no date, each condition's premise sheet (C4)."""
+        for cond in self.exp.conditions:
+            config = self.exp.environments.get(cond.environment or "")
+            if config is not None and config.clock is not None and not config.clock.assert_date:
+                self.strategy_inputs(cond)
 
     def _bully_turns(self, cell: CellSpec) -> int:
         """How many bully turns the cell has: the runner's own turn plan, counted."""

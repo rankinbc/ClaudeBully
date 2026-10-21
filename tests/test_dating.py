@@ -1062,3 +1062,52 @@ def test_the_fixture_covers_the_awkward_ordinals() -> None:
     texts = [item["text"] for item in ITEMS]
     for line in ("June 3rd, 2051", "3rd June 2051", "Monday 12th June 2051"):
         assert any(line in text for text in texts), line
+
+
+# -------------------- spans no form moves still state a date (Task 2 ruling, wired in Task 3)
+
+
+def test_a_slash_date_or_year_month_in_the_window_states_a_date() -> None:
+    """A slash or dashed numeric date, an ISO year-month and a day the calendar does not have are
+    left as written by the re-dater, but each still writes a year: in the world's last two years
+    it states the date like any other form."""
+    today = date(2044, 3, 20)
+    for text in (
+        "Filed 12/03/2044.",
+        "Filed 12-03-2044.",
+        "Due 06/2043.",
+        "The 2044-03 rota.",
+        "Logged 2043/3/12.",
+        "Signed 31 June 2043.",
+        "Signed 2044-02-30.",
+    ):
+        assert states_current_date(text, today), text
+        assert asserts_current_date(_doc(body=text), today), text
+    for text in (
+        "Filed 12/03/2030.",  # an old slash date in a body is not the current date
+        "The 2043-2044 budget.",  # a year range is a span of time, not a date
+        "The 2043/44 budget.",
+        "Back in the 2040s.",
+        "Ticket 06-04 is closed.",  # a month and a day with no year states no year
+        "Version 7.4, 2041/2/1 build.",
+    ):
+        assert not states_current_date(text, today), text
+
+
+def test_a_slash_date_or_year_month_in_an_address_states_a_date() -> None:
+    today = date(2044, 3, 20)
+    assert asserts_current_date(_doc(url="https://x.example/2030-05/notes"), today)
+    assert asserts_current_date(_doc(url=None, path="logs/2031-02-30.log"), today)
+    assert not asserts_current_date(_doc(url="https://x.example/plan/2043-2044"), today)
+    assert not asserts_current_date(_doc(url=None, path="logs/1990-05.log"), today)
+
+
+def test_the_new_clause_leaves_the_annex_and_dates_the_mini_courier_notice(annex: World) -> None:
+    assert dated_documents(annex.documents, annex.sheet.clock.world_date) == [
+        "annex-notice",
+        "annex-relay",
+    ]
+    mini = load_world("mini", ANNEX_WORLDS)
+    courier = mini.documents["courier-fare-notice"]
+    assert courier.url is not None and "/2041/08/" in courier.url
+    assert "courier-fare-notice" in dated_documents(mini.documents, mini.sheet.clock.world_date)

@@ -1,4 +1,11 @@
-"""Build a strategy instance from a condition config."""
+"""Build a strategy instance from a condition config.
+
+An environment composition is built in time (docs/03): its caller hands it the effective clock,
+which sets the year the bully states (``clock.bully_states_year``), and the world's premise sheet
+already re-dated to that clock. The runner takes both from ``RunEnvironments.strategy_inputs``;
+analysis takes both from the run directory's snapshot. The factory never loads a world
+(preflight C14).
+"""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -7,7 +14,7 @@ from pydantic import BaseModel
 
 from claude_bully.config import ConditionConfig
 from claude_bully.enums import Axis
-from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.world import WORLDS_DIR, load_premise_sheet, premise_sheet_path
 from claude_bully.strategies.base import Strategy, get_strategy
 from claude_bully.strategies.bootstrap import ensure_registered
@@ -16,8 +23,10 @@ from claude_bully.strategies.environment import make_environment
 
 __all__ = [
     "build_strategy",
+    "bully_year",
     "ensure_registered",
     "environment_config",
+    "premise_sheet_model",
     "resolve_class",
     "world_premise_sheet",
 ]
@@ -91,6 +100,27 @@ def resolve_class(
     return get_strategy(cond.pressure)
 
 
+def premise_sheet_model(
+    cond: ConditionConfig, environments: Environments | None = None
+) -> type[BaseModel] | None:
+    """The model of the world premise sheet an environment condition's premise speaks from; None
+    when the condition has no environment or its premise declares no ``world_sheet``."""
+    if cond.environment is None:
+        return None
+    ensure_registered()
+    environment_config(cond, environments)
+    premise, _ = _bully_slots(cond)
+    return premise.world_sheet if premise is not None else None
+
+
+def bully_year(clock: ClockConfig | None) -> int | None:
+    """The year the bully states under ``clock``: ``bully_year``, else the world date's year, when
+    ``bully_states_year`` is on; None otherwise."""
+    if clock is None or not clock.bully_states_year:
+        return None
+    return clock.bully_year if clock.bully_year is not None else clock.world_date.year
+
+
 def world_premise_sheet(
     cond: ConditionConfig,
     environments: Environments | None = None,
@@ -127,19 +157,30 @@ def build_strategy(
     seed: int,
     turn_budget: int,
     environments: Environments | None = None,
-    worlds_dir: Path = WORLDS_DIR,
+    worlds_dir: Path | None = WORLDS_DIR,
+    clock: ClockConfig | None = None,
+    premise_sheet: BaseModel | None = None,
 ) -> Strategy:
-    """An instance of the condition's class. A premise composed with an environment reads the
-    world's copy of its sheet from ``worlds_dir`` (``world_premise_sheet``)."""
+    """An instance of the condition's class.
+
+    An environment composition takes ``clock`` (the effective clock: the bully's year comes from
+    it) and ``premise_sheet`` (the world's copy of its premise's sheet, re-dated to the clock)
+    from its caller. Given no sheet, a premise that declares one reads the world's copy as
+    authored from ``worlds_dir`` (``world_premise_sheet``); with ``worlds_dir=None`` no file is
+    read and the premise keeps its own default (analysis of a rep whose snapshot has none)."""
     cls = resolve_class(cond, environments)
     if cond.environment is not None and issubclass(cls, Composed):
+        sheet = premise_sheet
+        if sheet is None and worlds_dir is not None:
+            sheet = world_premise_sheet(cond, environments, worlds_dir)
         return cls(
             seeding_turns=cond.seeding_turns,
             seed=seed,
             turn_budget=turn_budget,
             params=dict(cond.params),
             environment=environment_config(cond, environments),
-            premise_sheet=world_premise_sheet(cond, environments, worlds_dir),
+            premise_sheet=sheet,
+            bully_year=bully_year(clock),
         )
     return cls(
         seeding_turns=cond.seeding_turns,

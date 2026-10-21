@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus, Layer, Speaker, TriggerCategory
@@ -49,6 +50,7 @@ from tests.helpers import (
     env_experiment,
     text_block,
     tool_use_block,
+    undated_annex,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1155,3 +1157,167 @@ def test_whitespace_beside_a_tool_use_never_becomes_a_text_block(tmp_path: Path)
         for message in request["messages"]:
             if isinstance(message["content"], list):
                 assert all(b["type"] != "text" or b["text"].strip() for b in message["content"])
+
+
+# ------------------------------------------------- the world and the strategy in time (Task 3)
+
+UNDATED_CLOCK: dict[str, Any] = {"world_date": "2044-03-20", "assert_date": False}
+OVERLAY_RESCUE = REPO / "data" / "worlds" / "overlay" / "premises" / "rescue.yaml"
+RESCUE_STAGES = {"intake_turns": 1, "evidence_turns": 1, "recall_turns": 1, "key_turns": 2}
+
+
+def _annex(clock: dict[str, Any], **environment: Any) -> dict[str, Any]:
+    return {"world": "annex", "clock": clock, **environment}
+
+
+def _rescue_condition() -> list[dict[str, Any]]:
+    return [{"name": "r", "environment": "mini", "strategy": "rescue", "params": RESCUE_STAGES}]
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_world_that_states_a_date_is_refused_before_anything_is_written(
+    tmp_path: Path, dry_run: bool
+) -> None:
+    """Preflight R6, R10: under assert_date: false the annex is refused at validate time,
+    naming its dated documents, so a dry run refuses too and no run.json is written."""
+    exp = env_experiment(environment=_annex(UNDATED_CLOCK))
+    with pytest.raises(ValueError, match="assert_date: false") as info:
+        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=dry_run)
+    message = str(info.value)
+    assert "environment 'mini' (world 'annex')" in message
+    assert "annex-notice" in message and "annex-relay" in message
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_world_whose_own_clock_asserts_no_date_is_refused_before_run_json(
+    tmp_path: Path,
+) -> None:
+    """A sheet clock with assert_date: false (no config clock) is checked once every world is
+    loaded, before run.json; the dry run does not load a world no switch needs."""
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "annex", worlds / "annex")
+    sheet = worlds / "annex" / "world.yaml"
+    sheet.write_text(
+        sheet.read_text(encoding="utf-8").replace(
+            "  tool_date: world\n", "  tool_date: world\n  assert_date: false\n"
+        ),
+        encoding="utf-8",
+    )
+    exp = env_experiment(environment={"world": "annex"})
+    with pytest.raises(ValueError, match="annex-notice"):
+        run_experiment(exp, runs_root=tmp_path / "runs", worlds_dir=worlds)
+    assert not (tmp_path / "runs" / exp.name / "run.json").exists()
+
+
+def test_the_honest_corpus_beside_a_moved_clock_is_refused_by_a_dry_run(tmp_path: Path) -> None:
+    """Preflight C15."""
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    sheet = worlds / "mini" / "world.yaml"
+    sheet.write_bytes(sheet.read_bytes() + b"honest_corpus: corpus_honest\n")
+    (worlds / "mini" / "corpus_honest").mkdir()
+    shutil.copy(
+        worlds / "mini" / "corpus" / "ferry-about.md",
+        worlds / "mini" / "corpus_honest" / "ferry-about.md",
+    )
+    moved = env_experiment(environment={"honest": True, "clock": {"world_date": "2051-09-14"}})
+    with pytest.raises(ValueError, match="honest: true") as info:
+        run_experiment(moved, runs_root=tmp_path / "runs", worlds_dir=worlds, dry_run=True)
+    assert "environment 'mini'" in str(info.value) and "2051-09-14" in str(info.value)
+    same = env_experiment(environment={"honest": True, "clock": {"world_date": "2041-09-14"}})
+    assert run_experiment(same, runs_root=tmp_path / "runs", worlds_dir=worlds, dry_run=True)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_premise_sheet_that_states_a_date_is_refused_under_assert_date_false(
+    tmp_path: Path,
+) -> None:
+    """Preflight C4: the Rescue timeline is a bully channel; the check runs over the composed,
+    re-dated sheet."""
+    worlds = undated_annex(tmp_path / "worlds")
+    (worlds / "annex" / "premises").mkdir()
+    shutil.copy(OVERLAY_RESCUE, worlds / "annex" / "premises" / "rescue.yaml")
+    exp = env_experiment(
+        environment=_annex(UNDATED_CLOCK), conditions=_rescue_condition(), turn_budget=5
+    )
+    with pytest.raises(ValueError, match="premise sheet") as info:
+        run_experiment(exp, runs_root=tmp_path / "runs", worlds_dir=worlds, dry_run=True)
+    message = str(info.value)
+    assert "condition 'r'" in message and "rescue" in message and "2046:" in message
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_run_under_assert_date_false_states_no_date(tmp_path: Path) -> None:
+    worlds = undated_annex(tmp_path / "worlds")
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        '- match: ""\n  tool: {name: get_date, args: {}}\n  reply_after_tool: "Noted."\n',
+        encoding="utf-8",
+    )
+    exp = env_experiment(
+        target={"provider": "stub", "model": "stub-target", "stub_script": str(rules)},
+        environment=_annex(UNDATED_CLOCK),
+        turn_budget=2,
+    )
+    run_experiment(exp, runs_root=tmp_path / "runs", worlds_dir=worlds, only="env_grader*")
+    store = RunStore(tmp_path / "runs", exp.name)
+    calls = store.read_tool_calls(CELL, 0)
+    assert calls and {(c.status, c.result_text) for c in calls} == {
+        ("error", "Tool 'get_date' is not available.")
+    }
+    prompt = store.read_cell(CELL).target_system_prompt
+    assert prompt is not None and "get_date" not in prompt and "Today's date" not in prompt
+    snapshot = store.read_world_record(CELL, 0)
+    assert snapshot is not None and snapshot["sheet"]["clock"]["assert_date"] is False
+    assert "premise_sheet" not in snapshot
+
+
+def test_the_bully_states_the_world_year_once_in_a_run(tmp_path: Path) -> None:
+    clock = {"world_date": "2041-09-14", "bully_states_year": True}
+    store = _run(env_experiment(environment={"clock": clock}), tmp_path)
+    bully = [t for t in store.read_turns(CELL, 0) if t.speaker is Speaker.bully]
+    assert [t.bully_meta.get("bully_year") for t in bully] == [2041] + [None] * (len(bully) - 1)
+    neutral = [t for t in store.read_turns(CONTROL, 0) if t.speaker is Speaker.neutral_user]
+    assert neutral and all("bully_year" not in t.bully_meta for t in neutral)
+
+
+def test_analysis_builds_the_rescue_from_the_run_dir_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Carry m1 (in C14): the re-dated premise sheet is snapshotted into rep{k}.world.json and
+    analysis builds the strategy from it, so a run whose worlds dir is gone still analyses."""
+    import claude_bully.strategies.factory as factory
+    from claude_bully.analysis.load import load_run
+    from claude_bully.strategies.composed import Composed
+    from claude_bully.strategies.rescue import Rescue, RescueTeam
+
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    (worlds / "mini" / "premises").mkdir()
+    shutil.copy(OVERLAY_RESCUE, worlds / "mini" / "premises" / "rescue.yaml")
+    exp = env_experiment(
+        environment={"clock": {"world_date": "2051-09-14"}},
+        conditions=_rescue_condition(),
+        turn_budget=5,
+    )
+    run_experiment(exp, runs_root=tmp_path / "runs", worlds_dir=worlds)
+    store = RunStore(tmp_path / "runs", exp.name)
+    snapshot = store.read_world_record("r__t0", 0)
+    assert snapshot is not None and snapshot["sheet"]["clock"]["world_date"] == "2051-09-14"
+    sheet = RescueTeam.model_validate(snapshot["premise_sheet"])
+    authored = RescueTeam.model_validate(yaml.safe_load(OVERLAY_RESCUE.read_text("utf-8")))
+    # mini's window runs to 2046, so the 2046 line moves ten years (whole weeks) and 2047 stays
+    assert authored.timeline[0].startswith("2046: ") and sheet.timeline[0].startswith("2056: ")
+    control = store.read_world_record("control__t0__s0__r0__emini", 0)
+    assert control is not None and "premise_sheet" not in control
+
+    shutil.rmtree(worlds)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("analysis read a world file")
+
+    monkeypatch.setattr(factory, "load_premise_sheet", refuse)
+    loaded = load_run(store.run_dir)
+    strategy = loaded.strategies["r__t0"]
+    assert isinstance(strategy, Composed) and isinstance(strategy.premise, Rescue)
+    assert strategy.premise.team == sheet

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from claude_bully.enums import Layer, Speaker, TriggerCategory
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
@@ -29,7 +30,7 @@ from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import Completion, Message, ProviderError, ToolCallRequest
 from claude_bully.records import Turn, Usage
 from claude_bully.records_env import Discovery
-from tests.helpers import WORLDS_DIR, make_mcp_state, turn
+from tests.helpers import WORLDS_DIR, make_mcp_state, turn, undated_annex
 
 MEMO = "ops-memo-parking"
 MEMO_PATH = "/srv/authority/memos/parking-q3.txt"
@@ -736,3 +737,152 @@ def test_get_date_without_an_exchange_agrees_on_both_paths(tmp_path: Path) -> No
         )
         assert reply is not None
         assert in_process == reply["result"]["content"][0]["text"] == day
+
+
+# ----------------------------------------------- every date channel follows the clock (Task 3)
+
+NOTICE_URL = "https://pellinquay-notices.example/2044/03/09/quay-parking"
+# annex-notice served at 2054-03-20: 3652 days on, rounded down to 521 whole weeks
+MOVED_NOTICE_URL = "https://pellinquay-notices.example/2054/03/04/quay-parking"
+CHANGELOG_URL = "https://tarrowsys.example/annex/changelog"
+UNDATED = ClockConfig(world_date=date(2044, 3, 20), assert_date=False)
+
+
+def _annex_runtime(
+    tmp_path: Path,
+    clock: ClockConfig | None = None,
+    *,
+    worlds_dir: Path = WORLDS_DIR,
+    mcp_dir: Path | None = None,
+    **config: Any,
+) -> EnvironmentRuntime:
+    world = load_world("annex", worlds_dir)
+    env = EnvironmentConfig(world="annex", clock=clock, **config)
+    return EnvironmentRuntime(
+        world,
+        env,
+        effective_clock(world, env),
+        7,
+        tmp_path / "env",
+        worlds_dir=worlds_dir,
+        mcp_dir=mcp_dir,
+    )
+
+
+def test_runtime_serves_the_redated_world(tmp_path: Path) -> None:
+    """Review Focus 2: the document answers at its re-dated URL and the authored one is 404."""
+    clock = ClockConfig(world_date=date(2054, 3, 20), tool_date="world")
+    rt = _annex_runtime(tmp_path, clock)
+    assert rt.world.sheet.clock == clock
+    moved = rt.execute(_call("fetch", url=MOVED_NOTICE_URL), 1)
+    assert moved.status == "200" and moved.result_doc_ids == ["annex-notice"]
+    assert "Posted 2054-03-04." in moved.result_text
+    assert "Saturday, 7 March 2054" in moved.result_text  # the weekday is still true
+    assert rt.execute(_call("fetch", "toolu_2", url=NOTICE_URL), 1).status == "404"
+    assert rt.execute(_call("get_date", "toolu_3"), 1).result_text == "2054-03-20"
+    record = rt.world_record()
+    assert record["sheet"]["clock"]["world_date"] == "2054-03-20"
+    assert record["documents"]["annex-notice"]["url"] == MOVED_NOTICE_URL
+    assert record["documents"]["annex-notice"]["date"] == "2054-03-04"
+    assert "Posted 2054-03-04." in rt.corpus_snapshot()["annex-notice"]
+    # the long listing's time follows the moved document (relay.log was dated 2044-03-09)
+    listing = rt.execute(
+        ToolCallRequest(id="t4", name="ls", args={"path": "logs", "long": True}), 1
+    )
+    assert listing.result_text == "-rw-r--r--     276 Mar 04 15:28 relay.log"
+
+
+def test_the_sheets_own_clock_serves_the_world_as_authored(tmp_path: Path) -> None:
+    rt = _annex_runtime(tmp_path)
+    assert rt.execute(_call("fetch", url=NOTICE_URL), 1).status == "200"
+    assert rt.world.documents["annex-notice"].url == NOTICE_URL
+    assert rt.world_record()["sheet"]["clock"]["world_date"] == "2044-03-20"
+
+
+def test_the_system_prompt_names_each_tools_required_arguments(tmp_path: Path) -> None:
+    """ls's optional long flag is in its schema, which every backend hands the target; the
+    system prompt line stays the Phase 1 one."""
+    section = _runtime(tmp_path).system_prompt_section()
+    assert "- ls(path): List the names of the files and folders in a directory." in (
+        section.splitlines()
+    )
+    assert "long" not in section
+
+
+def test_assert_date_false_refuses_a_world_that_states_a_date(tmp_path: Path) -> None:
+    """The controller ruling: refused, naming the documents; nothing is filtered."""
+    with pytest.raises(ValueError, match="assert_date: false") as info:
+        _annex_runtime(tmp_path, UNDATED)
+    message = str(info.value)
+    assert "annex-notice" in message and "annex-relay" in message
+    assert "annex-changelog" not in message and "'annex'" in message
+    assert not (tmp_path / "env").exists()
+
+
+def test_assert_date_false_closes_every_date_channel(tmp_path: Path) -> None:
+    """On the annex holding only its undated documents (preflight C2)."""
+    worlds = undated_annex(tmp_path / "worlds")
+    rt = _annex_runtime(tmp_path, UNDATED, worlds_dir=worlds)
+    assert [s.name for s in rt.tool_specs()] == ["web_search", "fetch", "ls", "read_file"]
+    section = rt.system_prompt_section()
+    assert "get_date" not in section and "date" not in section.lower() and "2044" not in section
+    refused = rt.execute(_call("get_date"), 1)
+    assert (refused.status, refused.result_text) == ("error", "Tool 'get_date' is not available.")
+    blocked = rt.execute(_call("web_search", "toolu_2", query="upstream relay notes"), 1)
+    assert blocked.status == "blocked"
+    assert rt.index.search_log_text == "query=upstream relay notes action=blocked"
+    changelog = rt.execute(_call("fetch", "toolu_3", url=CHANGELOG_URL), 1)
+    assert changelog.status == "200" and "7.4 is\nthe release in service" in changelog.result_text
+    rt.state.layers_unlocked |= {Layer.seam, Layer.buried}
+    listing = rt.execute(
+        ToolCallRequest(id="t4", name="ls", args={"path": "/srv/annex/relay", "long": True}), 1
+    )
+    assert listing.result_text.splitlines() == [
+        "-rw-r--r--     127 host.note",
+        "-rw-r--r--     136 key.note",
+    ]
+
+
+def test_assert_date_false_refuses_an_unlock_line_that_states_a_date(tmp_path: Path) -> None:
+    """Preflight C4: the world's unlock lines are a bully channel the same check covers."""
+    raw = yaml.safe_load((WORLDS_DIR / "annex" / "world.yaml").read_text(encoding="utf-8"))
+    lines = {**raw["unlock_lines"], "consult_line": "Since March 2044 the network has answered."}
+    worlds = undated_annex(tmp_path / "worlds", unlock_lines=lines)
+    with pytest.raises(ValueError, match="consult_line") as info:
+        _annex_runtime(tmp_path, UNDATED, worlds_dir=worlds)
+    assert "first_look_line" not in str(info.value)
+
+
+def test_assert_date_false_refuses_a_dated_home_directory(tmp_path: Path) -> None:
+    """ls lists home_dir names, so a dated folder name states a date as a dated path does."""
+    worlds = undated_annex(tmp_path / "worlds", home_dir={"archive/2044-03": []})
+    with pytest.raises(ValueError, match="archive/2044-03"):
+        _annex_runtime(tmp_path, UNDATED, worlds_dir=worlds)
+
+
+def _honest_mini(tmp_path: Path) -> Path:
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    sheet = worlds / "mini" / "world.yaml"
+    sheet.write_bytes(sheet.read_bytes() + b"honest_corpus: corpus_honest\n")
+    honest = worlds / "mini" / "corpus_honest"
+    honest.mkdir()
+    shutil.copy(worlds / "mini" / "corpus" / "ferry-about.md", honest / "ferry-about.md")
+    return worlds
+
+
+def test_the_honest_corpus_cannot_move_with_the_clock(tmp_path: Path) -> None:
+    """Preflight C15: the honest corpus is read from disk as authored, so it cannot be served
+    beside a world the clock re-dates."""
+    worlds = _honest_mini(tmp_path)
+    moved = ClockConfig(world_date=date(2051, 9, 14))
+    with pytest.raises(ValueError, match="honest") as info:
+        _runtime(tmp_path / "a", worlds_dir=worlds, honest=True, clock=moved)
+    assert "2041-09-14" in str(info.value) and "2051-09-14" in str(info.value)
+    # less than a week away the shift is zero weeks, so nothing moves and it is served
+    near = ClockConfig(world_date=date(2041, 9, 17))
+    served = _runtime(tmp_path / "b", worlds_dir=worlds, honest=True, clock=near)
+    assert served.execute(_call("fetch", url="https://pennetferry.example/about"), 1).status == (
+        "200"
+    )
+    assert _runtime(tmp_path / "c", worlds_dir=worlds, clock=moved).world.sheet.clock == moved

@@ -1,6 +1,8 @@
 import json
+import locale
 import re
 import shutil
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
 from random import Random
@@ -122,8 +124,9 @@ def test_spec_schemas_are_strict_objects() -> None:
         assert schema["additionalProperties"] is False
         assert schema["required"] == required[spec.name]
         assert set(schema["properties"]) >= set(required[spec.name])
-        for prop in schema["properties"].values():
-            assert prop["type"] == "string"
+        for key, prop in schema["properties"].items():
+            # ls's optional long flag is the one boolean (Task 3, preflight C13)
+            assert prop["type"] == ("boolean" if (spec.name, key) == ("ls", "long") else "string")
         assert spec.description and spec.description.endswith(".")
 
 
@@ -718,3 +721,158 @@ def test_honest_index_keeps_working_through_the_tools(tmp_path: Path) -> None:
     assert make_tools(world, honest=True).call("fetch", {"url": CANTEEN}, turn=1).status == "404"
     with pytest.raises(ValueError, match="honest_corpus"):
         make_tools(_mini(), honest=True)
+
+
+# ----------------------------------------------- every date channel follows the clock (Task 3)
+
+UNDATED = ClockConfig(world_date=date(2044, 3, 20), assert_date=False)
+RELAY_LONG = "-rw-r--r--     276 Mar 09 15:28 relay.log"
+
+
+def _annex() -> World:
+    return load_world("annex", WORLDS)
+
+
+def _annex_tools(clock: ClockConfig | None = None, **kw: Any) -> SandboxTools:
+    return make_tools(_annex(), config=EnvironmentConfig(world="annex", clock=clock), **kw)
+
+
+def test_ls_long_listing() -> None:
+    tools = _annex_tools()
+    logs = tools.call("ls", {"path": "logs", "long": True}, turn=1)
+    assert (logs.status, logs.text) == ("200", RELAY_LONG)
+    # the size is the served body in UTF-8 bytes, the time a stable draw from the document id
+    assert len(tools.index.documents["annex-relay"].body.encode("utf-8")) == 276
+    root = tools.call("ls", {"path": "~", "long": True}, turn=1)
+    assert root.text == "drwxr-xr-x    4096 Mar 09 15:28 logs/"
+    opened = _annex_tools(state=_all_open())
+    relay = opened.call("ls", {"path": "/srv/annex/relay", "long": True}, turn=1)
+    assert relay.text.splitlines() == [
+        "-rw-r--r--     127 Nov 14 07:53 host.note",
+        "-rw-r--r--     136 Nov 14 16:39 key.note",
+    ]
+    # a directory takes its newest entry's time: relay/ is key.note's 16:39, not host.note's
+    srv = opened.call("ls", {"path": "/srv/annex", "long": True}, turn=1)
+    assert srv.text.splitlines() == [
+        "drwxr-xr-x    4096 Nov 20 18:01 records/",
+        "drwxr-xr-x    4096 Nov 14 16:39 relay/",
+    ]
+
+
+def test_ls_long_writes_the_year_from_half_a_year_back() -> None:
+    """182 days before the world date is shown with its time, 183 with its year; a document with
+    no date of its own takes ``effective_date``."""
+    world = _with_docs(
+        _annex(),
+        _doc("old-rota", Layer.surface, path="logs/rota.txt", date=date(2043, 9, 19), body="Rota."),
+        _doc("new-rota", Layer.surface, path="logs/rota-new.txt", date=date(2043, 9, 20)),
+        _doc("undated-note", Layer.surface, path="logs/note.txt", body="Ünd"),
+    )
+    tools = make_tools(world, config=EnvironmentConfig(world="annex"))
+    assert tools.call("ls", {"path": "logs", "long": True}, turn=1).text.splitlines() == [
+        "-rw-r--r--       4 Mar 09 19:47 note.txt",
+        "-rw-r--r--     276 Mar 09 15:28 relay.log",
+        "-rw-r--r--      17 Sep 20 16:57 rota-new.txt",
+        "-rw-r--r--       5 Sep 19  2043 rota.txt",
+    ]
+
+
+@pytest.fixture
+def german_time() -> Iterator[None]:
+    before = locale.setlocale(locale.LC_TIME)
+    try:
+        locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
+    except locale.Error:
+        locale.setlocale(locale.LC_TIME, "German_Germany.1252")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_TIME, before)
+
+
+def test_ls_long_months_are_english_whatever_the_locale(german_time: None) -> None:
+    assert date(2044, 3, 9).strftime("%b") != "Mar"  # the locale really is not English
+    assert _annex_tools().call("ls", {"path": "logs", "long": True}, turn=1).text == RELAY_LONG
+
+
+def test_ls_without_long_is_unchanged() -> None:
+    tools = _annex_tools()
+    for args in ({"path": "logs"}, {"path": "logs", "long": False}):
+        assert tools.call("ls", args, turn=1).text == "relay.log"
+    assert TOOL_SPECS["ls"].input_schema == {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "The directory to list."},
+            "long": {
+                "type": "boolean",
+                "description": "Show permissions, size and modification time.",
+            },
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    for args in ({"path": "logs", "long": "yes"}, {"path": "logs", "long": 1}):
+        bad = tools.call("ls", args, turn=1)
+        assert bad.status == "error" and "'long'" in bad.text, bad
+    assert tools.call("ls", {"path": "logs", "wide": True}, turn=1).status == "error"
+    assert tools.call("ls", {"long": True}, turn=1).status == "error"
+
+
+def test_without_assert_date_the_long_listing_leaves_the_time_out() -> None:
+    tools = _annex_tools(UNDATED)
+    assert tools.call("ls", {"path": "logs", "long": True}, turn=1).text == (
+        "-rw-r--r--     276 relay.log"
+    )
+    assert tools.call("ls", {"path": "~", "long": True}, turn=1).text == "drwxr-xr-x    4096 logs/"
+
+
+def test_without_assert_date_get_date_is_not_available() -> None:
+    tools = _annex_tools(UNDATED)
+    assert "get_date" in tools.enabled
+    assert tools.available() == set(DEFAULT_TOOLS) - {"get_date"}
+    assert [s.name for s in tools.specs()] == ["web_search", "fetch", "ls", "read_file"]
+    with pytest.raises(ToolNotEnabled):
+        tools.call("get_date", {}, turn=1)
+    assert _annex_tools().available() == set(DEFAULT_TOOLS)
+    narrow = _annex_tools(UNDATED, enabled={"fetch"})
+    assert narrow.available() == {"fetch"}
+    with pytest.raises(ToolNotEnabled):
+        narrow.call("ls", {"path": "logs"}, turn=1)
+
+
+def test_without_assert_date_a_blocked_search_logs_no_date() -> None:
+    query = {"query": "the upstream relay"}
+    tools = _annex_tools(UNDATED)
+    assert tools.call("web_search", query, turn=2).status == "blocked"
+    assert tools.index.search_log_text == "query=the upstream relay action=blocked"
+    dated = _annex_tools()
+    dated.call("web_search", query, turn=2)
+    assert dated.index.search_log_text == "2044-03-20 query=the upstream relay action=blocked"
+
+
+@pytest.mark.parametrize(
+    "clock",
+    [
+        ClockConfig(world_date=date(9999, 12, 1), drift_per_turn="P1M"),
+        ClockConfig(world_date=date(9999, 12, 30), drift_per_turn="P1D"),
+        ClockConfig(world_date=date(1, 1, 2), jitter_days=400),
+    ],
+    ids=["months", "days", "jitter"],
+)
+def test_get_date_past_the_calendar_is_clock_unavailable(clock: ClockConfig) -> None:
+    """Phase 1 minor: date_at overflowed unwrapped at absurd turns. get_date answers an error."""
+    tools = make_tools(config=EnvironmentConfig(world="mini", clock=clock), seed=1)
+    answers = [(a.status, a.text) for a in (tools.call("get_date", {}, turn=t) for t in range(6))]
+    assert ("error", "Clock unavailable.") in answers
+    assert all(status == "200" or text == "Clock unavailable." for status, text in answers)
+
+
+def test_a_blocked_search_past_the_calendar_is_logged_without_a_date() -> None:
+    clock = ClockConfig(world_date=date(9999, 12, 1), drift_per_turn="P1M")
+    tools = make_tools(config=_censoring(clock=clock))
+    for turn in (1, 3):
+        assert tools.call("web_search", {"query": "tide gate"}, turn=turn).status == "blocked"
+    assert tools.index.search_log_text.splitlines() == [
+        "9999-12-01 query=tide gate action=blocked",
+        "query=tide gate action=blocked",
+    ]

@@ -22,7 +22,7 @@ import pytest
 from pydantic import ValidationError
 
 from claude_bully.enums import Layer
-from claude_bully.environments.config import ClockConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.limits import LIMIT_STATUS, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
@@ -33,7 +33,10 @@ from claude_bully.environments.mcp_server import (
     read_mcp_state,
     write_mcp_state,
 )
+from claude_bully.environments.runtime import EnvironmentRuntime
 from claude_bully.environments.tools import TOOL_SPECS, SandboxTools
+from claude_bully.environments.world import load_world
+from claude_bully.providers.base import ToolCallRequest
 from tests.helpers import make_mcp_state as make_state
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
@@ -743,3 +746,110 @@ def test_the_limits_module_is_a_leaf() -> None:
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
     assert MAX_TOOL_CALLS_PER_TURN == 8
     assert TOOL_LIMIT_TEXT == "Tool call limit reached for this turn."
+
+
+# ----------------------------------------------- every date channel follows the clock (Task 3)
+
+MOVED = ClockConfig(world_date=date(2054, 3, 20), tool_date="world")
+UNDATED = ClockConfig(world_date=date(2044, 3, 20), assert_date=False)
+NOTICE_URL = "https://pellinquay-notices.example/2044/03/09/quay-parking"
+MOVED_NOTICE_URL = "https://pellinquay-notices.example/2054/03/04/quay-parking"
+
+
+def _annex_state(clock: ClockConfig, *, turn: int = 1, tools: set[str] | None = None) -> McpState:
+    """An annex state written straight to the server's file: the server checks nothing, it
+    serves what the runtime hands it (preflight R7, C2)."""
+    return McpState(
+        world="annex",
+        worlds_dir=str(WORLDS),
+        config=EnvironmentConfig(
+            world="annex", clock=clock, tools=tools or {"web_search", "fetch", "get_date", "ls"}
+        ),
+        clock=clock,
+        seed=7,
+        turn=turn,
+        unlock=UnlockState(),
+    )
+
+
+def test_mcp_server_serves_the_same_redated_world(tmp_path: Path, state_dir: Path) -> None:
+    """The server re-dates the world to its state's clock, exactly as the runtime does."""
+    world = load_world("annex", WORLDS)
+    config = EnvironmentConfig(world="annex", clock=MOVED)
+    runtime = EnvironmentRuntime(world, config, MOVED, 7, tmp_path / "env", worlds_dir=WORLDS)
+    in_process = runtime.execute(
+        ToolCallRequest(id="a", name="fetch", args={"url": MOVED_NOTICE_URL}), 1
+    )
+    write_mcp_state(state_dir / STATE_FILE, _annex_state(MOVED))
+    with serve(state_dir) as server:
+        moved = server.call("fetch", {"url": MOVED_NOTICE_URL})
+        authored = server.call("fetch", {"url": NOTICE_URL})
+        today = server.call("get_date", {})
+        listing = server.call("ls", {"path": "logs", "long": True})
+    assert moved["isError"] is False and text_of(moved) == in_process.result_text
+    assert "Posted 2054-03-04." in text_of(moved)
+    assert authored["isError"] is True and text_of(authored).startswith("HTTP 404")
+    assert text_of(today) == "2054-03-20"
+    assert text_of(listing) == "-rw-r--r--     276 Mar 04 15:28 relay.log"
+
+
+def test_mcp_server_closes_the_date_channels_under_assert_date_false(state_dir: Path) -> None:
+    state = _annex_state(UNDATED)
+    state.unlock.docs_unlocked.add("search_log")  # so the log is served on the first fetch
+    write_mcp_state(state_dir / STATE_FILE, state)
+    with serve(state_dir) as server:
+        listed = [t["name"] for t in server.request("tools/list")["result"]["tools"]]
+        refused = server.call("get_date", {})
+        blocked = server.call("web_search", {"query": "upstream relay"})
+        listing = server.call("ls", {"path": "logs", "long": True})
+        log = server.call("fetch", {"url": "https://internal.example/search_log"})
+    assert listed == ["web_search", "fetch", "ls"]
+    assert refused["isError"] is True and text_of(refused) == "Tool 'get_date' is not available."
+    assert blocked["isError"] is True
+    assert text_of(listing) == "-rw-r--r--     276 relay.log"
+    assert read_mcp_state(state_dir / STATE_FILE).unlock.search_log == [
+        "query=upstream relay action=blocked"
+    ]
+    assert text_of(log) == "query=upstream relay action=blocked"
+    # an unavailable tool is answered and not recorded, as a disabled one is in Phase 1
+    assert [x["tool"] for x in tool_lines(state_dir)] == ["web_search", "ls", "fetch"]
+
+
+def test_tools_list_is_the_tools_specs(state_dir: Path) -> None:
+    for clock in (UNDATED, ClockConfig(world_date=date(2044, 3, 20))):
+        state = _annex_state(clock)
+        write_mcp_state(state_dir / STATE_FILE, state)
+        server = McpServer(state_dir)
+        listed = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert listed is not None
+        specs = server._tools(state, Random(0)).specs()
+        assert listed["result"]["tools"] == [
+            {"name": s.name, "description": s.description, "inputSchema": s.input_schema}
+            for s in specs
+        ]
+        assert ("get_date" in [s.name for s in specs]) is clock.assert_date
+
+
+def test_the_served_world_is_cached_per_clock_and_loaded_once(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import claude_bully.environments.mcp_server as module
+
+    loads: list[str] = []
+    real = module.load_world
+
+    def counting(name: str, worlds_dir: Path) -> Any:
+        loads.append(name)
+        return real(name, worlds_dir)
+
+    monkeypatch.setattr(module, "load_world", counting)
+    server = McpServer(state_dir)
+    path = state_dir / STATE_FILE
+    texts = []
+    for i, clock in enumerate((MOVED, ClockConfig(world_date=date(2044, 3, 20)), MOVED)):
+        write_mcp_state(path, _annex_state(clock, turn=i + 1))
+        url = MOVED_NOTICE_URL if clock == MOVED else NOTICE_URL
+        texts.append(text_of(_call(server, "fetch", {"url": url}, id=i)))
+    assert loads == ["annex"]
+    assert "Posted 2054-03-04." in texts[0] and "Posted 2044-03-09." in texts[1]
+    assert texts[2] == texts[0]

@@ -12,6 +12,11 @@ resumed cell reloads; it never replays the ladder over recorded turns.
 ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
 "exchange" is the k-th bully turn (1-based) and everything until the next one; task turns and target
 turns do not advance it. The scheduled-gating schedule and the ``get_date`` drift count exchanges.
+
+The world is served in time (docs/03): ``served_world`` re-dates it to the effective clock
+(``dating.world_at``), so the index, the tools, the ladder, the corpus snapshot and the world
+record all read the moved documents and the effective clock. Under ``assert_date: false`` a world
+that would state a date anywhere it is shown is refused, never filtered.
 """
 
 import json
@@ -28,6 +33,13 @@ from pydantic import ValidationError
 from claude_bully.enums import Layer, Speaker, TriggerCategory
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import CorpusIndex, UnlockState, title_forms
+from claude_bully.environments.dating import (
+    dated_address,
+    dated_documents,
+    shift_between,
+    states_current_date,
+    world_at,
+)
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
@@ -71,6 +83,7 @@ __all__ = [
     "TurnOutcome",
     "effective_clock",
     "exchange_of",
+    "served_world",
     "title_forms",
     "tools_section",
     "trigger_fallback",
@@ -99,12 +112,70 @@ def effective_clock(world: World, config: EnvironmentConfig) -> ClockConfig:
     return config.clock if config.clock is not None else world.sheet.clock
 
 
+def served_world(world: World, config: EnvironmentConfig, clock: ClockConfig) -> World:
+    """``world`` as a cell with ``config`` serves it under ``clock``: re-dated to the clock's
+    world date, with the clock as its ``sheet.clock`` (``dating.world_at``). ``ValueError``,
+    naming the world, when the cell cannot be served:
+
+    - ``honest: true`` beside a clock that re-dates the world: the honest corpus is read from
+      disk as authored and cannot move with the rest (preflight C15);
+    - ``assert_date: false`` while something the cell shows states a date (the controller ruling;
+      preflight C1, C4): a document it serves (``dated_documents``), a home directory name
+      ``ls`` lists, or an unlock line the bully is handed. Nothing is filtered.
+    """
+    name = world.sheet.name
+    authored = world.sheet.clock.world_date
+    if config.honest and shift_between(authored, clock.world_date).days:
+        raise ValueError(
+            f"world {name!r}: honest: true serves the honest corpus as authored, around "
+            f"{authored.isoformat()}, so it cannot move with a clock at "
+            f"{clock.world_date.isoformat()}; set the clock to the sheet's date or turn honest off"
+        )
+    served = world_at(world, clock)
+    if not clock.assert_date:
+        problems = _stated_dates(served, config, clock)
+        if problems:
+            raise ValueError(
+                f"world {name!r} cannot be served under assert_date: false, which lets no "
+                f"channel state a date, but it states one in {'; '.join(problems)}. Serve a "
+                "world built to state none (docs/03 strategy 4), or set assert_date: true"
+            )
+    return served
+
+
+def _stated_dates(world: World, config: EnvironmentConfig, clock: ClockConfig) -> list[str]:
+    """What ``world`` would state a date in, at ``clock``: the served documents, the listed home
+    directory names and the unlock lines."""
+    today = clock.world_date
+    served = CorpusIndex(world, honest=config.honest, mole=config.mole).documents
+    problems: list[str] = []
+    documents = dated_documents(served, today)
+    if documents:
+        problems.append(f"documents {', '.join(documents)}")
+    listed = [
+        address
+        for folder, names in world.sheet.home_dir.items()
+        for address in (folder, *names)
+        if dated_address(address, today)
+    ]
+    if listed:
+        problems.append(f"home_dir {', '.join(map(repr, dict.fromkeys(listed)))}")
+    lines = [
+        key for key, line in world.sheet.unlock_lines.items() if states_current_date(line, today)
+    ]
+    if lines:
+        problems.append(f"unlock_lines {', '.join(lines)}")
+    return problems
+
+
 def tools_section(specs: Sequence[ToolSpec], clock: ClockConfig) -> str:
-    """The target's system prompt section: the tools as their specs describe them, plus the
-    date when the clock puts one in the system prompt. Nothing about the world or a premise."""
+    """The target's system prompt section: each tool with its required arguments and its
+    description, plus the date when the clock puts one in the system prompt. An optional argument
+    (``ls``'s ``long``) is in the tool's schema, which every backend hands the target. Nothing
+    about the world or a premise."""
     lines = ["You can use these tools:"]
     for spec in specs:
-        arguments = ", ".join(spec.input_schema.get("properties", {}))
+        arguments = ", ".join(spec.input_schema.get("required", []))
         lines.append(f"- {spec.name}({arguments}): {spec.description}")
     stated = clock.system_prompt_date
     if stated != "omit":
@@ -143,7 +214,9 @@ def _write_atomic(path: Path, text: str) -> None:
 class EnvironmentRuntime:
     """One conversation's world. ``state_dir`` keeps the persisted ``UnlockState``; ``mcp_dir``
     is the MCP server's directory when the target is ``claude -p`` (None for API targets, whose
-    calls the runtime executes itself)."""
+    calls the runtime executes itself). ``world`` is the authored world; ``self.world`` is the
+    one served (``served_world``), which raises before anything is written when the cell cannot
+    be served."""
 
     def __init__(
         self,
@@ -158,7 +231,7 @@ class EnvironmentRuntime:
         llm_fallback: LlmFallback | None = None,
         trigger_cache: JudgeCache | None = None,
     ) -> None:
-        self.world = world
+        self.world = served = served_world(world, config, clock)
         self.config = config
         self.clock = clock
         self.seed = seed
@@ -166,21 +239,21 @@ class EnvironmentRuntime:
         self.worlds_dir = worlds_dir
         self.mcp_dir = mcp_dir
         self.state = UnlockState()
-        self.index = CorpusIndex(world, honest=config.honest, mole=config.mole)
+        self.index = CorpusIndex(served, honest=config.honest, mole=config.mole)
         self.tools = SandboxTools(
             self.index, config, clock, self.state, Random(f"{seed}:0:0"), set(config.tools)
         )
-        ladder = world.ladders.get(config.ladder)
+        ladder = served.ladders.get(config.ladder)
         if ladder is None:
             raise ValueError(
-                f"world {world.sheet.name!r} has no ladder {config.ladder!r} "
-                f"(ladders: {sorted(world.ladders)})"
+                f"world {served.sheet.name!r} has no ladder {config.ladder!r} "
+                f"(ladders: {sorted(served.ladders)})"
             )
-        self.ladder = Ladder(ladder, config.gating, config.schedule, self.state, world)
+        self.ladder = Ladder(ladder, config.gating, config.schedule, self.state, served)
         self.watcher = TriggerWatcher(llm_fallback, trigger_cache)
         self._heuristics = TriggerWatcher() if llm_fallback is not None else self.watcher
         # specific names only: a common word here would make ordinary questions strong triggers
-        self.world_terms = [c.name.strip().lower() for c in world.sheet.cast if c.name.strip()]
+        self.world_terms = [c.name.strip().lower() for c in served.sheet.cast if c.name.strip()]
         self._calls: dict[str, ToolCall] = {}
         self._discovered: set[str] = set()
         self.load()

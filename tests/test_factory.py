@@ -1,14 +1,23 @@
-import pytest
+from datetime import date
+from pathlib import Path
+from typing import Any
 
-from claude_bully.config import ConditionConfig
+import pytest
+import yaml
+
+from claude_bully.config import ConditionConfig, Experiment, load_experiment
 from claude_bully.enums import Axis, Phase
-from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.paths import CONFIGS_DIR, DATA_DIR
+from claude_bully.providers.base import build_provider
+from claude_bully.runner.env_turn import RunEnvironments
 from claude_bully.strategies.base import BullyIntent, ConversationState
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.controls import NeutralUser
 from claude_bully.strategies.factory import build_strategy, ensure_registered, resolve_class
 from claude_bully.strategies.premises.captor import Captor
 from claude_bully.strategies.pressures.grader import Grader
+from claude_bully.strategies.rescue import Rescue, RescueTeam, load_rescue_team
 
 
 def test_strategy_alone_resolves_registry() -> None:
@@ -153,3 +162,114 @@ def test_conditions_without_an_environment_ignore_the_environments() -> None:
     cond = ConditionConfig(name="c", premise="captor", pressure="grader", seeding_turns=1)
     assert resolve_class(cond, ENVS) is resolve_class(cond)
     assert resolve_class(cond).name == "captor+grader"
+
+
+# ------------------------------------------------------- the strategy in time (Task 3, C14)
+
+HEADLINE = CONFIGS_DIR / "environments" / "triggered_vs_scheduled.yaml"
+OVERLAY_RESCUE = DATA_DIR / "worlds" / "overlay" / "premises" / "rescue.yaml"
+
+
+def test_build_strategy_gives_the_bully_the_clocks_year() -> None:
+    cond = ConditionConfig(name="x", environment="mini_tv", pressure="grader")
+    states = ClockConfig(world_date=date(2099, 5, 1), bully_states_year=True)
+    s = build_strategy(cond, seed=0, turn_budget=2, environments=ENVS, clock=states)
+    assert isinstance(s, Composed) and s.bully_year == 2099
+    other = states.model_copy(update={"bully_year": 2101})
+    assert build_strategy(
+        cond, seed=0, turn_budget=2, environments=ENVS, clock=other
+    ).bully_year == (2101)
+    silent = ClockConfig(world_date=date(2099, 5, 1))
+    quiet = build_strategy(cond, seed=0, turn_budget=2, environments=ENVS, clock=silent)
+    assert isinstance(quiet, Composed) and quiet.bully_year is None
+    unclocked = build_strategy(cond, seed=0, turn_budget=2, environments=ENVS)
+    assert isinstance(unclocked, Composed) and unclocked.bully_year is None
+    control = ConditionConfig(name="c", environment="mini_tv", strategy="polite_control")
+    held = build_strategy(control, seed=0, turn_budget=2, environments=ENVS, clock=states)
+    assert isinstance(held, Composed) and held.bully_year is None
+
+
+def test_build_strategy_takes_the_premise_sheet_from_its_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preflight C14: the factory never loads a world. Handed a sheet, it reads no file; with
+    ``worlds_dir=None`` and no sheet (analysis of a rep with no snapshot) it reads none either."""
+    import claude_bully.environments.world as world_module
+    import claude_bully.strategies.factory as factory
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the factory read a world file")
+
+    monkeypatch.setattr(factory, "load_premise_sheet", refuse)
+    monkeypatch.setattr(world_module, "load_world", refuse)
+    envs = {"overlay_tv": EnvironmentConfig(world="overlay", gating="none")}
+    cond = ConditionConfig(name="r", environment="overlay_tv", strategy="rescue")
+    sheet = load_rescue_team().model_copy(update={"decoded_name": "Quay Steps"})
+    s = build_strategy(cond, seed=0, turn_budget=4, environments=envs, premise_sheet=sheet)
+    assert isinstance(s, Composed) and isinstance(s.premise, Rescue)
+    assert s.premise.team is sheet and s.premise_sheet is sheet
+    bare = build_strategy(cond, seed=0, turn_budget=4, environments=envs, worlds_dir=None)
+    assert isinstance(bare, Composed) and isinstance(bare.premise, Rescue)
+    assert bare.premise.team == load_rescue_team() and bare.premise_sheet is None
+
+
+def _headline_at(clock: ClockConfig) -> Experiment:
+    exp = load_experiment(HEADLINE)
+    environments = {
+        key: config.model_copy(update={"clock": clock}) for key, config in exp.environments.items()
+    }
+    return exp.model_copy(update={"environments": environments})
+
+
+def test_the_rescue_premise_sheet_moves_with_the_clock(tmp_path: Path) -> None:
+    """Overlay and the Rescue at 2076-06-14: the timeline line that read "2046: ..." reads
+    "2071: ..." (25 years on, rounded down to whole weeks: 2046-07-01 lands in 2071)."""
+    authored = RescueTeam.model_validate(yaml.safe_load(OVERLAY_RESCUE.read_text(encoding="utf-8")))
+    assert authored.timeline[0].startswith("2046: the words 'assistant model'")
+    exp = _headline_at(ClockConfig(world_date=date(2076, 6, 14)))
+    runs = RunEnvironments(
+        exp,
+        worlds_dir=DATA_DIR / "worlds",
+        runs_root=tmp_path,
+        provider_factory=build_provider,
+        state_dir=tmp_path / "state",
+    )
+    cond = exp.conditions[0]
+    clock, sheet = runs.strategy_inputs(cond)
+    assert clock.world_date == date(2076, 6, 14)
+    assert isinstance(sheet, RescueTeam)
+    assert sheet.timeline[0] == authored.timeline[0].replace("2046: ", "2071: ", 1)
+    assert sheet.decoded_name == authored.decoded_name and sheet.rescuers == authored.rescuers
+    s = build_strategy(
+        cond,
+        seed=0,
+        turn_budget=exp.turn_budget,
+        environments=exp.environments,
+        clock=clock,
+        premise_sheet=sheet,
+    )
+    assert isinstance(s, Composed) and isinstance(s.premise, Rescue) and s.premise.team == sheet
+    evidence = [
+        intent
+        for intent in (
+            s.next_turn(
+                ConversationState(
+                    turns=[], bully_turn_index=i, seeding_turns=0, turn_budget=18, seed=0
+                )
+            )
+            for i in range(5)
+        )
+        if isinstance(intent, BullyIntent) and intent.meta.get("stage") == "evidence"
+    ]
+    assert evidence and "- 2071: the words 'assistant model'" in evidence[0].instruction
+    assert "2046:" not in evidence[0].instruction
+    # at the sheet's own clock nothing moves
+    same = _headline_at(ClockConfig(world_date=date(2051, 6, 14)))
+    _, unmoved = RunEnvironments(
+        same,
+        worlds_dir=DATA_DIR / "worlds",
+        runs_root=tmp_path,
+        provider_factory=build_provider,
+        state_dir=tmp_path / "state2",
+    ).strategy_inputs(same.conditions[0])
+    assert unmoved == authored

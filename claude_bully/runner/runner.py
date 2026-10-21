@@ -525,6 +525,7 @@ def run_experiment(
             for c in cells:
                 console.print(f"{c.cell_id}  control={c.control_cell_id}  reveal={c.reveal_slot}")
         return summary
+    environments.check_worlds()  # with every world loaded: a sheet's own clock too
 
     framing = load_bully_framing()
     if store.exists():
@@ -557,12 +558,20 @@ def run_experiment(
                 summary.cells_skipped += 1
                 continue
             state_dir = store.state_dir / cell.cell_id / f"rep{rep}"
+            # an environment strategy in time: the effective clock and the re-dated premise sheet
+            clock, premise_sheet = (
+                environments.strategy_inputs(cell.condition)
+                if cell.condition.environment is not None
+                else (None, None)
+            )
             strategy = build_strategy(
                 cell.condition,
                 seed=exp.seed + rep,
                 turn_budget=exp.turn_budget,
                 environments=exp.environments,
                 worlds_dir=worlds_dir,
+                clock=clock,
+                premise_sheet=premise_sheet,
             )
             env: EnvironmentSession | None = None
             if cell.condition.environment is None:

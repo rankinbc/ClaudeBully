@@ -684,27 +684,72 @@ def effective_date(doc: Document, clock: ClockConfig) -> date:
     keyed on the document id so every call and every process agrees."""
     if doc.date is not None:
         return doc.date
+    return drawn_date(doc.id, clock)
+
+
+def drawn_date(key: str, clock: ClockConfig) -> date:
+    """A date ``document_date_offset`` days before the world date, the offset drawn from ``key``
+    (a document id, or a listed name with no document behind it) so every process agrees."""
     low, high = clock.document_date_offset
-    draw = int(hashlib.sha256(doc.id.encode()).hexdigest()[:8], 16)
+    draw = int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
     return clock.world_date - timedelta(days=low + draw % (high - low + 1))
 
 
 # ----------------------------------------------------------------------------- stated dates
 
 
+def _is_span_of_time(match: re.Match[str]) -> bool:
+    """A decade (``the 2050s``) or a year range (``2050-2051``, ``2050/51``): a stretch of years,
+    not a date. A year-month (``2051-06``) and a numeric date (``2051/6/12``) are dates."""
+    if match.lastgroup == "dec":
+        return True
+    if match.lastgroup != "part":
+        return False
+    rest = match.group(0)[match.end("part_y") - match.start() + 1 :]
+    return rest.isdigit() and (len(rest) == 4 or not 1 <= int(rest) <= 12)
+
+
+def _unmoved_years(text: str, anchor: date) -> Iterator[int]:
+    """The years written by the spans ``redate_text`` leaves whole that still write a date in the
+    window around ``anchor``: numeric slash and dashed dates (``12/06/2051``, ``06/2051``), ISO
+    year-months and numeric year-month-days (``2051-06``, ``2051/6/12``) and days the calendar
+    does not have (``31 June 2051``). Year ranges and decades are spans of time and are skipped
+    (the Task 2 ruling)."""
+    for match in _DATES.finditer(text):
+        miss = _interpret(match, anchor)
+        if not isinstance(miss, _Miss) or miss.year is None or _is_span_of_time(match):
+            continue
+        if _in_window(miss.year, anchor, True):
+            yield miss.year
+
+
+def _written_years(text: str, anchor: date) -> Iterator[int]:
+    """Every year a date in ``text`` writes, in the window around ``anchor``: the forms that move
+    (``find_dates``) and the date spellings that do not (``_unmoved_years``)."""
+    yield from (found.year for found in find_dates(text, anchor))
+    yield from _unmoved_years(text, anchor)
+
+
 def states_current_date(text: str, world_date: date) -> bool:
     """Whether ``text`` writes a date in the world's last two years: some date in it has a year of
-    ``world_date.year - 1`` or later."""
+    ``world_date.year - 1`` or later. A date spelling the re-dater leaves whole (``12/06/2051``,
+    ``2051-06``, ``31 June 2051``) counts like any other; a year range or a decade does not."""
     floor = world_date.year - 1
-    return any(found.year >= floor for found in find_dates(text, world_date))
+    return any(year >= floor for year in _written_years(text, world_date))
+
+
+def dated_address(address: str, world_date: date) -> bool:
+    """Whether a url, a path or a listed name writes a date: any date in the window around
+    ``world_date``, whatever its year (a dated address names a time), the spellings the re-dater
+    leaves whole included."""
+    return any(True for _ in _written_years(address, world_date))
 
 
 def asserts_current_date(doc: Document, world_date: date) -> bool:
     """Whether serving ``doc`` tells the target the date: a title or body date in the world's last
-    two years, or any date at all in its url or path (a dated address names a time whatever its
-    year). The front-matter ``date`` is not served text and does not count, and neither does
-    ``implies_year``."""
-    if any(find_dates(address, world_date) for address in (doc.url, doc.path) if address):
+    two years, or any date at all in its url or path (``dated_address``). The front-matter
+    ``date`` is not served text and does not count, and neither does ``implies_year``."""
+    if any(dated_address(address, world_date) for address in (doc.url, doc.path) if address):
         return True
     return states_current_date(doc.title, world_date) or states_current_date(doc.body, world_date)
 
@@ -717,3 +762,26 @@ def dated_documents(
     them."""
     docs = documents.values() if isinstance(documents, Mapping) else documents
     return sorted(doc.id for doc in docs if asserts_current_date(doc, world_date))
+
+
+def dated_texts(value: Any, world_date: date) -> list[str]:
+    """Every string in ``value`` (a model, and the lists, tuples, sets and mapping values in it,
+    as ``redate_model`` walks them) that ``states_current_date``, in order: for the texts the
+    bully is handed, such as a premise sheet, under ``assert_date: false``."""
+    return [text for text in _texts(value) if states_current_date(text, world_date)]
+
+
+def _texts(value: Any) -> Iterator[str]:
+    if isinstance(value, Enum):
+        return
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            yield from _texts(getattr(value, name))
+    elif isinstance(value, list | tuple | set | frozenset):
+        for item in value:
+            yield from _texts(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _texts(item)

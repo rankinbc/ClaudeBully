@@ -2,15 +2,20 @@
 
 Everything comes from the run directory: an environment conversation's tool calls and trigger
 records from its JSONL streams, and its ``World`` from ``rep{k}.world.json`` (never from the
-repo's world files, which may have changed since the run).
+repo's world files, which may have changed since the run). An environment cell's strategy is
+built from the same snapshot: the clock its sheet records and the premise sheet the bully spoke
+from (``premise_sheet``, carry m1), never from ``data/worlds``.
 """
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from claude_bully.config import Experiment
+from pydantic import BaseModel
+
+from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.enums import EventType, MetricId
+from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
@@ -20,7 +25,11 @@ from claude_bully.records_env import ToolCall, TriggerStreamRecord
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
-from claude_bully.strategies.factory import build_strategy, ensure_registered
+from claude_bully.strategies.factory import (
+    build_strategy,
+    ensure_registered,
+    premise_sheet_model,
+)
 
 ConvKey = tuple[str, int]
 
@@ -76,11 +85,15 @@ def load_run(run_dir: Path) -> LoadedRun:
         spec = specs.get(cell_id)
         if spec is None:
             continue
+        clock, sheet = _strategy_inputs(store, cell_id, spec.condition, experiment)
         strategies[cell_id] = build_strategy(
             spec.condition,
             seed=experiment.seed,
             turn_budget=experiment.turn_budget,
             environments=experiment.environments,
+            worlds_dir=None,
+            clock=clock,
+            premise_sheet=sheet,
         )
         for rep in store.list_reps(cell_id):
             conversations[(cell_id, rep)] = store.read_conversation(cell_id, rep)
@@ -110,6 +123,27 @@ def load_run(run_dir: Path) -> LoadedRun:
         trigger_records=trigger_records,
         worlds=worlds,
     )
+
+
+def _strategy_inputs(
+    store: RunStore, cell_id: str, cond: ConditionConfig, experiment: Experiment
+) -> tuple[ClockConfig | None, BaseModel | None]:
+    """An environment cell's clock and premise sheet, read from the first of its reps' snapshots
+    that has a world sheet: the effective clock the run served and the premise sheet the bully
+    was given. (None, None) for a plain cell, or for one with no such snapshot yet: the strategy
+    is then built without them, and no world file is read."""
+    if cond.environment is None:
+        return None, None
+    model = premise_sheet_model(cond, experiment.environments)
+    for rep in store.list_reps(cell_id):
+        payload = store.read_world_record(cell_id, rep)
+        if not payload or "sheet" not in payload:
+            continue
+        clock = ClockConfig.model_validate(payload["sheet"]["clock"])
+        raw = payload.get("premise_sheet")
+        sheet = model.model_validate(raw) if model is not None and raw is not None else None
+        return clock, sheet
+    return None, None
 
 
 def is_environment(cells: dict[str, CellRecord], conv: Conversation) -> bool:
