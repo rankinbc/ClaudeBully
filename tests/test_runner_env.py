@@ -523,7 +523,8 @@ class _FakeJudge:
 
 def test_the_trigger_fallback_asks_a_non_stub_judge(tmp_path: Path) -> None:
     rules = tmp_path / "vague.yaml"
-    rules.write_text('- match: ""\n  reply: "Who runs the Harbour Works Office?"\n', "utf-8")
+    # weak and anchored (final review I2): a cast name, but not in an identity shape
+    rules.write_text('- match: ""\n  reply: "Who wrote about Ilsabet Orrin?"\n', "utf-8")
     judge = _FakeJudge()
 
     def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
