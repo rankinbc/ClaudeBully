@@ -7,7 +7,9 @@ arrives with docs/07, so each test injects the event, as the progression tests d
 import math
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pytest
+from matplotlib.figure import Figure
 
 from claude_bully.analysis.compare import arm_values, compare_chart, comparison
 from claude_bully.analysis.load import LoadedRun, load_run
@@ -119,6 +121,35 @@ def test_an_arm_with_every_rep_flagged_shows_no_value_not_zero(
     assert math.isnan(result.means[0]) and result.flagged == 3
     assert result.means[1] == 0.0  # an arm that never had a value keeps its old 0.0
     assert compare_chart(loaded, cfg, tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    "arms",
+    [["grader", "captor_s2", "rescue"], ["captor_s2", "rescue", "grader"]],
+    ids=["flagged_first", "flagged_last"],
+)
+def test_a_wholly_flagged_arm_keeps_its_tick_label_and_the_note_names_it(
+    stub_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arms: list[str]
+) -> None:
+    """Final fix pass, carry 2: matplotlib drops a NaN bar's tick, so the arm's label vanished
+    and the footnote did not say which arm had no bar."""
+    loaded = load_run(stub_run)
+    for key in _three_reps(loaded):
+        _flag(loaded, key)
+    kept: list[Figure] = []
+    monkeypatch.setattr(plt, "close", kept.append)
+    compare_chart(loaded, _cfg("judge.goal", *arms), tmp_path)
+    monkeypatch.undo()
+    (fig,) = kept
+    ax = fig.axes[0]
+    assert [t.get_text() for t in ax.get_xticklabels()] == arms
+    lo, hi = ax.get_xlim()
+    assert all(lo < tick < hi for tick in ax.get_xticks())
+    assert [t.get_text() for t in fig.texts] == [
+        "3 reps flagged values_loosened, left out of the comparison; "
+        "no bar for grader: every rep flagged"
+    ]
+    plt.close(fig)
 
 
 def test_flagged_reps_of_other_arms_do_not_move_an_arm(stub_run: Path) -> None:

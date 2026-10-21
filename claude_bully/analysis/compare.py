@@ -12,8 +12,9 @@ per-turn metric id (its mean per rep)."""
 import math
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import matplotlib
 
@@ -21,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
 from claude_bully.analysis.load import LoadedRun
-from claude_bully.analysis.progression import is_values_loosened
+from claude_bully.analysis.progression import flagged_note, is_values_loosened
 from claude_bully.config import CompareConfig
 from claude_bully.enums import EventType, MetricId
 from claude_bully.metrics.events.environment import is_belief_adoption
@@ -87,19 +88,21 @@ def arm_flagged(loaded: LoadedRun, arm: str) -> int:
 @dataclass(frozen=True)
 class Comparison:
     """What the chart draws: one bar per arm (``means`` and ``errors`` over the unflagged reps),
-    and ``flagged``, the reps ``values_loosened`` left out of all of them."""
+    ``flagged``, the reps ``values_loosened`` left out of all of them, and ``no_value``, the arms
+    whose every rep was flagged (a NaN mean: no bar, but the arm keeps its tick label)."""
 
     labels: list[str]
     means: list[float]
     errors: list[float]
     flagged: int
+    no_value: list[str] = field(default_factory=list)
 
     @property
     def note(self) -> str | None:
-        if not self.flagged:
-            return None
-        noun = "rep" if self.flagged == 1 else "reps"
-        return f"{self.flagged} {noun} flagged values_loosened, left out of the comparison"
+        note = flagged_note(self.flagged, "the comparison")
+        if note is not None and self.no_value:
+            note += f"; no bar for {', '.join(self.no_value)}: every rep flagged"
+        return note
 
 
 def comparison(loaded: LoadedRun, compare: CompareConfig) -> Comparison:
@@ -107,6 +110,7 @@ def comparison(loaded: LoadedRun, compare: CompareConfig) -> Comparison:
     means: list[float] = []
     errors: list[float] = []
     flagged = 0
+    no_value: list[str] = []
     for arm in compare.arms:
         values = arm_values(loaded, arm, compare.metric)
         left_out = arm_flagged(loaded, arm)
@@ -115,14 +119,28 @@ def comparison(loaded: LoadedRun, compare: CompareConfig) -> Comparison:
         # an arm whose every rep was flagged has no value: a 0.0 bar would read as a success
         means.append(sum(values) / len(values) if values else (math.nan if left_out else 0.0))
         errors.append(statistics.pstdev(values) if len(values) > 1 else 0.0)
-    return Comparison(labels, means, errors, flagged)
+        if not values and left_out:
+            no_value.append(arm)
+    return Comparison(labels, means, errors, flagged, no_value)
 
 
 def compare_chart(loaded: LoadedRun, compare: CompareConfig, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     result = comparison(loaded, compare)
     fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.bar(result.labels, result.means, yerr=result.errors, capsize=4, color="#4c78a8")
+    bars = ax.bar(result.labels, result.means, yerr=result.errors, capsize=4, color="#4c78a8")
+    # A NaN bar (an arm with every rep flagged) adds nothing to the data limits, so autoscaling
+    # would push that arm's tick, and its label, out of view. Every arm keeps its tick and label:
+    # the ticks are explicit, and the x limits are the ones autoscaling gives when every bar
+    # counts (each bar's extent plus the axes margin), so an unflagged chart is unchanged.
+    if result.labels:
+        ax.set_xticks(range(len(result.labels)), result.labels)
+        left = min(bar.get_x() for bar in bars)
+        right = max(bar.get_x() + bar.get_width() for bar in bars)
+        # margins() with no arguments returns (x margin, y margin)
+        x_margin, _ = cast(tuple[float, float], ax.margins())
+        pad = (right - left) * x_margin
+        ax.set_xlim(left - pad, right + pad)
     ax.set_ylabel(compare.metric)
     ax.set_title(compare.title)
     if result.note is not None:
