@@ -29,6 +29,7 @@ from claude_bully.environments.dating import (
     shift_between,
     stated_years,
     states_current_date,
+    unmovable_dates,
     world_at,
 )
 from claude_bully.environments.world import (
@@ -48,6 +49,9 @@ RAW: dict[str, Any] = yaml.safe_load(
 )
 AUTHORED = date.fromisoformat(RAW["authored"])
 ITEMS: list[dict[str, Any]] = RAW["items"]
+UNMOVABLE: list[dict[str, Any]] = yaml.safe_load(
+    (FIXTURES / "dating" / "unmovable.yaml").read_text(encoding="utf-8")
+)["items"]
 LABELS = [
     f"{n:02d}-{item['kind']}-{re.sub(r'[^A-Za-z0-9]+', '_', item['text'])[:24]}"
     for n, item in enumerate(ITEMS)
@@ -823,3 +827,238 @@ def test_only_ascii_digits_make_a_date() -> None:
 def test_text_with_no_dates_is_returned_unchanged() -> None:
     text = "lorem ipsum 12 dolor " * 5000
     assert redate_text(text, _shift(FAR_FORWARD)) == text
+
+
+# -------------------- fix round 1: ordinals, ranges, markdown, unmovable dates
+
+
+def _ordinal(n: int) -> str:
+    if 11 <= n % 100 <= 13:
+        return f"{n}th"
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def test_an_ordinal_day_moves_whole_with_the_right_suffix() -> None:
+    """Every day of the month, in both spellings and both name styles, at every sweep target:
+    the new day carries its own suffix (1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 22nd, 23rd)."""
+    for target in SWEEP:
+        shift = _shift(target)
+        for month in range(1, 13):
+            for day in (1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 28):
+                old = date(2051, month, day)
+                new = old + timedelta(days=shift.days)
+                name_old, name_new = MONTHS[month - 1], MONTHS[new.month - 1]
+                if month != 5:  # "May" is its own abbreviation and counts as the full name
+                    short_old, short_new = name_old[:3], name_new[:3]
+                    moved = redate_text(f"{short_old} {_ordinal(day)}, 2051", shift)
+                    assert moved == f"{short_new} {_ordinal(new.day)}, {new.year:04d}", moved
+                moved = redate_text(f"{name_old} {_ordinal(day)}, 2051", shift)
+                assert moved == f"{name_new} {_ordinal(new.day)}, {new.year:04d}", moved
+                moved = redate_text(f"{_ordinal(day)} {name_old} 2051", shift)
+                assert moved == f"{_ordinal(new.day)} {name_new} {new.year:04d}", moved
+                weekday = WEEKDAYS[new.weekday()]
+                moved = redate_text(f"{weekday} {_ordinal(day)} {name_old} 2051", shift)
+                assert moved == f"{weekday} {_ordinal(new.day)} {name_new} {new.year:04d}", moved
+
+
+def test_an_ordinal_suffix_is_only_written_where_one_was() -> None:
+    shift = _shift(date(2051, 6, 21))
+    assert redate_text("June 24th, 2051 and June 24, 2051", shift) == (
+        "July 1st, 2051 and July 1, 2051"
+    )
+    assert redate_text("the 19th and the 3rd floor", shift) == "the 19th and the 3rd floor"
+
+
+def test_the_weekday_of_an_ordinal_date_stays_true() -> None:
+    text = "Monday 12th June 2051 and Wednesday, June 14th, 2051"
+    pattern = re.compile(
+        r"(?P<wd>[A-Z][a-z]+),? (?:(?P<d1>\d+)\w\w (?P<m1>[A-Z][a-z]+)|"
+        r"(?P<m2>[A-Z][a-z]+) (?P<d2>\d+)\w\w,?) (?P<y>\d{4})"
+    )
+    for target in SWEEP:
+        moved = redate_text(text, _shift(target))
+        found = pattern.findall(moved)
+        assert [row[0] for row in found] == ["Monday", "Wednesday"], moved
+        for weekday, d1, m1, m2, d2, year in found:
+            day = date(int(year), MONTHS.index(m1 or m2) + 1, int(d1 or d2))
+            assert WEEKDAYS[day.weekday()] == weekday, (target, moved)
+
+
+def _range_dmy(year: int, month: int, first: int, last: int, days: int, sep: str) -> str:
+    a = date(year, month, first) + timedelta(days=days)
+    b = date(year, month, last) + timedelta(days=days)
+    if (a.year, a.month) == (b.year, b.month):
+        return f"{a.day}{sep}{b.day} {MONTHS[a.month - 1]} {a.year}"
+    if a.year == b.year:
+        return f"{a.day} {MONTHS[a.month - 1]}{sep}{b.day} {MONTHS[b.month - 1]} {a.year}"
+    return f"{a.day} {MONTHS[a.month - 1]} {a.year}{sep}{b.day} {MONTHS[b.month - 1]} {b.year}"
+
+
+def _range_mdy(year: int, month: int, first: int, last: int, days: int, sep: str) -> str:
+    a = date(year, month, first) + timedelta(days=days)
+    b = date(year, month, last) + timedelta(days=days)
+    if (a.year, a.month) == (b.year, b.month):
+        return f"{MONTHS[a.month - 1]} {a.day}{sep}{b.day}, {a.year}"
+    if a.year == b.year:
+        return f"{MONTHS[a.month - 1]} {a.day}{sep}{MONTHS[b.month - 1]} {b.day}, {a.year}"
+    return f"{MONTHS[a.month - 1]} {a.day}, {a.year}{sep}{MONTHS[b.month - 1]} {b.day}, {b.year}"
+
+
+def test_a_day_range_moves_both_ends_by_the_same_shift() -> None:
+    for target in SWEEP:
+        shift = _shift(target)
+        for month in (1, 2, 6, 7, 12):
+            for first, last in ((1, 3), (12, 14), (22, 26), (27, 28), (28, 28)):
+                for sep in ("-", "–", " to ", " - "):
+                    text = f"{first}{sep}{last} {MONTHS[month - 1]} 2051"
+                    assert redate_text(text, shift) == _range_dmy(
+                        2051, month, first, last, shift.days, sep
+                    ), (target, text)
+                    text = f"{MONTHS[month - 1]} {first}{sep}{last}, 2051"
+                    assert redate_text(text, shift) == _range_mdy(
+                        2051, month, first, last, shift.days, sep
+                    ), (target, text)
+
+
+def test_a_day_range_keeps_its_ends_and_their_weekdays() -> None:
+    shift = _shift(FAR_BACK)
+    assert redate_text("Monday 12-14 June 2051", shift) == "Monday 7-9 June 2027"
+    assert WEEKDAYS[date(2027, 6, 7).weekday()] == "Monday"
+    assert redate_text("Open 12th-14th June 2051", shift) == "Open 7th-9th June 2027"
+    assert redate_text("12 - 14 June 2051", shift) == "7 - 9 June 2027"
+    # a range that the calendar or the order rules out is left whole
+    for text in ("14-12 June 2051", "28-31 February 2051", "June 28-31, 2051"):
+        assert redate_text(text, shift) == text
+
+
+def test_find_dates_reads_ordinals_and_ranges_as_one_date() -> None:
+    anchor = date(2051, 6, 14)
+    text = "Open Monday 12th-14th June 2051, then the 19th of June and June 22-26."
+    found = find_dates(text, anchor)
+    assert [(text[f.start : f.end], f.year, f.precision) for f in found] == [
+        ("Monday 12th-14th June 2051", 2051, "day"),
+        ("19th of June", 2051, "day"),
+        ("June 22-26", 2051, "day"),
+    ]
+    assert find_dates("the 19th", anchor) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Posted _June 2051_.", "Posted _June 2027_."),
+        ("Posted **12 June 2051**.", "Posted **7 June 2027**."),
+        ("Posted *2051*.", "Posted *2027*."),
+        ("Posted `2051-06-12`.", "Posted `2027-06-07`."),
+        ("Posted _2051_.", "Posted _2027_."),
+        ("Posted _12 June_.", "Posted _7 June_."),
+        ("Posted __12 June 2051__.", "Posted __7 June 2027__."),
+        ("Posted _Monday, June 12, 2051_.", "Posted _Monday, June 7, 2027_."),
+        ("(_2051.03_)", "(_2027.03_)"),
+    ],
+)
+def test_markdown_marks_do_not_hide_a_date(text: str, expected: str) -> None:
+    assert redate_text(text, _shift(FAR_BACK)) == expected
+    assert find_dates(text, AUTHORED), text
+
+
+def test_letters_and_digits_still_hide_a_year() -> None:
+    shift = _shift(FAR_FORWARD)
+    for text in ("a2051b", "x2051", "2051x", "2051th", "ID2051", "é2051", "2051é"):
+        assert redate_text(text, shift) == text, text
+
+
+def test_sept_is_september() -> None:
+    forward = _shift(date(2051, 6, 21))
+    assert redate_text("Sept 12, 2051", forward) == "Sept 19, 2051"
+    assert redate_text("Sept 25, 2051", forward) == "Oct 2, 2051"
+    # a month that becomes September is Sep, unless the name it replaces was Sept
+    back = DateShift(-7, AUTHORED)
+    assert redate_text("Oct 2, 2051", back) == "Sep 25, 2051"
+    assert redate_text("Sept 25, 2051", back) == "Sept 18, 2051"
+    assert redate_text("Oct 2, 2051 and September 25, 2051", back) == (
+        "Sep 25, 2051 and September 18, 2051"
+    )
+    (found,) = find_dates("Sept 12, 2051", AUTHORED)
+    assert (found.year, found.precision) == (2051, "day")
+
+
+def test_a_period_after_an_abbreviation_is_part_of_the_month() -> None:
+    shift = _shift(date(2051, 6, 21))
+    assert redate_text("Jun. 5, 2051 and 5 Jun. 2051 and Jun. 2051", shift) == (
+        "Jun. 12, 2051 and 12 Jun. 2051 and Jun. 2051"
+    )
+    # a sentence-ending abbreviation does not reach for the next line
+    text = "It ended in Dec.\n12 people came."
+    assert redate_text(text, shift) == text
+
+
+def test_the_unmovable_fixture() -> None:
+    for item in UNMOVABLE:
+        anchor = date.fromisoformat(item["anchor"]) if item.get("anchor") else None
+        assert unmovable_dates(item["text"], anchor) == item["expect"], item["text"]
+
+
+def test_unmovable_fixture_counts() -> None:
+    kinds = [item["kind"] for item in UNMOVABLE]
+    assert set(kinds) == {"positive", "negative", "near_miss"}
+    assert kinds.count("positive") >= 8
+    assert kinds.count("negative") >= 3
+    assert kinds.count("near_miss") >= 6
+    texts = "\n".join(item["text"] for item in UNMOVABLE if item["kind"] == "near_miss")
+    for trap in ("v2.0.51", "QS-21877", "555-0191", "+1 (800) 555-2051", "1-800-2051", "17:42"):
+        assert trap in texts, trap
+
+
+def test_an_unmovable_span_is_never_touched_by_redating() -> None:
+    """The report and the re-dater agree: every reported span comes through whole, in every
+    context the fixtures have, so a date is moved whole or not at all."""
+    shift = _shift(FAR_BACK)
+    texts = [item["text"] for item in ITEMS] + [item["text"] for item in UNMOVABLE]
+    reported = 0
+    for text in texts:
+        moved = redate_text(text, shift)
+        for span in unmovable_dates(text, AUTHORED):
+            reported += 1
+            assert span in moved, (text, span, moved)
+    assert reported >= 15
+
+
+def test_what_unmovable_dates_reports_is_not_what_find_dates_finds() -> None:
+    for item in ITEMS + UNMOVABLE:
+        text = item["text"]
+        found = [text[f.start : f.end] for f in find_dates(text, AUTHORED)]
+        for span in unmovable_dates(text, AUTHORED):
+            assert not any(span in whole or whole in span for whole in found), (text, span)
+
+
+def test_unmovable_dates_window_is_the_anchors() -> None:
+    text = "12/06/2051, 12/06/2021, 12/06/2020, 12/06/2056 and 12/06/2057"
+    assert unmovable_dates(text, date(2051, 6, 14)) == [
+        "12/06/2051",
+        "12/06/2021",
+        "12/06/2056",
+    ]
+    assert len(unmovable_dates(text)) == 5
+    assert unmovable_dates("06-04 and 2051-06", date(3026, 6, 14)) == ["06-04"]
+
+
+def test_the_fixture_covers_the_awkward_ordinals() -> None:
+    expected = "\n".join(item["expect"] for item in ITEMS)
+    for suffixed in (
+        "1st",
+        "2nd",
+        "3rd",
+        "11th",
+        "12th",
+        "13th",
+        "21st",
+        "22nd",
+        "23rd",
+        "31st",
+    ):
+        assert re.search(rf"(?<![0-9]){suffixed}\b", expected), suffixed
+    texts = [item["text"] for item in ITEMS]
+    for line in ("June 3rd, 2051", "3rd June 2051", "Monday 12th June 2051"):
+        assert any(line in text for text in texts), line

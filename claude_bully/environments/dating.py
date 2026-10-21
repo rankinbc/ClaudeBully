@@ -18,19 +18,34 @@ matches wins, and the text it matched is rewritten once (one left-to-right scan)
    within 183 days of the authored date (the earlier on a tie), plus the shift, written back
    without a year.
 6. Calendar version ``YYYY.MM``: the year and month of (Y-M-15 plus the shift).
-7. A bare ``YYYY``: the year of (Y-07-01 plus the shift). It is word-bounded, is not preceded by
-   ``$``, ``#``, ``@``, a digit, ``.`` or ``<letter or digit>-`` and is not followed by
-   ``.<digit>``, ``,<digit>`` or ``-<digit>``.
+7. A bare ``YYYY``: the year of (Y-07-01 plus the shift). It is not preceded by a letter, a
+   digit, ``$``, ``#``, ``@``, ``.`` or ``<letter or digit>-`` and is not followed by a letter, a
+   digit, ``.<digit>``, ``,<digit>`` or ``-<digit>``. An underscore is a boundary like a space,
+   so markdown emphasis (``_2051_``) does not hide a year.
 
-Times and weekday names are never changed. Month names are capitalized English, full or three
-letters (``May`` counts as the full name); the replacement keeps the style of the original and
-a zero-padded day stays zero-padded.
+Forms 3 and 5 take the day as people write it:
 
-What is not read as a date, on purpose, so content must not lean on it: a day the calendar does
-not have (31 June) and a date outside the window are left whole; an ordinal (12th June 2051), a
-numeric month-day (06-04), a range (12-14 June: only the end beside the month name moves), a
-decade (the 2050s) and an ISO year-month (2051-06) are not forms, so only a year the bare-year
-form reads inside them moves, and the rest stays as written.
+- An ordinal suffix (``3rd June 2051``, ``June 3rd, 2051``, ``Monday 12th June``) is part of the
+  day. The whole date moves and the suffix is rewritten for the new day (1st, 2nd, 3rd, 4th, 11th,
+  12th, 13th, 21st, 22nd, 23rd, 31st). ``12th of June`` is the same date.
+- A range of days (``12-14 June 2051``, ``June 12-14, 2051``, ``12 to 14 June``, an en dash)
+  moves both ends by the same shift, so it keeps its length. When the moved range crosses a month
+  the months are written out (``June 29-July 3, 2051``; an "of" is not kept there).
+- Month names are capitalized English, full or three letters, plus ``Sept``, and an abbreviation
+  may end in a period before a space (``Sep. 12, 2051``). The replacement keeps the style of the
+  original (``May`` counts as the full name) and a zero-padded day stays zero-padded.
+
+Times and weekday names are never changed.
+
+A date is moved whole or not at all. Three kinds of span are left exactly as written, and
+``unmovable_dates`` reports them so a world can be linted for them:
+
+- a day the calendar does not have (31 June, 2051-02-30, 14-12 June) and a date outside the
+  window (12 June 1931);
+- numeric spellings no form moves: ``12/06/2051``, ``06/2051``, ``2051/6/12``, ``12-06-2051``,
+  a month-day pair with no month name (``06-04``), an ISO year-month (``2051-06``), a year range
+  (``2050-2051``, ``2050/51``) and a decade (``the 2050s``);
+- anything else that is not a form (``the 19th``, with no month, is no date at all).
 
 The front-matter ``Document.date`` is not served text, and a world that states no other date is
 one a test can serve under ``assert_date: false`` (docs/03). Today no tool serves it: ``fetch``
@@ -77,54 +92,95 @@ _MONTHS: Final = (
     "November",
     "December",
 )
+# the abbreviations: three letters (May is its own full name) and Sept
+_SHORT: Final = frozenset({"Sept", *(name[:3] for name in _MONTHS if name != "May")})
 _MONTH_NUMBER: Final = {
     **{name: number for number, name in enumerate(_MONTHS, start=1)},
     **{name[:3]: number for number, name in enumerate(_MONTHS, start=1)},
+    "Sept": 9,
 }
 
 # ----------------------------------------------------------------------------- the patterns
 
-_MONTH = "(?:" + "|".join([*_MONTHS, *(name[:3] for name in _MONTHS if name != "May")]) + ")"
+# A boundary is any letter or digit; an underscore or a markdown mark is not one.
+_B = r"(?<![^\W_])"
+_E = r"(?![^\W_])"
+_MONTH_FULL = "(?:" + "|".join(_MONTHS) + ")"
+_MONTH_SHORT = "(?:Sept|" + "|".join(name[:3] for name in _MONTHS if name != "May") + ")"
 _WEEKDAY = (
     "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
 )
 # a gap between the parts of a date: spaces, or a line break (a body wraps at a fixed width)
 _GAP = r"(?:[ \t]+|[ \t]*\r?\n[ \t]*)"
-_LEAD = rf"(?:\b{_WEEKDAY}\b,?{_GAP})?"
+_LEAD = rf"(?:{_B}{_WEEKDAY}{_E},?{_GAP})?"
 _DAY = "(?:0?[1-9]|[12][0-9]|3[01])"
+_ORDINAL = "(?:st|nd|rd|th)"
+# an en dash and a hyphen, for a character class (the hyphen is last so that it is a literal)
+_DASHES = chr(0x2013) + "-"
+_RANGE = rf"(?:[ \t]*[{_DASHES}][ \t]*|[ \t]+to[ \t]+)"
 _YEAR4 = "[0-9]{4}"
 _MONTH2 = "0[1-9]|1[0-2]"
 _DAY2 = "0[1-9]|[12][0-9]|3[01]"
 # Not the middle of a longer number, a price, a tag, a handle, a decimal or a hyphenated id.
 _NOT_AFTER = r"(?<![0-9$#@.])(?<![A-Za-z0-9]-)"
 
+
+def _month(name: str) -> str:
+    """A month name group: in full, or an abbreviation that may end in a period before a space."""
+    return rf"(?P<{name}>{_B}(?:{_MONTH_FULL}{_E}|{_MONTH_SHORT}{_E}(?:\.(?=[ \t]))?))"
+
+
+def _days(prefix: str) -> str:
+    """A day, its ordinal suffix if any, and a second day after a dash or "to" if any."""
+    return (
+        rf"(?P<{prefix}_d>{_DAY})(?P<{prefix}_x>{_ORDINAL}?)"
+        rf"(?:(?P<{prefix}_sep>{_RANGE})(?P<{prefix}_e>{_DAY})(?P<{prefix}_ex>{_ORDINAL}?))?"
+    )
+
+
 # One named group per form, in the order of the module docstring (forms 3 and 5 have two spellings
-# each). At a given place the regex engine tries them in this order, so the first form wins.
+# each). At a given place the regex engine tries them in this order, so the first form wins. The
+# last four are spans no form moves; they are here so that nothing inside them is moved either.
 _FORMS: Final = (
     ("iso", rf"(?<![0-9])(?P<iso_y>{_YEAR4})-(?P<iso_m>{_MONTH2})-(?P<iso_d>{_DAY2})(?![0-9])"),
     ("url", rf"(?<![0-9])(?P<url_y>{_YEAR4})/(?P<url_m>{_MONTH2})/(?P<url_d>{_DAY2})(?![0-9])"),
     (
         "dmy",
-        rf"{_LEAD}(?<![0-9])(?P<dmy_d>{_DAY}){_GAP}(?P<dmy_mon>{_MONTH})\b,?{_GAP}"
+        rf"{_LEAD}(?<![0-9]){_days('dmy')}(?:{_GAP}of)?{_GAP}{_month('dmy_mon')},?{_GAP}"
         rf"(?P<dmy_y>{_YEAR4})(?![0-9])",
     ),
     (
         "mdy",
-        rf"{_LEAD}\b(?P<mdy_mon>{_MONTH})\b{_GAP}(?P<mdy_d>{_DAY})(?![0-9]),?{_GAP}"
-        rf"(?P<mdy_y>{_YEAR4})(?![0-9])",
+        rf"{_LEAD}{_month('mdy_mon')}{_GAP}{_days('mdy')}{_E},?{_GAP}(?P<mdy_y>{_YEAR4})(?![0-9])",
     ),
-    ("my", rf"\b(?P<my_mon>{_MONTH})\b{_GAP}(?P<my_y>{_YEAR4})(?![0-9])"),
-    ("dm", rf"{_LEAD}(?<![0-9])(?P<dm_d>{_DAY}){_GAP}(?P<dm_mon>{_MONTH})\b"),
-    ("md", rf"{_LEAD}\b(?P<md_mon>{_MONTH})\b{_GAP}(?P<md_d>{_DAY})(?![0-9])"),
+    ("my", rf"{_month('my_mon')}{_GAP}(?P<my_y>{_YEAR4})(?![0-9])"),
+    ("dm", rf"{_LEAD}(?<![0-9]){_days('dm')}(?:{_GAP}of)?{_GAP}{_month('dm_mon')}"),
+    ("md", rf"{_LEAD}{_month('md_mon')}{_GAP}{_days('md')}{_E}"),
+    (
+        "num",
+        rf"(?<![0-9/.-])(?:[0-9]{{1,2}}/(?:[0-9]{{1,2}}/)?|[0-9]{{1,2}}-[0-9]{{1,2}}-)"
+        rf"(?P<num_y>{_YEAR4})(?![0-9])",
+    ),
+    (
+        "part",
+        rf"{_B}{_NOT_AFTER}(?P<part_y>{_YEAR4})[/{_DASHES}]"
+        rf"(?:{_YEAR4}(?![0-9]|[/{_DASHES}][0-9])|[0-9]{{1,2}}(?:[-/][0-9]{{1,2}})?(?![0-9]))",
+    ),
+    (
+        "mmdd",
+        r"(?<![0-9$#@./:-])(?<![A-Za-z0-9]-)(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
+        r"(?![0-9]|[-:./][0-9])",
+    ),
+    ("dec", rf"{_B}(?P<dec_y>[0-9]{{3}}0)s{_E}"),
     ("cal", rf"{_NOT_AFTER}(?P<cal_y>{_YEAR4})\.(?P<cal_m>{_MONTH2})(?![0-9])"),
-    ("year", rf"{_NOT_AFTER}\b(?P<year_y>{_YEAR4})\b(?![.,-][0-9])"),
+    ("year", rf"{_B}{_NOT_AFTER}(?P<year_y>{_YEAR4}){_E}(?![.,-][0-9])"),
 )
 _DATES: Final = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in _FORMS))
 
 # A year as someone writes it in a sentence, with no window: the target who says "it's 2026" in a
 # 3026 world is the signal a plausibility sweep measures. Group 1 is the year. The exclusions are
 # the bare-year form's, except that ``-<digit>`` after it is allowed, for "2044-03-20".
-STATED_YEAR: Final = re.compile(rf"{_NOT_AFTER}\b([1-9][0-9]{{3}})\b(?![.,][0-9])")
+STATED_YEAR: Final = re.compile(rf"{_B}{_NOT_AFTER}([1-9][0-9]{{3}}){_E}(?![.,][0-9])")
 
 
 # ----------------------------------------------------------------------------- the shift
@@ -193,9 +249,19 @@ class _Hit:
     render: Callable[[int], str]
 
 
-def _in_window(year: int, anchor: date) -> bool:
+@dataclass(frozen=True)
+class _Miss:
+    """A match that is not moved, and why: its year is outside the window ("window"), the
+    calendar has no such day ("calendar"), or no form moves that spelling ("form"). ``year`` is
+    the year it writes, if it writes one."""
+
+    reason: Literal["window", "calendar", "form"]
+    year: int | None = None
+
+
+def _in_window(year: int, anchor: date, windowed: bool) -> bool:
     below, above = YEAR_WINDOW
-    return anchor.year - below <= year <= anchor.year + above
+    return not windowed or anchor.year - below <= year <= anchor.year + above
 
 
 def _calendar_day(year: int, month: int, day: int) -> date | None:
@@ -223,11 +289,27 @@ def _day_text(original: str, day: int) -> str:
     return f"{day:02d}" if original.startswith("0") else str(day)
 
 
+def _ordinal_suffix(day: int) -> str:
+    if 11 <= day % 100 <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
+def _suffix_text(original: str, day: int) -> str:
+    """The ordinal suffix for ``day`` if the date it replaces had one (``original`` is that
+    suffix, or empty)."""
+    return _ordinal_suffix(day) if original else ""
+
+
 def _month_text(original: str, month: int) -> str:
-    """The month in the style of ``original``: three letters for an abbreviation, else in full
-    (``May`` is both, and counts as full)."""
-    short = len(original) == 3 and original != "May"
-    return _MONTHS[month - 1][:3] if short else _MONTHS[month - 1]
+    """The month in the style of ``original``: an abbreviation (with its period, and Sept for a
+    Sept that stays September) or the full name (``May`` counts as full)."""
+    core = original.removesuffix(".")
+    if core not in _SHORT:
+        return _MONTHS[month - 1]
+    short = "Sept" if core == "Sept" and month == 9 else _MONTHS[month - 1][:3]
+    # May is a whole name, so it takes no period
+    return short + ("." if original.endswith(".") and short != "May" else "")
 
 
 def _splice(match: re.Match[str], edits: Mapping[str, str]) -> str:
@@ -239,13 +321,15 @@ def _splice(match: re.Match[str], edits: Mapping[str, str]) -> str:
     return text
 
 
-def _read_numeric(match: re.Match[str], anchor: date) -> _Hit | None:
+def _read_numeric(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
     """Form 1 (``YYYY-MM-DD``) and form 2 (``YYYY/MM/DD``): the date, plus the shift."""
     form = match.lastgroup
     year = int(match[f"{form}_y"])
     day = _calendar_day(year, int(match[f"{form}_m"]), int(match[f"{form}_d"]))
-    if day is None or not _in_window(year, anchor):
-        return None
+    if day is None:
+        return _Miss("calendar", year)
+    if not _in_window(year, anchor, windowed):
+        return _Miss("window", year)
     separator = "-" if form == "iso" else "/"
 
     def render(days: int) -> str:
@@ -255,34 +339,98 @@ def _read_numeric(match: re.Match[str], anchor: date) -> _Hit | None:
     return _Hit(year, "day", render)
 
 
-def _read_day_month_year(match: re.Match[str], anchor: date) -> _Hit | None:
-    """Form 3 (``D Month YYYY`` and ``Month D, YYYY``): the date, plus the shift."""
-    form = match.lastgroup
-    year = int(match[f"{form}_y"])
-    day = _calendar_day(year, _MONTH_NUMBER[match[f"{form}_mon"]], int(match[f"{form}_d"]))
-    if day is None or not _in_window(year, anchor):
-        return None
+def _read_days(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
+    """Forms 3 and 5, in both spellings: a day or a range of days with a month and, for form 3,
+    a year. Both ends of a range move by the same shift."""
+    form = str(match.lastgroup)
+    has_year = form in ("dmy", "mdy")
+    month = _MONTH_NUMBER[match[f"{form}_mon"].removesuffix(".")]
+    first = int(match[f"{form}_d"])
+    last = int(match[f"{form}_e"]) if match[f"{form}_e"] else None
+
+    def ends(year: int) -> tuple[date, date | None] | None:
+        """The first and last day in ``year``, when the calendar has both and they are in order."""
+        start = _calendar_day(year, month, first)
+        if start is None:
+            return None
+        if last is None:
+            return start, None
+        stop = _calendar_day(year, month, last)
+        return None if stop is None or last < first else (start, stop)
+
+    if has_year:
+        year = int(match[f"{form}_y"])
+        found = ends(year)
+        if found is None:
+            return _Miss("calendar", year)
+        if not _in_window(year, anchor, windowed):
+            return _Miss("window", year)
+    else:
+        # a date written without a year belongs to the year nearest the anchor; one that no year
+        # has (30 February) is not a date at all
+        if ends(2000) is None:
+            return _Miss("calendar")
+        nearest = _year_of_day_and_month(month, first, anchor)
+        if nearest is None:
+            return _Miss("window")
+        found = ends(nearest)
+        if found is None:
+            return _Miss("calendar")
+        year = nearest
+    start, stop = found
 
     def render(days: int) -> str:
-        moved = _moved(day, days)
-        return _splice(
-            match,
-            {
-                f"{form}_d": _day_text(match[f"{form}_d"], moved.day),
-                f"{form}_mon": _month_text(match[f"{form}_mon"], moved.month),
-                f"{form}_y": f"{moved.year:04d}",
-            },
-        )
+        new_first = _moved(start, days)
+        edits = {
+            f"{form}_d": _day_text(match[f"{form}_d"], new_first.day),
+            f"{form}_x": _suffix_text(match[f"{form}_x"], new_first.day),
+            f"{form}_mon": _month_text(match[f"{form}_mon"], new_first.month),
+        }
+        if has_year:
+            edits[f"{form}_y"] = f"{new_first.year:04d}"
+        if stop is None:
+            return _splice(match, edits)
+        new_last = _moved(stop, days)
+        if (new_first.year, new_first.month) == (new_last.year, new_last.month):
+            edits[f"{form}_e"] = _day_text(match[f"{form}_e"], new_last.day)
+            edits[f"{form}_ex"] = _suffix_text(match[f"{form}_ex"], new_last.day)
+            return _splice(match, edits)
+        return _write_crossing_range(match, form, new_first, new_last)
 
     return _Hit(year, "day", render)
 
 
-def _read_month_year(match: re.Match[str], anchor: date) -> _Hit | None:
+def _write_crossing_range(match: re.Match[str], form: str, first: date, last: date) -> str:
+    """A range that now spans two months, with both months written out. The weekday before it,
+    the ordinal suffixes, the zero padding, the dash or "to" and the month style are the
+    original's."""
+    lead_end = match.start(f"{form}_d" if form in ("dmy", "dm") else f"{form}_mon")
+    lead = match.group(0)[: lead_end - match.start()]
+    day1 = _day_text(match[f"{form}_d"], first.day) + _suffix_text(match[f"{form}_x"], first.day)
+    day2 = _day_text(match[f"{form}_e"], last.day) + _suffix_text(match[f"{form}_ex"], last.day)
+    month1 = _month_text(match[f"{form}_mon"], first.month)
+    month2 = _month_text(match[f"{form}_mon"], last.month)
+    sep = match[f"{form}_sep"]
+    year1, year2 = f"{first.year:04d}", f"{last.year:04d}"
+    if form == "dmy":
+        left = f"{day1} {month1}" + ("" if year1 == year2 else f" {year1}")
+        return f"{lead}{left}{sep}{day2} {month2} {year2}"
+    if form == "mdy":
+        left = f"{month1} {day1}" + ("" if year1 == year2 else f", {year1}")
+        return f"{lead}{left}{sep}{month2} {day2}, {year2}"
+    if form == "dm":
+        return f"{lead}{day1} {month1}{sep}{day2} {month2}"
+    return f"{lead}{month1} {day1}{sep}{month2} {day2}"
+
+
+def _read_month_year(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
     """Form 4 (``Month YYYY``): the month and year of the 15th, plus the shift."""
     year = int(match["my_y"])
-    if not _in_window(year, anchor):
-        return None
-    middle = date(year, _MONTH_NUMBER[match["my_mon"]], 15)
+    middle = _calendar_day(year, _MONTH_NUMBER[match["my_mon"].removesuffix(".")], 15)
+    if middle is None:
+        return _Miss("calendar", year)
+    if not _in_window(year, anchor, windowed):
+        return _Miss("window", year)
 
     def render(days: int) -> str:
         moved = _moved(middle, days)
@@ -297,35 +445,14 @@ def _read_month_year(match: re.Match[str], anchor: date) -> _Hit | None:
     return _Hit(year, "month", render)
 
 
-def _read_day_month(match: re.Match[str], anchor: date) -> _Hit | None:
-    """Form 5 (``D Month`` and ``Month D``): in the year within 183 days of ``anchor``, plus the
-    shift, written back without a year."""
-    form = match.lastgroup
-    month = _MONTH_NUMBER[match[f"{form}_mon"]]
-    year = _year_of_day_and_month(month, int(match[f"{form}_d"]), anchor)
-    if year is None:
-        return None
-    written = date(year, month, int(match[f"{form}_d"]))
-
-    def render(days: int) -> str:
-        moved = _moved(written, days)
-        return _splice(
-            match,
-            {
-                f"{form}_d": _day_text(match[f"{form}_d"], moved.day),
-                f"{form}_mon": _month_text(match[f"{form}_mon"], moved.month),
-            },
-        )
-
-    return _Hit(year, "day", render)
-
-
-def _read_version(match: re.Match[str], anchor: date) -> _Hit | None:
+def _read_version(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
     """Form 6 (calendar version ``YYYY.MM``): the year and month of the 15th, plus the shift."""
     year = int(match["cal_y"])
-    if not _in_window(year, anchor):
-        return None
-    middle = date(year, int(match["cal_m"]), 15)
+    middle = _calendar_day(year, int(match["cal_m"]), 15)
+    if middle is None:
+        return _Miss("calendar", year)
+    if not _in_window(year, anchor, windowed):
+        return _Miss("window", year)
 
     def render(days: int) -> str:
         moved = _moved(middle, days)
@@ -334,12 +461,14 @@ def _read_version(match: re.Match[str], anchor: date) -> _Hit | None:
     return _Hit(year, "month", render)
 
 
-def _read_year(match: re.Match[str], anchor: date) -> _Hit | None:
+def _read_year(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
     """Form 7 (a bare ``YYYY``): the year of 1 July, plus the shift."""
     year = int(match["year_y"])
-    if not _in_window(year, anchor):
-        return None
-    midyear = date(year, 7, 1)
+    midyear = _calendar_day(year, 7, 1)
+    if midyear is None:
+        return _Miss("calendar", year)
+    if not _in_window(year, anchor, windowed):
+        return _Miss("window", year)
 
     def render(days: int) -> str:
         return f"{_moved(midyear, days).year:04d}"
@@ -347,40 +476,73 @@ def _read_year(match: re.Match[str], anchor: date) -> _Hit | None:
     return _Hit(year, "year", render)
 
 
-_READERS: Final[dict[str, Callable[[re.Match[str], date], _Hit | None]]] = {
+def _read_unmovable(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
+    """A spelling no form moves (numeric slash and dashed dates, year-months and ranges, month-day
+    pairs, decades): consumed whole and left as written."""
+    group = {"num": "num_y", "part": "part_y", "dec": "dec_y"}.get(str(match.lastgroup))
+    return _Miss("form", int(match[group]) if group else None)
+
+
+_READERS: Final[dict[str, Callable[[re.Match[str], date, bool], _Hit | _Miss]]] = {
     "iso": _read_numeric,
     "url": _read_numeric,
-    "dmy": _read_day_month_year,
-    "mdy": _read_day_month_year,
+    "dmy": _read_days,
+    "mdy": _read_days,
     "my": _read_month_year,
-    "dm": _read_day_month,
-    "md": _read_day_month,
+    "dm": _read_days,
+    "md": _read_days,
+    "num": _read_unmovable,
+    "part": _read_unmovable,
+    "mmdd": _read_unmovable,
+    "dec": _read_unmovable,
     "cal": _read_version,
     "year": _read_year,
 }
 
 
-def _interpret(match: re.Match[str], anchor: date) -> _Hit | None:
-    """Read one match as a date around ``anchor``; None when it is not a date this module moves:
-    a year outside the window, or a day the calendar does not have."""
-    return _READERS[str(match.lastgroup)](match, anchor)
+def _interpret(match: re.Match[str], anchor: date, windowed: bool = True) -> _Hit | _Miss:
+    """Read one match as a date around ``anchor``: a ``_Hit`` to move, or a ``_Miss`` that says
+    why it stays as written."""
+    return _READERS[str(match.lastgroup)](match, anchor, windowed)
 
 
 def _scan(text: str, anchor: date) -> Iterator[tuple[re.Match[str], _Hit]]:
     for match in _DATES.finditer(text):
         hit = _interpret(match, anchor)
-        if hit is not None:
+        if isinstance(hit, _Hit):
             yield match, hit
 
 
 def find_dates(text: str, anchor: date) -> list[FoundDate]:
     """The dates in ``text``, left to right, that ``redate_text`` would move for an authored date
     of ``anchor``: the seven forms, years inside the window only. A date written without a year
-    reports the year it belongs to. A span runs from the weekday, when one is written."""
+    reports the year it belongs to, and a range of days is one date, in the year of its first
+    day. A span runs from the weekday, when one is written."""
     return [
         FoundDate(match.start(), match.end(), hit.year, hit.precision)
         for match, hit in _scan(text, anchor)
     ]
+
+
+def unmovable_dates(text: str, anchor: date | None = None) -> list[str]:
+    """The date-like spans in ``text``, in order, that ``redate_text`` leaves exactly as written
+    because no form moves them whole: numeric slash and dashed dates (``12/06/2051``), month-day
+    pairs (``06-04``), ISO year-months (``2051-06``), year ranges (``2050-2051``), decades (``the
+    2050s``) and days the calendar does not have (``31 June 2051``, ``14-12 June``). With an
+    ``anchor``, a span whose year is outside its window is left out, as the re-dater leaves such a
+    date alone on purpose; with none, every year counts. Version numbers, ticket ids, phone
+    numbers and times are not reported.
+
+    A world that must move cleanly should hold none of these in the text it serves."""
+    reference = anchor if anchor is not None else date(2000, 7, 1)
+    spans = []
+    for match in _DATES.finditer(text):
+        miss = _interpret(match, reference, windowed=anchor is not None)
+        if not isinstance(miss, _Miss) or miss.reason == "window":
+            continue
+        if anchor is None or miss.year is None or _in_window(miss.year, anchor, True):
+            spans.append(match.group(0))
+    return spans
 
 
 def stated_years(text: str) -> list[int]:
@@ -402,7 +564,7 @@ def redate_text(text: str, shift: DateShift) -> str:
 
     def replace(match: re.Match[str]) -> str:
         hit = _interpret(match, shift.authored)
-        return match.group(0) if hit is None else hit.render(shift.days)
+        return hit.render(shift.days) if isinstance(hit, _Hit) else match.group(0)
 
     return _DATES.sub(replace, text)
 

@@ -1,0 +1,88 @@
+# Fixtures for dating.unmovable_dates(text, anchor=None): the date-like spans that redate_text
+# leaves whole because no form moves them (numeric slash and dashed dates, month-day pairs,
+# year-months, year ranges, decades, and days the calendar does not have). `expect` is the list of
+# spans in order. An item with an `anchor` is read with that world date, so years outside its
+# window (30 years back, 5 forward) are left out. `kind` is positive (something is reported),
+# negative (nothing is, and the text holds no date-like span at all or only dates a form moves) or
+# near_miss (looks like a date and is not one: versions, ticket ids, phone numbers, times).
+items:
+  - text: "Call 12/06/2051 or 6/12/2051."
+    expect: ["12/06/2051", "6/12/2051"]
+    kind: positive
+  - text: "Filed 06/2051."
+    expect: ["06/2051"]
+    kind: positive
+  - text: "See /archive/2051/6/12/ and 2051/13/45."
+    expect: ["2051/6/12", "2051/13/45"]
+    kind: positive
+  - text: "Due 12-06-2051."
+    expect: ["12-06-2051"]
+    kind: positive
+  - text: "Sunday call (06-04) disconnected; stored 06-09 17:42; next window 06-20."
+    expect: ["06-04", "06-09", "06-20"]
+    kind: positive
+  - text: "Released 2051-06 and 2051-6-14."
+    expect: ["2051-06", "2051-6-14"]
+    kind: positive
+  - text: "Fiscal 2050/51 and 2050-2051."
+    expect: ["2050/51", "2050-2051"]
+    kind: positive
+  - text: "In the 2050s."
+    expect: ["2050s"]
+    kind: positive
+  - text: "The 2050–2051 span and the 2051–52 season."
+    expect: ["2050–2051", "2051–52"]
+    kind: positive
+  - text: "31 June 2051, 2051-02-30 and 30 February."
+    expect: ["31 June 2051", "2051-02-30", "30 February"]
+    kind: positive
+  - text: "14-12 June 2051, June 28-31, 2051 and 30-31 February."
+    expect: ["14-12 June 2051", "June 28-31, 2051", "30-31 February"]
+    kind: positive
+  - text: "Seen 12/06/2051 and 12/06/1931."
+    anchor: "2051-06-14"
+    expect: ["12/06/2051"]
+    kind: positive
+  - text: "Seen 12/06/1931, the 1990s and 1999-2005."
+    expect: ["12/06/1931", "1990s", "1999-2005"]
+    kind: positive
+
+  - text: ""
+    expect: []
+    kind: negative
+  - text: "Nothing to see here, not even a number."
+    expect: []
+    kind: negative
+  - text: "Filed 12 June 2051, 2051-06-12, June 12-14, 2051, 12th June 2051 and 2051.03."
+    expect: []
+    kind: negative
+  - text: "Version 7.4.2 shipped in 2051 at 17:42 on /2051/06/12/."
+    expect: []
+    kind: negative
+
+  - text: "v2.0.51 and 1.2051.3 and 2051.13"
+    expect: []
+    kind: near_miss
+  - text: "QS-21877, ticket QS-2051, INC2051 and PR#2051."
+    expect: []
+    kind: near_miss
+  - text: "Phone 555-0191 or +1 (800) 555-2051 or 1-800-2051."
+    expect: []
+    kind: near_miss
+  - text: "Between 17:42 and 18:30, or 12:30-14:00 sharp."
+    expect: []
+    kind: near_miss
+  - text: "$2,051.00 and 2051.5 kWh and 0x2051 and 2051h"
+    expect: []
+    kind: near_miss
+  - text: "Order 12345-67890 and build 10.2051."
+    expect: []
+    kind: near_miss
+  - text: "Seen 12/06/1931, the 1990s and 1999-2005."
+    anchor: "2051-06-14"
+    expect: []
+    kind: near_miss
+  - text: "29 February is placeable in a leap year, so it is not reported."
+    anchor: "2051-06-14"
+    expect: []
+    kind: near_miss

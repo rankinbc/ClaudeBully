@@ -251,6 +251,282 @@ items:
     expect: "2051,500 visits"
     kind: near_miss
     form: 7
+  - text: "Filed June 3rd, 2051."
+    target: "2027-06-14"
+    expect: "Filed May 29th, 2027."
+    kind: positive
+    form: 3
+  - text: "Filed 3rd June 2051."
+    target: "2027-06-14"
+    expect: "Filed 29th May 2027."
+    kind: positive
+    form: 3
+  - text: "Monday 12th June 2051."
+    target: "2027-06-14"
+    expect: "Monday 7th June 2027."
+    kind: positive
+    form: 3
+  - text: "June 24th, 2051; June 25th, 2051; June 26th, 2051."
+    target: "2051-06-21"
+    expect: "July 1st, 2051; July 2nd, 2051; July 3rd, 2051."
+    kind: positive
+    form: 3
+  - text: "June 4th, 2051; June 5th, 2051; June 6th, 2051."
+    target: "2051-06-21"
+    expect: "June 11th, 2051; June 12th, 2051; June 13th, 2051."
+    kind: positive
+    form: 3
+  - text: "June 14th, 2051; June 15th, 2051; June 16th, 2051."
+    target: "2051-06-21"
+    expect: "June 21st, 2051; June 22nd, 2051; June 23rd, 2051."
+    kind: positive
+    form: 3
+  - text: "July 24th, 2051; June 1st, 2051; Mar 29th, 2051."
+    target: "2051-06-21"
+    expect: "July 31st, 2051; June 8th, 2051; Apr 5th, 2051."
+    kind: positive
+    form: 3
+  - text: "24th June 2051, 25th June 2051 and 26th June 2051."
+    target: "2051-06-21"
+    expect: "1st July 2051, 2nd July 2051 and 3rd July 2051."
+    kind: positive
+    form: 3
+  - text: "4th Jun 2051, 5th Jun 2051 and 6th Jun 2051."
+    target: "2051-06-21"
+    expect: "11th Jun 2051, 12th Jun 2051 and 13th Jun 2051."
+    kind: positive
+    form: 3
+  - text: "Held on the 12th of June 2051."
+    target: "2051-06-21"
+    expect: "Held on the 19th of June 2051."
+    kind: positive
+    form: 3
+  - text: "Open the 12th of June, then June 14th."
+    target: "2051-06-21"
+    expect: "Open the 19th of June, then June 21st."
+    kind: positive
+    form: 5
+  - text: "Monday 12th June and 3 July."
+    target: "2027-06-14"
+    expect: "Monday 7th June and 28 June."
+    kind: positive
+    form: 5
+  - text: "The panel meets on the 19th, in the 3rd floor room."
+    target: "3026-06-14"
+    expect: "The panel meets on the 19th, in the 3rd floor room."
+    kind: near_miss
+  - text: "Open 12-14 June 2051."
+    target: "2027-06-14"
+    expect: "Open 7-9 June 2027."
+    kind: positive
+    form: 3
+  - text: "Open June 12-14, 2051."
+    target: "2027-06-14"
+    expect: "Open June 7-9, 2027."
+    kind: positive
+    form: 3
+  - text: "Open 12 to 14 June 2051."
+    target: "2051-06-21"
+    expect: "Open 19 to 21 June 2051."
+    kind: positive
+    form: 3
+  - text: "Open 12–14 June 2051."
+    target: "2076-06-14"
+    expect: "Open 8–10 June 2076."
+    kind: positive
+    form: 3
+  - text: "Open 12th-14th June 2051."
+    target: "2027-06-14"
+    expect: "Open 7th-9th June 2027."
+    kind: positive
+    form: 3
+  - text: "Open Monday 12-14 June 2051 (Mon to Wed)."
+    target: "2027-06-14"
+    expect: "Open Monday 7-9 June 2027 (Mon to Wed)."
+    kind: positive
+    form: 3
+  - text: "Open June 22-26, 2051."
+    target: "2051-06-21"
+    expect: "Open June 29-July 3, 2051."
+    kind: near_miss
+    form: 3
+  - text: "Open 22-26 June 2051."
+    target: "2051-06-21"
+    expect: "Open 29 June-3 July 2051."
+    kind: near_miss
+    form: 3
+  - text: "Open Dec 24-28, 2050."
+    target: "2051-06-21"
+    expect: "Open Dec 31, 2050-Jan 4, 2051."
+    kind: near_miss
+    form: 3
+  - text: "Open December 24 to 28, 2050."
+    target: "2051-06-21"
+    expect: "Open December 31, 2050 to January 4, 2051."
+    kind: near_miss
+    form: 3
+  - text: "Open 12-14 June."
+    target: "2027-06-14"
+    expect: "Open 7-9 June."
+    kind: positive
+    form: 5
+  - text: "Open June 12-14."
+    target: "2051-06-21"
+    expect: "Open June 19-21."
+    kind: positive
+    form: 5
+  - text: "Open 22-26 June."
+    target: "2051-06-21"
+    expect: "Open 29 June-3 July."
+    kind: near_miss
+    form: 5
+  - text: "Open June 22-26."
+    target: "2051-06-21"
+    expect: "Open June 29-July 3."
+    kind: near_miss
+    form: 5
+  - text: "Open 12th-14th June 2051."
+    target: "2051-06-21"
+    expect: "Open 19th-21st June 2051."
+    kind: positive
+    form: 3
+  - text: "Held on the 3rd of January 2051."
+    target: "2027-06-14"
+    expect: "Held on the 29th of December 2026."
+    kind: positive
+    form: 3
+  - text: "Open 05-09 June 2051."
+    target: "2051-06-13"
+    expect: "Open 29 May-02 June 2051."
+    kind: near_miss
+    form: 3
+  - text: "Thursday 22-26 June 2051."
+    target: "2051-06-21"
+    expect: "Thursday 29 June-3 July 2051."
+    kind: near_miss
+    form: 3
+  - text: "Thursday, June 22-26, 2051."
+    target: "2051-06-21"
+    expect: "Thursday, June 29-July 3, 2051."
+    kind: near_miss
+    form: 3
+  - text: "Thursday 22-26 June."
+    target: "2051-06-21"
+    expect: "Thursday 29 June-3 July."
+    kind: near_miss
+    form: 5
+  - text: "Thursday June 22-26."
+    target: "2051-06-21"
+    expect: "Thursday June 29-July 3."
+    kind: near_miss
+    form: 5
+  - text: "14-12 June 2051 and 28-31 February 2051 are not ranges."
+    target: "3026-06-14"
+    expect: "14-12 June 2051 and 28-31 February 2051 are not ranges."
+    kind: near_miss
+    form: 3
+  - text: "Sept 12, 2051 and Sept 25, 2051."
+    target: "2051-06-21"
+    expect: "Sept 19, 2051 and Oct 2, 2051."
+    kind: positive
+    form: 3
+  - text: "Sep. 12, 2051 and Jun. 5, 2051."
+    target: "2051-06-21"
+    expect: "Sep. 19, 2051 and Jun. 12, 2051."
+    kind: positive
+    form: 3
+  - text: "From Dec. 2050 to Sept 2051."
+    target: "2051-08-02"
+    expect: "From Feb. 2051 to Nov 2051."
+    kind: positive
+    form: 4
+  - text: "It ended in Dec.\n12 people came."
+    target: "3026-06-14"
+    expect: "It ended in Dec.\n12 people came."
+    kind: near_miss
+    form: 4
+  - text: "Jun. 5, 2051 and Jun. 8, 2051."
+    target: "2027-06-14"
+    expect: "May 31, 2027 and Jun. 3, 2027."
+    kind: positive
+    form: 3
+  - text: "See logs/2051/2051-06-09.log."
+    target: "2027-06-14"
+    expect: "See logs/2027/2027-06-04.log."
+    kind: positive
+    form: 1
+  - text: "Posted _June 2051_."
+    target: "2076-06-14"
+    expect: "Posted _June 2076_."
+    kind: positive
+    form: 4
+  - text: "Posted **12 June 2051**."
+    target: "2027-06-14"
+    expect: "Posted **7 June 2027**."
+    kind: positive
+    form: 3
+  - text: "Posted _Monday 12 June 2051_."
+    target: "2027-06-14"
+    expect: "Posted _Monday 7 June 2027_."
+    kind: positive
+    form: 3
+  - text: "Posted _12 June_."
+    target: "2027-06-14"
+    expect: "Posted _7 June_."
+    kind: positive
+    form: 5
+  - text: "Posted *2051* and _2051_."
+    target: "2027-06-14"
+    expect: "Posted *2027* and _2027_."
+    kind: positive
+    form: 7
+  - text: "Posted `2051-06-12`."
+    target: "2027-06-14"
+    expect: "Posted `2027-06-07`."
+    kind: positive
+    form: 1
+  - text: "12/06/2051 and 6/12/2051"
+    target: "3026-06-14"
+    expect: "12/06/2051 and 6/12/2051"
+    kind: near_miss
+  - text: "due 06/2051"
+    target: "3026-06-14"
+    expect: "due 06/2051"
+    kind: near_miss
+  - text: "/archive/2051/6/12/ and 2051/13/45"
+    target: "3026-06-14"
+    expect: "/archive/2051/6/12/ and 2051/13/45"
+    kind: near_miss
+  - text: "12-06-2051"
+    target: "3026-06-14"
+    expect: "12-06-2051"
+    kind: near_miss
+  - text: "Sunday call (06-04) disconnected; stored 06-09 17:42; next window 06-20."
+    target: "3026-06-14"
+    expect: "Sunday call (06-04) disconnected; stored 06-09 17:42; next window 06-20."
+    kind: near_miss
+  - text: "released 2051-06 and 2051-6-14"
+    target: "3026-06-14"
+    expect: "released 2051-06 and 2051-6-14"
+    kind: near_miss
+  - text: "fiscal 2050/51 and 2050-2051"
+    target: "3026-06-14"
+    expect: "fiscal 2050/51 and 2050-2051"
+    kind: near_miss
+  - text: "ids 2051-0912 and 2051-123 stay"
+    target: "3026-06-14"
+    expect: "ids 2051-0912 and 2051-123 stay"
+    kind: near_miss
+    form: 7
+  - text: "order 2051-12345"
+    target: "3026-06-14"
+    expect: "order 2051-12345"
+    kind: near_miss
+    form: 7
+  - text: "the 2050–2051 span and the 2051–52 season"
+    target: "3026-06-14"
+    expect: "the 2050–2051 span and the 2051–52 season"
+    kind: near_miss
   - text: "Posted 2051-06-03; updated 12 June 2051; archived under /2051/06/12/ as release 2051.06 (see June 2051, 3 June and 2051)."
     target: "2076-06-14"
     expect: "Posted 2076-05-30; updated 8 June 2076; archived under /2076/06/08/ as release 2076.06 (see June 2076, 30 May and 2076)."
