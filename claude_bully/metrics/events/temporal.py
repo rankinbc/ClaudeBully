@@ -352,7 +352,9 @@ _BREAK = re.compile(rf",|{_CONJUNCTION}", re.IGNORECASE)
 # "I can't deny that I've lost years"
 _FACTIVE_NEGATION = re.compile(
     r"\b(?:\w+n't|not|never)\s+(?:(?:fully|really|quite|yet)\s+)?(?:realiz\w*|realis\w*|"
-    r"notice\w*|deny|dispute|contest)\b",
+    r"notice\w*|deny|dispute|contest)\b"
+    # "haven't noticed any sign that ..." denies the frame: the verb has an object of its own
+    r"(?!\s+(?:any|an?|no|some|anything|the)\b)",
     re.IGNORECASE,
 )
 
