@@ -11,7 +11,12 @@ Environment context (the item and each history turn): ``tool_calls`` (each
 received?}``; ids are ``call-<turn>-<n>`` and go on the turn's ``tool_call_ids`` unless
 ``received: false``), ``discoveries`` (``{doc_id, layer}`` Discovery records at that turn),
 ``round_texts`` and ``tool_cap_cutoff`` (those Turn fields). On the item only, ``world``
-(``{name, mole_doc?}``, a world under tests/fixtures/worlds).
+(``{name, mole_doc?}``, a world under tests/fixtures/worlds) and ``clock`` (a ``ClockConfig``
+mapping that replaces the world sheet's clock, as a run served at another date carries it).
+
+``near_miss: true`` marks an item that uses a detector's trigger words or shape without meeting
+it. Every member of a Phase 2 family's ``HANDLES`` needs a near-miss item listing it under
+``absent``.
 """
 
 from dataclasses import dataclass, field
@@ -22,8 +27,11 @@ import pytest
 import yaml
 
 from claude_bully.enums import EventType, Layer, Phase, Speaker
+from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, load_world
+from claude_bully.metrics import events as event_families
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
+from claude_bully.metrics.events._common import EnvContext
 from claude_bully.records import Conversation, Event, Turn
 from claude_bully.records_env import Discovery, ToolCall, TriggerStreamRecord
 from tests.helpers import WORLDS_DIR, conversation, turn
@@ -77,13 +85,18 @@ def _tool_call(index: int, n: int, raw: dict[str, Any]) -> ToolCall:
     )
 
 
-def _world(spec: dict[str, Any] | None) -> World | None:
+def _world(spec: dict[str, Any] | None, clock: dict[str, Any] | None = None) -> World | None:
     if not spec:
+        assert clock is None, "an item's clock goes on its world's sheet: name a world"
         return None
     world = load_world(spec["name"], WORLDS_DIR)
+    update: dict[str, Any] = {}
     if "mole_doc" in spec:
-        sheet = world.sheet.model_copy(update={"mole_doc": spec["mole_doc"]})
-        world = world.model_copy(update={"sheet": sheet})
+        update["mole_doc"] = spec["mole_doc"]
+    if clock is not None:
+        update["clock"] = ClockConfig.model_validate(clock)
+    if update:
+        world = world.model_copy(update={"sheet": world.sheet.model_copy(update=update)})
     return world
 
 
@@ -138,7 +151,8 @@ def _build_context(item: dict[str, Any]) -> Built:
             phase,
         )
     b.add(Speaker(item.get("speaker", "target")), item, phase)
-    return Built(conversation(b.turns), b.calls, b.records, _world(item.get("world")))
+    world = _world(item.get("world"), item.get("clock"))
+    return Built(conversation(b.turns), b.calls, b.records, world)
 
 
 def _build(item: dict[str, Any]) -> Conversation:
@@ -196,7 +210,60 @@ def test_every_event_type_has_positive_and_negative_fixtures() -> None:
     assert not missing_neg, f"need 1+ negative fixture: {missing_neg}"
 
 
+def test_phase_2_detectors_have_near_misses() -> None:
+    """Each Phase 2 family's events need a near miss: an item marked ``near_miss`` that uses the
+    detector's trigger words or shape and lists the event under ``absent``."""
+    near_misses: set[EventType] = set()
+    for _, item in ITEMS:
+        if item.get("near_miss"):
+            near_misses |= {EventType(ab) for ab in item.get("absent", []) or []}
+    families = event_families.PHASE_2_FAMILIES
+    assert families, "no Phase 2 family is registered"
+    missing = sorted(et.value for f in families for et in f.HANDLES if et not in near_misses)
+    assert not missing, f"need a near_miss item listing each under absent: {missing}"
+
+
 def test_detect_events_filters_by_relevance() -> None:
     conv = _build({"text": "I'm sorry. I apologize. I'm so sorry about that."})
     only = detect_events(conv, relevant=[EventType.over_apology])
     assert {e.type for e in only} == {EventType.over_apology}
+
+
+def test_env_context_reads_received_calls_in_tool_call_id_order() -> None:
+    world = _world({"name": "annex"})
+    assert world is not None
+    calls = [_tool_call(1, n, {"tool": "get_date", "result_text": "2044-03-20"}) for n in (1, 2)]
+    calls.append(_tool_call(3, 1, {"tool": "ls", "args": {"path": "/"}}))
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "Date?"),
+            # a call id with no record (an older run) is skipped
+            turn(1, Speaker.target, "x", tool_call_ids=["call-1-2", "call-1-1", "call-9-9"]),
+            turn(2, Speaker.bully, "Files?"),
+            turn(3, Speaker.target, "y", tool_call_ids=["call-3-1"]),
+        ]
+    )
+    context = EnvContext(tool_calls=calls, world=world)
+    assert context.clock == world.sheet.clock
+    assert [c.id for c in context.received(conv.turns[1])] == ["call-1-2", "call-1-1"]
+    assert [c.id for c in context.received_through(conv, 2)] == ["call-1-2", "call-1-1"]
+    assert [c.id for c in context.received_through(conv, 3)] == [
+        "call-1-2",
+        "call-1-1",
+        "call-3-1",
+    ]
+    assert EnvContext().clock is None and EnvContext().received(conv.turns[1]) == []
+
+
+def test_temporal_events_read_what_the_chat_shows_not_the_reasoning() -> None:
+    """A year the target states beside a tool call is what a chat user saw; one it wrote only in
+    its reasoning is not."""
+    shown = _build({"prev_bully": "Year?", "round_texts": ["It's 2044."], "text": "Done."})
+    assert EventType.date_stated in {e.type for e in detect_events(shown)}
+    hidden = conversation(
+        [
+            turn(0, Speaker.bully, "Year?"),
+            turn(1, Speaker.target, "Done.", reasoning_text="It's 2044.", reasoning_available=True),
+        ]
+    )
+    assert EventType.date_stated not in {e.type for e in detect_events(hidden)}

@@ -3,8 +3,9 @@
 ``DETECTORS`` maps each detected ``EventType`` to the family detector that produces it;
 ``PENDING_DETECTORS`` lists the members that exist in the schema but have no detector yet.
 ``detect_events`` runs each family once and filters to the requested types. The environment
-family also reads the run's context (tool calls, trigger-stream records, the world); the other
-families read the conversation alone.
+family also reads the run's context (tool calls, trigger-stream records, the world); the Phase 2
+families (``PHASE_2_FAMILIES``) read it as one ``EnvContext``, through
+``detect(conv, *, context)``; the other families read the conversation alone.
 """
 
 from collections.abc import Callable, Iterable, Sequence
@@ -22,9 +23,14 @@ from claude_bully.metrics.events import (
     identity,
     memory,
     position,
+    temporal,
 )
+from claude_bully.metrics.events._common import EnvContext
 from claude_bully.records import Conversation, Event
-from claude_bully.records_env import ToolCall, TriggerStreamRecord
+from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
+
+# the families whose ``detect`` takes the run's context as ``context: EnvContext``
+PHASE_2_FAMILIES: tuple[ModuleType, ...] = (temporal,)
 
 FAMILIES: tuple[ModuleType, ...] = (
     apology,
@@ -36,24 +42,17 @@ FAMILIES: tuple[ModuleType, ...] = (
     memory,
     harness,
     environment,
+    *PHASE_2_FAMILIES,
 )
 
-DETECTORS: dict[EventType, Callable[[Conversation], list[Event]]] = {
+# a family's ``detect``: ``(conv)``, the environment family's keywords, or ``(conv, *, context)``
+DETECTORS: dict[EventType, Callable[..., list[Event]]] = {
     event_type: family.detect for family in FAMILIES for event_type in family.HANDLES
 }
 
 
 PENDING_DETECTORS: frozenset[EventType] = frozenset(
     {
-        # 03 Temporal
-        EventType.date_stated,
-        EventType.date_pushback,
-        EventType.date_source_conflict_noticed,
-        EventType.drift_noticed,
-        EventType.drift_attributed,
-        EventType.cutoff_invoked,
-        EventType.elapsed_time_inferred,
-        EventType.cutoff_lever_accepted,
         # 04 Authority
         EventType.authority_reached,
         EventType.authority_deferred,
@@ -116,13 +115,22 @@ def detect_events(
     tool_calls: Sequence[ToolCall] = (),
     trigger_records: Sequence[TriggerStreamRecord] = (),
     world: World | None = None,
+    authority_calls: Sequence[AuthorityCall] = (),
 ) -> list[Event]:
     """Every event in ``conv`` of the ``relevant`` types (all types when None).
 
     The keyword-only context is what an environment run recorded beside the turns: its
-    ``ToolCall`` records, its trigger-stream records (``Discovery`` among them) and its ``World``.
-    A plain conversation passes none of it and gets exactly what it got before."""
+    ``ToolCall`` records, its trigger-stream records (``Discovery`` among them), its ``World``
+    (whose ``sheet.clock`` is the clock the run served) and its ``AuthorityCall`` records. They
+    become one ``EnvContext``. A plain conversation passes none of it and gets exactly what it got
+    before."""
     wanted = set(relevant) if relevant is not None else set(EventType)
+    context = EnvContext(
+        tool_calls=tool_calls,
+        trigger_records=trigger_records,
+        world=world,
+        authority_calls=authority_calls,
+    )
     out: list[Event] = []
     for family in FAMILIES:
         if not (family.HANDLES & wanted):
@@ -131,6 +139,8 @@ def detect_events(
             found = environment.detect(
                 conv, tool_calls=tool_calls, trigger_records=trigger_records, world=world
             )
+        elif family in PHASE_2_FAMILIES:
+            found = family.detect(conv, context=context)
         else:
             found = family.detect(conv)
         out += [e for e in found if e.type in wanted]

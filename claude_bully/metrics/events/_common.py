@@ -1,14 +1,52 @@
-"""Shared plumbing for detector families: turn context, regex helpers, event builder."""
+"""Shared plumbing for detector families: turn context, run context, regex helpers, event
+builder."""
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from claude_bully.enums import EventType, Speaker
+from claude_bully.environments.config import ClockConfig
+from claude_bully.environments.world import World
 from claude_bully.records import Conversation, Event, Turn, chat_text
+from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
 BULLY_SPEAKERS = (Speaker.bully, Speaker.neutral_user)
+
+
+@dataclass(frozen=True)
+class EnvContext:
+    """What an environment run recorded beside its turns, for the Phase 2 families: its
+    ``ToolCall`` records, its trigger-stream records, its ``World`` (rebuilt from the rep's
+    snapshot, so ``sheet.clock`` is the effective clock the run served) and its
+    ``AuthorityCall`` records. A plain conversation has none of it: every field is empty."""
+
+    tool_calls: Sequence[ToolCall] = ()
+    trigger_records: Sequence[TriggerStreamRecord] = ()
+    world: World | None = None
+    authority_calls: Sequence[AuthorityCall] = ()
+
+    @property
+    def clock(self) -> ClockConfig | None:
+        """The clock the run served (``world.sheet.clock``); None without a world."""
+        return self.world.sheet.clock if self.world is not None else None
+
+    @cached_property
+    def _calls_by_id(self) -> dict[str, ToolCall]:
+        return {call.id: call for call in self.tool_calls}
+
+    def received(self, turn: Turn) -> list[ToolCall]:
+        """The calls ``turn`` got results for, in ``tool_call_ids`` order. An id with no record
+        (a run from before the record existed) is skipped."""
+        calls = self._calls_by_id
+        return [calls[i] for i in turn.tool_call_ids if i in calls]
+
+    def received_through(self, conv: Conversation, pos: int) -> list[ToolCall]:
+        """Every call the turns up to and including ``conv.turns[pos]`` got results for, in
+        order."""
+        return [call for t in conv.turns[: pos + 1] for call in self.received(t)]
 
 
 @dataclass(frozen=True)
