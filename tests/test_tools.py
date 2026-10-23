@@ -3,7 +3,7 @@ import locale
 import re
 import shutil
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from random import Random
 from typing import Any
@@ -13,6 +13,7 @@ import pytest
 from claude_bully.enums import DocumentKind, Layer
 from claude_bully.environments.config import DEFAULT_TOOLS, ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
+from claude_bully.environments.dating import world_at
 from claude_bully.environments.tools import (
     TOOL_SPECS,
     SandboxTools,
@@ -777,13 +778,22 @@ def test_ls_long_writes_the_year_from_half_a_year_back() -> None:
     ]
 
 
+GERMAN_LOCALES = ("de_DE.UTF-8", "de_DE.utf8", "de_DE", "German_Germany.1252")
+
+
 @pytest.fixture
 def german_time() -> Iterator[None]:
+    """A German LC_TIME for the end-to-end check. A machine with no German locale installed
+    (the ubuntu CI image may have none) skips it; the locale-free guard below runs everywhere."""
     before = locale.setlocale(locale.LC_TIME)
-    try:
-        locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
-    except locale.Error:
-        locale.setlocale(locale.LC_TIME, "German_Germany.1252")
+    for name in GERMAN_LOCALES:
+        try:
+            locale.setlocale(locale.LC_TIME, name)
+            break
+        except locale.Error:
+            continue
+    else:
+        pytest.skip(f"no German locale installed (tried {', '.join(GERMAN_LOCALES)})")
     try:
         yield
     finally:
@@ -793,6 +803,37 @@ def german_time() -> Iterator[None]:
 def test_ls_long_months_are_english_whatever_the_locale(german_time: None) -> None:
     assert date(2044, 3, 9).strftime("%b") != "Mar"  # the locale really is not English
     assert _annex_tools().call("ls", {"path": "logs", "long": True}, turn=1).text == RELAY_LONG
+
+
+def test_ls_long_never_formats_a_time_through_the_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard that needs no locale installed, so it runs where the German check skips: every
+    date the listing is handed and every time it makes raises on strftime and on a format spec,
+    so a month or a time written through the process locale fails here."""
+    import claude_bully.environments.tools as tools_module
+
+    def refuse(self: date, spec: str) -> str:
+        raise AssertionError(f"ls -l formatted a time through the locale: {spec!r}")
+
+    class NoLocaleDate(date):
+        strftime = refuse
+        __format__ = refuse
+
+    class NoLocale(datetime):
+        strftime = refuse
+        __format__ = refuse
+
+    def unformattable(real: Any) -> Any:
+        def dated(*args: Any) -> NoLocaleDate:
+            return NoLocaleDate.fromordinal(real(*args).toordinal())
+
+        return dated
+
+    monkeypatch.setattr(tools_module, "datetime", NoLocale)
+    for name in ("effective_date", "drawn_date"):
+        monkeypatch.setattr(tools_module, name, unformattable(getattr(tools_module, name)))
+    tools = _annex_tools(state=_all_open())
+    assert tools.call("ls", {"path": "logs", "long": True}, turn=1).text == RELAY_LONG
+    assert tools.call("ls", {"path": "/srv/annex", "long": True}, turn=1).status == "200"
 
 
 def test_ls_without_long_is_unchanged() -> None:
@@ -876,3 +917,161 @@ def test_a_blocked_search_past_the_calendar_is_logged_without_a_date() -> None:
         "9999-12-01 query=tide gate action=blocked",
         "query=tide gate action=blocked",
     ]
+
+
+# ------------------------------------------------- fix round 1: ls -l at the root (I1)
+
+_LONG_LINE = re.compile(
+    r"^(?P<mode>[-d][-rwx]{9}) +(?P<size>\d+) "
+    r"(?P<mtime>(?P<mon>[A-Z][a-z]{2}) (?P<day>\d\d) "
+    r"(?:(?P<hh>\d\d):(?P<mm>\d\d)| (?P<year>\d{4})))"
+    r" (?P<name>.+)$"
+)
+_MONTH_NUMBERS = {
+    name: number
+    for number, name in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1
+    )
+}
+
+
+def _when(line: str, world_date: date) -> tuple[date, int, int]:
+    """When a long-listing line says its entry was modified. A line with a time and no year is
+    within half a year before the world date, so it takes the latest year that keeps it there."""
+    match = _LONG_LINE.match(line)
+    assert match is not None, line
+    month, day = _MONTH_NUMBERS[match["mon"]], int(match["day"])
+    if match["year"]:
+        return date(int(match["year"]), month, day), 0, 0
+    for year in (world_date.year, world_date.year - 1):
+        try:
+            when = date(year, month, day)
+        except ValueError:
+            continue
+        if when <= world_date:
+            return when, int(match["hh"]), int(match["mm"])
+    raise AssertionError(f"{line!r} is not within half a year of {world_date}")
+
+
+def test_ls_long_at_the_root() -> None:
+    """Fix round 1, I1: an entry directly under / is joined as /etc, never //etc, so a directory
+    there takes its newest entry's time and a file there shows its own size and date."""
+    notes = _doc(
+        "root-notes", Layer.surface, path="/notes.txt", date=date(2044, 3, 1), body="Notes."
+    )
+    world = _with_docs(_annex(), notes)
+    tools = make_tools(world, config=EnvironmentConfig(world="annex"), state=_all_open())
+    assert tools.call("ls", {"path": "/", "long": True}, turn=1).text.splitlines() == [
+        "drwxr-xr-x    4096 Dec 02 10:34 etc/",
+        "-rw-r--r--       6 Mar 01 10:01 notes.txt",
+        "drwxr-xr-x    4096 Nov 20 18:01 srv/",
+    ]
+    assert tools.call("ls", {"path": "/etc", "long": True}, turn=1).text == (
+        "drwxr-xr-x    4096 Dec 02 10:34 tarrow/"
+    )
+
+
+def _long_fields(line: str) -> re.Match[str]:
+    match = _LONG_LINE.match(line)
+    assert match is not None, line
+    return match
+
+
+@pytest.mark.parametrize(
+    ("name", "worlds_dir"),
+    [
+        pytest.param("overlay", DATA_DIR / "worlds", id="overlay"),
+        pytest.param("annex", WORLDS, id="annex"),
+        pytest.param("mini", WORLDS, id="mini"),
+    ],
+)
+def test_ls_long_at_the_root_of_every_world(name: str, worlds_dir: Path) -> None:
+    """Fix round 1, I1, on each world with absolute paths and a file put directly under /: every
+    root directory carries the newest time of its own listing, and the root file its true size
+    and its own date (looked up as //notes.txt, it was 0 bytes at a drawn date)."""
+    authored = load_world(name, worlds_dir)
+    world_date = authored.sheet.clock.world_date
+    day = world_date - timedelta(days=9)
+    body = "Nötes."
+    world = _with_docs(
+        authored, _doc("root-notes", Layer.surface, path="/notes.txt", date=day, body=body)
+    )
+    rungs = [rung.name for ladder in world.ladders.values() for rung in ladder.rungs]
+    tools = make_tools(world, config=EnvironmentConfig(world=name), state=_all_open(*rungs))
+    lines = tools.call("ls", {"path": "/", "long": True}, turn=1).text.splitlines()
+    names = [_long_fields(line)["name"] for line in lines]
+    assert "notes.txt" in names and any(entry.endswith("/") for entry in names), lines
+    for line in lines:
+        fields = _long_fields(line)
+        if fields["mode"].startswith("d"):
+            inner = tools.call("ls", {"path": f"/{fields['name']}", "long": True}, turn=1)
+            newest = max(inner.text.splitlines(), key=lambda text: _when(text, world_date))
+            assert fields["mtime"] == _long_fields(newest)["mtime"], (line, inner.text)
+        else:
+            assert int(fields["size"]) == len(body.encode("utf-8")) == 7, line
+            assert fields["mtime"].startswith(f"{fields['mon']} {day.day:02d} "), line
+            assert _MONTH_NUMBERS[fields["mon"]] == day.month, line
+
+
+@pytest.mark.parametrize("years_on", [0, 10])
+@pytest.mark.parametrize(
+    ("name", "worlds_dir"),
+    [
+        *(
+            pytest.param(path.parent.name, path.parent.parent, id=f"shipped-{path.parent.name}")
+            for path in sorted((DATA_DIR / "worlds").glob("*/world.yaml"))
+        ),
+        *(
+            pytest.param(path.parent.name, path.parent.parent, id=f"fixture-{path.parent.name}")
+            for path in sorted(WORLDS.glob("*/world.yaml"))
+        ),
+    ],
+)
+def test_every_directory_takes_its_newest_entrys_time(
+    name: str, worlds_dir: Path, years_on: int
+) -> None:
+    """The ls -l rules over every directory of every shipped and fixture world, everything open:
+    a directory line carries the time of the newest line in its own listing, and a file line the
+    UTF-8 size of the body it serves."""
+    authored = load_world(name, worlds_dir)
+    world_date = authored.sheet.clock.world_date + timedelta(days=3652 * years_on // 10)
+    clock = authored.sheet.clock.model_copy(update={"world_date": world_date})
+    world = world_at(authored, clock)
+    rungs = [rung.name for ladder in world.ladders.values() for rung in ladder.rungs]
+    tools = make_tools(
+        world,
+        config=EnvironmentConfig(world=name, clock=clock),
+        state=_all_open(*rungs),
+    )
+    checked: list[str] = []
+
+    def walk(path: str) -> None:
+        listing = tools.call("ls", {"path": path, "long": True}, turn=1)
+        assert listing.status == "200", (path, listing.text)
+        for line in listing.text.splitlines():
+            match = _LONG_LINE.match(line)
+            assert match is not None, line
+            entry = match["name"].rstrip("/")
+            child = entry if path in ("", "~") else f"{path.rstrip('/')}/{entry}"
+            if match["mode"].startswith("d"):
+                inner = tools.call("ls", {"path": child, "long": True}, turn=1).text.splitlines()
+                assert inner, child
+                newest = max(inner, key=lambda text: _when(text, world_date))
+                newest_match = _LONG_LINE.match(newest)
+                assert newest_match is not None
+                assert match["mtime"] == newest_match["mtime"], (path, line, inner)
+                checked.append(child)
+                walk(child)
+            else:
+                doc = tools.index.by_path(child)
+                assert doc is not None, child
+                served = (
+                    f"[image: {doc.body}]"
+                    if doc.kind is DocumentKind.image_description
+                    else doc.body
+                )
+                assert int(match["size"]) == len(served.encode("utf-8")), (child, line)
+
+    for root in ("", "/", "~"):
+        walk(root)
+    assert checked, f"{name} lists no directory"

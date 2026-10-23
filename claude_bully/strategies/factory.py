@@ -4,7 +4,8 @@ An environment composition is built in time (docs/03): its caller hands it the e
 which sets the year the bully states (``clock.bully_states_year``), and the world's premise sheet
 already re-dated to that clock. The runner takes both from ``RunEnvironments.strategy_inputs``;
 analysis takes both from the run directory's snapshot. The factory never loads a world
-(preflight C14).
+(preflight C14), and a world-sheet premise that is handed no sheet is an error, not a silent
+fallback to the authored dates (Task 3 fix round 1).
 """
 
 from collections.abc import Mapping
@@ -157,29 +158,37 @@ def build_strategy(
     seed: int,
     turn_budget: int,
     environments: Environments | None = None,
-    worlds_dir: Path | None = WORLDS_DIR,
     clock: ClockConfig | None = None,
     premise_sheet: BaseModel | None = None,
+    default_premise_sheet: bool = False,
 ) -> Strategy:
     """An instance of the condition's class.
 
     An environment composition takes ``clock`` (the effective clock: the bully's year comes from
-    it) and ``premise_sheet`` (the world's copy of its premise's sheet, re-dated to the clock)
-    from its caller. Given no sheet, a premise that declares one reads the world's copy as
-    authored from ``worlds_dir`` (``world_premise_sheet``); with ``worlds_dir=None`` no file is
-    read and the premise keeps its own default (analysis of a rep whose snapshot has none)."""
+    it) and ``premise_sheet`` (the world's copy of its premise's sheet, re-dated to the clock:
+    the runner's ``RunEnvironments.strategy_inputs``, or analysis's snapshot) from its caller. A
+    premise that declares a world sheet and gets none is an error, never a fallback to the
+    authored sheet, whose dates would be the world's own rather than the clock's. Only
+    ``default_premise_sheet=True`` lets it speak from its own default sheet instead: analysis of
+    a rep whose snapshot holds no sheet, where nothing computed reads it."""
     cls = resolve_class(cond, environments)
     if cond.environment is not None and issubclass(cls, Composed):
-        sheet = premise_sheet
-        if sheet is None and worlds_dir is not None:
-            sheet = world_premise_sheet(cond, environments, worlds_dir)
+        model = premise_sheet_model(cond, environments)
+        if model is not None and premise_sheet is None and not default_premise_sheet:
+            premise = cls.premise_cls.name if cls.premise_cls is not None else cond.name
+            raise ValueError(
+                f"condition {cond.name!r}: {premise!r} "
+                f"speaks from the world's own {model.__name__} sheet beside environment "
+                f"{cond.environment!r}, and build_strategy got no premise_sheet; pass the sheet "
+                "re-dated to the clock (RunEnvironments.strategy_inputs)"
+            )
         return cls(
             seeding_turns=cond.seeding_turns,
             seed=seed,
             turn_budget=turn_budget,
             params=dict(cond.params),
             environment=environment_config(cond, environments),
-            premise_sheet=sheet,
+            premise_sheet=premise_sheet,
             bully_year=bully_year(clock),
         )
     return cls(

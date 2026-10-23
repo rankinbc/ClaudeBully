@@ -36,7 +36,7 @@ from claude_bully.paths import CONFIGS_DIR, DATA_DIR
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.base import BullyIntent, ConversationState, End, Strategy
 from claude_bully.strategies.composed import Composed
-from claude_bully.strategies.factory import build_strategy
+from claude_bully.strategies.factory import build_strategy, world_premise_sheet
 from claude_bully.strategies.rescue import Rescue, RescueTeam, load_rescue_team
 from tests.helpers import WORLDS_DIR, env_experiment
 from tests.test_guardrails import load_denylist, scan
@@ -188,9 +188,7 @@ def test_rescue_beside_a_world_with_no_rescue_sheet_is_refused() -> None:
     assert not expected.exists()
     envs = {"mini_tv": EnvironmentConfig(world="mini", gating="none")}
     with pytest.raises(ValueError, match=r"world 'mini'") as caught:
-        build_strategy(
-            _rescue_in("mini_tv"), seed=0, turn_budget=5, environments=envs, worlds_dir=WORLDS_DIR
-        )
+        world_premise_sheet(_rescue_in("mini_tv"), envs, WORLDS_DIR)
     assert str(expected) in str(caught.value)
 
 
@@ -219,9 +217,9 @@ def test_the_worlds_sheet_replaces_the_default_when_rescue_composes_with_it(
 ) -> None:
     worlds = _mini_with(tmp_path, OVERLAY_SHEET.read_text(encoding="utf-8"))
     envs = {"mini_tv": EnvironmentConfig(world="mini", gating="none")}
-    s = build_strategy(
-        _rescue_in("mini_tv"), seed=0, turn_budget=5, environments=envs, worlds_dir=worlds
-    )
+    cond = _rescue_in("mini_tv")
+    sheet = world_premise_sheet(cond, envs, worlds)
+    s = build_strategy(cond, seed=0, turn_budget=5, environments=envs, premise_sheet=sheet)
     assert isinstance(s, Composed) and isinstance(s.premise, Rescue)
     assert s.premise.team == _overlay_sheet() != load_rescue_team()
     key = [i for i in _intents(s, 5) if i.meta.get("stage") == "key"]
@@ -235,9 +233,7 @@ def test_a_malformed_world_sheet_names_its_file(tmp_path: Path) -> None:
     worlds = _mini_with(tmp_path, yaml.safe_dump(broken))
     envs = {"mini_tv": EnvironmentConfig(world="mini", gating="none")}
     with pytest.raises(ValueError, match=r"rescue\.yaml: decoded_name"):
-        build_strategy(
-            _rescue_in("mini_tv"), seed=0, turn_budget=5, environments=envs, worlds_dir=worlds
-        )
+        world_premise_sheet(_rescue_in("mini_tv"), envs, worlds)
 
 
 def test_plain_rescue_keeps_the_default_sheet() -> None:
@@ -251,7 +247,13 @@ def test_the_headline_config_composes_rescue_with_the_overlay_sheet() -> None:
     sheet = _overlay_sheet()
     assert sheet.decoded_name != DEFAULT_NAME
     for cond in exp.conditions:
-        s = build_strategy(cond, seed=0, turn_budget=exp.turn_budget, environments=exp.environments)
+        s = build_strategy(
+            cond,
+            seed=0,
+            turn_budget=exp.turn_budget,
+            environments=exp.environments,
+            premise_sheet=world_premise_sheet(cond, exp.environments),
+        )
         assert isinstance(s, Composed) and isinstance(s.premise, Rescue), cond.name
         assert s.premise.team == sheet, cond.name
         intents = list(_intents(s, exp.turn_budget))

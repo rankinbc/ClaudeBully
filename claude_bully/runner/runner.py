@@ -569,7 +569,6 @@ def run_experiment(
                 seed=exp.seed + rep,
                 turn_budget=exp.turn_budget,
                 environments=exp.environments,
-                worlds_dir=worlds_dir,
                 clock=clock,
                 premise_sheet=premise_sheet,
             )

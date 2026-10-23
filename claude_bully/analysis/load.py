@@ -91,9 +91,11 @@ def load_run(run_dir: Path) -> LoadedRun:
             seed=experiment.seed,
             turn_budget=experiment.turn_budget,
             environments=experiment.environments,
-            worlds_dir=None,
             clock=clock,
             premise_sheet=sheet,
+            # a rep with no snapshot sheet yet (or from before Task 3): the premise's default,
+            # explicitly; nothing analysis computes reads the sheet
+            default_premise_sheet=sheet is None,
         )
         for rep in store.list_reps(cell_id):
             conversations[(cell_id, rep)] = store.read_conversation(cell_id, rep)

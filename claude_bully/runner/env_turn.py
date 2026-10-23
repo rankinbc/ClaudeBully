@@ -78,6 +78,7 @@ __all__ = [
     "TargetTurn",
     "WorldCatalog",
     "WorldChangedError",
+    "clock_ref",
     "target_system",
 ]
 
@@ -87,7 +88,15 @@ TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
 
 
 class WorldChangedError(RuntimeError):
-    """A world's files no longer hash to what the run (or the conversation) recorded."""
+    """A world's files no longer hash to what the run (or the conversation) recorded, or a rep's
+    effective clock is not the one it opened with."""
+
+
+def clock_ref(rep: int) -> str:
+    """The ``CellRecord.session_refs`` key holding the effective clock rep ``rep`` opened with
+    (its canonical JSON). Re-dating never touches the world's files, so the world hash cannot see
+    a clock edit; this ref can."""
+    return f"clock.rep{rep}"
 
 
 class TargetTurn(NamedTuple):
@@ -425,6 +434,22 @@ def _premise_name(cond: ConditionConfig) -> str:
     return repr(cond.premise or cond.strategy)
 
 
+def _check_clock(opened: ClockConfig, clock: ClockConfig, cell_id: str, rep: int) -> None:
+    """``WorldChangedError`` naming what moved when ``clock`` is not the clock the rep opened
+    with: a resumed conversation would otherwise read one date before the pause and another
+    after it."""
+    if opened == clock:
+        return
+    changed = [
+        name for name in ClockConfig.model_fields if getattr(opened, name) != getattr(clock, name)
+    ]
+    raise WorldChangedError(
+        "the clock changed since this conversation started; start a new run or restore the "
+        f"clock (cell {cell_id!r} rep {rep}: world date {opened.world_date.isoformat()} then, "
+        f"{clock.world_date.isoformat()} now; changed: {', '.join(changed)})"
+    )
+
+
 class WorldCatalog:
     """The worlds a run uses, each loaded and hashed once."""
 
@@ -631,8 +656,21 @@ class RunEnvironments:
         cells = [cell for cell in expand_cells(self.exp) if cell.condition.environment == key]
         return min(cells, key=self._bully_turns)
 
-    def check_world(self, name: str, store: RunStore, cell_id: str, rep: int) -> None:
-        """Stop when the world's files changed since the run or this conversation recorded them."""
+    def check_world(
+        self,
+        name: str,
+        store: RunStore,
+        cell_id: str,
+        rep: int,
+        clock: ClockConfig | None = None,
+    ) -> None:
+        """Stop when the world's files changed since the run or this conversation recorded them,
+        or when ``clock`` is not the effective clock the rep opened with (``clock_ref``). A rep
+        with no clock ref (recorded before the ref existed) is not a mismatch."""
+        if clock is not None and store.has_cell(cell_id):
+            stored = store.read_cell(cell_id).session_refs.get(clock_ref(rep))
+            if stored is not None:
+                _check_clock(ClockConfig.model_validate_json(stored), clock, cell_id, rep)
         current = self.catalog.hash(name)
         recorded = store.read_run().world_hashes.get(name) if store.exists() else None
         existing = (
@@ -662,12 +700,14 @@ class RunEnvironments:
     def open(
         self, *, cell: CellSpec, rep: int, store: RunStore, strategy: Strategy, state_dir: Path
     ) -> tuple[EnvironmentSession, ChatProvider]:
-        """The session and the target provider for one environment cell repetition."""
+        """The session and the target provider for one environment cell repetition. A resumed
+        rep must find its world's files and its effective clock as it left them."""
         key = cell.condition.environment
         assert key is not None, "only environment cells open an environment"
         config = environment_config(cell.condition, self.exp.environments)
         world = self.catalog.world(config.world)
-        self.check_world(config.world, store, cell.cell_id, rep)
+        clock = effective_clock(world, config)
+        self.check_world(config.world, store, cell.cell_id, rep, clock)
         if cell.target.provider is ProviderKind.claude_code:
             target = self._sandboxed_target(cell, rep, store)
         else:
@@ -678,7 +718,7 @@ class RunEnvironments:
         runtime = EnvironmentRuntime(
             world,
             config,
-            effective_clock(world, config),
+            clock,
             self.exp.seed + rep,
             state_dir / "environment",
             worlds_dir=self.catalog.worlds_dir,
@@ -696,6 +736,12 @@ class RunEnvironments:
             world_hash=self.catalog.hash(config.world),
         )
         session.prime()
+        # the clock the rep opened with: kept at its first open (or its first since the ref
+        # existed), so a resume with another clock is refused (check_world)
+        record = store.read_cell(cell.cell_id)
+        if clock_ref(rep) not in record.session_refs:
+            record.session_refs[clock_ref(rep)] = clock.model_dump_json()
+            store.write_cell(record)
         return session, target
 
     def _sandboxed_target(self, cell: CellSpec, rep: int, store: RunStore) -> ChatProvider:

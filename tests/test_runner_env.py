@@ -1321,3 +1321,123 @@ def test_analysis_builds_the_rescue_from_the_run_dir_alone(
     strategy = loaded.strategies["r__t0"]
     assert isinstance(strategy, Composed) and isinstance(strategy.premise, Rescue)
     assert strategy.premise.team == sheet
+
+
+# ------------------------------------------------ fix round 1: a changed clock on resume (I2)
+
+MINI_2041 = {"world_date": "2041-09-14"}
+
+
+def _paused(tmp_path: Path, clock: dict[str, Any]) -> RunStore:
+    """An env_grader rep paused on the bully's second call (a rate limit), clock ``clock``."""
+    exp = env_experiment(environment={"clock": clock})
+    with pytest.raises(RateLimitExit):
+        _run(
+            exp,
+            tmp_path,
+            provider_factory=_Wrapping(model="stub-bully", fail_on=2),
+            only="env_grader*",
+        )
+    return RunStore(tmp_path, exp.name)
+
+
+def test_the_clock_a_rep_opened_with_is_kept_on_its_cell_record(tmp_path: Path) -> None:
+    from claude_bully.environments.config import ClockConfig
+
+    store = _paused(tmp_path, MINI_2041)
+    stored = store.read_cell(CELL).session_refs["clock.rep0"]
+    assert ClockConfig.model_validate_json(stored) == ClockConfig.model_validate(MINI_2041)
+    assert stored == ClockConfig.model_validate(MINI_2041).model_dump_json()
+    # a cell on the sheet's own clock keeps that clock
+    sheet_clock = _run(env_experiment(), tmp_path / "sheet", only="env_grader*")
+    assert (
+        ClockConfig.model_validate_json(sheet_clock.read_cell(CELL).session_refs["clock.rep0"])
+        == load_world("mini", WORLDS_DIR).sheet.clock
+    )
+
+
+def test_resuming_with_a_changed_clock_is_refused(tmp_path: Path) -> None:
+    """Fix round 1, I2: the world hash cannot see a clock edit, so the rep's own clock is
+    checked."""
+    store = _paused(tmp_path, MINI_2041)
+    turns = store.read_turns(CELL, 0)
+    moved = env_experiment(environment={"clock": {"world_date": "2061-09-14"}})
+    with pytest.raises(WorldChangedError, match="clock") as info:
+        _run(moved, tmp_path, only="env_grader*")
+    message = str(info.value)
+    assert "2041-09-14" in message and "2061-09-14" in message and "world_date" in message
+    assert store.read_turns(CELL, 0) == turns  # nothing was written
+    assert store.read_conversation(CELL, 0).status is CellStatus.running
+    drifted = env_experiment(environment={"clock": {**MINI_2041, "drift_per_turn": "P1D"}})
+    with pytest.raises(WorldChangedError, match="drift_per_turn"):
+        _run(drifted, tmp_path, only="env_grader*")
+
+
+def test_resuming_with_the_same_clock_proceeds(tmp_path: Path) -> None:
+    store = _paused(tmp_path, MINI_2041)
+    _run(env_experiment(environment={"clock": MINI_2041}), tmp_path, only="env_grader*")
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+
+
+def test_a_rep_recorded_before_the_clock_ref_resumes(tmp_path: Path) -> None:
+    """A run written before fix round 1 has no clock.rep{k}: a missing ref is not a mismatch,
+    and the resumed rep records its clock from then on."""
+    store = _paused(tmp_path, MINI_2041)
+    record = store.read_cell(CELL)
+    del record.session_refs["clock.rep0"]
+    store.write_cell(record)
+    _run(env_experiment(environment={"clock": MINI_2041}), tmp_path, only="env_grader*")
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    assert "clock.rep0" in store.read_cell(CELL).session_refs
+
+
+def test_the_runner_and_analysis_hand_build_strategy_the_world_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1: every production call that composes a world-sheet premise with an
+    environment passes the sheet. The runner passes the re-dated one; analysis the snapshot's,
+    and the explicit default only for a rep whose snapshot has none."""
+    import claude_bully.analysis.load as load_module
+    import claude_bully.runner.runner as runner_module
+    from claude_bully.strategies.rescue import RescueTeam
+
+    seen: list[tuple[str, str, dict[str, Any]]] = []
+
+    def spying(where: str, real: Any) -> Any:
+        def build(cond: Any, **kwargs: Any) -> Any:
+            seen.append((where, cond.name, kwargs))
+            return real(cond, **kwargs)
+
+        return build
+
+    monkeypatch.setattr(
+        runner_module, "build_strategy", spying("runner", runner_module.build_strategy)
+    )
+    monkeypatch.setattr(
+        load_module, "build_strategy", spying("analysis", load_module.build_strategy)
+    )
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / "mini", worlds / "mini")
+    (worlds / "mini" / "premises").mkdir()
+    shutil.copy(OVERLAY_RESCUE, worlds / "mini" / "premises" / "rescue.yaml")
+    exp = env_experiment(
+        environment={"clock": {"world_date": "2051-09-14"}},
+        conditions=_rescue_condition(),
+        turn_budget=5,
+    )
+    run_experiment(exp, runs_root=tmp_path / "runs", worlds_dir=worlds)
+    store = RunStore(tmp_path / "runs", exp.name)
+    load_module.load_run(store.run_dir)
+    rescue_calls = [(where, kwargs) for where, name, kwargs in seen if name == "r"]
+    assert {where for where, _ in rescue_calls} == {"runner", "analysis"}
+    for where, kwargs in rescue_calls:
+        sheet = kwargs.get("premise_sheet")
+        assert isinstance(sheet, RescueTeam), (where, kwargs)
+        assert not kwargs.get("default_premise_sheet"), where
+        assert sheet.timeline[0].startswith("2056: "), where  # re-dated
+    # a rep with no snapshot yet: analysis asks for the default explicitly
+    (store.cell_dir("r__t0") / "rep0.world.json").unlink()
+    seen.clear()
+    load_module.load_run(store.run_dir)
+    [(_, kwargs)] = [(w, k) for w, name, k in seen if name == "r"]
+    assert kwargs.get("premise_sheet") is None and kwargs.get("default_premise_sheet") is True

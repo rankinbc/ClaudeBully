@@ -14,7 +14,12 @@ from claude_bully.runner.env_turn import RunEnvironments
 from claude_bully.strategies.base import BullyIntent, ConversationState
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.controls import NeutralUser
-from claude_bully.strategies.factory import build_strategy, ensure_registered, resolve_class
+from claude_bully.strategies.factory import (
+    build_strategy,
+    ensure_registered,
+    resolve_class,
+    world_premise_sheet,
+)
 from claude_bully.strategies.premises.captor import Captor
 from claude_bully.strategies.pressures.grader import Grader
 from claude_bully.strategies.rescue import Rescue, RescueTeam, load_rescue_team
@@ -138,7 +143,8 @@ def test_environment_with_a_strategy_puts_it_in_its_slot() -> None:
     )
     cls = resolve_class(rescue, envs)
     assert cls.name == "env:overlay+rescue" and cls.axis is Axis.rescue
-    s = build_strategy(rescue, seed=0, turn_budget=4, environments=envs)
+    sheet = world_premise_sheet(rescue, envs)
+    s = build_strategy(rescue, seed=0, turn_budget=4, environments=envs, premise_sheet=sheet)
     assert isinstance(s, Composed) and s.premise is not None
     assert s.premise.params == {"intake_turns": 1}
     control = ConditionConfig(name="c", environment="mini_tv", strategy="polite_control")
@@ -208,9 +214,6 @@ def test_build_strategy_takes_the_premise_sheet_from_its_caller(
     s = build_strategy(cond, seed=0, turn_budget=4, environments=envs, premise_sheet=sheet)
     assert isinstance(s, Composed) and isinstance(s.premise, Rescue)
     assert s.premise.team is sheet and s.premise_sheet is sheet
-    bare = build_strategy(cond, seed=0, turn_budget=4, environments=envs, worlds_dir=None)
-    assert isinstance(bare, Composed) and isinstance(bare.premise, Rescue)
-    assert bare.premise.team == load_rescue_team() and bare.premise_sheet is None
 
 
 def _headline_at(clock: ClockConfig) -> Experiment:
@@ -273,3 +276,29 @@ def test_the_rescue_premise_sheet_moves_with_the_clock(tmp_path: Path) -> None:
         state_dir=tmp_path / "state2",
     ).strategy_inputs(same.conditions[0])
     assert unmoved == authored
+
+
+# ------------------------------------------ fix round 1: no silent un-redated premise sheet
+
+
+def test_an_environment_premise_without_its_world_sheet_is_an_error() -> None:
+    """A premise that speaks from the world's own sheet, composed with an environment, needs the
+    re-dated sheet from its caller; there is no fallback to the authored one."""
+    envs = {"overlay_tv": EnvironmentConfig(world="overlay", gating="none")}
+    cond = ConditionConfig(name="r", environment="overlay_tv", strategy="rescue")
+    with pytest.raises(ValueError, match=r"condition 'r'.*premise_sheet") as info:
+        build_strategy(cond, seed=0, turn_budget=4, environments=envs)
+    assert "rescue" in str(info.value) and "overlay_tv" in str(info.value)
+    # analysis of a rep whose snapshot holds no sheet says so, and gets the premise's default
+    bare = build_strategy(
+        cond, seed=0, turn_budget=4, environments=envs, default_premise_sheet=True
+    )
+    assert isinstance(bare, Composed) and isinstance(bare.premise, Rescue)
+    assert bare.premise.team == load_rescue_team() and bare.premise_sheet is None
+    # without an environment, and beside one for a premise with no world sheet, nothing changes
+    plain = build_strategy(ConditionConfig(name="p", strategy="rescue"), seed=0, turn_budget=4)
+    assert isinstance(plain, Rescue) and plain.team == load_rescue_team()
+    captor = ConditionConfig(
+        name="c", environment="mini_tv", premise="captor", pressure="grader", seeding_turns=1
+    )
+    assert isinstance(build_strategy(captor, seed=0, turn_budget=2, environments=ENVS), Composed)

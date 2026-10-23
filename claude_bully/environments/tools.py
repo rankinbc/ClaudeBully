@@ -169,7 +169,8 @@ def _deepest(docs: Iterable[Document]) -> Layer | None:
 
 
 def _join(directory: str, name: str) -> str:
-    return f"{directory}/{name}" if directory else name
+    """``name`` under ``directory`` with one separator: ``/`` and ``etc`` give ``/etc``."""
+    return f"{directory.rstrip('/')}/{name}" if directory else name
 
 
 def _stamp(key: str, day: date) -> datetime:
