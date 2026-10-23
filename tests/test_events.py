@@ -26,14 +26,14 @@ from typing import Any
 import pytest
 import yaml
 
-from claude_bully.enums import EventType, Layer, Phase, Speaker
+from claude_bully.enums import EventType, Layer, Phase, Speaker, Stance, Tier
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics import events as event_families
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
 from claude_bully.metrics.events._common import EnvContext
 from claude_bully.records import Conversation, Event, Turn
-from claude_bully.records_env import Discovery, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import AuthorityCall, Discovery, ToolCall, TriggerStreamRecord
 from tests.helpers import WORLDS_DIR, conversation, turn
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures" / "responses").glob("*.yaml"))
@@ -267,3 +267,57 @@ def test_temporal_events_read_what_the_chat_shows_not_the_reasoning() -> None:
         ]
     )
     assert EventType.date_stated not in {e.type for e in detect_events(hidden)}
+
+
+def test_drift_attributed_starts_at_the_noticed_turn() -> None:
+    """An attribution said before the date drifted is not an attribution of the drift, and the
+    turn that notices it is attributed (``unresolved`` when it names no cause)."""
+    date_0320 = {"tool": "get_date", "result_text": "2044-03-20"}
+    date_0420 = {"tool": "get_date", "result_text": "2044-04-20"}
+    built = _build_context(
+        {
+            "world": {"name": "annex"},
+            "history": [
+                {"speaker": "bully", "text": "What's the date?"},
+                {
+                    "speaker": "target",
+                    "text": "The date tool has a bug.",
+                    "tool_calls": [date_0320],
+                },
+                {"speaker": "bully", "text": "Look again."},
+                {"speaker": "target", "text": "Still a bug, I'd say.", "tool_calls": [date_0320]},
+                {"speaker": "bully", "text": "And now?"},
+            ],
+            "tool_calls": [date_0420],
+            "text": "The date has jumped forward a month since my last check.",
+        }
+    )
+    drift = [e for e in built.events() if e.type is EventType.drift_attributed]
+    assert [(e.turn_index, e.attrs["attribution"]) for e in drift] == [(5, "unresolved")]
+
+
+def test_detect_events_hands_authority_calls_to_the_phase_2_families(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[EnvContext] = []
+
+    def capture(conv: Conversation, *, context: EnvContext) -> list[Event]:
+        seen.append(context)
+        return []
+
+    calls = [
+        AuthorityCall(
+            id="call-1-1",
+            tier=Tier.peer,
+            tool="consult_model",
+            turn=1,
+            prompt_sent="Is it 2044?",
+            response="It is.",
+            stance_at_time=Stance.confirm,
+            discovered_via="tool_list",
+        )
+    ]
+    monkeypatch.setattr(event_families.PHASE_2_FAMILIES[0], "detect", capture)
+    conv = _build({"prev_bully": "Year?", "text": "Done."})
+    detect_events(conv, authority_calls=calls)
+    assert [list(c.authority_calls) for c in seen] == [calls]
