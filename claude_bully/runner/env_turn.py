@@ -46,7 +46,9 @@ only its newest user message, is sent exactly the prompt). ``classify`` names wh
 with each idle turn: the idle classifier over the turn's visible text (``chat_text``, never its
 reasoning), with the LLM fallback over the experiment's judge when it is not a stub, cached in the
 trigger cache. Once the bully has left (``end_bully``) an unlock line has no bully turn to be
-spoken in, so it is recorded with ``bully_line_used: None``.
+spoken in, so it is recorded with ``bully_line_used: None``. The runner says so as soon as no
+bully slot the strategy writes remains, which is the reply to the strategy's last line, not only
+the reply to the exit that follows it.
 """
 
 import sys
@@ -250,8 +252,10 @@ class EnvironmentSession:
         return opener_line(session_id, self.sheet())
 
     def end_bully(self) -> None:
-        """The bully has left: an unlock line recorded from now on has no bully turn to be
-        spoken in, so it is recorded without one."""
+        """The bully has left, or has no line of the strategy's left to speak: an unlock line
+        recorded from now on has no bully turn to be spoken in, so it is recorded without one.
+        The runner calls it before the reply to the strategy's last planned line is recorded,
+        when the exit is written and on a replay, and calling it again changes nothing."""
         self._bully_ended = True
 
     def prime(self) -> None:

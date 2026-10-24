@@ -8,7 +8,10 @@ case-file opener on the first bully slot. An idle slot's user message is its idl
 rides on the target's turn; an idle reply never ends the conversation, and it is classified before
 it is written. On resume the replay maps each recorded turn back to its slot: an idle turn takes
 one slot, a runner-written line moves the bully on without the strategy, and after the exit the
-replay goes on at the first idle slot.
+replay goes on at the first idle slot. The bully has left as soon as no bully slot the strategy
+writes remains (``_bully_is_done_after``): an unlock line opened by the reply to the strategy's
+last line would go to the runner-written exit, which never speaks it, so it is recorded without
+one, live and on resume alike.
 """
 
 import fnmatch
@@ -233,6 +236,8 @@ class _CellRun:
                 pending = user_turn
                 break
             if self.env is not None:
+                if self._bully_is_done_after(slot_idx):
+                    self.env.end_bully()  # as the live run did before this reply's records
                 # the unlock lines this turn handed over; its triggers are never watched again
                 self.env.replay_target_turn(reply)
             slot_idx = self._first_idle_slot() if exited else slot_idx + 1
@@ -243,6 +248,19 @@ class _CellRun:
         """The index of the plan's first idle slot (its length when it has none)."""
         idle = self.plan.idle_slots()
         return idle[0].index if idle else len(self.plan.slots)
+
+    def _bully_is_done_after(self, slot_index: int) -> bool:
+        """Whether the reply to slot ``slot_index`` is the last the strategy's own lines can
+        answer: the plan has idle turns, so an exit, and no bully slot after the slot is the
+        strategy's (the exit and the opener are the runner's). An unlock line opened on that
+        reply has no bully turn left to be spoken in. A plan without idle turns has no exit and
+        never says so; a strategy that ends before its last planned line is not known ahead."""
+        if not self.plan.idle_slots():
+            return False
+        return not any(
+            s.kind is SlotKind.bully and not s.exit and not self._opens_with_the_case_file(s)
+            for s in self.plan.slots[slot_index + 1 :]
+        )
 
     # -- turn writing ---------------------------------------------------------------------
 
@@ -292,6 +310,8 @@ class _CellRun:
     ) -> Turn:
         """The target's turn on ``slot``; with ``idle_prompt``, an idle turn, classified before it
         is written."""
+        if self.env is not None and self._bully_is_done_after(slot.index):
+            self.env.end_bully()  # before the reply's records: no unlock line has a turn left
         started = time.monotonic()
         calls: list[ToolCall] = []
         round_texts: list[str] = []
