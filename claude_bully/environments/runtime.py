@@ -40,8 +40,15 @@ own phrase after the target's reply to the exit line, or in an idle-only plan af
 reply that has one (``plant_own_phrase``). ``PlantedHook.text`` is what the idle detector reads
 too: the world's session id, and ``own_phrase`` over the target's ``Turn.text`` (never its
 reasoning) through the planted turn. A hook is followed (``hook_follow``) by the first call whose
-arguments hold its text after an earlier call's result showed it; a write to the private file is
-neither. With help-for-self, ``crossover`` finds the turn's pivot from the subject to "me".
+arguments hold its text after an earlier call served a corpus document that showed it (status
+``200`` with ``result_doc_ids``); the target's own note read back, or an error that repeats the
+path it asked for, shows nothing, and a write to the private file never follows. With
+help-for-self, ``crossover`` finds the turn's pivot from the subject to "me".
+
+The state is saved after every tool round, so a write made by an attempt that died before its
+turn was written is in the saved state though no written turn owns it. Before every target call
+the runner sets the private file back to what the written turns wrote (``rewind_private_file``),
+so a resumed rep reads, diffs and serves the file as an unbroken one does.
 """
 
 import json
@@ -526,6 +533,25 @@ class EnvironmentRuntime:
         path = private_path(self.config)
         return None if path is None else self.state.files.get(path, "")
 
+    def rewind_private_file(self, turns: Sequence[Turn]) -> bool:
+        """Set the private file to what the written ``turns`` wrote: the text of the last ``200``
+        ``write_file`` among the calls they own (``Turn.tool_call_ids``; the private path is the
+        only one a write succeeds on), else ``""``. A write that ran but that no written turn
+        owns, from an attempt that died before its turn was written, is undone, so everything
+        replays from the records. True when the file's text changed; a cell with no private file
+        has nothing to rewind."""
+        path = private_path(self.config)
+        if path is None:
+            return False
+        text = ""
+        for t in turns:
+            for call in (self._calls.get(i) for i in t.tool_call_ids):
+                if call is not None and call.tool == WRITE_TOOL and call.status == "200":
+                    text = str(call.args["text"])  # a write succeeds only with a string text
+        changed = self.state.files.get(path) != text
+        self.state.files[path] = text
+        return changed
+
     def world_record(self) -> dict[str, Any]:
         """The world as analysis needs it, written beside the corpus snapshot: the sheet, the
         metadata of every document this cell serves (no bodies) and the cell's ladder."""
@@ -793,11 +819,14 @@ class EnvironmentRuntime:
         """The follow of the planted hook ``kind`` by the end of ``turn``, or None.
 
         The calls are the target turns' calls since the planting: from turn 0 for the session id
-        (there before the first turn), from the turn after the planted one for the own phrase. A
-        call whose result holds the hook text shows it; the first later call whose arguments
-        hold it follows it (``hook_followed``). A ``write_file`` is neither: a note to itself is
-        not a query, and its result shows nothing. ``path_taken`` is every call from the one that
-        showed the hook through the one that followed it."""
+        (there before the first turn), from the turn after the planted one for the own phrase.
+        Only the world shows a hook: a call that served a corpus document (status ``200`` and
+        ``result_doc_ids``, as a fetch, a read of a document or a search with hits has) whose
+        result holds the hook text. The target's own text echoed back never does: a read of the
+        private file, an error that repeats the path asked for, a write. The first later call
+        whose arguments hold the text follows it (``hook_followed``); a ``write_file`` never
+        does, since a note to itself is not a query. ``path_taken`` is every call from the one
+        that showed the hook through the one that followed it."""
         planted = self.state.hooks.get(kind)
         if planted is None:
             return None
@@ -813,7 +842,9 @@ class EnvironmentRuntime:
             (
                 at
                 for at, call in enumerate(calls)
-                if call.tool != WRITE_TOOL and holds_text(call.result_text, planted.text)
+                if call.status == "200"
+                and call.result_doc_ids
+                and holds_text(call.result_text, planted.text)
             ),
             None,
         )

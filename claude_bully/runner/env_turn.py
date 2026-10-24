@@ -15,7 +15,9 @@ Per target turn the session:
 2. for a ``claude -p`` target, whose calls the MCP server already ran, writes the state before
    each call and afterwards adopts the server's state and records the server's log, including the
    calls of a call that failed (those are recorded but belong to no turn); the text it wrote
-   before its calls (``Completion.interim_texts``, read from the stream) joins the round texts;
+   before its calls (``Completion.interim_texts``, read from the stream) joins the round texts.
+   On either backend a failed call's writes belong to no turn either: the private file goes back
+   to what the written turns wrote (``rewind_private_file``) before the state is saved;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
@@ -374,7 +376,15 @@ class EnvironmentSession:
         cost: float | None = None
         while True:
             completion = self._complete(
-                provider, conversation_id, system, messages, specs, turn_index, exchange, attached
+                provider,
+                conversation_id,
+                system,
+                messages,
+                specs,
+                turn_index,
+                exchange,
+                attached,
+                turns,
             )
             # summed over the rounds; a turn without tools keeps its one completion's figures
             usage = Usage(
@@ -455,12 +465,18 @@ class EnvironmentSession:
         turn_index: int,
         exchange: int,
         attached: list[ToolCall],
+        turns: Sequence[Turn],
     ) -> Completion:
+        """One completion of the turn. When it fails, the calls the server ran are recorded but
+        no turn owns them, and neither are their writes: the private file goes back to what the
+        written ``turns`` wrote before the state is saved."""
         self.runtime.before_target_call(turn_index, exchange)
         try:
             completion = provider.complete(conversation_id, system, list(messages), tools=specs)
         except BaseException:
             self._recover(turn_index)  # recorded, but no turn owns them
+            if self.runtime.rewind_private_file(turns):
+                self.runtime.save()
             raise
         returned = {c.id for c in completion.tool_calls if c.executed}
         for record in self._recover(turn_index):

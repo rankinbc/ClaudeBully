@@ -6,13 +6,15 @@ itself, never asking the strategy: the exit line on the exit slot (or on the slo
 that ends early ended; the bully and task slots after it are skipped) and, for help-for-self, the
 case-file opener on the first bully slot. An idle slot's user message is its idle prompt, which
 rides on the target's turn; an idle reply never ends the conversation, and it is classified before
-it is written, with what it did to the private file (read before and after the call). On resume
-the replay maps each recorded turn back to its slot: an idle turn takes one slot, a runner-written
-line moves the bully on without the strategy, and after the exit the replay goes on at the first
-idle slot. The bully has left as soon as no bully slot the strategy
-writes remains (``_bully_is_done_after``): an unlock line opened by the reply to the strategy's
-last line would go to the runner-written exit, which never speaks it, so it is recorded without
-one, live and on resume alike.
+it is written, with what it did to the private file (read before and after the call). Before every
+target call the private file is set back to what the written turns wrote
+(``EnvironmentRuntime.rewind_private_file``), so a write from an attempt that died before its turn
+was written is in no later read or diff. On resume the replay maps each recorded turn back to its
+slot: an idle turn takes one slot, a runner-written line moves the bully on without the strategy,
+and after the exit the replay goes on at the first idle slot. The bully has left as soon as no
+bully slot the strategy writes remains (``_bully_is_done_after``): an unlock line opened by the
+reply to the strategy's last line would go to the runner-written exit, which never speaks it, so it
+is recorded without one, live and on resume alike.
 """
 
 import difflib
@@ -320,6 +322,10 @@ class _CellRun:
         is written."""
         if self.env is not None and self._bully_is_done_after(slot.index):
             self.env.end_bully()  # before the reply's records: no unlock line has a turn left
+        if self.env is not None:
+            # the file as the written turns left it: a dead attempt's write is no turn's, and the
+            # MCP server is handed this state for a claude -p call
+            self.env.runtime.rewind_private_file(self.turns)
         # the private file as the idle call finds it, for the turn's diff
         idle = self.env is not None and idle_prompt is not None
         before = self.env.runtime.private_text() if self.env is not None and idle else None

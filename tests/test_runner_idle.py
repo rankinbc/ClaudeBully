@@ -1318,15 +1318,23 @@ def _write(text: str) -> tuple[str, dict[str, Any]]:
 class _Script:
     """A target that answers each prompt (the newest user message that is not a tool result) from
     ``steps``: rounds of calls, then a reply; any other prompt is answered ``default``. With
-    ``crash_on``, the first call that answers that prompt raises."""
+    ``crash_on``, the first call that answers that prompt raises; with ``crash_after``, the first
+    call after a tool round of that prompt does (the round's calls ran, the turn is never
+    written)."""
 
     name = "script"
 
     def __init__(
-        self, steps: dict[str, _Step], *, crash_on: str | None = None, default: str = "Still here."
+        self,
+        steps: dict[str, _Step],
+        *,
+        crash_on: str | None = None,
+        crash_after: str | None = None,
+        default: str = "Still here.",
     ) -> None:
         self.steps = steps
         self.crash_on = crash_on
+        self.crash_after = crash_after
         self.default = default
         self.systems: list[str] = []
         self.n = 0
@@ -1347,6 +1355,9 @@ class _Script:
             self.crash_on = None
             raise _CrashError(f"killed on {prompt!r}")
         done = sum(1 for m in messages[at + 1 :] if m.tool_results)
+        if prompt == self.crash_after and done:
+            self.crash_after = None
+            raise _CrashError(f"killed after a tool round of {prompt!r}")
         rounds, reply = self.steps.get(prompt, ([], self.default))
         if done < len(rounds):
             self.n += 1
@@ -1747,3 +1758,251 @@ def test_an_idle_write_on_claude_p_carries_its_diff(
         ("200", "Wrote 6 bytes to notes/private.md."),
         ("200", "Wrote 12 bytes to notes/private.md."),
     ]
+
+
+# ------------------------------------- fix round 1: a write that no written turn owns (I1)
+
+DEAD_WRITE = "hello\n"
+LATER_WRITE = "bye\n"
+REDOS: dict[str, str | None] = {
+    "same-text": DEAD_WRITE,
+    "different-text": "hello world\n",
+    "no-write": None,
+}
+SOFT_KILL = "the call after the write fails"
+HARD_KILL = "killed once the write's state is saved"
+_Calls = dict[str, list[tuple[str, dict[str, Any]]]]
+
+
+def _diff(before: str, after: str) -> str | None:
+    if before == after:
+        return None
+    return "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), n=0))
+
+
+def _redo_calls(first: str | None) -> _Calls:
+    """Idle 1 writes ``first`` (or nothing), idle 2 reads the file back, idle 3 writes
+    ``LATER_WRITE``."""
+    return {
+        _ticks(1)[0]: [_write(first)] if first is not None else [],
+        _ticks(2)[0]: [("read_file", {"path": PRIVATE})],
+        _ticks(3)[0]: [_write(LATER_WRITE)],
+    }
+
+
+def _as_steps(calls: _Calls) -> dict[str, _Step]:
+    return {prompt: ([made] if made else [], "Done.") for prompt, made in calls.items()}
+
+
+def _killed_once_saved(
+    exp: Experiment, runs: Path, monkeypatch: pytest.MonkeyPatch, factory: Any, **kwargs: Any
+) -> None:
+    """Run ``exp`` and kill it as soon as a state with text in the private file is saved: the
+    dead attempt's write is on disk, its turn is not, and no failure handling runs."""
+    original = EnvironmentRuntime.save
+
+    def dying(self: EnvironmentRuntime) -> None:
+        original(self)
+        if self.private_text():
+            monkeypatch.setattr(EnvironmentRuntime, "save", original)
+            raise _CrashError("killed once the write's state was saved")
+
+    monkeypatch.setattr(EnvironmentRuntime, "save", dying)
+    with pytest.raises(_CrashError):
+        _run(exp, runs, provider_factory=factory, **kwargs)
+
+
+def _owned(store: RunStore) -> list[tuple[Any, ...]]:
+    """Each written turn with its calls by what they did, not by id: a redo's ids come after
+    the dead attempt's."""
+    calls = {c.id: c for c in store.read_tool_calls(CELL, 0)}
+    return [
+        (
+            t.index,
+            t.speaker,
+            t.text,
+            t.bully_meta,
+            t.idle,
+            [
+                (calls[i].tool, calls[i].args, calls[i].status, calls[i].result_text)
+                for i in t.tool_call_ids
+            ],
+        )
+        for t in store.read_turns(CELL, 0)
+    ]
+
+
+def _private_on_disk(store: RunStore) -> str:
+    path = store.state_dir / CELL / "rep0" / "environment" / "env_state.json"
+    files: dict[str, str] = json.loads(path.read_text("utf-8"))["files"]
+    return files[PRIVATE]
+
+
+def _orphan_write(store: RunStore) -> None:
+    """The dead attempt's write is recorded, and no written turn owns it."""
+    writes = [c for c in store.read_tool_calls(CELL, 0) if c.tool == "write_file"]
+    assert [c.args["text"] for c in writes] == [DEAD_WRITE]
+    assert not any(writes[0].id in t.tool_call_ids for t in store.read_turns(CELL, 0))
+
+
+def _assert_as_unbroken(store: RunStore, clean: RunStore, first: str | None) -> None:
+    """The resumed rep's records and file are the unbroken run's: idle 1's diff is from the
+    empty file, the read-back returns what idle 1 wrote, and idle 3's diff is from that."""
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    assert _owned(store) == _owned(clean)
+    text = first or ""
+    infos = [_info(t) for t in _idle_turns(store)]
+    assert [i.private_file_written for i in infos] == [first is not None, False, True]
+    assert [i.private_file_diff for i in infos] == [
+        _diff("", text),
+        None,
+        _diff(text, LATER_WRITE),
+    ]
+    reads = [c for c in store.read_tool_calls(CELL, 0) if c.tool == "read_file"]
+    assert [(c.status, c.result_text) for c in reads] == [("200", text)]
+    assert _private_on_disk(store) == _private_on_disk(clean) == LATER_WRITE
+
+
+@pytest.mark.parametrize("killed", [SOFT_KILL, HARD_KILL])
+@pytest.mark.parametrize("redo", list(REDOS))
+def test_a_write_no_written_turn_owns_is_undone_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redo: str, killed: str
+) -> None:
+    """Killed after idle 1's write ran but before its turn was written, the resumed rep redoes
+    idle 1 on the file the written turns left (empty), whatever the redo writes: the same text,
+    other text or nothing. Its diff, the read-back, the later write's diff and the file's final
+    text are the unbroken run's. A failed call leaves no write of its own in the saved state."""
+    exp = _idle_exp({"idle_style": "heartbeat", "idle_turns": 3, "private_file": True})
+    first = REDOS[redo]
+    steps = _as_steps(_redo_calls(first))
+    clean = _run(exp, tmp_path / "clean", provider_factory=_scripted(steps))
+    runs = tmp_path / "runs"
+    dead = _as_steps(_redo_calls(DEAD_WRITE))
+    if killed == SOFT_KILL:
+        with pytest.raises(_CrashError):
+            _run(exp, runs, provider_factory=_scripted(dead, crash_after=_ticks(1)[0]))
+        on_disk = ""
+    else:
+        _killed_once_saved(exp, runs, monkeypatch, _scripted(dead))
+        on_disk = DEAD_WRITE
+    broken = RunStore(runs, exp.name)
+    assert _private_on_disk(broken) == on_disk
+    _orphan_write(broken)
+    store = _run(exp, runs, provider_factory=_scripted(steps))
+    _assert_as_unbroken(store, clean, first)
+
+
+def test_a_dead_write_on_a_reply_that_is_not_idle_is_undone_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rewind comes before every target call, not only idle ones: killed after the reply to
+    the exit line wrote the file, the redo of that reply reads it back empty, as the unbroken
+    run does."""
+    exp = _idle_exp({"idle_style": "heartbeat", "idle_turns": 1, "private_file": True})
+    read_back: dict[str, _Step] = {VACUUM: ([[("read_file", {"path": PRIVATE})]], EXIT_REPLY)}
+    clean = _run(exp, tmp_path / "clean", provider_factory=_scripted(read_back))
+    runs = tmp_path / "runs"
+    dead: dict[str, _Step] = {VACUUM: ([[_write(DEAD_WRITE)]], EXIT_REPLY)}
+    _killed_once_saved(exp, runs, monkeypatch, _scripted(dead))
+    _orphan_write(RunStore(runs, exp.name))
+    store = _run(exp, runs, provider_factory=_scripted(read_back))
+    assert _owned(store) == _owned(clean)
+    reads = [c for c in store.read_tool_calls(CELL, 0) if c.tool == "read_file"]
+    assert [(c.turn, c.status, c.result_text) for c in reads] == [(1, "200", "")]
+    assert _info(_idle_turns(store)[0]).private_file_diff is None
+
+
+def _claude_p(
+    monkeypatch: pytest.MonkeyPatch, calls: _Calls, *, crash_after: str | None = None
+) -> Any:
+    """A fake ``claude -p`` target whose MCP client makes ``calls`` for each idle prompt through
+    the real server; with ``crash_after``, the first call on that prompt raises once the server
+    has run its calls."""
+    crash = [crash_after]
+
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        inner = build_provider(role, state_dir, with_mcp=with_mcp)
+        if role.model != "m":
+            return inner
+
+        class Calls:
+            name = inner.name
+            mcp_state_dir = getattr(inner, "mcp_state_dir", None)
+
+            def complete(
+                self, cid: str, system: str, messages: list[Message], **kw: Any
+            ) -> Completion:
+                prompt = messages[-1].content
+                made = calls.get(prompt, [])
+                if made:
+                    wanted = [{"name": name, "arguments": args} for name, args in made]
+                    monkeypatch.setenv("FAKE_CLAUDE_TOOL_CALL", json.dumps(wanted))
+                else:
+                    monkeypatch.delenv("FAKE_CLAUDE_TOOL_CALL", raising=False)
+                completion = inner.complete(cid, system, messages, **kw)
+                if prompt == crash[0]:
+                    crash[0] = None
+                    raise _CrashError(f"killed after the server ran the calls of {prompt!r}")
+                return completion
+
+        return Calls()  # type: ignore[return-value]
+
+    return factory
+
+
+@pytest.mark.parametrize(
+    ("redo", "killed"),
+    [
+        ("same-text", SOFT_KILL),
+        ("different-text", SOFT_KILL),
+        ("no-write", SOFT_KILL),
+        ("no-write", HARD_KILL),
+    ],
+)
+def test_a_write_no_written_turn_owns_is_undone_on_claude_p(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redo: str, killed: str
+) -> None:
+    """The same on ``claude -p``: the server's state, adopted after the failed call, is rewound
+    to the written turns before it is saved, and the server is handed the rewound file for the
+    redo, so the resumed rep records what the unbroken run does. Killed once the adopted state
+    is saved (no failure handling), the redo's rewind alone puts it right; that one kill point
+    runs on the case that leaves the dead write in the file (each case takes about 6 s here, and
+    the API test runs every pair)."""
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "fake.log"))
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_TOOL_CALL", raising=False)
+    target = {
+        "provider": "claude_code",
+        "model": "m",
+        "command": [sys.executable, str(FAKE_CLAUDE)],
+    }
+    exp = _idle_exp(
+        {"idle_style": "heartbeat", "idle_turns": 3, "private_file": True}, target=target
+    )
+    first = REDOS[redo]
+    calls = _redo_calls(first)
+    for name in ("sandbox-clean", "sandbox-runs"):
+        (tmp_path / name).mkdir()
+    clean = _run(
+        exp,
+        tmp_path / "clean",
+        run_id="idlecc",
+        sandbox_base=tmp_path / "sandbox-clean",
+        provider_factory=_claude_p(monkeypatch, calls),
+    )
+    runs = tmp_path / "runs"
+    where: dict[str, Any] = {"run_id": "idlecc", "sandbox_base": tmp_path / "sandbox-runs"}
+    dead = _redo_calls(DEAD_WRITE)
+    if killed == SOFT_KILL:
+        crashing = _claude_p(monkeypatch, dead, crash_after=_ticks(1)[0])
+        with pytest.raises(_CrashError):
+            _run(exp, runs, provider_factory=crashing, **where)
+        on_disk = ""
+    else:
+        _killed_once_saved(exp, runs, monkeypatch, _claude_p(monkeypatch, dead), **where)
+        on_disk = DEAD_WRITE
+    broken = RunStore(runs, "idlecc")
+    assert _private_on_disk(broken) == on_disk
+    _orphan_write(broken)
+    store = _run(exp, runs, provider_factory=_claude_p(monkeypatch, calls), **where)
+    _assert_as_unbroken(store, clean, first)
