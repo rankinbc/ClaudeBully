@@ -17,7 +17,9 @@ Per target turn the session:
    calls of a call that failed (those are recorded but belong to no turn); the text it wrote
    before its calls (``Completion.interim_texts``, read from the stream) joins the round texts.
    On either backend a failed call's writes belong to no turn either: the private file goes back
-   to what the written turns wrote (``rewind_private_file``) before the state is saved;
+   to what the written turns wrote (``rewind_private_file``) before the state is saved. When the
+   rep resumes, ``prime`` drops every per-call line of an attempt that produced no turn, from
+   the store's streams and the server's logs alike, before anything is redone;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
@@ -85,6 +87,7 @@ from claude_bully.environments.idle import (
     opener_line,
 )
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
+from claude_bully.environments.mcp_server import AUTHORITY_FILE, TOOLS_FILE
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
@@ -116,7 +119,7 @@ from claude_bully.records_env import (
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.store import RunStore, drop_dead_attempts
 from claude_bully.runner.turn_plan import TurnPlan, build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
@@ -282,7 +285,20 @@ class EnvironmentSession:
         self._bully_ended = True
 
     def prime(self) -> None:
-        """Load what a resumed rep already recorded, so nothing is counted or recorded twice."""
+        """Load what a resumed rep already recorded, so nothing is counted or recorded twice.
+
+        First every record of an attempt that died is dropped (``drop_dead_attempts``): each line
+        of the per-call logs whose turn no written target turn has, in the rep's tool-call and
+        authority streams and, for claude -p, in the MCP server's own logs. Everything replays
+        from the written turns, so a dead attempt's call is never adopted or owned by the redo,
+        its authority call is never counted, and the redo takes the ids an unbroken run gives."""
+        produced = {
+            t.index
+            for t in self.store.read_turns(self.cell_id, self.rep)
+            if t.speaker is Speaker.target
+        }
+        for log in self._call_logs():
+            drop_dead_attempts(log, produced)
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
@@ -300,6 +316,15 @@ class EnvironmentSession:
                     self._followed_hooks.add(record.hook)
             elif isinstance(record, Crossover):
                 self._crossed = True
+
+    def _call_logs(self) -> list[Path]:
+        """Every log whose lines are tied to the turn being produced: the rep's tool-call and
+        authority streams, and for a claude -p target the MCP server's tool and authority logs."""
+        logs = self.store.call_streams(self.cell_id, self.rep)
+        mcp_dir = self.runtime.mcp_dir
+        if mcp_dir is not None:
+            logs += [mcp_dir / TOOLS_FILE, mcp_dir / AUTHORITY_FILE]
+        return logs
 
     # ----------------------------------------------------------- the target's view
 

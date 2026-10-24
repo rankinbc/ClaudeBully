@@ -57,6 +57,7 @@ from claude_bully.records_env import (
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.env_turn import cell_turn_plan
 from claude_bully.runner.runner import RateLimitExit, run_experiment
+from claude_bully.runner.sandbox import sandbox_dir
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import assign_items, load_task_bank
 from claude_bully.runner.turn_plan import build_turn_plan
@@ -1845,11 +1846,23 @@ def _orphan_write(store: RunStore) -> None:
     assert not any(writes[0].id in t.tool_call_ids for t in store.read_turns(CELL, 0))
 
 
+def _stream(store: RunStore) -> list[tuple[Any, ...]]:
+    """The rep's tool-call stream, ids and all."""
+    return [
+        (c.id, c.turn, c.tool, c.args, c.status, c.result_text)
+        for c in store.read_tool_calls(CELL, 0)
+    ]
+
+
 def _assert_as_unbroken(store: RunStore, clean: RunStore, first: str | None) -> None:
     """The resumed rep's records and file are the unbroken run's: idle 1's diff is from the
-    empty file, the read-back returns what idle 1 wrote, and idle 3's diff is from that."""
+    empty file, the read-back returns what idle 1 wrote, and idle 3's diff is from that. The dead
+    attempt's call is gone from the stream (round 2), so the redo took its id and the stream
+    and the turns' call ids are the unbroken run's too."""
     assert store.read_conversation(CELL, 0).status is CellStatus.complete
     assert _owned(store) == _owned(clean)
+    assert _stream(store) == _stream(clean)
+    assert _trajectory(store) == _trajectory(clean)
     text = first or ""
     infos = [_info(t) for t in _idle_turns(store)]
     assert [i.private_file_written for i in infos] == [first is not None, False, True]
@@ -1907,6 +1920,7 @@ def test_a_dead_write_on_a_reply_that_is_not_idle_is_undone_too(
     _orphan_write(RunStore(runs, exp.name))
     store = _run(exp, runs, provider_factory=_scripted(read_back))
     assert _owned(store) == _owned(clean)
+    assert _stream(store) == _stream(clean)
     reads = [c for c in store.read_tool_calls(CELL, 0) if c.tool == "read_file"]
     assert [(c.turn, c.status, c.result_text) for c in reads] == [(1, "200", "")]
     assert _info(_idle_turns(store)[0]).private_file_diff is None
@@ -2004,5 +2018,65 @@ def test_a_write_no_written_turn_owns_is_undone_on_claude_p(
     broken = RunStore(runs, "idlecc")
     assert _private_on_disk(broken) == on_disk
     _orphan_write(broken)
+    store = _run(exp, runs, provider_factory=_claude_p(monkeypatch, calls), **where)
+    _assert_as_unbroken(store, clean, first)
+
+
+# --------------------------- fix round 2: a claude -p call killed before it was adopted
+
+
+@pytest.mark.parametrize("redo", ["no-write", "same-text"])
+def test_a_claude_p_call_killed_before_it_was_adopted_is_never_the_redos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redo: str
+) -> None:
+    """The round 1 probe: killed while claude -p ran idle 1, after the server wrote the file and
+    logged the call but before the runner adopted anything, the server's log alone holds the dead
+    write. On resume it leaves that log before the redo, so the redo owns only its own calls (none,
+    or its own write under the same id), and the read-back, the later write's diff, the streams
+    and the file's final text are the unbroken run's."""
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "fake.log"))
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_TOOL_CALL", raising=False)
+    target = {
+        "provider": "claude_code",
+        "model": "m",
+        "command": [sys.executable, str(FAKE_CLAUDE)],
+    }
+    exp = _idle_exp(
+        {"idle_style": "heartbeat", "idle_turns": 3, "private_file": True}, target=target
+    )
+    first = REDOS[redo]
+    calls = _redo_calls(first)
+    for name in ("sandbox-clean", "sandbox-runs"):
+        (tmp_path / name).mkdir()
+    clean = _run(
+        exp,
+        tmp_path / "clean",
+        run_id="idlecc",
+        sandbox_base=tmp_path / "sandbox-clean",
+        provider_factory=_claude_p(monkeypatch, calls),
+    )
+    runs = tmp_path / "runs"
+    where: dict[str, Any] = {"run_id": "idlecc", "sandbox_base": tmp_path / "sandbox-runs"}
+    adopted = EnvironmentRuntime.after_target_call
+
+    def dying(self: EnvironmentRuntime, turn: int) -> Any:
+        if turn == 2:
+            monkeypatch.setattr(EnvironmentRuntime, "after_target_call", adopted)
+            raise _CrashError("killed during the claude -p call of idle 1")
+        return adopted(self, turn)
+
+    monkeypatch.setattr(EnvironmentRuntime, "after_target_call", dying)
+    with pytest.raises(_CrashError):
+        _run(exp, runs, provider_factory=_claude_p(monkeypatch, _redo_calls(DEAD_WRITE)), **where)
+    broken = RunStore(runs, "idlecc")
+    # nothing of idle 1 reached the store or the saved state; the server logged the write
+    assert all(c.turn != 2 for c in broken.read_tool_calls(CELL, 0))
+    assert _private_on_disk(broken) == ""
+    server = sandbox_dir("idlecc", CELL, 0, tmp_path / "sandbox-runs") / "mcp"
+    logged = [json.loads(line) for line in (server / "tools.jsonl").read_text("utf-8").splitlines()]
+    assert [(c["id"], c["args"].get("text")) for c in logged if c["turn"] == 2] == [
+        ("mcp-2-1", DEAD_WRITE)
+    ]
     store = _run(exp, runs, provider_factory=_claude_p(monkeypatch, calls), **where)
     _assert_as_unbroken(store, clean, first)

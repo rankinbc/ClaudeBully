@@ -15,10 +15,15 @@ corpus snapshot:
 
 Every loader refuses a record from an older schema version (there is no migration: no real run
 was recorded before schema version 2).
+
+The tool-call and authority streams are written while a turn is produced, before the turn is. A
+resumed rep drops the lines of every attempt that produced no turn (``drop_dead_attempts``) before
+it goes on, so the streams hold what an unbroken run's do.
 """
 
 import json
-from collections.abc import Mapping
+import os
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +64,40 @@ def _load_lines(path: Path) -> list[Any]:
         return []
     with path.open(encoding="utf-8") as fh:
         return [_checked(json.loads(line), path) for line in fh if line.strip()]
+
+
+def drop_dead_attempts(path: Path, produced: Collection[int]) -> int:
+    """Rewrite the per-call JSONL file ``path`` without the lines of attempts that died, and
+    return how many lines it dropped.
+
+    A line belongs to the attempt at its ``turn``. That attempt died when no target turn with
+    that index was written: it was killed before its turn was, or paused by a rate limit whose
+    marker took the index. So a line is kept only when its ``turn`` is in ``produced``, the
+    indices of the written target turns. A line that does not parse is a writer's torn last line,
+    from the same dead attempt. Kept lines are written back byte for byte, through a temp file and
+    a rename; a file with nothing to drop is not touched."""
+    if not path.exists():
+        return 0
+    kept: list[bytes] = []
+    dropped = 0
+    for line in path.read_bytes().split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:  # a torn line (also undecodable bytes)
+            dropped += 1
+            continue
+        turn = record.get("turn") if isinstance(record, dict) else None
+        if isinstance(turn, int) and turn in produced:
+            kept.append(line)
+        else:
+            dropped += 1
+    if dropped:
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_bytes(b"".join(line + b"\n" for line in kept))
+        os.replace(tmp, path)
+    return dropped
 
 
 class RunStore:
@@ -163,6 +202,11 @@ class RunStore:
     def read_authority_calls(self, cell_id: str, rep: int) -> list[AuthorityCall]:
         path = self._stream_path(cell_id, rep, AUTHORITY_STREAM)
         return [AuthorityCall.model_validate(raw) for raw in _load_lines(path)]
+
+    def call_streams(self, cell_id: str, rep: int) -> list[Path]:
+        """The rep's per-call streams, whose lines are tied to the turn being produced: the tool
+        calls and the authority calls (``drop_dead_attempts``)."""
+        return [self._stream_path(cell_id, rep, s) for s in (TOOLS_STREAM, AUTHORITY_STREAM)]
 
     def append_trigger_record(self, cell_id: str, rep: int, record: TriggerStreamRecord) -> None:
         self._append(self._stream_path(cell_id, rep, TRIGGERS_STREAM), record)

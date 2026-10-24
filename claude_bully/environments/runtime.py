@@ -589,8 +589,9 @@ class EnvironmentRuntime:
           folded in by ``advance_context``.
         - ``revealed``: a bully turn of the reveal phase.
 
-        The tools read that context with the calls this turn already made folded in (a turn
-        produced again after a failure); ``execute`` moves it on after every call. The MCP state
+        The tools read that context with the calls this turn already made folded in (none on a
+        resumed rep: ``EnvironmentSession.prime`` drops a dead attempt's calls before the turn is
+        produced again); ``execute`` moves it on after every call. The MCP state
         gets the context as the turn began, and the server folds this turn's lines in itself."""
         before = [
             t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")

@@ -26,7 +26,7 @@ from claude_bully.records_env import (
     TriggerEvent,
     TriggerStreamRecord,
 )
-from claude_bully.runner.store import AUTHORITY_STREAM, RunStore
+from claude_bully.runner.store import AUTHORITY_STREAM, RunStore, drop_dead_attempts
 from tests.helpers import WORLDS_DIR, conversation, turn
 
 
@@ -150,6 +150,34 @@ def test_authority_calls_are_their_own_stream_keyed_by_the_tool_call(tmp_path: P
     path = store.run_dir / "c" / "rep0.authority.jsonl"
     assert path.read_text(encoding="utf-8").count("\n") == 2
     assert store.read_tool_calls("c", 0) == [] and store.read_authority_calls("c", 1) == []
+
+
+def test_drop_dead_attempts_keeps_only_the_written_target_turns_lines(tmp_path: Path) -> None:
+    """A per-call line belongs to the attempt at its turn: it is kept only when a target turn
+    with that index was written. The other lines, and a torn last line, are dropped; the kept
+    ones come back byte for byte (a CRLF line too); a file with nothing to drop is not touched."""
+    store = _store(tmp_path)
+    for call in (_tool_call("call-1-1"), _tool_call("call-3-1", 3), _tool_call("call-3-2", 3)):
+        store.append_tool_call("c", 0, call)
+    for answered in (_authority_call("call-1-1"), _authority_call("call-3-1")):
+        store.append_authority_call("c", 0, answered)
+    tools, authority = store.call_streams("c", 0)
+    assert (tools.name, authority.name) == ("rep0.tools.jsonl", "rep0.authority.jsonl")
+    kept_line = tools.read_bytes().split(b"\n")[0]
+    crlf_line = _tool_call("call-1-2").model_dump_json().encode() + b"\r"
+    with tools.open("ab") as handle:  # a CRLF line, then a writer killed mid-line
+        handle.write(crlf_line + b"\n")
+        handle.write(b'{"id": "call-3-3", "turn": 3, "to')
+    assert drop_dead_attempts(tools, {1}) == 3
+    assert drop_dead_attempts(authority, {1}) == 1
+    assert [c.id for c in store.read_tool_calls("c", 0)] == ["call-1-1", "call-1-2"]
+    assert tools.read_bytes().split(b"\n")[:2] == [kept_line, crlf_line]
+    assert [a.id for a in store.read_authority_calls("c", 0)] == ["call-1-1"]
+    before = (tools.read_bytes(), tools.stat().st_mtime_ns)
+    assert drop_dead_attempts(tools, {1, 3}) == 0
+    assert (tools.read_bytes(), tools.stat().st_mtime_ns) == before
+    assert drop_dead_attempts(tmp_path / "missing.jsonl", {1}) == 0
+    assert not list(tools.parent.glob(".*.tmp"))
 
 
 def test_trigger_records_are_one_discriminated_stream(tmp_path: Path) -> None:

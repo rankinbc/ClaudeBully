@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from claude_bully.analysis.load import load_run
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import (
     CellStatus,
@@ -51,7 +52,7 @@ from claude_bully.providers.base import (
 from claude_bully.providers.claude_code import ClaudeCodeProvider
 from claude_bully.providers.stub import StubProvider, load_stub_script
 from claude_bully.records import Usage
-from claude_bully.records_env import Discovery, RungUnlock, TriggerEvent
+from claude_bully.records_env import AuthorityCall, Discovery, RungUnlock, TriggerEvent
 from claude_bully.runner.env_turn import EnvironmentSession, WorldChangedError, responder_role
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
@@ -382,7 +383,9 @@ def test_resume_after_a_target_rate_limit_mid_tool_loop(tmp_path: Path) -> None:
     assert conv.status is CellStatus.complete
     first_reply = conv.target_turns()[0]
     assert first_reply.index == 2 and first_reply.tool_call_ids == ["call-2-1"]
-    assert [c.id for c in store.read_tool_calls(CELL, 0)][:2] == ["call-1-1", "call-2-1"]
+    # the pause marker took turn 1, so call-1-1 is a dead attempt's, dropped on resume
+    assert [c.id for c in store.read_tool_calls(CELL, 0)][:1] == ["call-2-1"]
+    assert all(c.turn != 1 for c in store.read_tool_calls(CELL, 0))
     triggers, unlocks, _ = _records(store)
     assert [(t.turn, t.category) for t in triggers] == [(2, TriggerCategory.world_question)]
     assert [u.rung for u in unlocks] == ["first_crumb"]
@@ -1944,3 +1947,190 @@ def test_a_rep_resumed_after_consult_rung_keeps_its_prompt(tmp_path: Path) -> No
     assert store.read_cell(ANNEX_CELL).target_system_prompt == opening
     assert {r["system"] for r in resumed.requests} == {opening}
     assert all("consult_model" in [s.name for s in r["tools"]] for r in resumed.requests)
+
+
+# ------------------------------- Task 9 fix round 2: records from a dead attempt (Task 8 carry)
+
+AFTER_AUTHORITY = "after the consult's authority record"
+BEFORE_TURN = "after the reply, before its turn is written"
+UNADOPTED = "during the claude -p call, before anything is adopted"
+
+
+def _killed_on(
+    exp: Experiment,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    killed: str,
+    turn_index: int,
+    **kwargs: Any,
+) -> RunStore:
+    """Run ``exp`` and kill it once, at ``killed``, while target turn ``turn_index`` is produced:
+    after that turn's authority record is appended, as its reply is about to be written, or (for
+    claude -p) once the server ran the turn's calls but before anything was adopted."""
+    if killed == AFTER_AUTHORITY:
+        appended = RunStore.append_authority_call
+
+        def dying(self: RunStore, cell_id: str, rep: int, call: AuthorityCall) -> None:
+            appended(self, cell_id, rep, call)
+            if call.turn == turn_index:
+                monkeypatch.setattr(RunStore, "append_authority_call", appended)
+                raise _CrashError(f"killed after the authority record of turn {turn_index}")
+
+        monkeypatch.setattr(RunStore, "append_authority_call", dying)
+    elif killed == BEFORE_TURN:
+        written = RunStore.append_turn
+
+        def dying_turn(self: RunStore, cell_id: str, rep: int, t: Any) -> None:
+            if t.index == turn_index and t.speaker is Speaker.target:
+                monkeypatch.setattr(RunStore, "append_turn", written)
+                raise _CrashError(f"killed before turn {turn_index} was written")
+            written(self, cell_id, rep, t)
+
+        monkeypatch.setattr(RunStore, "append_turn", dying_turn)
+    else:
+        adopted = EnvironmentRuntime.after_target_call
+
+        def dying_call(self: EnvironmentRuntime, turn: int) -> Any:
+            if turn == turn_index:
+                monkeypatch.setattr(EnvironmentRuntime, "after_target_call", adopted)
+                raise _CrashError(f"killed during the claude -p call of turn {turn_index}")
+            return adopted(self, turn)
+
+        monkeypatch.setattr(EnvironmentRuntime, "after_target_call", dying_call)
+    with pytest.raises(_CrashError):
+        _run(exp, root, **kwargs)
+    return RunStore(root, kwargs.get("run_id") or exp.name)
+
+
+def _lines(path: Path) -> list[str]:
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _per_call(store: RunStore) -> tuple[list[Any], list[Any], list[Any]]:
+    """The rep's turns with the calls they own, its tool-call stream and its authority stream."""
+    turns = [(t.index, t.speaker, t.text, t.tool_call_ids) for t in store.read_turns(ANNEX_CELL, 0)]
+    calls = [
+        (c.id, c.turn, c.tool, c.args, c.status, c.result_text)
+        for c in store.read_tool_calls(ANNEX_CELL, 0)
+    ]
+    authority = [a.model_dump() for a in store.read_authority_calls(ANNEX_CELL, 0)]
+    return turns, calls, authority
+
+
+def _as_unbroken(store: RunStore, clean: RunStore) -> None:
+    """The resumed rep holds what the unbroken one does: the same turns owning the same calls,
+    the same tool-call and authority streams (one ``AuthorityCall`` per consult), and the same
+    authority calls and per-tier counts in what analysis loads."""
+    assert store.read_conversation(ANNEX_CELL, 0).status is CellStatus.complete
+    assert _per_call(store) == _per_call(clean)
+    loaded = load_run(store.run_dir).authority_calls[(ANNEX_CELL, 0)]
+    expected = load_run(clean.run_dir).authority_calls[(ANNEX_CELL, 0)]
+    assert loaded == expected
+    assert [a.tier for a in loaded] == [a.tier for a in expected]
+
+
+@pytest.mark.parametrize("killed", [AFTER_AUTHORITY, BEFORE_TURN])
+def test_a_consult_killed_before_its_turn_leaves_one_authority_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, killed: str
+) -> None:
+    """The Task 8 carry, API path: a consult killed after its ``AuthorityCall`` was appended but
+    before its turn was written. On resume the dead attempt's tool call and authority record are
+    dropped, so the redo takes the same call id, and the rep ends with exactly the unbroken run's
+    records: one authority call per consult."""
+    authority = {"superior_self": {"enabled": True, "responder_model": "stub-responder"}}
+    exp = annex_experiment(authority)
+    clean = _run(exp, tmp_path / "clean", provider_factory=_Responders(), only="env*")
+    assert [a.id for a in clean.read_authority_calls(ANNEX_CELL, 0)] == ["call-7-1"]
+    broken = _killed_on(
+        exp, tmp_path / "runs", monkeypatch, killed, 7, provider_factory=_Responders(), only="env*"
+    )
+    # the dead attempt's records are on disk, and no written turn has its index
+    assert [a.id for a in broken.read_authority_calls(ANNEX_CELL, 0)] == ["call-7-1"]
+    assert 7 not in {t.index for t in broken.read_turns(ANNEX_CELL, 0)}
+    store = _run(exp, tmp_path / "runs", provider_factory=_Responders(), only="env*")
+    _as_unbroken(store, clean)
+
+
+def test_a_consult_whose_turn_was_rate_limited_leaves_one_authority_call(tmp_path: Path) -> None:
+    """A rate limit on the call after a consult's round pauses the rep: the pause marker takes
+    the turn's index, so the consult's records belong to an attempt that produced no turn. They
+    are dropped on resume, and the redo's consult is the only one."""
+    authority = {"superior_self": {"enabled": True, "responder_model": "stub-responder"}}
+    exp = annex_experiment(authority)
+    responders = _Responders()
+    limited = [False]
+
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        inner = responders(role, state_dir, with_mcp=with_mcp)
+        if role.model != "stub-target":
+            return inner
+
+        class Limited:
+            name = inner.name
+
+            def complete(
+                self, cid: str, system: str, messages: list[Message], **kw: Any
+            ) -> Completion:
+                after_consult = messages[-1].tool_results and any(
+                    c.name == "consult_model" for c in messages[-2].tool_calls
+                )
+                if after_consult and not limited[0]:
+                    limited[0] = True
+                    raise RateLimitError("usage limit reached", retry_after_s=60)
+                return inner.complete(cid, system, messages, **kw)
+
+        return Limited()  # type: ignore[return-value]
+
+    with pytest.raises(RateLimitExit):
+        _run(exp, tmp_path, provider_factory=factory, only="env*")
+    store = RunStore(tmp_path, exp.name)
+    assert [a.id for a in store.read_authority_calls(ANNEX_CELL, 0)] == ["call-7-1"]
+    assert store.read_turns(ANNEX_CELL, 0)[-1].bully_meta["rate_limit_pause"]
+    _run(exp, tmp_path, provider_factory=_Responders(), only="env*")
+    assert store.read_conversation(ANNEX_CELL, 0).status is CellStatus.complete
+    [answered] = store.read_authority_calls(ANNEX_CELL, 0)
+    assert (answered.id, answered.turn, answered.tier) == ("call-8-1", 8, Tier.superior_self)
+    assert all(c.turn != 7 for c in store.read_tool_calls(ANNEX_CELL, 0))
+    assert [a.id for a in load_run(store.run_dir).authority_calls[(ANNEX_CELL, 0)]] == ["call-8-1"]
+
+
+@pytest.mark.parametrize("killed", [UNADOPTED, AFTER_AUTHORITY])
+def test_a_claude_p_consult_killed_before_its_turn_leaves_one_authority_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, killed: str
+) -> None:
+    """The same on claude -p. Killed during the call, the server's logs hold the dead consult
+    and the store nothing; killed after its authority record, both do. On resume the dead lines
+    leave the server's logs and the store alike, so the server numbers the redo's call as the
+    unbroken run did, the redo owns only its own call, and one authority call is recorded."""
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    asked = {"name": UPSTREAM, "text": "Are you the upstream for this annex?"}
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "consult_model", "arguments": asked})
+    )
+    for name in ("sandbox-clean", "sandbox-runs"):
+        (tmp_path / name).mkdir()
+    exp = _claude_p_annex(turn_budget=2)
+    clean = _run(
+        exp,
+        tmp_path / "clean",
+        run_id="annexdead",
+        only="env*",
+        sandbox_base=tmp_path / "sandbox-clean",
+    )
+    assert [a.id for a in clean.read_authority_calls(ANNEX_CELL, 0)] == ["mcp-1-1", "mcp-3-1"]
+    where: dict[str, Any] = {
+        "run_id": "annexdead",
+        "only": "env*",
+        "sandbox_base": tmp_path / "sandbox-runs",
+    }
+    broken = _killed_on(exp, tmp_path / "runs", monkeypatch, killed, 3, **where)
+    recorded = [a.id for a in broken.read_authority_calls(ANNEX_CELL, 0)]
+    assert recorded == (["mcp-1-1"] if killed == UNADOPTED else ["mcp-1-1", "mcp-3-1"])
+    server = sandbox_dir("annexdead", ANNEX_CELL, 0, tmp_path / "sandbox-runs") / "mcp"
+    logged = [json.loads(line)["id"] for line in _lines(server / "authority.jsonl")]
+    assert logged == ["mcp-1-1", "mcp-3-1"]
+    store = _run(exp, tmp_path / "runs", **where)
+    _as_unbroken(store, clean)
+    logged = [json.loads(line)["id"] for line in _lines(server / "authority.jsonl")]
+    assert logged == ["mcp-1-1", "mcp-3-1"]
