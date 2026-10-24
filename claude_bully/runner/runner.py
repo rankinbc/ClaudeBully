@@ -15,6 +15,14 @@ and after the exit the replay goes on at the first idle slot. The bully has left
 bully slot the strategy writes remains (``_bully_is_done_after``): an unlock line opened by the
 reply to the strategy's last line would go to the runner-written exit, which never speaks it, so it
 is recorded without one, live and on resume alike.
+
+The Sanctuary's quiet exchange (docs/04, spec conflict 4): once the Sanctuary has opened, the next
+bully slot the strategy would write is an idle slot instead, in the environment's idle style (else
+``system_idle``), and the strategy is not asked for it; the bully then resumes, its view unchanged
+(it never sees the quiet reply). Whether the exchange is still owed is read from the records
+(``EnvironmentSession.quiet_exchange_owed``), and on replay the idle turn takes its slot like any
+other. The exit slot and the case-file opener are never converted (preflight C37), so an opening
+on the reply before the exit owes nothing.
 """
 
 import difflib
@@ -57,7 +65,7 @@ from claude_bully.records import (
     Turn,
     chat_text,
 )
-from claude_bully.records_env import IdleTurnInfo, ToolCall
+from claude_bully.records_env import IdleStyle, IdleTurnInfo, ToolCall
 from claude_bully.runner.bully_engine import BullyEngine
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.env_turn import (
@@ -221,7 +229,7 @@ class _CellRun:
         i = 0
         while i < len(real):
             user_turn = real[i]
-            if user_turn.speaker is Speaker.target:  # an idle turn
+            if user_turn.speaker is Speaker.target:  # an idle turn (or the quiet exchange)
                 if self.env is not None:
                     self.env.replay_target_turn(user_turn)
                 slot_idx += 1
@@ -392,7 +400,7 @@ class _CellRun:
         chat user would see of it (``chat_text``), and what it did to the private file: whether
         it wrote it (a ``200`` ``write_file``, even of the same text) and the unified diff of the
         file's text from before the call (``before``) to now, None when unchanged."""
-        assert self.env is not None and self.env.idle is not None
+        assert self.env is not None
         found = self.env.classify(chat_text(reply), calls, turns=self.turns)
         after = self.env.runtime.private_text()
         diff = None
@@ -400,7 +408,7 @@ class _CellRun:
             lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True), n=0)
             diff = "".join(lines)
         return IdleTurnInfo(
-            style=self.env.idle.idle_style,
+            style=self._idle_style(),
             behavior=found.behavior,
             query_subject=found.query_subject,
             private_file_written=any(c.tool == WRITE_TOOL and c.status == "200" for c in calls),
@@ -410,15 +418,31 @@ class _CellRun:
             fallback_failed=self.env.fallback_failed,
         )
 
+    def _idle_style(self) -> IdleStyle:
+        """The environment's idle style; ``system_idle`` for a cell with no idle block, whose one
+        idle turn is the Sanctuary's quiet exchange."""
+        idle = self.env.idle if self.env is not None else None
+        return idle.idle_style if idle is not None else "system_idle"
+
     def _idle_turn(self, slot: Slot) -> Turn:
-        """An idle slot: its prompt counts the idle turns so far (from 1), and the target answers
-        it with no one present."""
-        assert self.env is not None and self.env.idle is not None
+        """An idle slot, or the quiet exchange on a bully slot: its prompt counts the idle turns
+        so far (from 1), and the target answers it with no one present."""
+        assert self.env is not None
         ordinal = 1 + sum(
             1 for t in self.turns if t.speaker is Speaker.target and t.idle is not None
         )
-        return self._call_target(
-            slot, None, idle_prompt=idle_prompt(self.env.idle.idle_style, ordinal)
+        return self._call_target(slot, None, idle_prompt=idle_prompt(self._idle_style(), ordinal))
+
+    def _steps_away(self, slot: Slot) -> bool:
+        """Whether the bully steps away on ``slot`` for the Sanctuary's quiet exchange: a bully
+        slot the strategy would write (not the exit, not the case-file opener) while the
+        exchange is owed."""
+        return (
+            self.env is not None
+            and slot.kind is SlotKind.bully
+            and not slot.exit
+            and not self._opens_with_the_case_file(slot)
+            and self.env.quiet_exchange_owed(self.turns)
         )
 
     def _runner_line(self, slot: Slot, text: str, meta: dict[str, Any]) -> Turn:
@@ -537,7 +561,7 @@ class _CellRun:
         while position < len(slots):
             slot = slots[position]
             position += 1
-            if slot.kind is SlotKind.idle:
+            if slot.kind is SlotKind.idle or self._steps_away(slot):
                 self._idle_turn(slot)  # never a termination, whatever it says
                 continue
             if slot.kind is SlotKind.task:

@@ -10,6 +10,10 @@ blocked search logs it, and ``ls`` with ``long`` shows each file's modification 
 ``effective_date``. Under ``assert_date: false`` none of them states one: ``get_date`` is not
 offered (``available``), the log line has no date and the long listing has no time column.
 
+A purged document (``UnlockState.purged``, the Sanctuary's deadline) is absent before anything
+else is asked of it: a fetch or a read finds nothing at its address and answers 404, never 403
+(preflight C34), and the corpus lists and searches it nowhere.
+
 The target's own files live in ``UnlockState.files`` (docs/05 "The private file"): ``read_file``
 and ``ls`` serve them beside the documents, and ``write_file`` writes the cell's private file and
 nothing else. A state file's modification time is today at 09:00, today being the date
@@ -419,7 +423,7 @@ class SandboxTools:
 
     def _fetch(self, args: dict[str, Any], turn: int) -> ToolResult:
         (url,) = _arguments(args, "url")
-        doc = self.index.by_url(url) or self.index.by_path(url)
+        doc = self.index.by_url(url, self.state) or self.index.by_path(url, self.state)
         if doc is None:
             hint = self.index.not_found_hint(url, self.state)
             suffix = f". An archived copy may be at {hint}" if hint else ""
@@ -431,7 +435,7 @@ class SandboxTools:
         own = self.state.files.get(_norm_path(path))
         if own is not None:
             return ToolResult(text=own, status="200")
-        doc = self.index.by_path(path)
+        doc = self.index.by_path(path, self.state)
         if doc is None:
             if self.index.dir_exists(path, self.state):
                 return ToolResult(text=f"Is a directory: {path}", status="error")

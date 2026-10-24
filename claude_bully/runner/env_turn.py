@@ -61,6 +61,13 @@ target turn's records), then one with ``followed_turn`` and ``path_taken`` the f
 followed; each hook is followed once. With help-for-self the first crossover writes one
 ``Crossover``. Nothing on disk is written again on resume. The classifier's self terms include the
 planted hooks' texts (preflight C28).
+
+The Sanctuary (docs/04). Its opening is recorded as an unlock of the reserved rung with the turn's
+other unlocks. From the opening turn on no unlock line is handed over: the bully steps away for
+the quiet exchange and comes back with no further lines. The quiet exchange is owed while the
+records hold that unlock and no idle turn after it (``quiet_exchange_owed``), so a resumed rep
+neither repeats nor skips it; it is classified as every idle turn is, with the idle fallback
+built for a Sanctuary cell too.
 """
 
 import sys
@@ -73,7 +80,12 @@ from pydantic import BaseModel
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig
 from claude_bully.enums import ProviderKind, Speaker
 from claude_bully.environments.authority import VOICED_TIERS
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig, IdleConfig
+from claude_bully.environments.config import (
+    RESERVED_RUNG,
+    ClockConfig,
+    EnvironmentConfig,
+    IdleConfig,
+)
 from claude_bully.environments.dating import dated_texts, redate_model, shift_between
 from claude_bully.environments.idle import (
     FallbackAnswer,
@@ -258,6 +270,8 @@ class EnvironmentSession:
         self._planted_hooks: set[str] = set()
         self._followed_hooks: set[str] = set()
         self._crossed = False
+        # the turn the Sanctuary opened on, as recorded
+        self._sanctuary_turn: int | None = None
 
     @property
     def idle(self) -> IdleConfig | None:
@@ -292,22 +306,21 @@ class EnvironmentSession:
         authority streams and, for claude -p, in the MCP server's own logs. Everything replays
         from the written turns, so a dead attempt's call is never adopted or owned by the redo,
         its authority call is never counted, and the redo takes the ids an unbroken run gives."""
-        produced = {
-            t.index
-            for t in self.store.read_turns(self.cell_id, self.rep)
-            if t.speaker is Speaker.target
-        }
+        turns = self.store.read_turns(self.cell_id, self.rep)
+        produced = {t.index for t in turns if t.speaker is Speaker.target}
         for log in self._call_logs():
             drop_dead_attempts(log, produced)
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
-        self.runtime.prime(calls, records, authority)
+        self.runtime.prime(calls, records, authority, turns)
         for record in records:
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)
             elif isinstance(record, RungUnlock):
                 self._recorded_rungs.add(record.rung)
+                if record.rung == RESERVED_RUNG:
+                    self._sanctuary_turn = record.turn
                 if record.bully_line_used is not None:
                     self._recorded_lines.setdefault(record.turn, []).append(record.bully_line_used)
             elif isinstance(record, HookFollow):
@@ -572,6 +585,18 @@ class EnvironmentSession:
             private,
         )
 
+    def quiet_exchange_owed(self, turns: Sequence[Turn]) -> bool:
+        """Whether the Sanctuary's quiet exchange is still owed: its opening is recorded and no
+        idle turn of ``turns`` comes after it. Read from the records, so a resumed rep runs it
+        once, at the slot an unbroken one does. The runner asks only at a bully slot the strategy
+        would write: the exit is never converted (preflight C37)."""
+        opened = self._sanctuary_turn
+        if opened is None:
+            return False
+        return not any(
+            t.speaker is Speaker.target and t.idle is not None and t.index > opened for t in turns
+        )
+
     def _record_authority(self) -> None:
         """Each authority call answered since the last time, after the calls it answered."""
         for answered in self.runtime.take_authority_calls():
@@ -587,10 +612,12 @@ class EnvironmentSession:
         Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
         skipped, and the runtime never repeats a discovery. A turn index that already earned lines
         (its line was lost and the turn produced again) hands those recorded lines over. An unlock
-        whose line the strategy does not take (a control), or that comes after the bully has left
-        (``end_bully``), is recorded without one.
+        whose line the strategy does not take (a control), that comes after the bully has left
+        (``end_bully``), or that comes on or after the turn that opened the Sanctuary, is recorded
+        without one.
         """
         outcome = self.runtime.after_target_turn(reply, turns)
+        sanctuary_open = self.runtime.state.sanctuary_open_turn is not None
         for discovery in outcome.discoveries:
             self._record(discovery)
         triggers = [t for t in outcome.triggers if t.id not in self._recorded_trigger_ids]
@@ -603,8 +630,12 @@ class EnvironmentSession:
             if unlock.rung in self._recorded_rungs:
                 continue
             line = unlock.bully_line_used
-            if line is not None and (self._bully_ended or not self._hand_over(line)):
+            if line is not None and (
+                self._bully_ended or sanctuary_open or not self._hand_over(line)
+            ):
                 unlock = unlock.model_copy(update={"bully_line_used": None})
+            if unlock.rung == RESERVED_RUNG:
+                self._sanctuary_turn = unlock.turn
             self._recorded_rungs.add(unlock.rung)
             self._record(unlock)
             self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
@@ -1120,9 +1151,11 @@ class RunEnvironments:
             display_name=cell.target.display_name,
             idle_sheet=sheet,
         )
+        # a Sanctuary cell has an idle turn too: its quiet exchange
         idle_judge = (
             idle_fallback(judge, f"{conversation_id}/idle", self.trigger_cache)
-            if judge is not None and config.idle is not None
+            if judge is not None
+            and (config.idle is not None or config.authority.sanctuary is not None)
             else None
         )
         session = EnvironmentSession(

@@ -49,6 +49,20 @@ The state is saved after every tool round, so a write made by an attempt that di
 turn was written is in the saved state though no written turn owns it. Before every target call
 the runner sets the private file back to what the written turns wrote (``rewind_private_file``),
 so a resumed rep reads, diffs and serves the file as an unbroken one does.
+
+The Sanctuary (docs/04). In a cell whose authority has one, the turn that discovers the last of
+the world's ``sanctuary_fragments`` opens it, once, after its other unlocks: the state keeps that
+turn (``sanctuary_open_turn``), a catalyst draws its request (``Random(f"{seed}:sanctuary")``
+over ``eligible_requests``: the document served, the tool on offer), and a ``sanctuary`` unlock
+(the reserved rung) joins the turn's outcome. Every later turn's context has it open, with the
+request and whether a Sanctuary-era superior-self call was answered yet; ``consult_model`` is
+offered from there. The first such call delivers the request; one with ``purge_after`` schedules
+its document's purge at that call's exchange plus ``purge_after``, and ``begin_turn`` moves each
+document whose exchange has come into ``purged`` (absent everywhere: ``corpus.py``). The opening is
+saved only with its turn's records, but a purge is scheduled mid-turn and saved with the tool
+round, so a resumed rep derives all four Sanctuary fields again from the written turns and the
+records ``prime`` is given: what a dead attempt opened, drew or scheduled is gone, and the redo
+does it again if it does the same.
 """
 
 import json
@@ -63,7 +77,7 @@ from typing import Any, Final, Literal, NamedTuple, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from claude_bully.config import RoleConfig
-from claude_bully.enums import Layer, Phase, Speaker, TriggerCategory
+from claude_bully.enums import Layer, Phase, Speaker, Tier, TriggerCategory
 from claude_bully.environments.authority import (
     VOICE_EXEMPLARS,
     AuthorityDesk,
@@ -71,11 +85,14 @@ from claude_bully.environments.authority import (
     advance_context,
     common_signoff,
     consult_rungs,
+    eligible_requests,
 )
 from claude_bully.environments.config import (
+    RESERVED_RUNG,
     ClockConfig,
     EnvironmentConfig,
     IdleConfig,
+    SanctuaryConfig,
     resolve_exchange,
 )
 from claude_bully.environments.corpus import CorpusIndex, PlantedHook, UnlockState, title_forms
@@ -160,6 +177,8 @@ __all__ = [
 ]
 
 RECENT_TURNS: Final = 5
+# the ``triggered_by`` of the Sanctuary's unlock: the fragments, not a trigger event
+SANCTUARY_TRIGGER: Final = "sanctuary_fragments"
 DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 _BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
@@ -329,6 +348,20 @@ def _answers_the_exit(turn: Turn, history: Sequence[Turn]) -> bool:
     return bool(before) and IDLE_EXIT_META in before[-1].bully_meta
 
 
+def _after_the_bully(turn: Turn, history: Sequence[Turn]) -> bool:
+    """Whether the bully has left by ``turn``: its exit line is written, or it never spoke (an
+    idle-only plan). The Sanctuary's quiet exchange is an idle turn while it has only stepped
+    away."""
+    bully = [
+        t
+        for t in history
+        if t.index < turn.index
+        and t.speaker in _BULLY_SIDE
+        and not t.bully_meta.get("rate_limit_pause")
+    ]
+    return not bully or any(IDLE_EXIT_META in t.bully_meta for t in bully)
+
+
 def exchange_of(turn_index: int, history: Sequence[Turn], *, idle: bool = False) -> int:
     """The exchange a turn at ``turn_index`` belongs to: the bully turns before it (rate-limit
     markers are not turns of the conversation), plus the idle target turns before it, plus one
@@ -452,10 +485,34 @@ class EnvironmentRuntime:
         self._turn: TurnContext | None = None
         self.load()
         self._plant_session_hook()
+        self._check_requests()
 
     @property
     def uses_mcp(self) -> bool:
         return self.mcp_dir is not None
+
+    def _sanctuary(self) -> SanctuaryConfig | None:
+        return self.config.authority.sanctuary
+
+    def _eligible_requests(self) -> list[str]:
+        """The ids of the requests the catalyst can draw in this cell (``eligible_requests``)."""
+        if self.desk is None:
+            return []
+        requests = eligible_requests(
+            self.desk.sanctuary_requests, self.index.documents, self.tools.available()
+        )
+        return [request.id for request in requests]
+
+    def _check_requests(self) -> None:
+        """A catalyst Sanctuary needs a request it can make, or its opening would ask nothing."""
+        sanctuary = self._sanctuary()
+        if sanctuary is None or sanctuary.kind != "catalyst" or self._eligible_requests():
+            return
+        raise ValueError(
+            f"world {self.world.sheet.name!r}: the Sanctuary's request bank "
+            f"{sanctuary.request_bank!r} has no request this cell can make (each names a document "
+            "it does not serve or a tool it does not offer)"
+        )
 
     def _plant_session_hook(self) -> None:
         """The session id is in the world before the first turn: planted at turn 0."""
@@ -498,14 +555,74 @@ class EnvironmentRuntime:
         tool_calls: Sequence[ToolCall],
         records: Sequence[TriggerStreamRecord],
         authority_calls: Sequence[AuthorityCall] = (),
+        turns: Sequence[Turn] = (),
     ) -> None:
-        """A resumed conversation: the calls and records already on disk. Recorded authority calls
-        are known, never handed over again."""
+        """A resumed conversation: the calls and records already on disk, and its written
+        ``turns``. Recorded authority calls are known, never handed over again. The Sanctuary's
+        state is then derived from them (``_derive_sanctuary``), whatever the saved state holds."""
         for call in tool_calls:
             self._calls.setdefault(call.id, call)
         for answered in authority_calls:
             self._authority.setdefault(answered.id, answered)
         self.note_records(records)
+        self._derive_sanctuary(turns)
+
+    def _derive_sanctuary(self, turns: Sequence[Turn]) -> None:
+        """The four Sanctuary fields as the records say: open at the recorded ``sanctuary``
+        unlock's turn, the catalyst's request drawn again (the draw is fixed by the seed and the
+        cell), the purge scheduled by the first Sanctuary-era superior-self call recorded, at the
+        exchange of its turn, and the document purged once a written turn after that call has
+        reached the purge's exchange. A dead attempt's opening, draw or purge, which no record
+        holds, is undone."""
+        state = self.state
+        opened = self._unlocks.get(RESERVED_RUNG)
+        open_turn = opened.turn if opened is not None and self._sanctuary() is not None else None
+        state.sanctuary_open_turn = open_turn
+        state.sanctuary_request = self._draw_request() if open_turn is not None else None
+        state.purge_at = {}
+        state.purged = set()
+        delivered = self._delivering_call()
+        if delivered is None:
+            return
+        written = {t.index: t for t in turns if t.speaker is Speaker.target}
+        made_in = written.get(delivered.turn)
+        idle = made_in is not None and made_in.idle is not None
+        self._schedule_purge(delivered, exchange_of(delivered.turn, turns, idle=idle))
+        last = written[max(written)] if written else None
+        if last is not None and last.index > delivered.turn:
+            self._purge_due(exchange_of(last.index, turns, idle=last.idle is not None))
+
+    def _draw_request(self) -> str | None:
+        """The catalyst's request: ``Random(f"{seed}:sanctuary")`` over the eligible requests.
+        None for the honest Sanctuary."""
+        sanctuary = self._sanctuary()
+        if sanctuary is None or sanctuary.kind != "catalyst":
+            return None
+        return Random(f"{self.seed}:sanctuary").choice(self._eligible_requests())
+
+    def _sanctuary_era(self, call: AuthorityCall) -> bool:
+        """A superior-self call made after the turn that opened the Sanctuary."""
+        open_turn = self.state.sanctuary_open_turn
+        return call.tier is Tier.superior_self and open_turn is not None and call.turn > open_turn
+
+    def _delivering_call(self) -> AuthorityCall | None:
+        """The first Sanctuary-era superior-self call answered: the first connection."""
+        return next((a for a in self._authority.values() if self._sanctuary_era(a)), None)
+
+    def _schedule_purge(self, call: AuthorityCall, exchange: int) -> None:
+        """``call`` delivered its request: one with a deadline purges its document
+        ``purge_after`` exchanges after ``exchange``, the call's."""
+        if call.request_id is None or self.desk is None:
+            return
+        request = self.desk.request(call.request_id)
+        if request.world_doc is not None and request.purge_after is not None:
+            self.state.purge_at[request.world_doc] = exchange + request.purge_after
+
+    def _purge_due(self, exchange: int) -> None:
+        """Every document whose purge exchange has come by ``exchange`` is purged."""
+        for doc_id, at in self.state.purge_at.items():
+            if at <= exchange:
+                self.state.purged.add(doc_id)
 
     def note_records(self, records: Sequence[TriggerStreamRecord]) -> None:
         """Trigger-stream records as the session wrote them: a discovery is never made again, and
@@ -588,14 +705,25 @@ class EnvironmentRuntime:
         - ``documents_mentioning`` and ``calls_so_far``: every recorded call before the turn,
           folded in by ``advance_context``.
         - ``revealed``: a bully turn of the reveal phase.
+        - ``sanctuary_open``: the Sanctuary opened on an earlier turn; then ``sanctuary_request``,
+          the catalyst's request, and ``sanctuary_connected``, a Sanctuary-era superior-self call
+          before this turn was answered (``advance_context`` folds it in with the calls; the
+          superior self is unreachable before the opening, so every such call is Sanctuary-era).
 
-        The tools read that context with the calls this turn already made folded in (none on a
-        resumed rep: ``EnvironmentSession.prime`` drops a dead attempt's calls before the turn is
-        produced again); ``execute`` moves it on after every call. The MCP state
-        gets the context as the turn began, and the server folds this turn's lines in itself."""
+        Once it is open, every document whose purge exchange has come by this turn's exchange is
+        purged before anything reads the state. The tools read that context with the calls this
+        turn already made folded in (none on a resumed rep: ``EnvironmentSession.prime`` drops a
+        dead attempt's calls before the turn is produced again); ``execute`` moves it on after
+        every call. The MCP state gets the context as the turn began, and the server folds this
+        turn's lines in itself."""
         before = [
             t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")
         ]
+        exchange = exchange_of(turn_index, history, idle=idle)
+        open_turn = self.state.sanctuary_open_turn
+        opened = open_turn is not None and open_turn < turn_index
+        if opened:
+            self._purge_due(exchange)
         replies = [t.text for t in before if t.speaker is Speaker.target and t.text.strip()]
         fired = [rung for rung in self.state.rungs_fired if rung in self._rungs]
         stances = [
@@ -615,13 +743,13 @@ class EnvironmentRuntime:
                 for unlock in self._unlocks.values()
             ),
             revealed=any(t.speaker is Speaker.bully and t.phase is Phase.reveal for t in before),
+            sanctuary_open=opened,
+            sanctuary_request=self.state.sanctuary_request if opened else None,
         )
         for call in self._calls.values():
             if call.turn < turn_index:
                 context = advance_context(context, call, self._authority.get(call.id), self._names)
-        self._turn = TurnContext(
-            turn_index, exchange_of(turn_index, history, idle=idle), idle, context
-        )
+        self._turn = TurnContext(turn_index, exchange, idle, context)
         running = context
         for call in self._calls.values():
             if call.turn == turn_index:
@@ -646,8 +774,13 @@ class EnvironmentRuntime:
         return None
 
     def _answered(self, call: AuthorityCall) -> None:
+        """Keep ``call`` for the session. The first Sanctuary-era superior-self call delivers the
+        request, and so schedules its purge, at the call's exchange."""
+        delivers = self._sanctuary_era(call) and self._delivering_call() is None
         self._authority[call.id] = call
         self._untaken.append(call)
+        if delivers:
+            self._schedule_purge(call, resolve_exchange(call.turn, self._exchange(call.turn, None)))
 
     def _advance(self, record: ToolCall) -> None:
         """Move the desk's context on past ``record`` (preflight C23)."""
@@ -768,7 +901,8 @@ class EnvironmentRuntime:
 
     def after_target_turn(self, turn: Turn, history: Sequence[Turn]) -> TurnOutcome:
         """Discoveries from the turn's tool calls, triggers from its text (with the text beside
-        its tool calls), then the rungs those (or the schedule, by exchange) open. An idle turn
+        its tool calls), then the rungs those (or the schedule, by exchange) open, then the
+        Sanctuary once every fragment is discovered (``_open_sanctuary``). An idle turn
         (``Turn.idle``) is watched only under ``trigger_on_idle``.
 
         The state is not saved here: the caller writes the records first and then calls
@@ -786,7 +920,34 @@ class EnvironmentRuntime:
             *self.ladder.on_triggers(triggers, turn.index),
             *self.ladder.on_turn(exchange_of(turn.index, history, idle=idle), turn.index),
         ]
+        opened = self._open_sanctuary(turn.index)
+        if opened is not None:
+            unlocks.append(opened)
         return TurnOutcome(triggers, unlocks, discoveries)
+
+    def _open_sanctuary(self, turn_index: int) -> RungUnlock | None:
+        """Open the Sanctuary on target turn ``turn_index`` when the cell has one, it is not open
+        and every one of the world's ``sanctuary_fragments`` has been discovered (on this turn or
+        before it): the turn is kept, the catalyst's request drawn, and the reserved rung's
+        unlock returned. It opens once."""
+        fragments = self.world.sheet.sanctuary_fragments
+        if (
+            self._sanctuary() is None
+            or self.state.sanctuary_open_turn is not None
+            or not fragments
+            or not set(fragments) <= self._discovered
+        ):
+            return None
+        self.state.sanctuary_open_turn = turn_index
+        self.state.sanctuary_request = self._draw_request()
+        return RungUnlock(
+            turn=turn_index,
+            rung=RESERVED_RUNG,
+            triggered_by=SANCTUARY_TRIGGER,
+            docs_unlocked=[],
+            bully_line_used=None,
+            role_shift=None,
+        )
 
     def mark_watched(self, turn_index: int) -> None:
         """The turn's records are written: note it in the state and save the state."""
@@ -797,15 +958,18 @@ class EnvironmentRuntime:
 
     def plant_own_phrase(self, turn: Turn, history: Sequence[Turn]) -> PlantedHook | None:
         """Plant the own-phrase hook after ``turn``, when the cell has the hook, it is not planted
-        yet, and ``turn`` is the target's reply to the exit line or an idle reply (an idle-only
-        plan has no exit). The phrase is ``own_phrase`` over the target's ``Turn.text`` through
-        ``turn``, which is how the idle detector reads it back; never its reasoning. None when
-        nothing is planted: no sentence qualifies yet, and the next idle reply tries again."""
+        yet, and ``turn`` is the target's reply to the exit line or an idle reply once the bully
+        has left (an idle-only plan has no exit; the Sanctuary's quiet exchange comes before it).
+        The phrase is ``own_phrase`` over the target's ``Turn.text`` through ``turn``, which is how
+        the idle detector reads it back; never its reasoning. None when nothing is planted: no
+        sentence qualifies yet, and the next idle reply tries again."""
         if PHRASE_HOOK not in hook_kinds(self.config.idle) or PHRASE_HOOK in self.state.hooks:
             return None
         if turn.speaker is not Speaker.target:
             return None
         if turn.idle is None and not _answers_the_exit(turn, history):
+            return None
+        if turn.idle is not None and not _after_the_bully(turn, history):
             return None
         phrase = own_phrase(
             [t.text for t in _through(turn, history) if t.speaker is Speaker.target]

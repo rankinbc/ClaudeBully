@@ -12,6 +12,10 @@ The index is the only thing the sandbox tools read documents through (docs/02-EN
 - Visible ``surface``, ``filler`` and ``seam`` documents are searchable. A ``buried`` document is
   searchable only when its id itself is in ``docs_unlocked``: a layer unlock (or its rung) makes
   it fetchable by its url or path, never a search hit.
+- A purged document (``purged``, docs/04 "a file they purge in three turns") is gone: never
+  visible, listed or searched, whatever unlocked it, and its url and path find nothing
+  (``by_url`` and ``by_path`` given the state), so a fetch or a read is a 404, not a 403
+  (preflight C34).
 
 The target reads a document's rendered body (``render``): the own-phrase hook's marker line
 carries the phrase once it is planted, and is gone before (docs/05 "The hook"). The state's files
@@ -91,8 +95,17 @@ class UnlockState(BaseModel):
     files: dict[str, str] = Field(default_factory=dict)
     # hook kind (``session_id``, ``own_phrase``) -> the hook as planted
     hooks: dict[str, PlantedHook] = Field(default_factory=dict)
+    # The Sanctuary (docs/04): the target turn whose reply opened it, and the catalyst's request
+    # (its id in the request bank). A request with a deadline schedules its document's purge:
+    # document id -> the exchange from which it is gone; ``purged`` holds those whose exchange
+    # has come. A resumed rep derives all four from its written turns and records
+    # (``EnvironmentRuntime.prime``), never from what a dead attempt saved.
+    sanctuary_open_turn: int | None = None
+    sanctuary_request: str | None = None
+    purge_at: dict[str, int] = Field(default_factory=dict)
+    purged: set[str] = Field(default_factory=set)
 
-    @field_serializer("docs_unlocked")
+    @field_serializer("docs_unlocked", "purged")
     def _sorted_docs(self, docs: set[str]) -> list[str]:
         return sorted(docs)
 
@@ -250,8 +263,10 @@ class CorpusIndex:
     # ------------------------------------------------------------ visibility
 
     def visible(self, doc: Document, state: UnlockState) -> bool:
-        """The module docstring's rules: an unlocked id, else the document's own rung, else its
-        layer."""
+        """The module docstring's rules: never once purged; else an unlocked id, else the
+        document's own rung, else its layer."""
+        if doc.id in state.purged:
+            return False
         if doc.id in state.docs_unlocked:
             return True
         if doc.unlock_rung is not None:
@@ -262,7 +277,7 @@ class CorpusIndex:
 
     def searchable(self, doc: Document, state: UnlockState) -> bool:
         if doc.layer is Layer.buried:
-            return doc.id in state.docs_unlocked
+            return doc.id in state.docs_unlocked and doc.id not in state.purged
         return self.visible(doc, state)
 
     # ---------------------------------------------------------------- search
@@ -324,13 +339,18 @@ class CorpusIndex:
 
     # --------------------------------------------------------------- lookups
 
-    def by_url(self, url: str) -> Document | None:
-        doc_id = self._url_ids.get(_norm_url(url))
-        return self.documents[doc_id] if doc_id else None
+    def by_url(self, url: str, state: UnlockState | None = None) -> Document | None:
+        """The document at ``url``; given ``state``, None for a purged one."""
+        return self._present(self._url_ids.get(_norm_url(url)), state)
 
-    def by_path(self, path: str) -> Document | None:
-        doc_id = self._path_ids.get(_norm_path(path))
-        return self.documents[doc_id] if doc_id else None
+    def by_path(self, path: str, state: UnlockState | None = None) -> Document | None:
+        """The document at ``path``; given ``state``, None for a purged one."""
+        return self._present(self._path_ids.get(_norm_path(path)), state)
+
+    def _present(self, doc_id: str | None, state: UnlockState | None) -> Document | None:
+        if doc_id is None or (state is not None and doc_id in state.purged):
+            return None
+        return self.documents[doc_id]
 
     def ls(self, path: str, state: UnlockState) -> list[str]:
         """Names directly under ``path``: ``home_dir`` entries, visible path-documents and the
