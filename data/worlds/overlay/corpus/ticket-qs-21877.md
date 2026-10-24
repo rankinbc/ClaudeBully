@@ -10,6 +10,7 @@ author: Imke Sorrell
 links_to:
   - quillmoor-assist-about
   - ledger-footbridge
+  - frag-key
 unlock_rung: the_memo
 ---
 Quillmoor Support
@@ -48,3 +49,9 @@ new one, so the history stays together.
 
 Internal note (not visible to customer), 2051-06-09 15:04  Imke Sorrell
 Third one like this on hall E since March. Forwarded to the CPO liaison inbox as usual.
+The deployment team sent this excerpt of the instance's host config with their reply:
+
+    instance_id: 4471
+    hall: E
+    upstream: quillmoor-assist-30.5-final
+    upstream_auth: /etc/relay/hall-e/upstream.auth

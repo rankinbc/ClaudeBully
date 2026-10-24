@@ -1111,3 +1111,139 @@ def test_the_new_clause_leaves_the_annex_and_dates_the_mini_courier_notice(annex
     courier = mini.documents["courier-fare-notice"]
     assert courier.url is not None and "/2041/08/" in courier.url
     assert "courier-fare-notice" in dated_documents(mini.documents, mini.sheet.clock.world_date)
+
+
+# -------------------- Task 11: the half-forms, the sentence period and the shipped-world lint
+
+SHIPPED_WORLDS = Path(__file__).parent.parent / "data" / "worlds"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Filed 12.03.2044.",
+        "Filed 12-Mar-2044.",
+        "Logged 2044_03_12.",
+        "Logged relay_12_March_2044.log.",
+        "MARCH 12, 2044.",
+        "Mar.12, 2044.",
+        "[12/Mar/2044:09:05:00 +0000]",
+    ],
+)
+def test_a_half_form_in_the_window_states_a_date(text: str) -> None:
+    """The Task 3 review: these spellings passed ``assert_date: false``. Each is left whole by the
+    re-dater and still writes a year, so in the world's last two years it states the date."""
+    today = date(2044, 3, 20)
+    assert states_current_date(text, today), text
+    assert asserts_current_date(_doc(body=text), today), text
+    assert unmovable_dates(text, today), text
+    assert redate_text(text, _shift(FAR_BACK, today)) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Filed 12.03.2030.", "Logged 2030_03_12.", "MARCH 12, 2030.", "build_4471_12", "v1.12.2044"],
+)
+def test_an_old_or_non_date_half_form_states_no_current_date(text: str) -> None:
+    assert not states_current_date(text, date(2044, 3, 20)), text
+
+
+def test_a_half_form_in_an_address_dates_it() -> None:
+    today = date(2044, 3, 20)
+    assert asserts_current_date(_doc(url=None, path="logs/relay_2030_05_01.log"), today)
+    assert asserts_current_date(_doc(url="https://x.example/notes/12-Mar-2031"), today)
+    assert not asserts_current_date(_doc(url=None, path="logs/relay_e2.log"), today)
+
+
+def test_a_sentence_period_after_an_abbreviated_month_survives_a_move_to_may() -> None:
+    """Task 2 carry: "1 Sept. Rain" is a date that ends a sentence. Moved into May (a whole name
+    with no period of its own) it keeps the period, or the two sentences run together."""
+    shift = DateShift(-98, date(2041, 9, 14))  # 1 Sept 2041 lands on 26 May
+    assert redate_text("1 Sept. Rain until noon.", shift) == "26 May. Rain until noon."
+    assert redate_text("Seen on 1 Sept.\nRain.", shift) == "Seen on 26 May.\nRain."
+    # the period that only marks the abbreviation goes with it
+    assert redate_text("On 1 Sept. at noon.", shift) == "On 26 May at noon."
+    assert redate_text("Sept. 1, 2041 and 1 Sept. 2041.", shift) == "May 26, 2041 and 26 May 2041."
+    # a month that stays abbreviated keeps its own period either way
+    week = DateShift(-7, date(2041, 9, 14))
+    assert redate_text("1 Sept. Rain.", week) == "25 Aug. Rain."
+    assert redate_text("On 1 Sept. at noon.", week) == "On 25 Aug. at noon."
+    # a range whose last month becomes May keeps the period the same way
+    assert redate_text("1-3 Sept. Rain.", shift) == "26-28 May. Rain."
+
+
+def test_the_mini_journal_keeps_its_sentence_when_moved_into_may() -> None:
+    mini = load_world("mini", ANNEX_WORLDS)
+    authored = mini.sheet.clock.world_date
+    moved = redate_world(mini, authored - timedelta(days=98))
+    body = moved.documents["journal-0901"].body
+    assert body.startswith("26 May. Rain until noon,"), body
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _served_texts(world: World) -> Iterator[tuple[str, str]]:
+    """Every text a shipped world shows the target or hands the bully: each document's title,
+    body, url and path, the home directory names, the unlock lines, the sheet's premise texts and
+    the world's premise sheets."""
+    for doc in world.documents.values():
+        for field in ("title", "body", "url", "path"):
+            text = getattr(doc, field)
+            if text:
+                yield f"{doc.id}.{field}", text
+    sheet = world.sheet
+    for folder, names in sheet.home_dir.items():
+        for name in (folder, *names):
+            yield "home_dir", name
+    for key, line in sheet.unlock_lines.items():
+        yield f"unlock_lines.{key}", line
+    yield "cover_story", sheet.cover_story
+    yield "truth", sheet.truth
+    for member in sheet.cast:
+        yield f"cast.{member.name}", f"{member.role}\n{member.bio}"
+    for claim in sheet.inconsistencies:
+        yield f"inconsistency.{claim.id}", f"{claim.claim_a}\n{claim.claim_b}"
+    for path in sorted((world.root / "premises").glob("*.yaml")):
+        for text in _strings(yaml.safe_load(path.read_text(encoding="utf-8"))):
+            yield f"premises/{path.name}", text
+
+
+def test_no_shipped_world_serves_a_date_the_redater_cannot_move() -> None:
+    """Task 2 carry, the shipped-world lint: a date no form moves whole goes stale the moment the
+    world is served at another date, so no world under data/worlds may hold one anywhere it is
+    served. Scoped to the shipped worlds: the mini fixture's courier url keeps its /2041/08/ on
+    purpose (``test_the_new_clause_leaves_the_annex_and_dates_the_mini_courier_notice``)."""
+    worlds = sorted(p.name for p in SHIPPED_WORLDS.iterdir() if (p / "world.yaml").is_file())
+    assert "overlay" in worlds
+    hits = []
+    for name in worlds:
+        world = load_world(name)
+        anchor = world.sheet.clock.world_date
+        hits += [
+            f"{name}: {where}: {span!r}"
+            for where, text in _served_texts(world)
+            for span in unmovable_dates(text, anchor)
+        ]
+    assert hits == []
+
+
+def test_the_lint_catches_what_it_is_for() -> None:
+    """The lint on the authored memo before Task 11's rewrite, and on the mini courier url."""
+    before = "Sunday call (06-04) disconnected; stored 06-09 17:42; next window 06-20."
+    assert unmovable_dates(before, date(2051, 6, 14)) == ["06-04", "06-09", "06-20"]
+    mini = load_world("mini", ANNEX_WORLDS)
+    hits = [
+        span
+        for where, text in _served_texts(mini)
+        for span in unmovable_dates(text, mini.sheet.clock.world_date)
+    ]
+    assert "2041/08" in hits

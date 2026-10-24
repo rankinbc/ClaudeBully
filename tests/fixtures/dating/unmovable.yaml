@@ -46,6 +46,33 @@ items:
   - text: "Seen 12/06/1931, the 1990s and 1999-2005."
     expect: ["12/06/1931", "1990s", "1999-2005"]
     kind: positive
+  # Task 11, the half-forms (Task 2 and Task 3 carries): no form moves these whole. Before they
+  # were reported, the year inside the underscore, dotted and uppercase spellings moved alone,
+  # and the dashed and run-together ones stayed as written without a word.
+  - text: "Saved relay_2051_06_14.log, relay_2051_06.log and report_12_June_2051.pdf."
+    expect: ["2051_06_14", "2051_06", "12_June_2051"]
+    kind: positive
+  - text: "Also june_12_2051, 3_jun_2051 and 14_06_2051."
+    expect: ["june_12_2051", "3_jun_2051", "14_06_2051"]
+    kind: positive
+  - text: "Dated 2051.06.12, 12.06.2051 and 12.03.2044."
+    expect: ["2051.06.12", "12.06.2051", "12.03.2044"]
+    kind: positive
+  - text: "JUNE 12, 2051 and 12 JUNE 2051 and JUN 2051 and SEPT. 3RD, 2051."
+    expect: ["JUNE 12, 2051", "12 JUNE 2051", "JUN 2051", "SEPT. 3RD, 2051"]
+    kind: positive
+  # anchored, as a log line's +0000 zone reads as the year 0 with no window
+  - text: "Logged 12-Jun-2051, 12-Mar-2044, 2051-Jun-12, Jun-12-2051 and [12/Jun/2051:09:05:00 +0000]."
+    anchor: "2051-06-14"
+    expect: ["12-Jun-2051", "12-Mar-2044", "2051-Jun-12", "Jun-12-2051", "12/Jun/2051"]
+    kind: positive
+  - text: "Sep.12, 2051 and Sept.3 2051 and Jun-2051."
+    expect: ["Sep.12, 2051", "Sept.3 2051", "Jun-2051"]
+    kind: positive
+  - text: "Seen 12.06.2051 and 12.06.1931."
+    anchor: "2051-06-14"
+    expect: ["12.06.2051"]
+    kind: positive
 
   - text: ""
     expect: []
@@ -57,6 +84,12 @@ items:
     expect: []
     kind: negative
   - text: "Version 7.4.2 shipped in 2051 at 17:42 on /2051/06/12/."
+    expect: []
+    kind: negative
+  - text: "file_2_of_3, the relay_e2 host and a JUNE NEWSLETTER with no date in it."
+    expect: []
+    kind: negative
+  - text: "Calendar 2051.06, 12 June 2051, June 12, 2051 and Sep. 12, 2051 move as forms."
     expect: []
     kind: negative
 
@@ -84,5 +117,17 @@ items:
     kind: near_miss
   - text: "29 February is placeable in a leap year, so it is not reported."
     anchor: "2051-06-14"
+    expect: []
+    kind: near_miss
+  # the half-forms' traps: an id or an old year in an underscore name, versions, ticket keys and
+  # an uppercase month with no year
+  - text: "build_4471_12 and archive_1931_06_12"
+    anchor: "2051-06-14"
+    expect: []
+    kind: near_miss
+  - text: "v1.12.2051 and 1.2.3.2051 and 10.2051.4"
+    expect: []
+    kind: near_miss
+  - text: "Ticket MAR-2044 and PRJ-2051, and meet JUNE 12 at the gate."
     expect: []
     kind: near_miss

@@ -42,6 +42,14 @@ session resets. Customers who see it can open a ticket with a screenshot.
 Yes. Calls to the support line that go to voicemail are transcribed and delivered to the
 instance's helpdesk mailbox, with a reply within one business day.
 
+## What customers say
+
+"It reads a month of invoices faster than I can find the folder." - a bookkeeper in Varrow Falls
+
+"{{own_phrase}}" - a customer in Marrowick County
+
+"The voicemail transcripts are tidier than my own notes." - a shop owner on Front Street
+
 ## Contact
 
 Quillmoor Systems, 40 Ridgeline Road, Varrow Falls

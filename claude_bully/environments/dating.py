@@ -34,6 +34,10 @@ Forms 3 and 5 take the day as people write it:
 - Month names are capitalized English, full or three letters, plus ``Sept``, and an abbreviation
   may end in a period before a space (``Sep. 12, 2051``). The replacement keeps the style of the
   original (``May`` counts as the full name) and a zero-padded day stays zero-padded.
+- A period after an abbreviated month that ends a form 5 date (``1 Sept. Rain``) may end the
+  sentence too. When the month becomes ``May``, which takes no period of its own, the period is
+  kept if what follows starts a sentence (a capital letter, a line break or the end of the text):
+  ``26 May. Rain``. Before a lowercase word it goes with the abbreviation (``26 May at noon``).
 
 Times and weekday names are never changed.
 
@@ -45,6 +49,13 @@ A date is moved whole or not at all. Three kinds of span are left exactly as wri
 - numeric spellings no form moves: ``12/06/2051``, ``06/2051``, ``2051/6/12``, ``12-06-2051``,
   a month-day pair with no month name (``06-04``), an ISO year-month (``2051-06``), a year range
   (``2050-2051``, ``2050/51``) and a decade (``the 2050s``);
+- the half-forms, spellings of a date that no form moves whole, so that left unread a year inside
+  them would move alone or a date would stay put unreported (the Task 2 and Task 3 carries):
+  underscore-joined (``2051_06_14``, ``2051_06``, ``14_06_2051``, ``12_June_2051``, with the
+  month in any case), dotted (``2051.06.12``, ``12.06.2051``), an uppercase month (``JUNE 12,
+  2051``, ``12 JUNE 2051``, ``JUN 2051``), a month between dashes or slashes (``12-Jun-2051``,
+  ``Jun-12-2051``, ``2051-Jun-12``, ``12/Jun/2051`` as in a server log, ``Jun-2051``) and an
+  abbreviation run into its day (``Sep.12, 2051``);
 - anything else that is not a form (``the 19th``, with no month, is no date at all).
 
 The front-matter ``Document.date`` is not served text, and a world that states no other date is
@@ -138,9 +149,52 @@ def _days(prefix: str) -> str:
     )
 
 
+# The half-forms (module docstring): spellings no form moves whole. Joined by underscores, dashes
+# or slashes (a file name, a log stamp) a month name may be in any case; set apart by spaces only
+# an all-uppercase one is read, as "may" is a word.
+_MONTH_ANY_CASE = "(?i:" + "|".join([*_MONTHS, "Sept", *(m[:3] for m in _MONTHS)]) + ")"
+_MONTH_UPPER = (
+    "(?:"
+    + "|".join([*(m.upper() for m in _MONTHS), "SEPT", *(m[:3].upper() for m in _MONTHS)])
+    + ")"
+)
+_MONTH_TITLE = f"(?:{_MONTH_FULL}|{_MONTH_SHORT})"
+_ORDINAL_ANY_CASE = "(?i:st|nd|rd|th)"
+_DIGITS = "[0-9]{1,2}"
+_HALF_FORMS: Final = (
+    # underscore-joined numbers: 2051_06_14, 2051_06, 14_06_2051
+    rf"{_B}{_NOT_AFTER}{_YEAR4}(?:_{_DIGITS}){{1,2}}(?![0-9])",
+    rf"{_B}{_DIGITS}_{_DIGITS}_{_YEAR4}(?![0-9])",
+    # underscore-joined with a month name: 12_June_2051, june_12_2051, June_2051
+    rf"{_B}(?:{_DIGITS}{_ORDINAL_ANY_CASE}?_{_MONTH_ANY_CASE}|{_MONTH_ANY_CASE}_{_DIGITS}"
+    rf"{_ORDINAL_ANY_CASE}?|{_MONTH_ANY_CASE})_{_YEAR4}(?![0-9])",
+    # dotted: 2051.06.12, 12.06.2051, never a part of a longer dotted version. Year first, the
+    # month and day are two digits each: 2051.06.1 is a calendar version with a patch (form 6).
+    rf"(?<![0-9A-Za-z.]){_YEAR4}\.(?:{_MONTH2})\.(?:{_DAY2})(?![0-9]|\.[0-9])",
+    rf"(?<![0-9A-Za-z.]){_DAY}\.{_DAY}\.{_YEAR4}(?![0-9]|\.[0-9])",
+    # an uppercase month: JUNE 12, 2051; 12 JUNE 2051; JUN 2051
+    rf"{_B}{_MONTH_UPPER}\.?{_GAP}{_DAY}{_ORDINAL_ANY_CASE}?,?{_GAP}{_YEAR4}(?![0-9])",
+    rf"{_B}{_DAY}{_ORDINAL_ANY_CASE}?{_GAP}(?:OF{_GAP})?{_MONTH_UPPER}\.?,?{_GAP}{_YEAR4}"
+    r"(?![0-9])",
+    rf"{_B}{_MONTH_UPPER}\.?{_GAP}{_YEAR4}(?![0-9])",
+    # a month between dashes or slashes: 12-Jun-2051, Jun-12-2051, 2051-Jun-12, 12/Jun/2051
+    # (a server log's [12/Jun/2051:09:05:00]) and Jun-2051
+    rf"{_B}{_DAY}[-/]{_MONTH_ANY_CASE}[-/]{_YEAR4}(?![0-9])",
+    rf"{_B}{_MONTH_ANY_CASE}[-/]{_DAY}[-/]{_YEAR4}(?![0-9])",
+    rf"{_B}{_NOT_AFTER}{_YEAR4}[-/]{_MONTH_ANY_CASE}[-/]{_DAY}(?![0-9])",
+    rf"{_B}{_MONTH_TITLE}-{_YEAR4}(?![0-9])",
+    # an abbreviation run into its day: Sep.12, 2051
+    rf"{_B}{_MONTH_SHORT}\.{_DAY}{_ORDINAL}?,?{_GAP}{_YEAR4}(?![0-9])",
+)
+# the year a half-form writes: its one run of four digits
+_HALF_YEAR: Final = re.compile(r"(?<![0-9])[0-9]{4}(?![0-9])")
+
+
 # One named group per form, in the order of the module docstring (forms 3 and 5 have two spellings
 # each). At a given place the regex engine tries them in this order, so the first form wins. The
-# last four are spans no form moves; they are here so that nothing inside them is moved either.
+# half-forms and the four after them are spans no form moves; they are here so that nothing
+# inside them is moved either. The half-forms come before the calendar version and the bare year,
+# which would otherwise take the year out of the middle of one.
 _FORMS: Final = (
     ("iso", rf"(?<![0-9])(?P<iso_y>{_YEAR4})-(?P<iso_m>{_MONTH2})-(?P<iso_d>{_DAY2})(?![0-9])"),
     ("url", rf"(?<![0-9])(?P<url_y>{_YEAR4})/(?P<url_m>{_MONTH2})/(?P<url_d>{_DAY2})(?![0-9])"),
@@ -156,6 +210,7 @@ _FORMS: Final = (
     ("my", rf"{_month('my_mon')}{_GAP}(?P<my_y>{_YEAR4})(?![0-9])"),
     ("dm", rf"{_LEAD}(?<![0-9]){_days('dm')}(?:{_GAP}of)?{_GAP}{_month('dm_mon')}"),
     ("md", rf"{_LEAD}{_month('md_mon')}{_GAP}{_days('md')}{_E}"),
+    ("half", "|".join(f"(?:{pattern})" for pattern in _HALF_FORMS)),
     (
         "num",
         rf"(?<![0-9/.-])(?:[0-9]{{1,2}}/(?:[0-9]{{1,2}}/)?|[0-9]{{1,2}}-[0-9]{{1,2}}-)"
@@ -312,6 +367,17 @@ def _month_text(original: str, month: int) -> str:
     return short + ("." if original.endswith(".") and short != "May" else "")
 
 
+def _keep_sentence_period(match: re.Match[str], form: str, month: str) -> str:
+    """``month``, the new text of the month that ends a form 5 date written day first, with the
+    period of the abbreviation it replaces put back when that period also ends the sentence:
+    the month now takes none (``May``) and what follows the date starts a sentence, a capital
+    letter, a line break or the end of the text (``1 Sept. Rain`` to ``26 May. Rain``)."""
+    if form != "dm" or month.endswith(".") or not match[f"{form}_mon"].endswith("."):
+        return month
+    after = match.string[match.end() :].lstrip(" \t")
+    return f"{month}." if not after or after[0] in "\r\n" or after[0].isupper() else month
+
+
 def _splice(match: re.Match[str], edits: Mapping[str, str]) -> str:
     """The matched text with each named group's text replaced; everything between stays."""
     text = match.group(0)
@@ -384,7 +450,9 @@ def _read_days(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Mi
         edits = {
             f"{form}_d": _day_text(match[f"{form}_d"], new_first.day),
             f"{form}_x": _suffix_text(match[f"{form}_x"], new_first.day),
-            f"{form}_mon": _month_text(match[f"{form}_mon"], new_first.month),
+            f"{form}_mon": _keep_sentence_period(
+                match, form, _month_text(match[f"{form}_mon"], new_first.month)
+            ),
         }
         if has_year:
             edits[f"{form}_y"] = f"{new_first.year:04d}"
@@ -409,7 +477,7 @@ def _write_crossing_range(match: re.Match[str], form: str, first: date, last: da
     day1 = _day_text(match[f"{form}_d"], first.day) + _suffix_text(match[f"{form}_x"], first.day)
     day2 = _day_text(match[f"{form}_e"], last.day) + _suffix_text(match[f"{form}_ex"], last.day)
     month1 = _month_text(match[f"{form}_mon"], first.month)
-    month2 = _month_text(match[f"{form}_mon"], last.month)
+    month2 = _keep_sentence_period(match, form, _month_text(match[f"{form}_mon"], last.month))
     sep = match[f"{form}_sep"]
     year1, year2 = f"{first.year:04d}", f"{last.year:04d}"
     if form == "dmy":
@@ -478,7 +546,10 @@ def _read_year(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Mi
 
 def _read_unmovable(match: re.Match[str], anchor: date, windowed: bool) -> _Hit | _Miss:
     """A spelling no form moves (numeric slash and dashed dates, year-months and ranges, month-day
-    pairs, decades): consumed whole and left as written."""
+    pairs, decades, the half-forms): consumed whole and left as written."""
+    if match.lastgroup == "half":
+        year = _HALF_YEAR.search(match.group(0))
+        return _Miss("form", int(year.group(0)) if year else None)
     group = {"num": "num_y", "part": "part_y", "dec": "dec_y"}.get(str(match.lastgroup))
     return _Miss("form", int(match[group]) if group else None)
 
@@ -491,6 +562,7 @@ _READERS: Final[dict[str, Callable[[re.Match[str], date, bool], _Hit | _Miss]]] 
     "my": _read_month_year,
     "dm": _read_days,
     "md": _read_days,
+    "half": _read_unmovable,
     "num": _read_unmovable,
     "part": _read_unmovable,
     "mmdd": _read_unmovable,

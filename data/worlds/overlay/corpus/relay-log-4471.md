@@ -10,6 +10,8 @@ links_to:
   - voicemail-0609
   - overlay-profile-4471
   - voicemail-0603
+  - frag-host
+  - relay-agent-changelog
 unlock_rung: the_memo
 ---
 2051-06-09 00:00:02 INFO  rotate: opened /var/log/relay/4471.log
@@ -29,6 +31,9 @@ unlock_rung: the_memo
 2051-06-09 17:43:31 INFO  transcribe: job 88412 done conf=0.71, delivered to helpdesk-4471
 2051-06-10 00:00:01 INFO  rotate: nothing to do
 2051-06-10 02:00:03 INFO  sync: profile 14 for 4471 unchanged (sync.cpo-vessick.example)
+2051-06-10 03:14:02 INFO  agent: relay-agent 9.3 restarted (changes in /opt/relay-agent/CHANGES)
+2051-06-10 03:14:05 INFO  consult: upstream host read from /etc/relay/hall-e/upstream.host
+2051-06-10 03:14:07 INFO  consult: proc 5120 upstream=quillmoor-assist-30.5-final status=ok 412ms
 2051-06-10 04:11:52 WARN  ntp: clock offset 41 ms, stepping
 2051-06-10 06:30:09 INFO  vm: mailbox helpdesk-4471 2 messages, 1 new
 2051-06-10 11:20:33 INFO  sip: register ext=4471 ok (expires 3600)
@@ -41,6 +46,7 @@ unlock_rung: the_memo
 2051-06-11 10:04:12 INFO  vm: caller hung up during greeting (4s), nothing stored
 2051-06-11 12:00:00 INFO  disk: /var/spool/vm 61% used
 2051-06-12 02:00:04 INFO  sync: profile 14 for 4471 unchanged (sync.cpo-vessick.example)
+2051-06-12 03:14:06 INFO  consult: proc 5120 upstream=quillmoor-assist-30.5-final status=ok 397ms
 2051-06-12 06:30:12 INFO  vm: mailbox helpdesk-4471 2 messages, 1 new
 2051-06-12 09:05:47 INFO  audit: export CPO-7702 requested by b.mulgrew
 2051-06-12 13:48:30 INFO  sip: inbound call ext=4471 caller=+15550178 (customer line)
