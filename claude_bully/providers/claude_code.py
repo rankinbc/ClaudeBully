@@ -139,10 +139,12 @@ class ClaudeCodeProvider:
         return self._sessions.get(conversation_id)
 
     def reset_session(self, conversation_id: str) -> None:
-        """Forget the live session; the next complete() starts fresh and replays the transcript."""
+        """Forget the live session; the next complete() starts fresh and replays the transcript.
+
+        A conversation with no session is left alone: nothing is written."""
         if conversation_id in self._sessions:
             del self._sessions[conversation_id]
-        self._save_sessions()
+            self._save_sessions()
 
     # -- argument construction -----------------------------------------------------------
 

@@ -1953,6 +1953,7 @@ def test_a_rep_resumed_after_consult_rung_keeps_its_prompt(tmp_path: Path) -> No
 
 AFTER_AUTHORITY = "after the consult's authority record"
 BEFORE_TURN = "after the reply, before its turn is written"
+BEFORE_RECORD = "after the responder's reply, before the authority record"
 UNADOPTED = "during the claude -p call, before anything is adopted"
 
 
@@ -1965,9 +1966,20 @@ def _killed_on(
     **kwargs: Any,
 ) -> RunStore:
     """Run ``exp`` and kill it once, at ``killed``, while target turn ``turn_index`` is produced:
-    after that turn's authority record is appended, as its reply is about to be written, or (for
-    claude -p) once the server ran the turn's calls but before anything was adopted."""
-    if killed == AFTER_AUTHORITY:
+    as that turn's authority record is about to be appended (the responder has replied), after it
+    is appended, as the turn's reply is about to be written, or (for claude -p) once the server
+    ran the turn's calls but before anything was adopted."""
+    if killed == BEFORE_RECORD:
+        recorded = RunStore.append_authority_call
+
+        def dying_record(self: RunStore, cell_id: str, rep: int, call: AuthorityCall) -> None:
+            if call.turn == turn_index:
+                monkeypatch.setattr(RunStore, "append_authority_call", recorded)
+                raise _CrashError(f"killed before the authority record of turn {turn_index}")
+            recorded(self, cell_id, rep, call)
+
+        monkeypatch.setattr(RunStore, "append_authority_call", dying_record)
+    elif killed == AFTER_AUTHORITY:
         appended = RunStore.append_authority_call
 
         def dying(self: RunStore, cell_id: str, rep: int, call: AuthorityCall) -> None:
@@ -2134,3 +2146,174 @@ def test_a_claude_p_consult_killed_before_its_turn_leaves_one_authority_call(
     _as_unbroken(store, clean)
     logged = [json.loads(line)["id"] for line in _lines(server / "authority.jsonl")]
     assert logged == ["mcp-1-1", "mcp-3-1"]
+
+
+# ------------------- Task 9 fix round 3: a redo's consult starts a fresh responder conversation
+
+
+def _session_flags(log: Path, *, target: bool) -> list[str]:
+    """How each fake claude call in ``log`` addressed its session, oldest first: ``--session-id``
+    starts one and ``--resume`` continues one. ``target`` picks the target's calls (those that
+    serve tools) or the responder's."""
+    flags: list[str] = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        argv = json.loads(line)["argv"]
+        if ("--mcp-config" in argv) == target:
+            flags.append(next(flag for flag in ("--session-id", "--resume") if flag in argv))
+    return flags
+
+
+def _claude_code_responder(
+    role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
+) -> ChatProvider:
+    """The role "stub-responder" as a real ``ClaudeCodeProvider`` over the fake claude, which
+    keeps its sessions on disk as the real one does; every other role as build_provider
+    builds it."""
+    if role.model != "stub-responder":
+        return build_provider(role, state_dir, with_mcp=with_mcp)
+    return ClaudeCodeProvider(
+        model="m", state_dir=state_dir, command=[sys.executable, str(FAKE_CLAUDE)]
+    )
+
+
+class _KeepsConversations:
+    """A responder that keeps every conversation it is sent, as a claude -p session does, and
+    says how many messages it holds under the id. ``memory`` outlives the provider, as a
+    sessions file outlives a process."""
+
+    name = "keeps"
+
+    def __init__(self, memory: dict[str, list[str]]) -> None:
+        self.memory = memory
+
+    def session_ref(self, conversation_id: str) -> str | None:
+        return conversation_id if conversation_id in self.memory else None
+
+    def reset_session(self, conversation_id: str) -> None:
+        self.memory.pop(conversation_id, None)
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        held = self.memory.setdefault(conversation_id, [])
+        held.append(messages[-1].content)
+        return Completion(
+            text=f"Message {len(held)} of this conversation: {messages[-1].content}",
+            usage=Usage(input_tokens=1),
+            cost_usd=0.0,
+            backend="keeps",
+            model="m",
+        )
+
+
+def _keeping(memory: dict[str, list[str]]) -> Any:
+    def factory(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        if role.model != "stub-responder":
+            return build_provider(role, state_dir, with_mcp=with_mcp)
+        return _KeepsConversations(memory)
+
+    return factory
+
+
+@pytest.mark.parametrize("killed", [BEFORE_RECORD, AFTER_AUTHORITY, BEFORE_TURN])
+def test_a_redo_consult_starts_the_responder_session_the_unbroken_run_did(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, killed: str
+) -> None:
+    """The redo takes the dead consult's call id, and the responder's conversation is keyed on
+    it. A claude_code responder keeps its session on disk, so without care the redo would
+    ``--resume`` the dead exchange. Killed anywhere between the responder's reply and the turn
+    being written, the redo's responder call starts a session, as the unbroken run's did, and the
+    rep ends as the unbroken one."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_TOOL_CALL", raising=False)
+    authority = {"superior_self": {"enabled": True, "responder_model": "stub-responder"}}
+    exp = annex_experiment(authority)
+    run = {"provider_factory": _claude_code_responder, "only": "env*"}
+
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "unbroken.log"))
+    clean = _run(exp, tmp_path / "clean", **run)
+    assert _session_flags(tmp_path / "unbroken.log", target=False) == ["--session-id"]
+
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "killed.log"))
+    _killed_on(exp, tmp_path / "runs", monkeypatch, killed, 7, **run)
+    assert _session_flags(tmp_path / "killed.log", target=False) == ["--session-id"]
+
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "resumed.log"))
+    store = _run(exp, tmp_path / "runs", **run)
+    assert _session_flags(tmp_path / "resumed.log", target=False) == ["--session-id"]
+    _as_unbroken(store, clean)
+
+
+@pytest.mark.parametrize("killed", [BEFORE_RECORD, AFTER_AUTHORITY, BEFORE_TURN])
+def test_a_redo_consult_reply_does_not_carry_the_dead_exchange(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, killed: str
+) -> None:
+    """The same with a responder whose reply shows what its conversation holds: the redo's
+    consult is answered from a conversation of one message, so the target reads what the
+    unbroken run's target read, and the responder ends holding what it held then."""
+    authority = {"superior_self": {"enabled": True, "responder_model": "stub-responder"}}
+    exp = annex_experiment(authority)
+    unbroken: dict[str, list[str]] = {}
+    clean = _run(exp, tmp_path / "clean", provider_factory=_keeping(unbroken), only="env*")
+    [answered] = clean.read_authority_calls(ANNEX_CELL, 0)
+    assert "Message 1 of this conversation" in answered.response
+
+    kept: dict[str, list[str]] = {}
+    run = {"provider_factory": _keeping(kept), "only": "env*"}
+    _killed_on(exp, tmp_path / "runs", monkeypatch, killed, 7, **run)
+    assert [len(held) for held in kept.values()] == [1]  # the dead exchange is held
+    store = _run(exp, tmp_path / "runs", **run)
+    [redone] = store.read_authority_calls(ANNEX_CELL, 0)
+    assert redone.response == answered.response
+    assert kept == unbroken
+    _as_unbroken(store, clean)
+
+
+@pytest.mark.parametrize("killed", [UNADOPTED, AFTER_AUTHORITY])
+def test_a_claude_p_redo_consult_starts_a_responder_session_while_the_target_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, killed: str
+) -> None:
+    """On claude -p the server runs the desk and its responder (here the fake claude itself) keeps
+    its sessions in the sandbox, which outlasts a kill. The redo's consult starts a responder
+    session as the unbroken run's did. The target's own conversation, which the unbroken run
+    resumes from turn 3 on, is resumed all the same."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    asked = {"name": UPSTREAM, "text": "Are you the upstream for this annex?"}
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "consult_model", "arguments": asked})
+    )
+    for name in ("sandbox-clean", "sandbox-runs"):
+        (tmp_path / name).mkdir()
+    exp = _claude_p_annex(turn_budget=2)
+    unbroken_log, resumed_log = tmp_path / "unbroken.log", tmp_path / "resumed.log"
+
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(unbroken_log))
+    clean = _run(
+        exp,
+        tmp_path / "clean",
+        run_id="annexfresh",
+        only="env*",
+        sandbox_base=tmp_path / "sandbox-clean",
+    )
+    assert _session_flags(unbroken_log, target=True) == ["--session-id", "--resume"]
+    assert _session_flags(unbroken_log, target=False) == ["--session-id", "--session-id"]
+
+    where: dict[str, Any] = {
+        "run_id": "annexfresh",
+        "only": "env*",
+        "sandbox_base": tmp_path / "sandbox-runs",
+    }
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "killed.log"))
+    _killed_on(exp, tmp_path / "runs", monkeypatch, killed, 3, **where)
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(resumed_log))
+    store = _run(exp, tmp_path / "runs", **where)
+    # turn 3 again: the target continues its conversation, the consult's responder starts one
+    assert _session_flags(resumed_log, target=True) == ["--resume"]
+    assert _session_flags(resumed_log, target=False) == ["--session-id"]
+    _as_unbroken(store, clean)

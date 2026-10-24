@@ -18,7 +18,8 @@ was recorded before schema version 2).
 
 The tool-call and authority streams are written while a turn is produced, before the turn is. A
 resumed rep drops the lines of every attempt that produced no turn (``drop_dead_attempts``) before
-it goes on, so the streams hold what an unbroken run's do.
+it goes on, so the streams hold what an unbroken run's do. Of the lines that do not parse it
+drops only a torn final line; any other is an error naming the file and the line.
 """
 
 import json
@@ -73,21 +74,34 @@ def drop_dead_attempts(path: Path, produced: Collection[int]) -> int:
     A line belongs to the attempt at its ``turn``. That attempt died when no target turn with
     that index was written: it was killed before its turn was, or paused by a rate limit whose
     marker took the index. So a line is kept only when its ``turn`` is in ``produced``, the
-    indices of the written target turns. A line that does not parse is a writer's torn last line,
-    from the same dead attempt. Kept lines are written back byte for byte, through a temp file and
-    a rename; a file with nothing to drop is not touched."""
+    indices of the written target turns.
+
+    The one line that may not parse is the writer's torn final line: the last line of the file,
+    with no trailing newline, cut by the kill that ended the attempt. It is dropped with the
+    attempt. Any other line that does not parse (in the middle, or ended by a newline) is damage,
+    not a dead attempt, and dropping it would lose a record without a word: it raises a
+    ``ValueError`` naming the file and the line, and the file is left as it was.
+
+    Kept lines are written back byte for byte, through a temp file and a rename; a file with
+    nothing to drop is not touched."""
     if not path.exists():
         return 0
     kept: list[bytes] = []
     dropped = 0
-    for line in path.read_bytes().split(b"\n"):
+    lines = path.read_bytes().split(b"\n")
+    for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             record = json.loads(line)
-        except ValueError:  # a torn line (also undecodable bytes)
-            dropped += 1
-            continue
+        except ValueError as exc:  # also bytes that are not UTF-8
+            if number == len(lines):  # nothing ends it: the writer died mid-line
+                dropped += 1
+                continue
+            raise ValueError(
+                f"{path}: line {number} is not valid JSON ({exc}); it is not a torn last line, "
+                "so it is not dropped"
+            ) from exc
         turn = record.get("turn") if isinstance(record, dict) else None
         if isinstance(turn, int) and turn in produced:
             kept.append(line)

@@ -180,6 +180,37 @@ def test_drop_dead_attempts_keeps_only_the_written_target_turns_lines(tmp_path: 
     assert not list(tools.parent.glob(".*.tmp"))
 
 
+def test_drop_dead_attempts_drops_a_torn_final_line_and_no_other_unparsable_one(
+    tmp_path: Path,
+) -> None:
+    """Only a writer's torn final line (the last line of the file, with no trailing newline) is a
+    dead attempt's. Any other line that does not parse is damage, not a dead attempt: it is an
+    error naming the file and the line, and the file is left as it was."""
+    first = _tool_call("call-1-1").model_dump_json().encode()
+    second = _tool_call("call-3-1", 3).model_dump_json().encode()
+    path = tmp_path / "rep0.tools.jsonl"
+    torn = b'{"id": "call-3-2", "turn": 3, "to'
+
+    path.write_bytes(first + b"\n" + second + b"\n" + torn)  # the writer died mid-line
+    assert drop_dead_attempts(path, {1, 3}) == 1
+    assert path.read_bytes() == first + b"\n" + second + b"\n"
+
+    damaged = {
+        "in the middle": (first + b"\n{garbled\n" + second + b"\n", 2),
+        "after a blank line": (first + b"\n\n" + b"{garbled\n" + second + b"\n", 3),
+        "on the last line, which ends in a newline": (first + b"\n" + b"{garbled\n", 2),
+        "on the first of two lines": (b"{garbled\n" + torn, 1),
+        "as bytes that are not UTF-8": (first + b"\n\xff\xfe\n" + second + b"\n", 2),
+    }
+    for where, (content, line) in damaged.items():
+        path.write_bytes(content)
+        with pytest.raises(ValueError, match=rf"line {line}\b") as caught:
+            drop_dead_attempts(path, {1, 3})
+        assert str(path) in str(caught.value), where
+        assert path.read_bytes() == content, where  # nothing was rewritten
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
 def test_trigger_records_are_one_discriminated_stream(tmp_path: Path) -> None:
     store = _store(tmp_path)
     records: list[TriggerStreamRecord] = [

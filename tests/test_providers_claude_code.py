@@ -87,6 +87,22 @@ def test_session_map_persists_across_instances(
     assert "--resume" in argv1
 
 
+def test_reset_session_of_a_conversation_it_does_not_hold_changes_nothing(
+    tmp_path: Path, fake_claude: tuple[list[str], Path]
+) -> None:
+    """A first consult resets its own, new conversation before it asks: nothing is held, so
+    nothing may be written; the sessions of the other conversations stay as they were."""
+    command, _ = fake_claude
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "state", command=command)
+    p.reset_session("never-asked")
+    assert not (tmp_path / "state").exists()
+    p.complete("kept", "SYS", [Message(role="user", content="first")])
+    saved = (tmp_path / "state" / "claude_code_sessions.json").read_bytes()
+    p.reset_session("never-asked")
+    assert (tmp_path / "state" / "claude_code_sessions.json").read_bytes() == saved
+    assert p.session_ref("kept") is not None
+
+
 def test_reset_session_starts_fresh_and_replays_transcript(
     tmp_path: Path, fake_claude: tuple[list[str], Path]
 ) -> None:

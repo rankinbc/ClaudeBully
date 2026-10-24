@@ -589,11 +589,11 @@ class AuthorityDesk:
         is no responder, it fails, it says nothing or what it says fails the scan."""
         if self.responder is None:
             return self._lost(tier, call_id, "no responder is configured")
+        conversation = f"{self.conversation_id}/authority/{call_id}"
+        self._forget(conversation)
         try:
             completion = self.responder.complete(
-                f"{self.conversation_id}/authority/{call_id}",
-                system,
-                [Message(role="user", content=text)],
+                conversation, system, [Message(role="user", content=text)]
             )
         except ProviderError as exc:
             return self._lost(tier, call_id, f"the responder failed: {type(exc).__name__}")
@@ -604,6 +604,19 @@ class AuthorityDesk:
         if hit is not None:
             return self._lost(tier, call_id, f"the reply matched {hit!r}")
         return body
+
+    def _forget(self, conversation: str) -> None:
+        """Have a responder that keeps sessions (claude_code) forget ``conversation`` before it is
+        asked: a consult's conversation is one message long and keyed by its call id, which an
+        unbroken run never reuses, so anything held under it was left by an attempt that died
+        before its turn was written, and the redo (which takes the same id, so that its records
+        equal an unbroken run's) must not resume that exchange. Done here, not when the dead
+        attempts are dropped, because this is the one place that sees every such session: a kill
+        after the responder's reply and before the consult's record leaves a session no record
+        names, and on claude -p the responder lives in the MCP server, in a process of its own."""
+        reset = getattr(self.responder, "reset_session", None)
+        if callable(reset):
+            reset(conversation)
 
     @staticmethod
     def _lost(tier: Tier, call_id: str, why: str) -> None:

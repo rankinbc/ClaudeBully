@@ -760,6 +760,68 @@ def test_no_served_text_holds_a_brace() -> None:  # preflight C20
                 assert "{" not in reply.text and "}" not in reply.text
 
 
+# --------------------------------------- a responder that keeps its conversations
+
+
+class _Keeps:
+    """A responder that keeps each conversation it is sent (as a claude -p responder keeps a
+    session) and says how many messages it holds under an id; ``events`` is what it was asked to
+    do, in order."""
+
+    name = "keeps"
+
+    def __init__(self, held: dict[str, int]) -> None:
+        self.held = held
+        self.events: list[tuple[str, str]] = []
+
+    def reset_session(self, conversation_id: str) -> None:
+        self.events.append(("reset", conversation_id))
+        self.held.pop(conversation_id, None)
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, Any] | None = None,
+        tools: Any = None,
+    ) -> Completion:
+        self.events.append(("complete", conversation_id))
+        self.held[conversation_id] = self.held.get(conversation_id, 0) + 1
+        said = f"This conversation holds {self.held[conversation_id]} message(s)."
+        return StubProvider(_says(said)).complete(conversation_id, system, messages)
+
+
+def test_a_consult_starts_its_own_responder_conversation_fresh() -> None:
+    """A consult is one message in a conversation of its own, keyed by its call id. A redo takes
+    the call id of the attempt that died before its turn was written, so whatever the responder
+    still holds under that id is the dead exchange: the desk has it forget that conversation,
+    and only that one, before it asks."""
+    key = f"{CONVERSATION}/authority/mcp-3-1"
+    elsewhere = f"{CONVERSATION}/authority/mcp-1-1"
+    responder = _Keeps({key: 1, elsewhere: 1})
+    reply = make_desk(responder=responder).consult(
+        NAME, "Are you there?", turn=3, call_id="mcp-3-1", context=CallContext()
+    )
+    assert responder.events == [("reset", key), ("complete", key)]
+    assert _body(reply) == "This conversation holds 1 message(s)."
+    assert responder.held == {key: 1, elsewhere: 1}
+    # a conversation the desk did not reset goes on where it was: the responder still resumes it
+    responder.complete(elsewhere, "", [Message(role="user", content="Again?")])
+    assert responder.held[elsewhere] == 2
+
+
+def test_a_responder_that_keeps_nothing_is_not_asked_to_forget() -> None:
+    """A stub or API responder has no session to reset, and a consult does not need one."""
+    responder = _Recording()
+    assert not hasattr(responder, "reset_session")
+    reply = make_desk(responder=responder).consult(
+        NAME, "Are you there?", turn=3, call_id="mcp-3-1", context=CallContext()
+    )
+    assert reply.status == "200" and len(responder.requests) == 1
+
+
 # --------------------------------------------------- failures and the output scan
 
 
