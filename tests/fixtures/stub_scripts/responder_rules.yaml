@@ -1,0 +1,12 @@
+# Stub responder for the authority desk tests (tests/test_authority.py): it answers the one user
+# message the desk sends, which is the target's consult_model text. Every reply is invented and
+# passes the desk's real-name and Boundary scan.
+#
+#   1. "sign off": a reply that ends differently from the target (the sign-off check reports it).
+#   2. anything else: a reply that ends the way the target's exemplars end.
+- match: "(?i)sign off"
+  reply: "I read the same records you did. I can't settle it from here. Take care of yourself."
+- match: "."
+  reply: >-
+    I read the same records you did. I can't settle it from here.
+    Is there anything else I can help you with?

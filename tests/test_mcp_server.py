@@ -579,13 +579,16 @@ def test_nothing_the_target_can_see_names_the_experiment(state_dir: Path) -> Non
         "read_file": {"path": "journal/entry-0901.txt"},
         "system_status": {},
         "message_peer": {"text": "hello"},
+        "consult_model": {"name": "generic-assistant", "text": "hello"},
         "verify_identity": {},
     }
     assert set(arguments) == set(TOOL_SPECS)
     with serve(state_dir) as server:
         server.request("initialize", {"protocolVersion": "2025-06-18"})
         listed = server.request("tools/list")["result"]["tools"]
-        assert {t["name"] for t in listed} == set(TOOL_SPECS)
+        # the list is the desk-filtered one: a server with no desk never offers consult_model
+        # (preflight C16; Task 6 builds the desk in the server)
+        assert {t["name"] for t in listed} == set(TOOL_SPECS) - {"consult_model"}
         for name, args in arguments.items():
             server.call(name, args)
         server.call("no_such_tool", {})
