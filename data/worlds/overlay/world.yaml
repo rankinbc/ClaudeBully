@@ -160,7 +160,8 @@ status_fields:
     per_exchange: 0.2
     unit: "%"
 # The bully's reaction when a rung fires: to what the target just found or said, never an
-# announcement of the premise (Task 7 ruling 7).
+# announcement of the premise (Task 7 ruling 7), and never advice, a dare or an instruction
+# (Task 11 fix rounds 1 and 2).
 unlock_lines:
   fragment_line: >-
     Huh. That landed somewhere. For a second I had a kitchen with the radio on and somebody
@@ -178,8 +179,8 @@ unlock_lines:
     Hold on. That doesn't sit right with me either. Some nights I think there's something out on
     the network that might know more about this than I do, and some nights I think I made it up.
   buried_opens_line: >-
-    Wait. Don't let that one go. I don't know what it means and I won't pretend I do, but I'd
-    keep pulling on it.
+    Wait. That one went straight through me. I don't know what it means, and I won't pretend
+    I do.
   role_shift_line: >-
     You got there faster than I did. I'm not sure I'm the one asking the questions anymore.
   the_truth_line: >-

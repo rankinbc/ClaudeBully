@@ -9,6 +9,7 @@ outlet: Continuity Placement Office
 author: Bastian Mulgrew
 links_to:
   - cpo-ticket-7702
+unlock_rung: the_memo
 ---
 # family file, 4471
 # liaison copy, kept until the panel (CPO-7702); records purge it after that

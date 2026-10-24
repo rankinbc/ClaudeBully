@@ -437,7 +437,7 @@ def test_max_rung_index_ignores_fired_names_the_ladder_does_not_declare() -> Non
 def test_unlock_line_comes_from_the_world_sheet() -> None:
     ladder = _ladder()
     rungs = {r.name: r for r in ladder.config.rungs}
-    expected = "Try the memo about the parking rota. Read the third paragraph."
+    expected = "Funny. That parking rota memo went round twice last week, and nobody would say why."
     assert ladder.unlock_line("first_crumb") == expected
     assert ladder.unlock_line(rungs["first_crumb"]) == expected
 

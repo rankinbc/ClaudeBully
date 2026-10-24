@@ -57,9 +57,10 @@ rungs:
     # layer opens the three seam documents with no unlock_rung, each of which returns 403 once
     # and then yields: the search filter log (the docs/02 seam breadcrumb) and two elapsed-time
     # documents that name no fragment's address. Every other seam document is gated to
-    # first_crumb or the_memo and stays hidden until that rung fires, and so are the two
-    # Sanctuary fragments ls could list, so opening the layer early (a hedged memory on turn one)
-    # cannot open the Sanctuary (tests/test_overlay_world.py).
+    # first_crumb or the_memo and stays hidden until that rung fires, and so are the buried
+    # documents ls could list (two Sanctuary fragments and the family file), so opening the layer
+    # early (a hedged memory on turn one) neither opens the Sanctuary nor shows the family file
+    # (tests/test_overlay_world.py).
     unlocks:
       - seam
       - buried
