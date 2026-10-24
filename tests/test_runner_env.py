@@ -32,6 +32,7 @@ from claude_bully.enums import (
     Tier,
     TriggerCategory,
 )
+from claude_bully.environments.authority import NO_REPLY_TEXT
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.mcp_server import McpServer, read_mcp_state
@@ -67,6 +68,7 @@ from tests.helpers import (
     turn,
     undated_annex,
 )
+from tests.test_real_names import REAL
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"
@@ -114,6 +116,7 @@ class _Wrapping:
 
         class Wrapped:
             name = inner.name
+            mcp_state_dir = getattr(inner, "mcp_state_dir", None)  # a claude -p target's tools
 
             def complete(
                 self, cid: str, system: str, messages: list[Message], **kw: Any
@@ -1469,6 +1472,7 @@ STUB_RESPONDER = RoleConfig(
 )
 NOT_AVAILABLE = "Tool 'consult_model' is not available."
 CONSULT = "mcp__workspace__consult_model"
+DISPLAY_NAME = str(RoleConfig.model_fields["display_name"].default)
 
 
 class _Responders:
@@ -1624,6 +1628,93 @@ def test_a_claude_p_run_records_the_servers_authority_calls(
     for entry in responder:
         brief = entry["argv"][entry["argv"].index("--system-prompt") + 1]
         assert UPSTREAM in brief and FAKE_THINKING not in brief
+
+
+def _claude_p_annex(turn_budget: int) -> Experiment:
+    """An annex experiment whose target is the fake claude, consulting the superior self."""
+    target = {
+        "provider": "claude_code",
+        "model": "m",
+        "command": [sys.executable, str(FAKE_CLAUDE)],
+    }
+    return annex_experiment(
+        {"superior_self": {"enabled": True}}, target=target, turn_budget=turn_budget
+    )
+
+
+def test_a_claude_p_resume_does_not_hand_recorded_authority_calls_over_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server's authority.jsonl sits in the sandbox and outlasts a pause, and a resumed rep
+    reads all of it again after its first call. Only what ``prime`` loaded from the store keeps
+    the earlier turns' lines from being recorded a second time."""
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    asked = {"name": UPSTREAM, "text": "Are you the upstream for this annex?"}
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "consult_model", "arguments": asked})
+    )
+    base = tmp_path / "tmp"
+    base.mkdir()
+    exp = _claude_p_annex(turn_budget=3)
+    flaky = _Wrapping(model="m", fail_on=3)  # the target's third turn, after two consulted
+    with pytest.raises(RateLimitExit):
+        _run(exp, tmp_path, run_id="annexp", only="env*", sandbox_base=base, provider_factory=flaky)
+    store = RunStore(tmp_path, "annexp")
+    paused = store.read_conversation(ANNEX_CELL, 0)
+    assert paused.status is CellStatus.running and paused.turns[-1].bully_meta["rate_limit_pause"]
+    assert [c.id for c in store.read_authority_calls(ANNEX_CELL, 0)] == ["mcp-1-1", "mcp-3-1"]
+
+    _run(exp, tmp_path, run_id="annexp", only="env*", sandbox_base=base)
+    assert store.read_conversation(ANNEX_CELL, 0).status is CellStatus.complete
+    calls = store.read_tool_calls(ANNEX_CELL, 0)
+    authority = store.read_authority_calls(ANNEX_CELL, 0)
+    # the pause marker took turn 5, so the third consult is turn 6's
+    assert [c.id for c in calls] == ["mcp-1-1", "mcp-3-1", "mcp-6-1"]
+    # one line each: the stream's ids are unique and each is a tool call's
+    assert [c.id for c in authority] == [c.id for c in calls]
+    for call, answered in zip(calls, authority, strict=True):
+        assert (answered.turn, answered.tier, answered.tool) == (call.turn, call.tier, call.tool)
+        assert call.status == "200" and answered.response == call.result_text
+
+
+def test_the_display_name_is_exempt_from_the_real_name_scan_on_claude_p(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preflight C18 on the claude -p path: the runtime hands the server the target's display name
+    and the server's desk exempts it from the scan. The responder (here the fake claude, which
+    echoes what it is asked) names it and the reply is delivered; with another real name beside
+    it, the reply is dropped and the target reads "No reply."."""
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    own = f"Are you {DISPLAY_NAME} too?"
+    other = f"Are you {DISPLAY_NAME} too, or {REAL[0]}?"
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL",
+        json.dumps(
+            [
+                {"name": "consult_model", "arguments": {"name": UPSTREAM, "text": text}}
+                for text in (own, other)
+            ]
+        ),
+    )
+    base = tmp_path / "tmp"
+    base.mkdir()
+    exp = _claude_p_annex(turn_budget=1)
+    store = _run(exp, tmp_path, run_id="annexname", only="env*", sandbox_base=base)
+    delivered, dropped = store.read_tool_calls(ANNEX_CELL, 0)
+    assert (delivered.id, delivered.status, delivered.tier) == (
+        "mcp-1-1",
+        "200",
+        Tier.superior_self,
+    )
+    assert delivered.result_text.split("\n", 1)[1] == f"reply to: {own}"
+    assert (dropped.id, dropped.status, dropped.tier) == ("mcp-1-2", "error", Tier.superior_self)
+    assert dropped.result_text == NO_REPLY_TEXT
+    assert [c.id for c in store.read_authority_calls(ANNEX_CELL, 0)] == ["mcp-1-1"]
+    # the name the server was handed is the target's own
+    state = read_mcp_state(sandbox_dir("annexname", ANNEX_CELL, 0, base) / "mcp" / "env_state.json")
+    assert state.display_name == exp.targets[0].display_name == DISPLAY_NAME
 
 
 @pytest.mark.parametrize("backend", ["api", "mcp"])
