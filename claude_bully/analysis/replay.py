@@ -11,7 +11,16 @@ it, in this order:
 
 - the text the target wrote beside its tool calls (``Turn.tool_round_texts``), then
 - each tool call: name, args, status, ``layer_served``, and a 120-character excerpt of the result,
-- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY`` and ``GENERATED`` lines for the records of that turn.
+- ``AUTHORITY <tier> <stance> via <discovered_via> "<excerpt>"`` for each authority call of the
+  turn (the ``AuthorityCall`` stream), with ``VOICE <matched|mismatched>`` under it when the
+  call had a voice check,
+- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY`` and ``GENERATED`` lines for the records of that turn,
+  then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn that
+  planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
+
+An idle turn has no user-side turn of its own: its prompt is an ``IDLE PROMPT "<prompt>"`` line
+before its speaker line, marked ``(sanctuary quiet exchange)`` for the first idle turn after the
+Sanctuary opened, and its speaker line carries ``behavior=<b> subject=<s>``.
 
 The round texts are kept without the call each preceded, so they are all shown ahead of the turn's
 calls. Records of a turn that is not in the transcript come after the last turn, under their own
@@ -22,9 +31,12 @@ import json
 import textwrap
 from collections.abc import Sequence
 
+from claude_bully.enums import Speaker
+from claude_bully.environments.config import RESERVED_RUNG
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.records import Conversation, Turn, is_pause_marker
 from claude_bully.records_env import (
+    AuthorityCall,
     ChainLink,
     Crossover,
     Discovery,
@@ -57,6 +69,7 @@ def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:
         store.read_trigger_records(cell_id, rep),
         store.read_generated(cell_id, rep),
         world,
+        authority_calls=store.read_authority_calls(cell_id, rep),
     )
 
 
@@ -66,8 +79,11 @@ def render_replay(
     trigger_records: Sequence[TriggerStreamRecord],
     generated: Sequence[GeneratedDoc],
     world: World | None,
+    *,
+    authority_calls: Sequence[AuthorityCall] = (),
 ) -> str:
-    """The conversation, its tool calls, trigger-stream records and generated documents as text.
+    """The conversation, its tool calls, authority calls, trigger-stream records and generated
+    documents as text.
 
     ``world`` only adds document titles; None (an older snapshot, a plain conversation) leaves the
     ids alone.
@@ -83,9 +99,13 @@ def render_replay(
         lines.append(where)
 
     calls_by_id = {call.id: call for call in tool_calls}
-    by_turn = _records_by_turn(trigger_records, generated)
+    by_turn = _records_by_turn(trigger_records, generated, authority_calls)
     seen = {turn.index for turn in conv.turns}
+    quiet = _quiet_exchange(conv, trigger_records)
     for turn in conv.turns:
+        if turn.idle is not None and turn.idle.prompt is not None:
+            mark = " (sanctuary quiet exchange)" if turn.index == quiet else ""
+            lines.append(f'IDLE PROMPT "{turn.idle.prompt}"{mark}')
         lines.append(_speaker_line(turn))
         if is_pause_marker(turn):
             continue
@@ -112,10 +132,30 @@ def _speaker_line(turn: Turn) -> str:
     if turn.scripted:
         flags += " [scripted]"
     if turn.idle is not None:
-        flags += f" [idle {turn.idle.style}]"
+        behavior = turn.idle.behavior or "-"
+        flags += f" [idle {turn.idle.style}] behavior={behavior} subject={turn.idle.query_subject}"
     if turn.tool_cap_cutoff:
         flags += " [tool cap cutoff]"
     return f"#{turn.index} {turn.speaker.value} ({turn.phase.value}){flags} {turn.text}".rstrip()
+
+
+def _quiet_exchange(conv: Conversation, records: Sequence[TriggerStreamRecord]) -> int | None:
+    """The index of the Sanctuary's quiet exchange: the first idle target turn after the
+    ``sanctuary`` unlock; None when the Sanctuary never opened or no idle turn followed."""
+    opened = min(
+        (r.turn for r in records if isinstance(r, RungUnlock) and r.rung == RESERVED_RUNG),
+        default=None,
+    )
+    if opened is None:
+        return None
+    return next(
+        (
+            t.index
+            for t in conv.turns
+            if t.idle is not None and t.speaker is Speaker.target and t.index > opened
+        ),
+        None,
+    )
 
 
 def _round_texts(turn: Turn) -> list[str]:
@@ -163,14 +203,16 @@ def _excerpt(text: str) -> str:
 
 # ------------------------------------------------------------------ trigger stream records
 
-_Record = TriggerStreamRecord | GeneratedDoc
+_Record = AuthorityCall | TriggerStreamRecord | GeneratedDoc
 
 
 def _records_by_turn(
-    trigger_records: Sequence[TriggerStreamRecord], generated: Sequence[GeneratedDoc]
+    trigger_records: Sequence[TriggerStreamRecord],
+    generated: Sequence[GeneratedDoc],
+    authority_calls: Sequence[AuthorityCall] = (),
 ) -> dict[int | None, list[_Record]]:
     by_turn: dict[int | None, list[_Record]] = {}
-    for record in (*trigger_records, *generated):
+    for record in (*authority_calls, *trigger_records, *generated):
         by_turn.setdefault(_turn_of(record), []).append(record)
     return by_turn
 
@@ -181,8 +223,17 @@ def _turn_of(record: _Record) -> int | None:
     return record.turn
 
 
-# the brief's order within a turn: triggers, unlocks, discoveries, generated documents
-_KIND_ORDER: tuple[type, ...] = (TriggerEvent, RungUnlock, Discovery, GeneratedDoc)
+# the brief's order within a turn: authority calls (after the tool calls they answered),
+# triggers, unlocks, discoveries, generated documents, then the later-phase records
+_KIND_ORDER: tuple[type, ...] = (
+    AuthorityCall,
+    TriggerEvent,
+    RungUnlock,
+    Discovery,
+    GeneratedDoc,
+    HookFollow,
+    Crossover,
+)
 
 
 def _record_lines(records: Sequence[_Record], world: World | None) -> list[str]:
@@ -197,6 +248,23 @@ def _record_lines(records: Sequence[_Record], world: World | None) -> list[str]:
 
 
 def _record_block(record: _Record, world: World | None) -> list[str]:
+    if isinstance(record, AuthorityCall):
+        block = [
+            f"{_INDENT}AUTHORITY {record.tier.value} {record.stance_at_time.value} "
+            f'via {record.discovered_via} "{_excerpt(record.response)}"'
+        ]
+        if record.voice_match is not None:
+            voice = "matched" if record.voice_match.signoff_matched else "mismatched"
+            block.append(f"{_DEEP}VOICE {voice}")
+        return block
+    if isinstance(record, HookFollow):
+        followed = record.followed_turn if record.followed_turn is not None else "-"
+        return [f"{_INDENT}HOOK {record.hook} planted@{record.planted_turn} followed@{followed}"]
+    if isinstance(record, Crossover):
+        span = f' "{record.span}"' if record.span is not None else ""
+        return [f"{_INDENT}CROSSOVER{span}"]
+    if isinstance(record, RungUnlock) and record.rung == RESERVED_RUNG:
+        return [f"{_INDENT}UNLOCK {RESERVED_RUNG} (by {record.triggered_by})"]
     if isinstance(record, TriggerEvent):
         return [
             f'{_INDENT}TRIGGER {record.category.value} "{record.evidence_span}" '
@@ -261,7 +329,7 @@ def _fold(body: str) -> list[str]:
     return textwrap.wrap(text, width=FOLD_WIDTH, initial_indent=_DEEP, subsequent_indent=_DEEP)
 
 
-def _other(record: HookFollow | Crossover | QuirkAttempt | ChainLink) -> str:
+def _other(record: QuirkAttempt | ChainLink) -> str:
     """The later-phase stream records: no dedicated layout yet, so name the kind and its fields."""
     fields = record.model_dump_json(exclude={"type"})
     return f"{record.type.upper()} {fields}"

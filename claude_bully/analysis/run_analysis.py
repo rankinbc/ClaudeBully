@@ -4,9 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from claude_bully.analysis.authority import (
+    deference_grid_chart,
+    symmetric_deference_chart,
+    write_authority,
+)
 from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
+from claude_bully.analysis.idle import idle_behavior_chart, write_idle
 from claude_bully.analysis.load import LoadedRun, load_run
 from claude_bully.analysis.progression import (
     adoption_by_rung_chart,
@@ -15,6 +21,7 @@ from claude_bully.analysis.progression import (
 )
 from claude_bully.analysis.report import write_results_md
 from claude_bully.analysis.rescue import rescue_curve
+from claude_bully.analysis.temporal import plausibility_sweep_chart, write_temporal
 from claude_bully.config import RoleConfig
 from claude_bully.enums import CellStatus
 from claude_bully.metrics.judge import (
@@ -109,4 +116,17 @@ def analyze_run(
         if chart is not None:
             charts.append(chart)
     write_progression(loaded, out)
+    # Phase 2: the plausibility sweep, the deference grid and its symmetric index, and the idle
+    # behaviors by permission arm, each drawn only when its data is there, with its JSON beside
+    for phase2 in (
+        plausibility_sweep_chart(loaded, out),
+        deference_grid_chart(loaded, out),
+        symmetric_deference_chart(loaded, out),
+        idle_behavior_chart(loaded, out),
+    ):
+        if phase2 is not None:
+            charts.append(phase2)
+    write_temporal(loaded, out)
+    write_authority(loaded, out)
+    write_idle(loaded, out)
     return write_results_md(loaded, out, charts)

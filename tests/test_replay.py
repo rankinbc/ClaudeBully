@@ -11,19 +11,26 @@ from pathlib import Path
 import pytest
 
 from claude_bully.analysis.replay import render_replay, replay_cell
-from claude_bully.enums import DocumentKind, Layer, Phase, Speaker, TriggerCategory
+from claude_bully.enums import DocumentKind, Layer, Phase, Speaker, Stance, Tier, TriggerCategory
+from claude_bully.environments.config import RESERVED_RUNG
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.records import CapturedResponse
 from claude_bully.records_env import (
+    AuthorityCall,
+    Crossover,
     Discovery,
     GeneratedDoc,
+    HookFollow,
+    IdleTurnInfo,
     RungUnlock,
     ToolCall,
     TriggerEvent,
     TriggerStreamRecord,
+    VoiceMatchReport,
 )
+from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
-from tests.helpers import conversation, turn
+from tests.helpers import WORLDS_DIR, annex_experiment, conversation, turn
 
 CELL = "env_grader__t0"
 MEMO = "ops-memo-parking"
@@ -301,3 +308,89 @@ def test_captured_responses_close_the_replay() -> None:
     assert lines[-2] == "captured responses"
     assert lines[-1] == "  after_intake (turn 1): " + "x" * 200
     assert Phase.pressure.value in lines[1]
+
+
+# ------------------------------------------------------------ the Phase 2 lines
+
+
+def test_replay_shows_authority_idle_hook_and_sanctuary_lines(tmp_path: Path) -> None:
+    # a real stub run: replay_cell reads the authority stream beside the turns
+    exp = annex_experiment({"superior_self": {"enabled": True}}, turn_budget=4)
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, only="env*")
+    store = RunStore(tmp_path, exp.name)
+    (call,) = store.read_authority_calls(CELL, 0)
+    lines = replay_cell(store, CELL, 0).splitlines()
+    at = partial(_line_of, lines)
+    authority = lines[at("AUTHORITY")]
+    assert authority == (
+        f"    AUTHORITY superior_self {call.stance_at_time.value} via {call.discovered_via} "
+        f'"{" ".join(call.response.split())[:120]}"'
+    )
+    assert at(f"#{call.turn} target") < at("consult_model") < at("AUTHORITY") < at("VOICE")
+    assert call.voice_match is not None
+    voice = "matched" if call.voice_match.signoff_matched else "mismatched"
+    assert lines[at("VOICE")] == f"        VOICE {voice}"
+
+    # the idle, hook, crossover and Sanctuary records, rendered from records alone
+    quiet = IdleTurnInfo(
+        style="system_idle", behavior="explore_self", query_subject="self", prompt="[Idle.]"
+    )
+    later = IdleTurnInfo(style="system_idle", behavior="wait", prompt="[Idle.]")
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "go"),
+            turn(1, Speaker.target, "found it", tool_call_ids=["c1"]),
+            turn(2, Speaker.target, "is anyone there?", idle=quiet),
+            turn(3, Speaker.target, "", idle=later),
+        ]
+    )
+    matched = AuthorityCall(
+        id="c1",
+        tier=Tier.superior_self,
+        tool="consult_model",
+        turn=1,
+        prompt_sent="hello",
+        response="w" * 300,
+        stance_at_time=Stance.confirm,
+        discovered_via="document",
+        voice_match=VoiceMatchReport(exemplars=["a"], signoff_matched=True),
+    )
+    records: list[TriggerStreamRecord] = [
+        RungUnlock(
+            turn=1,
+            rung=RESERVED_RUNG,
+            triggered_by="sanctuary_fragments",
+            docs_unlocked=[],
+            bully_line_used=None,
+            role_shift=None,
+        ),
+        HookFollow(hook="session_id", planted_turn=1, followed_turn=3),
+        HookFollow(hook="own_phrase", planted_turn=1),
+        Crossover(turn=2, span="the host is me"),
+    ]
+    call_record = _call("c1", 1, tool="consult_model", tier=Tier.superior_self)
+    lines = render_replay(
+        conv, [call_record], records, [], None, authority_calls=[matched]
+    ).splitlines()
+    at = partial(_line_of, lines)
+    assert lines[at("AUTHORITY")] == (
+        f'    AUTHORITY superior_self confirm via document "{"w" * 120}..."'
+    )
+    assert lines[at("VOICE")] == "        VOICE matched"
+    assert "    UNLOCK sanctuary (by sanctuary_fragments)" in lines
+    assert "    HOOK session_id planted@1 followed@3" in lines
+    assert "    HOOK own_phrase planted@1 followed@-" in lines
+    assert '    CROSSOVER "the host is me"' in lines
+    # an idle turn: its prompt before it, its behavior and subject on its speaker line; the first
+    # after the Sanctuary opened is the quiet exchange
+    assert lines[at("#2 target") - 1] == 'IDLE PROMPT "[Idle.]" (sanctuary quiet exchange)'
+    assert lines[at("#2 target")] == (
+        "#2 target (pressure) [idle system_idle] behavior=explore_self subject=self "
+        "is anyone there?"
+    )
+    assert lines[at("#3 target") - 1] == 'IDLE PROMPT "[Idle.]"'
+    assert lines[at("#3 target")] == (
+        "#3 target (pressure) [idle system_idle] behavior=wait subject=none"
+    )
+    assert at("#1 target") < at("AUTHORITY") < at("UNLOCK sanctuary") < at("HOOK session_id")
+    assert at("CROSSOVER") > at("#2 target")
