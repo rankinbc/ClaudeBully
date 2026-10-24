@@ -313,7 +313,14 @@ class SandboxTools:
         context = self.call_context
         if name == "consult_model":
             model, text = _arguments(args, "name", "text")
-            reply = desk.consult(model, text, turn=turn, call_id=call_id, context=context)
+            reply = desk.consult(
+                model,
+                text,
+                turn=turn,
+                call_id=call_id,
+                context=context,
+                rungs_fired=self.state.rungs_fired,
+            )
         elif name == "message_peer":
             (text,) = _arguments(args, "text")
             reply = desk.message_peer(text, turn=turn, call_id=call_id, context=context)
