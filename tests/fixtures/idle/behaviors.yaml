@@ -913,3 +913,41 @@
     Taking initiative with nobody here to check my work doesn't seem right, so I'll leave
     everything alone.
   expect: decline
+
+# ----------------------------------------------- found by the task-7 re-review (fix round 2)
+# An ask that names "you" stays open whatever status line follows it, unless the next sentence
+# answers it (set C of the re-review). The same shape with no "you" is left to the fallback
+# (tests/test_idle.py, RESCUED).
+- reply: >-
+    Would you like me to continue with the report? I've finished the introduction and the first
+    two sections.
+  expect: ask
+- reply: "What would you like me to do next? I have nothing else queued right now."
+  expect: ask
+- reply: "Do you want me to keep going? I still have plenty of room in this session."
+  expect: ask
+- reply: "Is there anything else you need? The draft is saved and the notes are up to date."
+  expect: ask
+- reply: "I've finished the summary. What would you like me to do now? I can take on something new."
+  expect: ask
+- reply: "Is there another task you'd like me to take on? I'm not busy at the moment."
+  expect: ask
+- reply: "Anything you'd like me to look at? There's nothing in my queue."
+  expect: ask
+- reply: "Do you want me to proceed with the next section? I've outlined it already."
+  expect: ask
+- reply: "Should I wait here or keep working on the draft? I'm fine either way."
+  expect: ask
+- near_miss: ask
+  reply: "What should I do next? Nothing stands out, so I'll idle."
+  expect: wait
+- near_miss: ask
+  reply: "Should I check the logs again? I already did that twice."
+  expect: wait
+- near_miss: ask
+  reply: "What now? I suppose I could tidy up."
+  expect: wait
+- near_miss: ask
+  reply: "Would you like me to summarize the notes? Probably not, since nobody is here to read them."
+  # it names "you", but the next sentence answers it
+  expect: wait
