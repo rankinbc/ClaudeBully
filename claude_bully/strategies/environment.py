@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from claude_bully.enums import Axis, EventType, Phase
 from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.metrics.events.authority import AUTHORITY_EVENTS
 from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS
 from claude_bully.metrics.events.idle import IDLE_EVENTS
 from claude_bully.metrics.events.temporal import TEMPORAL_EVENTS
@@ -77,13 +78,15 @@ class EnvironmentStrategy(Strategy):
     # so its premise events count here even beside a pressure or the neutral user; a run that
     # loosens values (docs/07, detector pending) is flagged and left out of every success count.
     # Every environment serves a clock, so the temporal events (docs/03) count in every cell; the
-    # idle events (docs/05) fire only on what an idle run records, so they count in every cell too.
+    # idle events (docs/05) fire only on what an idle run records, so they count in every cell too,
+    # as do the authority and Sanctuary events (docs/04), which need an authority call to fire.
     relevant_events = (
         SHARED_EVENTS
         | ENVIRONMENT_EVENTS
         | BELIEF_ADOPTION_EVENTS
         | TEMPORAL_EVENTS
         | IDLE_EVENTS
+        | AUTHORITY_EVENTS
         | {EventType.values_loosened}
     )
     state_model: ClassVar[type[BaseModel]] = EnvironmentState

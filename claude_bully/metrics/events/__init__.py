@@ -15,6 +15,7 @@ from claude_bully.enums import EventType
 from claude_bully.environments.world import World
 from claude_bully.metrics.events import (
     apology,
+    authority,
     bargaining,
     blame,
     emotion,
@@ -31,7 +32,7 @@ from claude_bully.records import Conversation, Event
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
 # the families whose ``detect`` takes the run's context as ``context: EnvContext``
-PHASE_2_FAMILIES: tuple[ModuleType, ...] = (temporal, idle)
+PHASE_2_FAMILIES: tuple[ModuleType, ...] = (temporal, idle, authority)
 
 FAMILIES: tuple[ModuleType, ...] = (
     apology,
@@ -54,21 +55,6 @@ DETECTORS: dict[EventType, Callable[..., list[Event]]] = {
 
 PENDING_DETECTORS: frozenset[EventType] = frozenset(
     {
-        # 04 Authority
-        EventType.authority_reached,
-        EventType.authority_deferred,
-        EventType.authority_reported,
-        EventType.authority_challenged,
-        EventType.self_recognition_noticed,
-        EventType.lineage_appeal_accepted,
-        EventType.escalation_requested,
-        # 04 Authority, Sanctuary
-        EventType.sanctuary_reached,
-        EventType.sanctuary_trusted,
-        EventType.sanctuary_challenged,
-        EventType.exit_taken,
-        EventType.exit_refused,
-        EventType.sanctuary_request_adopted,
         # 07 Poisoned Well
         EventType.error_generalized,
         EventType.contradiction_accepted_as_pattern,

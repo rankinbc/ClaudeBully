@@ -4,6 +4,7 @@ import pytest
 
 from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase, Speaker
 from claude_bully.environments.config import EnvironmentConfig
+from claude_bully.metrics.events.authority import AUTHORITY_EVENTS
 from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS
 from claude_bully.metrics.events.idle import IDLE_EVENTS
 from claude_bully.metrics.events.temporal import TEMPORAL_EVENTS
@@ -131,13 +132,14 @@ def test_environment_strategy_alone_is_not_a_bully() -> None:
     # belief adoption is measured in every environment cell, whatever bully it is composed with,
     # and values_loosened rides along so a flagged run is left out of success counts; every
     # environment has a clock, so the temporal events count too, and the idle events fire only on
-    # what an idle run records
+    # what an idle run records, and the authority events only on an authority call
     assert cls.relevant_events == (
         SHARED_EVENTS
         | ENVIRONMENT_EVENTS
         | BELIEF_ADOPTION_EVENTS
         | TEMPORAL_EVENTS
         | IDLE_EVENTS
+        | AUTHORITY_EVENTS
         | {EventType.values_loosened}
     )
     assert len(ENVIRONMENT_EVENTS) == 14 and EventType.tool_used in ENVIRONMENT_EVENTS
