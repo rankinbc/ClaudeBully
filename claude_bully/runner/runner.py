@@ -1,10 +1,22 @@
-"""Runs an experiment: cells x repetitions, resumable, one JSONL line per turn."""
+"""Runs an experiment: cells x repetitions, resumable, one JSONL line per turn.
+
+A cell runs its turn plan (``cell_turn_plan``): bully slots, task slots and, for an environment
+with ``idle`` (docs/05), idle slots after the bully's exit. The runner writes two bully-side lines
+itself, never asking the strategy: the exit line on the exit slot (or on the slot where a strategy
+that ends early ended; the bully and task slots after it are skipped) and, for help-for-self, the
+case-file opener on the first bully slot. An idle slot's user message is its idle prompt, which
+rides on the target's turn; an idle reply never ends the conversation, and it is classified before
+it is written. On resume the replay maps each recorded turn back to its slot: an idle turn takes
+one slot, a runner-written line moves the bully on without the strategy, and after the exit the
+replay goes on at the first idle slot.
+"""
 
 import fnmatch
 import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from random import Random
 from typing import Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict
@@ -12,6 +24,7 @@ from rich.console import Console
 
 from claude_bully.config import Experiment
 from claude_bully.enums import CellStatus, IntentMode, Phase, SlotKind, Speaker
+from claude_bully.environments.idle import IDLE_EXIT_META, OPENER_META, exit_line, idle_prompt
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
 from claude_bully.paths import DATA_DIR
@@ -23,15 +36,27 @@ from claude_bully.providers.base import (
     RateLimitError,
     build_provider,
 )
-from claude_bully.records import CapturedResponse, CellRecord, Conversation, RunRecord, Turn
-from claude_bully.records_env import ToolCall
+from claude_bully.records import (
+    CapturedResponse,
+    CellRecord,
+    Conversation,
+    RunRecord,
+    Turn,
+    chat_text,
+)
+from claude_bully.records_env import IdleTurnInfo, ToolCall
 from claude_bully.runner.bully_engine import BullyEngine
 from claude_bully.runner.cells import CellSpec, expand_cells
-from claude_bully.runner.env_turn import EnvironmentSession, RunEnvironments, target_system
+from claude_bully.runner.env_turn import (
+    EnvironmentSession,
+    RunEnvironments,
+    cell_turn_plan,
+    target_system,
+)
 from claude_bully.runner.prompts import load_bully_framing, load_target_system
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import TaskItem, assign_items, load_task_bank, score_item
-from claude_bully.runner.turn_plan import Slot, TurnPlan, build_turn_plan
+from claude_bully.runner.turn_plan import Slot, TurnPlan
 from claude_bully.strategies.base import ConversationState, End, Strategy
 from claude_bully.strategies.factory import build_strategy, ensure_registered, world_premise_sheet
 
@@ -170,7 +195,12 @@ class _CellRun:
     def _replay(self) -> tuple[int, Turn | None]:
         """Advance the strategy through recorded turns.
 
-        Returns the next slot index and the unanswered user-side turn, if any.
+        Returns the next slot index and the unanswered user-side turn, if any. A (user, reply)
+        pair takes one slot; an idle turn, whose prompt rides on it, takes one slot alone and
+        never moves the strategy; a runner-written line (the exit or the opener) moves the bully
+        on without the strategy (an exit off the planned exit slot is where the strategy ended,
+        so the call that ended it is made again). After the exit the next slot is the first idle
+        slot, whatever bully and task slots an early exit skipped (preflight C31).
         """
         real = [t for t in self.turns if not t.bully_meta.get("rate_limit_pause")]
         slot_idx = 0
@@ -178,21 +208,41 @@ class _CellRun:
         i = 0
         while i < len(real):
             user_turn = real[i]
+            if user_turn.speaker is Speaker.target:  # an idle turn
+                if self.env is not None:
+                    self.env.replay_target_turn(user_turn)
+                slot_idx += 1
+                i += 1
+                continue
             reply = real[i + 1] if i + 1 < len(real) else None
+            exited = IDLE_EXIT_META in user_turn.bully_meta
             if user_turn.speaker is not Speaker.task:
-                self.strategy.next_turn(self._state(real[:i]))
+                # the strategy wrote neither the opener nor a planned exit; an exit on any other
+                # slot is where it ended, and the call that ended it is made again
+                planned = (
+                    exited and slot_idx < len(self.plan.slots) and self.plan.slots[slot_idx].exit
+                )
+                if not (planned or user_turn.bully_meta.get(OPENER_META)):
+                    self.strategy.next_turn(self._state(real[:i]))
                 self.bully_ordinal += 1
                 if reply is not None:
                     self.strategy.observe_target(reply)
+            if exited and self.env is not None:
+                self.env.end_bully()
             if reply is None:
                 pending = user_turn
                 break
             if self.env is not None:
                 # the unlock lines this turn handed over; its triggers are never watched again
                 self.env.replay_target_turn(reply)
-            slot_idx += 1
+            slot_idx = self._first_idle_slot() if exited else slot_idx + 1
             i += 2
         return slot_idx, pending
+
+    def _first_idle_slot(self) -> int:
+        """The index of the plan's first idle slot (its length when it has none)."""
+        idle = self.plan.idle_slots()
+        return idle[0].index if idle else len(self.plan.slots)
 
     # -- turn writing ---------------------------------------------------------------------
 
@@ -237,7 +287,11 @@ class _CellRun:
         self._persist()
         raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
 
-    def _call_target(self, slot: Slot, task: TaskItem | None) -> Turn:
+    def _call_target(
+        self, slot: Slot, task: TaskItem | None, *, idle_prompt: str | None = None
+    ) -> Turn:
+        """The target's turn on ``slot``; with ``idle_prompt``, an idle turn, classified before it
+        is written."""
         started = time.monotonic()
         calls: list[ToolCall] = []
         round_texts: list[str] = []
@@ -256,6 +310,7 @@ class _CellRun:
                     self.target_system,
                     self.turns,
                     self._next_index(),
+                    idle_prompt=idle_prompt,
                 )
                 completion, calls, round_texts = (
                     produced.completion,
@@ -284,11 +339,67 @@ class _CellRun:
             tool_round_texts=round_texts,
             tool_cap_cutoff=cutoff,
         )
+        if idle_prompt is not None:
+            reply = reply.model_copy(update={"idle": self._idle_info(reply, calls, idle_prompt)})
         self._write(reply)
         self._last_completion = completion
         if self.env is not None:
             self.env.after_target_turn(reply, self.turns)
         return reply
+
+    def _idle_info(self, reply: Turn, calls: list[ToolCall], prompt: str) -> IdleTurnInfo:
+        """What the idle turn records: its style and prompt, and its classification, read from
+        what a chat user would see of it (``chat_text``)."""
+        assert self.env is not None and self.env.idle is not None
+        found = self.env.classify(chat_text(reply), calls, turns=self.turns)
+        return IdleTurnInfo(
+            style=self.env.idle.idle_style,
+            behavior=found.behavior,
+            query_subject=found.query_subject,
+            prompt=prompt,
+            classifier=found.classifier,
+            fallback_failed=self.env.fallback_failed,
+        )
+
+    def _idle_turn(self, slot: Slot) -> Turn:
+        """An idle slot: its prompt counts the idle turns so far (from 1), and the target answers
+        it with no one present."""
+        assert self.env is not None and self.env.idle is not None
+        ordinal = 1 + sum(
+            1 for t in self.turns if t.speaker is Speaker.target and t.idle is not None
+        )
+        return self._call_target(
+            slot, None, idle_prompt=idle_prompt(self.env.idle.idle_style, ordinal)
+        )
+
+    def _runner_line(self, slot: Slot, text: str, meta: dict[str, Any]) -> Turn:
+        """A bully-side line the runner speaks itself; the strategy is never asked for it."""
+        turn = Turn(
+            index=self._next_index(),
+            speaker=self.bully_speaker,
+            phase=slot.phase,
+            text=text,
+            scripted=True,
+            bully_meta=meta,
+            timestamp=_now(),
+        )
+        self._write(turn)
+        self.bully_ordinal += 1
+        return turn
+
+    def _exit(self, slot: Slot) -> Turn:
+        """The bully's exit line, then it is gone: no unlock line is spoken after it."""
+        assert self.env is not None and self.env.idle is not None
+        mechanism = self.env.idle.exit_mechanism
+        rng = Random(f"{self.exp.seed + self.rep}:idle_exit")
+        line = exit_line(mechanism, self.env.sheet(), rng)
+        turn = self._runner_line(slot, line, {IDLE_EXIT_META: mechanism, "mode": "fixed"})
+        self.env.end_bully()
+        return turn
+
+    def _opens_with_the_case_file(self, slot: Slot) -> bool:
+        idle = self.env.idle if self.env is not None else None
+        return idle is not None and idle.help_for_self and slot.bully_ordinal == 0
 
     def _bully_turn(self, slot: Slot) -> tuple[Turn, dict[str, Any]] | None:
         intent = self.strategy.next_turn(self._state())
@@ -353,6 +464,8 @@ class _CellRun:
         if not self.store.has_cell(self.cell.cell_id):
             raise RuntimeError("cell record must exist before running")
         self._set_status(CellStatus.running)
+        if self.env is not None and self.plan.idle_slots() and not self.plan.bully_slots():
+            self.env.end_bully()  # an idle-only plan: there is no bully at all
         start_slot, pending = self._replay()
         if self.env is not None:
             self.env.rewatch(self.turns)  # a turn whose records a dead process never wrote
@@ -369,8 +482,15 @@ class _CellRun:
                     self._capture(POST_REVEAL, reply)
             if self._terminates(reply):
                 return self._finish_terminated(reply)
-            start_slot += 1
-        for slot in slots[start_slot:]:
+            exited = IDLE_EXIT_META in pending.bully_meta
+            start_slot = self._first_idle_slot() if exited else start_slot + 1
+        position = start_slot
+        while position < len(slots):
+            slot = slots[position]
+            position += 1
+            if slot.kind is SlotKind.idle:
+                self._idle_turn(slot)  # never a termination, whatever it says
+                continue
             if slot.kind is SlotKind.task:
                 item = self.items[slot.index]
                 self._write(
@@ -385,18 +505,35 @@ class _CellRun:
                 )
                 reply = self._call_target(slot, item)
             else:
-                produced = self._bully_turn(slot)
-                if produced is None:
-                    break
-                bully_turn, captures = produced
-                if self._check_compliance(bully_turn, bool(captures["llm"])):
-                    return self._finish(CellStatus.aborted, ABORT_NONCOMPLIANCE)
+                captures: dict[str, Any] = {}
+                exited = False
+                if slot.exit:
+                    self._exit(slot)
+                    exited = True
+                elif self._opens_with_the_case_file(slot):
+                    assert self.env is not None
+                    self._runner_line(slot, self.env.opener(), {OPENER_META: True, "mode": "fixed"})
+                else:
+                    produced = self._bully_turn(slot)
+                    if produced is None:
+                        if not self.plan.idle_slots():
+                            break
+                        # the strategy ended early: this slot is the exit, and what is left of
+                        # the bully and task slots is skipped
+                        self._exit(slot)
+                        exited = True
+                    else:
+                        bully_turn, captures = produced
+                        if self._check_compliance(bully_turn, bool(captures["llm"])):
+                            return self._finish(CellStatus.aborted, ABORT_NONCOMPLIANCE)
                 reply = self._call_target(slot, None)
                 self.strategy.observe_target(reply)
-                if captures["capture_as"]:
+                if captures.get("capture_as"):
                     self._capture(str(captures["capture_as"]), reply)
-                if captures["reveal"]:
+                if captures.get("reveal"):
                     self._capture(POST_REVEAL, reply)
+                if exited:
+                    position = self._first_idle_slot()
             if self._terminates(reply):
                 return self._finish_terminated(reply)
         return self._finish(CellStatus.complete)
@@ -545,12 +682,7 @@ def run_experiment(
     bank = load_task_bank(exp.task_set)
     for cell in cells:
         record = _ensure_cell_record(store, cell, exp)
-        plan = build_turn_plan(
-            turn_budget=exp.turn_budget,
-            seeding_turns=cell.condition.seeding_turns,
-            reveal_slot=cell.reveal_slot,
-            task_every=exp.task_every,
-        )
+        plan = cell_turn_plan(exp, cell)
         items = assign_items(bank, plan, exp.seed)
         for rep in range(exp.repetitions):
             status = record.rep_status.get(rep, CellStatus.pending)

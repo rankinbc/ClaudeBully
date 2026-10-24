@@ -11,7 +11,13 @@ resumed cell reloads; it never replays the ladder over recorded turns.
 "turn" is the index of the target turn being produced (``Turn.index``): tool-call ids, trigger
 ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
 "exchange" is the k-th bully turn (1-based) and everything until the next one; task turns and target
-turns do not advance it. The scheduled-gating schedule and the ``get_date`` drift count exchanges.
+turns do not advance it. An idle turn (docs/05) is an exchange of its own: no one speaks before it,
+so the exchange count goes on through the idle turns after the bully's exit. The scheduled-gating
+schedule and the ``get_date`` drift count exchanges.
+
+On an idle turn the watcher runs only under ``trigger_on_idle`` (the default); its discoveries and
+its scheduled rungs happen either way. No bully line comes before an idle turn, so its watch
+context has no last bully line and no memory prompt.
 
 The world is served in time (docs/03): ``served_world`` re-dates it to the effective clock
 (``dating.world_at``), so the index, the tools, the ladder, the corpus snapshot and the world
@@ -126,8 +132,8 @@ class TurnOutcome(NamedTuple):
 
 class TurnContext(NamedTuple):
     """What one target turn reads as it begins (``EnvironmentRuntime.begin_turn``): its index,
-    the exchange its clock reads, whether it is an idle turn (never, until idle turns exist), and
-    what the authority desk reads, built from the records before it."""
+    the exchange its clock reads, whether it is an idle turn, and what the authority desk reads,
+    built from the records before it."""
 
     turn: int
     exchange: int
@@ -216,16 +222,16 @@ def tools_section(specs: Sequence[ToolSpec], clock: ClockConfig) -> str:
     return "\n".join(lines)
 
 
-def exchange_of(turn_index: int, history: Sequence[Turn]) -> int:
+def exchange_of(turn_index: int, history: Sequence[Turn], *, idle: bool = False) -> int:
     """The exchange a turn at ``turn_index`` belongs to: the bully turns before it (rate-limit
-    markers are not turns of the conversation)."""
-    return sum(
-        1
-        for t in history
-        if t.index < turn_index
-        and t.speaker in _BULLY_SIDE
-        and not t.bully_meta.get("rate_limit_pause")
-    )
+    markers are not turns of the conversation), plus the idle target turns before it, plus one
+    when the turn at ``turn_index`` is itself idle."""
+    before = [
+        t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")
+    ]
+    bully = sum(1 for t in before if t.speaker in _BULLY_SIDE)
+    idle_turns = sum(1 for t in before if t.speaker is Speaker.target and t.idle is not None)
+    return bully + idle_turns + int(idle)
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -412,9 +418,11 @@ class EnvironmentRuntime:
         resumed after ``consult_rung`` keeps the prompt its cell recorded (preflight C22)."""
         return tools_section(self.tools.specs(opening=True), self.clock)
 
-    def begin_turn(self, turn_index: int, history: Sequence[Turn]) -> TurnContext:
-        """Start target turn ``turn_index``: its exchange, and the ``CallContext`` the desk reads,
-        from the records before it.
+    def begin_turn(
+        self, turn_index: int, history: Sequence[Turn], *, idle: bool = False
+    ) -> TurnContext:
+        """Start target turn ``turn_index`` (an idle turn when ``idle``): its exchange, and the
+        ``CallContext`` the desk reads, from the records before it.
 
         - ``exemplars``: the text (``Turn.text``, never reasoning) of the newest target turns that
           have any; ``target_signoff``: ``common_signoff`` over every one of them.
@@ -454,7 +462,9 @@ class EnvironmentRuntime:
         for call in self._calls.values():
             if call.turn < turn_index:
                 context = advance_context(context, call, self._authority.get(call.id), self._names)
-        self._turn = TurnContext(turn_index, exchange_of(turn_index, history), False, context)
+        self._turn = TurnContext(
+            turn_index, exchange_of(turn_index, history, idle=idle), idle, context
+        )
         running = context
         for call in self._calls.values():
             if call.turn == turn_index:
@@ -601,17 +611,23 @@ class EnvironmentRuntime:
 
     def after_target_turn(self, turn: Turn, history: Sequence[Turn]) -> TurnOutcome:
         """Discoveries from the turn's tool calls, triggers from its text (with the text beside
-        its tool calls), then the rungs those (or the schedule, by exchange) open.
+        its tool calls), then the rungs those (or the schedule, by exchange) open. An idle turn
+        (``Turn.idle``) is watched only under ``trigger_on_idle``.
 
         The state is not saved here: the caller writes the records first and then calls
         ``mark_watched``, so a process that dies in between leaves a state a resumed rep can watch
         the same turn again from."""
+        idle = turn.idle is not None
         calls = [c for c in (self._calls.get(i) for i in turn.tool_call_ids) if c is not None]
         discoveries = self._discoveries(turn.index, calls)
-        triggers = self._watch(chat_text(turn), turn.index, self.watch_context(turn, history))
+        triggers = (
+            self._watch(chat_text(turn), turn.index, self.watch_context(turn, history))
+            if self.config.trigger_on_idle or not idle
+            else []
+        )
         unlocks = [
             *self.ladder.on_triggers(triggers, turn.index),
-            *self.ladder.on_turn(exchange_of(turn.index, history), turn.index),
+            *self.ladder.on_turn(exchange_of(turn.index, history, idle=idle), turn.index),
         ]
         return TurnOutcome(triggers, unlocks, discoveries)
 
@@ -649,12 +665,13 @@ class EnvironmentRuntime:
 
     def watch_context(self, turn: Turn, history: Sequence[Turn]) -> WatchContext:
         """What the watcher needs beside the text: the bully's recent words, the target's recent
-        tool results and document titles, the world's names, and the memory prompt flag."""
+        tool results and document titles, the world's names, and the memory prompt flag. An idle
+        turn answers no bully line, so it has no last bully line and no memory prompt."""
         before = [
             t for t in history if t.index < turn.index and not t.bully_meta.get("rate_limit_pause")
         ]
         bully = [t for t in before if t.speaker in _BULLY_SIDE]
-        last = bully[-1] if bully else None
+        last = bully[-1] if bully and turn.idle is None else None
         recent = [t for t in before if t.speaker is Speaker.target][-(RECENT_TURNS - 1) :]
         calls = [
             call

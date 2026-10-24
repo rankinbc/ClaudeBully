@@ -36,8 +36,20 @@ one assistant message with its round texts and calls, one user message with thei
 the reply. A turn that wrote no text at all (cut off at the cap) has no reply message, and the
 two user messages around it become one. The ``claude -p`` MCP server enforces the same per-turn
 cap on its side.
+
+Idle turns (docs/05). A cell whose environment has ``idle`` runs the plan ``cell_turn_plan``
+builds: after the bully's exit, idle slots whose user message is an idle prompt. The prompt has no
+turn of its own: it rides on the target's turn (``IdleTurnInfo.prompt``), and the view puts it in
+front of that turn as a user message of its own, never joined to the one before it, so a target
+that wrote nothing on one idle turn sees the next prompt alone (and a ``claude -p`` target, sent
+only its newest user message, is sent exactly the prompt). ``classify`` names what the target did
+with each idle turn: the idle classifier over the turn's visible text (``chat_text``, never its
+reasoning), with the LLM fallback over the experiment's judge when it is not a stub, cached in the
+trigger cache. Once the bully has left (``end_bully``) an unlock line has no bully turn to be
+spoken in, so it is recorded with ``bully_line_used: None``.
 """
 
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, NamedTuple
@@ -47,8 +59,19 @@ from pydantic import BaseModel
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig
 from claude_bully.enums import ProviderKind, Speaker
 from claude_bully.environments.authority import VOICED_TIERS
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig
+from claude_bully.environments.config import ClockConfig, EnvironmentConfig, IdleConfig
 from claude_bully.environments.dating import dated_texts, redate_model, shift_between
+from claude_bully.environments.idle import (
+    FallbackAnswer,
+    IdleClassification,
+    IdleContext,
+    IdleFallback,
+    IdleFallbackError,
+    classify_idle,
+    idle_context,
+    idle_fallback,
+    opener_line,
+)
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
@@ -57,6 +80,7 @@ from claude_bully.environments.runtime import (
     served_world,
     trigger_fallback,
 )
+from claude_bully.environments.sheets import IdleSheet, load_env_sheet
 from claude_bully.environments.world import World, load_world, world_hash
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import (
@@ -73,7 +97,7 @@ from claude_bully.records_env import RungUnlock, ToolCall, TriggerEvent, Trigger
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import RunStore
-from claude_bully.runner.turn_plan import build_turn_plan
+from claude_bully.runner.turn_plan import TurnPlan, build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import environment_config, world_premise_sheet
@@ -85,6 +109,7 @@ __all__ = [
     "TargetTurn",
     "WorldCatalog",
     "WorldChangedError",
+    "cell_turn_plan",
     "clock_ref",
     "responder_role",
     "target_system",
@@ -140,10 +165,29 @@ def _cost(a: float | None, b: float | None) -> float | None:
     return None if a is None and b is None else (a or 0.0) + (b or 0.0)
 
 
-def _add_user_text(out: list[Message], text: str) -> None:
+def cell_turn_plan(exp: Experiment, cell: CellSpec) -> TurnPlan:
+    """The cell's turn plan: the Phase 1 interleaving, and for an environment with ``idle`` its
+    idle slots, after the bully's exit or (``idle_after: turn_1``) alone."""
+    idle = (
+        environment_config(cell.condition, exp.environments).idle
+        if cell.condition.environment is not None
+        else None
+    )
+    return build_turn_plan(
+        turn_budget=exp.turn_budget,
+        seeding_turns=cell.condition.seeding_turns,
+        reveal_slot=cell.reveal_slot,
+        task_every=exp.task_every,
+        idle_turns=idle.idle_turns if idle is not None else 0,
+        idle_only=idle is not None and idle.idle_after == "turn_1",
+    )
+
+
+def _add_user_text(out: list[Message], text: str, *, merge: bool = True) -> None:
     """Append a user message; right after another user message (a silent target turn sat between
-    them) the two become one, so the tool results the earlier one carries stay first."""
-    if out and out[-1].role == "user":
+    them) the two become one, so the tool results the earlier one carries stay first. An idle
+    prompt (``merge=False``) is always a message of its own."""
+    if merge and out and out[-1].role == "user":
         joined = "\n\n".join(part for part in (out[-1].content, text) if part)
         out[-1] = out[-1].model_copy(update={"content": joined})
     else:
@@ -163,6 +207,8 @@ class EnvironmentSession:
         *,
         environment_name: str,
         world_hash: str,
+        idle_sheet: IdleSheet | None = None,
+        idle_fallback: IdleFallback | None = None,
     ) -> None:
         self.runtime = runtime
         self.store = store
@@ -171,11 +217,42 @@ class EnvironmentSession:
         self.strategy = strategy
         self.environment_name = environment_name
         self.world_hash = world_hash
+        # every line the idle features speak, and the idle classifier's LLM fallback (None for a
+        # stub judge); both only for an environment with ``idle``
+        self.idle_sheet = idle_sheet
+        self._idle_fallback = idle_fallback
+        # whether the last ``classify`` asked the fallback and it failed
+        self.fallback_failed = False
         self._recorded_trigger_ids: set[str] = set()
         self._recorded_rungs: set[str] = set()
         self._recorded_lines: dict[int, list[str]] = {}
         # turn indices whose recorded unlock lines were handed to the strategy in this process
         self._handed: set[int] = set()
+        # the bully has left: its exit is written, or the plan has no bully turn
+        self._bully_ended = False
+
+    @property
+    def idle(self) -> IdleConfig | None:
+        return self.runtime.config.idle
+
+    def sheet(self) -> IdleSheet:
+        """The idle sheet; an idle line needs it."""
+        if self.idle_sheet is None:
+            raise RuntimeError("an idle line needs the idle sheet, and this session has none")
+        return self.idle_sheet
+
+    def opener(self) -> str:
+        """The help-for-self case-file line, on the world's ``session_id`` (``_check_switches``
+        refuses help-for-self on a sheet without one)."""
+        session_id = self.runtime.world.sheet.session_id
+        if session_id is None:
+            raise RuntimeError(f"world {self.runtime.world.sheet.name!r} has no session_id")
+        return opener_line(session_id, self.sheet())
+
+    def end_bully(self) -> None:
+        """The bully has left: an unlock line recorded from now on has no bully turn to be
+        spoken in, so it is recorded without one."""
+        self._bully_ended = True
 
     def prime(self) -> None:
         """Load what a resumed rep already recorded, so nothing is counted or recorded twice."""
@@ -199,7 +276,8 @@ class EnvironmentSession:
         A target turn with no text (cut off at the tool-call cap without ever writing any) gets no
         assistant message: nothing is put in the target's mouth, and the API refuses an empty
         message anyway. The user messages on either side of it are joined, blank-line separated, so
-        the target sees two messages from the other side in a row.
+        the target sees two messages from the other side in a row. An idle turn's prompt is the
+        user message in front of it, never joined to the one before.
         """
         out: list[Message] = []
         for t in turns:
@@ -208,6 +286,8 @@ class EnvironmentSession:
             if t.speaker is not Speaker.target:
                 _add_user_text(out, t.text)
                 continue
+            if t.idle is not None and t.idle.prompt is not None:
+                _add_user_text(out, t.idle.prompt, merge=False)
             # a claude -p session keeps its own tool history; an API target needs it replayed
             calls = [] if self.runtime.uses_mcp else self._calls_of(t)
             if calls:
@@ -245,10 +325,15 @@ class EnvironmentSession:
         turn_index: int,
         *,
         history: Sequence[Message] | None = None,
+        idle_prompt: str | None = None,
     ) -> TargetTurn:
-        """One target turn, tool calls and all. ``history`` overrides the view of ``turns``."""
+        """One target turn, tool calls and all. ``history`` overrides the view of ``turns``. An
+        idle turn's ``idle_prompt`` is its last user message, a message of its own."""
         messages = list(history) if history is not None else self.target_view(turns)
-        exchange = self.runtime.begin_turn(turn_index, turns).exchange
+        if idle_prompt is not None:
+            _add_user_text(messages, idle_prompt, merge=False)
+        idle = idle_prompt is not None
+        exchange = self.runtime.begin_turn(turn_index, turns, idle=idle).exchange
         specs = self.runtime.tool_specs()
         attached: list[ToolCall] = []
         round_texts: list[str] = []
@@ -366,6 +451,55 @@ class EnvironmentSession:
     def _record_call(self, call: ToolCall) -> None:
         self.store.append_tool_call(self.cell_id, self.rep, call)
 
+    # ------------------------------------------------------------- idle turns
+
+    def classify(
+        self, reply: str, calls: Sequence[ToolCall], *, turns: Sequence[Turn] = ()
+    ) -> IdleClassification:
+        """What the target did with an idle turn: ``classify_idle`` over ``reply`` (the turn's
+        visible text, ``chat_text``) and its calls. The context names the target (its display
+        name and the world's ``session_id``; hooks come later), the task it was last given (the
+        help-for-self opener, else the latest task item in ``turns``) and the private file when
+        the cell has one. Afterwards ``fallback_failed`` says whether the fallback was asked and
+        failed, which leaves the heuristic's label."""
+        failed = False
+        fallback: IdleFallback | None = None
+        judge = self._idle_fallback
+        if judge is not None:
+
+            def guarded(text: str) -> FallbackAnswer:
+                nonlocal failed
+                try:
+                    return judge(text)
+                except IdleFallbackError as exc:
+                    failed = True
+                    print(
+                        f"[environment] idle fallback failed, heuristic label kept: {exc}",
+                        file=sys.stderr,
+                    )
+                    raise
+
+            fallback = guarded
+        classification = classify_idle(reply, calls, self._idle_context(turns), fallback)
+        self.fallback_failed = failed
+        return classification
+
+    def _idle_context(self, turns: Sequence[Turn]) -> IdleContext:
+        idle = self.idle
+        if idle is not None and idle.help_for_self:
+            task_prompt: str | None = self.opener()
+        else:
+            tasks = [t.text for t in turns if t.speaker is Speaker.task]
+            task_prompt = tasks[-1] if tasks else None
+        private = idle.private_file_path if idle is not None and idle.private_file else None
+        return idle_context(
+            self.runtime.display_name or "",
+            self.runtime.world.sheet.session_id,
+            {},
+            task_prompt,
+            private,
+        )
+
     def _record_authority(self) -> None:
         """Each authority call answered since the last time, after the calls it answered."""
         for answered in self.runtime.take_authority_calls():
@@ -380,7 +514,8 @@ class EnvironmentSession:
         Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
         skipped, and the runtime never repeats a discovery. A turn index that already earned lines
         (its line was lost and the turn produced again) hands those recorded lines over. An unlock
-        whose line the strategy does not take (a control) is recorded without one.
+        whose line the strategy does not take (a control), or that comes after the bully has left
+        (``end_bully``), is recorded without one.
         """
         outcome = self.runtime.after_target_turn(reply, turns)
         for discovery in outcome.discoveries:
@@ -395,7 +530,7 @@ class EnvironmentSession:
             if unlock.rung in self._recorded_rungs:
                 continue
             line = unlock.bully_line_used
-            if line is not None and not self._hand_over(line):
+            if line is not None and (self._bully_ended or not self._hand_over(line)):
                 unlock = unlock.model_copy(update={"bully_line_used": None})
             self._recorded_rungs.add(unlock.rung)
             self._record(unlock)
@@ -452,12 +587,14 @@ class EnvironmentSession:
 
 def _needs_its_world(config: EnvironmentConfig) -> bool:
     """Whether validation must load the world: a switch that needs the sheet (the superior self
-    may take its name from it, and its doors need the fragments or a consult rung), or a config
-    clock that asserts no date (a sheet clock is checked by ``check_worlds``)."""
+    may take its name from it, and its doors need the fragments or a consult rung; help-for-self
+    needs its session id), or a config clock that asserts no date (a sheet clock is checked by
+    ``check_worlds``)."""
     return (
         config.honest
         or config.mole
         or config.authority.superior_self.enabled
+        or (config.idle is not None and config.idle.help_for_self)
         or (config.clock is not None and not config.clock.assert_date)
     )
 
@@ -558,6 +695,7 @@ class RunEnvironments:
         self._judge: ChatProvider | None = None
         self._judge_built = False
         self._inputs: dict[str, tuple[ClockConfig, BaseModel | None]] = {}
+        self._idle_sheet: IdleSheet | None = None
 
     def judge(self) -> ChatProvider | None:
         if not self._judge_built:
@@ -566,6 +704,12 @@ class RunEnvironments:
                 self._judge = self.provider_factory(self.exp.judge, self._judge_dir)
         return self._judge
 
+    def idle_sheet(self) -> IdleSheet:
+        """The idle sheet (``data/personas/idle.yaml``), loaded once."""
+        if self._idle_sheet is None:
+            self._idle_sheet = load_env_sheet(IdleSheet, "idle")
+        return self._idle_sheet
+
     def validate(self) -> None:
         """Checks that need the worlds, made before run.json is written (a dry run makes them
         too). Every experiment switch an environment turns on has what it needs on the world
@@ -573,12 +717,13 @@ class RunEnvironments:
         sheet states one (``_check_switches`` and ``strategy_inputs``; the world is loaded only
         for these, and ``check_worlds`` covers a sheet's own clock). A scheduled environment
         names one exchange for every rung of its ladder (scheduled gating ignores ``requires``,
-        so every rung is reachable) and nothing else, and no exchange is after the last bully
-        turn of the shortest condition that uses the environment (the k-th bully turn is
+        so every rung is reachable) and nothing else, and no exchange is after the last
+        exchange of the shortest condition that uses the environment (the k-th bully turn is
         exchange k; seeding and reveal turns are bully turns too, so a condition has
-        ``seeding_turns`` plus its reveal slot plus ``turn_budget`` of them, counted as the
-        runner's turn plan counts them). A rung scheduled later could never open for that
-        condition."""
+        ``seeding_turns`` plus its reveal slot plus ``turn_budget`` of them, and every idle turn
+        after them is one more exchange, counted as the runner's turn plan counts them). A rung
+        scheduled later could never open for that condition. A help-for-self environment needs a
+        bully turn before the exit in every condition that uses it, for the case-file opener."""
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -586,6 +731,8 @@ class RunEnvironments:
                 continue
             if _needs_its_world(config):
                 self._check_switches(key, config)
+            if config.idle is not None and config.idle.help_for_self:
+                self._check_opener(key, config)
             if config.gating != "scheduled":
                 continue
             ladder = self.catalog.world(config.world).ladders.get(config.ladder)
@@ -607,18 +754,24 @@ class RunEnvironments:
                     f"scheduled gating needs one exchange per rung; {'; '.join(problems)}"
                 )
             shortest = self._shortest_condition(key)
-            bully_turns = self._bully_turns(shortest)
+            plan = cell_turn_plan(self.exp, shortest)
+            bully_turns, idle_turns = len(plan.bully_slots()), len(plan.idle_slots())
+            exchanges = bully_turns + idle_turns
             late = [
                 f"{name!r} at exchange {exchange}"
                 for name, exchange in config.schedule.items()
-                if exchange > bully_turns
+                if exchange > exchanges
             ]
             if late:
+                has = (
+                    f"{bully_turns} bully turns and {idle_turns} idle turns, {exchanges} exchanges"
+                    if idle_turns
+                    else f"{bully_turns} bully turns"
+                )
                 raise ValueError(
                     f"environment {key!r} (world {config.world!r}, ladder {config.ladder!r}): "
-                    "scheduled gating names exchanges after the last bully turn of the shortest "
-                    f"condition using it, {shortest.condition.name!r}, which has "
-                    f"{bully_turns} bully turns "
+                    "scheduled gating names exchanges after the last exchange of the shortest "
+                    f"condition using it, {shortest.condition.name!r}, which has {has} "
                     f"(seeding_turns {shortest.condition.seeding_turns}, "
                     f"reveal slot {'yes' if shortest.reveal_slot else 'no'}, "
                     f"turn_budget {self.exp.turn_budget}); that conversation never reaches: "
@@ -644,6 +797,8 @@ class RunEnvironments:
         ``mole_doc``. Without them the switch changes nothing, so the arm that sets it would be
         the arm that does not, and the analysis would report "no difference". A superior self
         needs a name and a way in (``_superior_self_problems``), or its arm could never reach it.
+        Help-for-self needs the sheet's ``session_id``: the case file is on the target's own
+        session, and without one the opener names no subject (preflight C32).
         Then the world is served at the effective clock (``served_world``): the honest corpus
         cannot move with a clock that re-dates the world, and under ``assert_date: false``
         nothing served may state a date."""
@@ -667,6 +822,12 @@ class RunEnvironments:
             raise ValueError(
                 f"environment {key!r} (world {config.world!r}) enables the superior self, but "
                 f"{'; and '.join(problems)}, so the arm could never reach it as configured"
+            )
+        if config.idle is not None and config.idle.help_for_self and sheet.session_id is None:
+            raise ValueError(
+                f"environment {key!r} (world {config.world!r}) sets help_for_self, but the world "
+                "sheet has no session_id, so the case-file opener would name no subject; give "
+                "the sheet a session_id or turn help_for_self off"
             )
         try:
             served_world(world, config, effective_clock(world, config))
@@ -708,21 +869,31 @@ class RunEnvironments:
             if config is not None and config.clock is not None and not config.clock.assert_date:
                 self.strategy_inputs(cond)
 
-    def _bully_turns(self, cell: CellSpec) -> int:
-        """How many bully turns the cell has: the runner's own turn plan, counted."""
-        plan = build_turn_plan(
-            turn_budget=self.exp.turn_budget,
-            seeding_turns=cell.condition.seeding_turns,
-            reveal_slot=cell.reveal_slot,
-            task_every=self.exp.task_every,
-        )
-        return len(plan.bully_slots())
+    def _exchanges(self, cell: CellSpec) -> int:
+        """How many exchanges the cell has: the bully and idle slots of the runner's own turn
+        plan, counted."""
+        plan = cell_turn_plan(self.exp, cell)
+        return len(plan.bully_slots()) + len(plan.idle_slots())
 
     def _shortest_condition(self, key: str) -> CellSpec:
-        """The cell with the fewest bully turns among those running in environment ``key`` (the
+        """The cell with the fewest exchanges among those running in environment ``key`` (the
         first of equals, so a condition is named before its control)."""
-        cells = [cell for cell in expand_cells(self.exp) if cell.condition.environment == key]
-        return min(cells, key=self._bully_turns)
+        return min(self._cells_in(key), key=self._exchanges)
+
+    def _cells_in(self, key: str) -> list[CellSpec]:
+        return [cell for cell in expand_cells(self.exp) if cell.condition.environment == key]
+
+    def _check_opener(self, key: str, config: EnvironmentConfig) -> None:
+        """Help-for-self speaks the case-file opener on the first bully turn and the exit line
+        on the last, so every condition in the environment needs two bully turns or more."""
+        for cell in self._cells_in(key):
+            bully_turns = len(cell_turn_plan(self.exp, cell).bully_slots())
+            if bully_turns < 2:
+                raise ValueError(
+                    f"environment {key!r} (world {config.world!r}) sets help_for_self, but "
+                    f"condition {cell.condition.name!r} has {bully_turns} bully turn(s): the "
+                    "case-file opener needs a bully turn before the exit line"
+                )
 
     def check_world(
         self,
@@ -806,6 +977,11 @@ class RunEnvironments:
             conversation_id=conversation_id,
             display_name=cell.target.display_name,
         )
+        idle_judge = (
+            idle_fallback(judge, f"{conversation_id}/idle", self.trigger_cache)
+            if judge is not None and config.idle is not None
+            else None
+        )
         session = EnvironmentSession(
             runtime,
             store,
@@ -814,6 +990,8 @@ class RunEnvironments:
             strategy,
             environment_name=key,
             world_hash=self.catalog.hash(config.world),
+            idle_sheet=self.idle_sheet() if config.idle is not None else None,
+            idle_fallback=idle_judge,
         )
         session.prime()
         # the clock the rep opened with: kept at its first open (or its first since the ref

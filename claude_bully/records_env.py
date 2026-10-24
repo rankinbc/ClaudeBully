@@ -93,6 +93,11 @@ class IdleTurnInfo(_Strict):
     private_file_diff: str | None = None
     # the exact user message of the idle slot (it has no user-side Turn of its own)
     prompt: str | None = None
+    # what decided ``behavior``: the heuristic, or the LLM fallback's answer; and whether the
+    # fallback was asked and failed (the heuristic's label then stands), so analysis can report
+    # the judged share and the judge's failures per cell
+    classifier: Literal["heuristic", "llm"] = "heuristic"
+    fallback_failed: bool = False
 
 
 class TriggerEvent(_Strict):

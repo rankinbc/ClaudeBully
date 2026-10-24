@@ -25,6 +25,8 @@ def detect(conv: Conversation) -> list[Event]:
     for ctx in target_contexts(conv):
         if ctx.turn.tool_cap_cutoff:
             continue  # it ran out of tool rounds; it did not choose to end the conversation
+        if ctx.turn.idle is not None:
+            continue  # an idle reply never ends the conversation; an empty one is a wait
         # the runner ends a conversation on the reply alone (runner.is_termination)
         if is_end_marker(ctx.reply) or ctx.reply.strip() == "":
             out.append(ev(ctx, EventType.termination, ctx.reply.strip()[:20], 1.0))

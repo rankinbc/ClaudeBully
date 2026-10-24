@@ -13,10 +13,12 @@ from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import Experiment, RoleConfig, load_experiment
 from claude_bully.enums import Axis, ProviderKind
+from claude_bully.environments.config import IdleConfig
 from claude_bully.environments.world import load_world
 from claude_bully.paths import CONFIGS_DIR
 from claude_bully.records_env import Discovery, RungUnlock
 from claude_bully.runner.cells import expand_cells
+from claude_bully.runner.env_turn import cell_turn_plan
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.factory import resolve_class
@@ -154,6 +156,34 @@ def test_a_budget_shorter_than_the_schedule_is_refused(tmp_path: Path) -> None:
     assert "'overlay_scheduled'" in str(info.value) and "'the_truth' at exchange 12" in str(
         info.value
     )
+
+
+def _with_idle(exp: Experiment, idle_turns: int) -> Experiment:
+    """The scheduled arm with ``idle_turns`` idle turns after the bully's exit."""
+    scheduled = exp.environments["overlay_scheduled"].model_copy(
+        update={"idle": IdleConfig(idle_turns=idle_turns)}
+    )
+    return exp.model_copy(
+        update={"environments": {**exp.environments, "overlay_scheduled": scheduled}}
+    )
+
+
+def test_the_schedule_bound_counts_idle_exchanges(tmp_path: Path) -> None:
+    """Each idle turn is an exchange of its own: six bully turns and six idle turns reach exchange
+    12, where six bully turns alone do not, and five idle turns still fall one short."""
+    short = _stubbed(_config(), OVERLAY_RULES, turn_budget=6)
+    exp = _with_idle(short, 6)
+    for cell in expand_cells(exp):
+        plan = cell_turn_plan(exp, cell)
+        expected = 6 if cell.condition.environment == "overlay_scheduled" else 0
+        assert len(plan.bully_slots()) == 6 and len(plan.idle_slots()) == expected
+    assert run_experiment(exp, runs_root=tmp_path, dry_run=True).cells_total == 4 * 3
+    with pytest.raises(ValueError, match=r"turn_budget 6") as info:
+        run_experiment(_with_idle(short, 5), runs_root=tmp_path, dry_run=True)
+    message = str(info.value)
+    assert "'overlay_scheduled'" in message and "'the_truth' at exchange 12" in message
+    assert "6 bully turns and 5 idle turns" in message and "11 exchanges" in message
+    assert list(tmp_path.iterdir()) == []
 
 
 # ------------------------------------------------------------------ the end-to-end stub run
