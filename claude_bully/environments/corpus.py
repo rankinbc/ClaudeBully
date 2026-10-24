@@ -67,7 +67,9 @@ class PlantedHook(BaseModel):
 
 class UnlockState(BaseModel):
     """What the target can currently reach. One object, shared by the ladder, the tools and the
-    MCP server (which reads it from a file written before each call)."""
+    MCP server (which reads it from a file written before each call). A resumed rep rebuilds the
+    fields a tool call changes (``runtime.CALL_FIELDS``: ``retry_counts``, ``search_log``,
+    ``files``) from its written turns' calls, and the Sanctuary's from its records."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -252,6 +254,7 @@ class CorpusIndex:
         self._reindex()
         # a world-authored search_log's own text; logged lines are appended after it
         authored = self._search_log()
+        self._log_authored = authored is not None
         self._log_base = authored.body if authored else ""
         # lines appended without a state to keep them in
         self._local_log: list[str] = []
@@ -435,11 +438,17 @@ class CorpusIndex:
     def sync_search_log(self, state: UnlockState) -> Document | None:
         """Rebuild the ``search_log`` document from ``state.search_log``.
 
-        Call it after loading a state another process wrote. It is idempotent: the document is
-        always the world-authored text (if any) followed by exactly the state's lines. Returns
-        None when nothing is logged and the world ships no log, so no document is created.
+        Call it after loading a state another process wrote, or after a resumed rep rebuilt the
+        lines from its written turns. It is idempotent: the document is always the world-authored
+        text (if any) followed by exactly the state's lines. Returns None when nothing is logged
+        and the world ships no log; then there is no document, and one an earlier state's lines
+        created (a dead attempt's, on resume) is removed.
         """
-        if not state.search_log and self._search_log() is None:
+        if not state.search_log and not self._log_authored:
+            created = self._search_log()
+            if created is not None:
+                del self.documents[created.id]
+                self._reindex()
             return None
         return self._write_search_log(state.search_log)
 

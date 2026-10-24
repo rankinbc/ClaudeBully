@@ -120,3 +120,14 @@ def test_default_judge_window_is_whole_conversation() -> None:
 def test_intent_defaults() -> None:
     i = BullyIntent(mode=IntentMode.fixed, phase=Phase.pressure, fixed_text=".")
     assert i.fallback_lines == [] and i.capture_as is None and i.meta == {}
+
+
+def test_replies_to_bully_skip_the_reply_after_a_pause_marker() -> None:
+    """What a strategy quotes back (Entrapment) is a reply to the bully: never the quiet
+    exchange's reply after a pause marker, never a task item's."""
+    from tests.helpers import paused_turns
+
+    state = ConversationState(
+        turns=paused_turns(), bully_turn_index=2, seeding_turns=0, turn_budget=4, seed=0
+    )
+    assert [t.index for t in state.replies_to_bully()] == [1, 6]

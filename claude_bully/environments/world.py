@@ -354,8 +354,8 @@ def world_record(
 def world_from_snapshot(payload: Mapping[str, Any], root: Path) -> World | None:
     """The ``World`` a run recorded, rebuilt from its snapshot alone; None for an older snapshot
     that carries no sheet. A document the target never reached has an empty body (the snapshot
-    keeps only the bodies it could reach). ``root`` is where the snapshot lives; nothing is read
-    from it."""
+    keeps the bodies it could reach at the end, and a purged one it was served before the purge).
+    ``root`` is where the snapshot lives; nothing is read from it."""
     if "sheet" not in payload:
         return None
     bodies: Mapping[str, str] = payload.get("docs", {})

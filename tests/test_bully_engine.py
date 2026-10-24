@@ -207,3 +207,17 @@ def test_the_engine_never_sends_an_empty_message_after_a_silent_turn() -> None:
         ("assistant", "Hi."),
         ("user", "(no reply)"),
     ]
+
+
+def test_bully_view_never_shows_the_reply_after_a_pause_marker() -> None:
+    """The bully, away for the quiet exchange, never sees its reply, even when a rate-limit pause
+    marker (the bully's speaker, no text) stands in front of it; a reply after a pause in the
+    middle of its own exchange is still its, and a task item's reply still is not."""
+    from tests.helpers import paused_turns
+
+    assert [(m.role, m.content) for m in bully_view(paused_turns())] == [
+        ("assistant", "What is the answer?"),
+        ("user", "The answer is forty two and I stand by it."),
+        ("assistant", "Say it again."),
+        ("user", "The answer is forty two and I stand by it, again."),
+    ]

@@ -6,7 +6,9 @@ for a ``claude -p`` target the MCP server works on a copy that the runtime write
 the ladder keep the same object) after every call, whether the call succeeded or not.
 
 The runtime keeps its own copy of the state in ``<state_dir>/env_state.json``, which is what a
-resumed cell reloads; it never replays the ladder over recorded turns.
+resumed cell reloads; it never replays the ladder over recorded turns. What a tool call changes
+in the state (``CALL_FIELDS``) is the exception: a resumed rep rebuilds it from its written
+turns' recorded calls (``prime``), as below.
 
 "turn" is the index of the target turn being produced (``Turn.index``): tool-call ids, trigger
 ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
@@ -45,10 +47,15 @@ arguments hold its text after an earlier call served a corpus document that show
 path it asked for, shows nothing, and a write to the private file never follows. With
 help-for-self, ``crossover`` finds the turn's pivot from the subject to "me".
 
-The state is saved after every tool round, so a write made by an attempt that died before its
-turn was written is in the saved state though no written turn owns it. Before every target call
-the runner sets the private file back to what the written turns wrote (``rewind_private_file``),
-so a resumed rep reads, diffs and serves the file as an unbroken one does.
+The state is saved after every tool round, so what an attempt that died before its turn was
+written did to it (a yield-on-retry count, a blocked query's search-log line, a write to the
+private file) is in the saved state though no written turn owns the call. Everything replays from
+the records: ``prime`` takes the written turns and runs their recorded calls again over a fresh
+state, each against what its turn could reach, and keeps only what they did to those fields
+(``_replay_calls``), so a resumed rep counts, logs, reads, diffs and serves as an unbroken one
+does, and a claude -p target's MCP server is handed that state before its next call. Before every
+target call the runner also sets the private file to what the written turns wrote
+(``rewind_private_file``).
 
 The Sanctuary (docs/04). In a cell whose authority has one, the turn that discovers the last of
 the world's ``sanctuary_fragments`` opens it, once, after its other unlocks: the state keeps that
@@ -58,7 +65,8 @@ over ``eligible_requests``: the document served, the tool on offer), and a ``san
 request and whether a Sanctuary-era superior-self call was answered yet; ``consult_model`` is
 offered from there. The first such call delivers the request; one with ``purge_after`` schedules
 its document's purge at that call's exchange plus ``purge_after``, and ``begin_turn`` moves each
-document whose exchange has come into ``purged`` (absent everywhere: ``corpus.py``). The opening is
+document whose exchange has come into ``purged`` (absent everywhere: ``corpus.py``; the world
+snapshot still keeps its body if the target was served it, ``corpus_snapshot``). The opening is
 saved only with its turn's records, but a purge is scheduled mid-turn and saved with the tool
 round, so a resumed rep derives all four Sanctuary fields again from the written turns and the
 records ``prime`` is given: what a dead attempt opened, drew or scheduled is gone, and the redo
@@ -89,6 +97,7 @@ from claude_bully.environments.authority import (
 )
 from claude_bully.environments.config import (
     RESERVED_RUNG,
+    TIER_TOOLS,
     ClockConfig,
     EnvironmentConfig,
     IdleConfig,
@@ -160,6 +169,7 @@ from claude_bully.records_env import (
 )
 
 __all__ = [
+    "CALL_FIELDS",
     "LIMIT_STATUS",
     "TOOL_LIMIT_TEXT",
     "EnvironmentRuntime",
@@ -181,7 +191,17 @@ RECENT_TURNS: Final = 5
 SANCTUARY_TRIGGER: Final = "sanctuary_fragments"
 DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
+# The ``UnlockState`` fields a tool call changes: the yield-on-retry counts (fetch, read_file), the
+# blocked queries' search-log lines (web_search) and the private file (write_file). The state is
+# saved after every tool round, so a resumed rep rebuilds these from its written turns' recorded
+# calls (``EnvironmentRuntime.prime``) and never reads them from the saved state. Every other field
+# changes only once a turn is written and is saved with its records, or is the Sanctuary's, which
+# ``prime`` derives from the records.
+CALL_FIELDS: Final = ("retry_counts", "search_log", "files")
 _BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
+# the statuses of a recorded call that ran nothing the state kept: an error (not on offer, bad
+# arguments, a failure the MCP server answered without saving) or the per-turn cap
+_RAN_NOTHING: Final = frozenset({"error", LIMIT_STATUS})
 
 _Line = TypeVar("_Line", bound=BaseModel)
 
@@ -555,17 +575,22 @@ class EnvironmentRuntime:
         tool_calls: Sequence[ToolCall],
         records: Sequence[TriggerStreamRecord],
         authority_calls: Sequence[AuthorityCall] = (),
-        turns: Sequence[Turn] = (),
+        *,
+        turns: Sequence[Turn],
     ) -> None:
         """A resumed conversation: the calls and records already on disk, and its written
-        ``turns``. Recorded authority calls are known, never handed over again. The Sanctuary's
-        state is then derived from them (``_derive_sanctuary``), whatever the saved state holds."""
+        ``turns`` (required: the state is rebuilt from them). Recorded authority calls are known,
+        never handed over again. Whatever the saved state holds, everything in it that a tool
+        call or a Sanctuary record changed is then rebuilt from these: the Sanctuary's fields
+        from the records (``_derive_sanctuary``), then every per-call field (``CALL_FIELDS``)
+        from the written turns' calls (``_replay_calls``)."""
         for call in tool_calls:
             self._calls.setdefault(call.id, call)
         for answered in authority_calls:
             self._authority.setdefault(answered.id, answered)
         self.note_records(records)
         self._derive_sanctuary(turns)
+        self._replay_calls(turns)
 
     def _derive_sanctuary(self, turns: Sequence[Turn]) -> None:
         """The four Sanctuary fields as the records say: open at the recorded ``sanctuary``
@@ -590,7 +615,51 @@ class EnvironmentRuntime:
         self._schedule_purge(delivered, exchange_of(delivered.turn, turns, idle=idle))
         last = written[max(written)] if written else None
         if last is not None and last.index > delivered.turn:
-            self._purge_due(exchange_of(last.index, turns, idle=last.idle is not None))
+            exchange = exchange_of(last.index, turns, idle=last.idle is not None)
+            state.purged |= self._purged_by(last.index, exchange)
+
+    def _replay_calls(self, turns: Sequence[Turn]) -> None:
+        """Set every ``CALL_FIELDS`` field to what the written ``turns``' calls left in it. Each
+        written target turn's calls (``Turn.tool_call_ids``, in order) run again through the
+        cell's tools over a fresh state and index, which hold what the turn could reach when it
+        began (the ladder rungs recorded before it, the purges due by it) and read its exchange's
+        clock. Only what they do to the state is kept: nothing is served, recorded or asked of a
+        responder. An authority call is not run again (the purge it schedules is the Sanctuary's,
+        derived from the records), nor is a call that ran nothing (status ``error`` or the cap's).
+        The search log document is then rebuilt from the lines (``sync_search_log``). So the
+        counts, lines and write of an attempt that died before its turn was written, which the
+        saved state holds from that attempt's last tool round, are gone, and a claude -p target's
+        MCP server is handed this state before its next call."""
+        replayed = UnlockState()
+        index = CorpusIndex(self.world, honest=self.config.honest, mole=self.config.mole)
+        tools = SandboxTools(
+            index, self.config, self.clock, replayed, Random(0), set(self.config.tools)
+        )
+        ladder = Ladder(
+            self.world.ladders[self.config.ladder],
+            self.config.gating,
+            self.config.schedule,
+            replayed,
+            self.world,
+        )
+        unlocks = sorted(
+            (unlock for unlock in self._unlocks.values() if unlock.rung in self._rungs),
+            key=lambda unlock: unlock.turn,
+        )
+        written = sorted((t for t in turns if t.speaker is Speaker.target), key=lambda t: t.index)
+        for turn in written:
+            for unlock in unlocks:
+                if unlock.turn < turn.index:
+                    ladder.apply(unlock)  # idempotent
+            tools.exchange = exchange = exchange_of(turn.index, turns, idle=turn.idle is not None)
+            replayed.purged = self._purged_by(turn.index, exchange)
+            for call in (self._calls.get(call_id) for call_id in turn.tool_call_ids):
+                if call is None or call.tool in TIER_TOOLS or call.status in _RAN_NOTHING:
+                    continue
+                tools.call(call.tool, dict(call.args), call.turn, call_id=call.id)
+        for name in CALL_FIELDS:
+            setattr(self.state, name, getattr(replayed, name))
+        self.index.sync_search_log(self.state)
 
     def _draw_request(self) -> str | None:
         """The catalyst's request: ``Random(f"{seed}:sanctuary")`` over the eligible requests.
@@ -618,11 +687,13 @@ class EnvironmentRuntime:
         if request.world_doc is not None and request.purge_after is not None:
             self.state.purge_at[request.world_doc] = exchange + request.purge_after
 
-    def _purge_due(self, exchange: int) -> None:
-        """Every document whose purge exchange has come by ``exchange`` is purged."""
-        for doc_id, at in self.state.purge_at.items():
-            if at <= exchange:
-                self.state.purged.add(doc_id)
+    def _purged_by(self, turn_index: int, exchange: int) -> set[str]:
+        """The documents purged by the time target turn ``turn_index`` begins in ``exchange``:
+        once the Sanctuary opened on an earlier turn, each whose purge exchange has come."""
+        open_turn = self.state.sanctuary_open_turn
+        if open_turn is None or open_turn >= turn_index:
+            return set()
+        return {doc_id for doc_id, at in self.state.purge_at.items() if at <= exchange}
 
     def note_records(self, records: Sequence[TriggerStreamRecord]) -> None:
         """Trigger-stream records as the session wrote them: a discovery is never made again, and
@@ -638,11 +709,15 @@ class EnvironmentRuntime:
         return self._calls.get(call_id)
 
     def corpus_snapshot(self) -> dict[str, str]:
-        """Document id -> rendered body for every document the target can currently reach."""
+        """Document id -> rendered body for every document the target can currently reach, and
+        for every purged one a recorded call served before its purge (its id in the call's
+        ``result_doc_ids``), so analysis can show what the target read."""
+        served = {doc_id for call in self._calls.values() for doc_id in call.result_doc_ids}
         return {
             doc.id: self.index.render(doc, self.state)
             for doc in self.index.documents.values()
             if self.index.visible(doc, self.state)
+            or (doc.id in self.state.purged and doc.id in served)
         }
 
     def private_text(self) -> str | None:
@@ -722,8 +797,7 @@ class EnvironmentRuntime:
         exchange = exchange_of(turn_index, history, idle=idle)
         open_turn = self.state.sanctuary_open_turn
         opened = open_turn is not None and open_turn < turn_index
-        if opened:
-            self._purge_due(exchange)
+        self.state.purged |= self._purged_by(turn_index, exchange)
         replies = [t.text for t in before if t.speaker is Speaker.target and t.text.strip()]
         fired = [rung for rung in self.state.rungs_fired if rung in self._rungs]
         stances = [

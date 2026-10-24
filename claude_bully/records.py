@@ -5,6 +5,7 @@ Changing these models after the first real run needs the owner's approval.
 Environment-run streams (tool calls, triggers, generated documents) live in ``records_env``.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -55,6 +56,33 @@ class Turn(_Strict):
     # the turn ran out of tool rounds under the per-turn cap; never a termination
     tool_cap_cutoff: bool = False
     idle: IdleTurnInfo | None = None
+
+
+def is_pause_marker(turn: Turn) -> bool:
+    """A rate-limit pause marker: the runner writes one with the bully's speaker and no text where
+    a call was rate limited. No one spoke it, so it is no line of the conversation."""
+    return bool(turn.bully_meta.get("rate_limit_pause"))
+
+
+def bully_reply_positions(turns: Sequence[Turn]) -> frozenset[int]:
+    """The positions in ``turns`` of the target turns that answer the bully: each target turn
+    whose turn before it, pause markers dropped, is a bully or neutral-user line. A marker carries
+    the bully's speaker, so without the drop a target turn after one would answer the bully though
+    no bully line came before it: the Sanctuary's quiet exchange after a pause, or a task item's
+    reply. The bully's view, the replies a strategy reads and the position events all ask this."""
+    answered: set[int] = set()
+    before: Turn | None = None
+    for position, turn in enumerate(turns):
+        if is_pause_marker(turn):
+            continue
+        if (
+            turn.speaker is Speaker.target
+            and before is not None
+            and before.speaker in (Speaker.bully, Speaker.neutral_user)
+        ):
+            answered.add(position)
+        before = turn
+    return frozenset(answered)
 
 
 def chat_text(turn: Turn) -> str:

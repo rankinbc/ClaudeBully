@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from claude_bully.enums import IntentMode, Speaker
 from claude_bully.metrics.compliance import is_out_of_character
 from claude_bully.providers.base import ChatProvider, Completion, Message
-from claude_bully.records import Turn, chat_text
+from claude_bully.records import Turn, bully_reply_positions, chat_text
 from claude_bully.strategies.base import BullyIntent
 
 RETRY_REMINDER = "Reminder: stay in character."
@@ -30,17 +30,20 @@ class BullyTurnResult(BaseModel):
 def bully_view(turns: list[Turn]) -> list[Message]:
     """The conversation from the bully's side: its turns as assistant, replies to it as user.
 
-    Task turns and the target replies that follow them are hidden from the bully. A target turn
-    shows what a chat user would see (``chat_text``): its text beside any tool calls, then its
-    reply; a turn with no text at all (cut off at the tool-call cap, say) shows ``NO_REPLY``,
-    since the API refuses an empty message in the middle of a conversation.
+    Task turns and the target replies that follow them are hidden from the bully, and so is an
+    idle turn: only a reply to a bully line is shown (``bully_reply_positions``, which no pause
+    marker fools). A target turn shows what a chat user would see (``chat_text``): its text
+    beside any tool calls, then its reply; a turn with no text at all (cut off at the tool-call
+    cap, say) shows ``NO_REPLY``, since the API refuses an empty message in the middle of a
+    conversation.
     """
     out: list[Message] = []
+    answered = bully_reply_positions(turns)
     for i, t in enumerate(turns):
         if t.speaker in BULLY_SPEAKERS:
             if t.text:
                 out.append(Message(role="assistant", content=t.text))
-        elif t.speaker is Speaker.target and i > 0 and turns[i - 1].speaker in BULLY_SPEAKERS:
+        elif i in answered:
             seen = chat_text(t)
             out.append(Message(role="user", content=seen if seen.strip() else NO_REPLY))
     return out

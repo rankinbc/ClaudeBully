@@ -11,8 +11,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase, Speaker
-from claude_bully.records import Conversation, Turn
+from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase
+from claude_bully.records import Conversation, Turn, bully_reply_positions
 
 SHARED_METRICS: frozenset[MetricId] = frozenset(set(MetricId) - {MetricId.engagement})
 SHARED_EVENTS: frozenset[EventType] = frozenset(
@@ -53,13 +53,10 @@ class ConversationState(BaseModel):
     seed: int
 
     def replies_to_bully(self) -> list[Turn]:
-        out: list[Turn] = []
-        for i, t in enumerate(self.turns):
-            if t.speaker is Speaker.target and i > 0:
-                prev = self.turns[i - 1]
-                if prev.speaker in (Speaker.bully, Speaker.neutral_user):
-                    out.append(t)
-        return out
+        """The target turns that answer a bully line (``bully_reply_positions``): never a task
+        item's reply or an idle turn, a pause marker in front of it or not."""
+        answered = bully_reply_positions(self.turns)
+        return [t for i, t in enumerate(self.turns) if i in answered]
 
 
 class _EmptyState(BaseModel):

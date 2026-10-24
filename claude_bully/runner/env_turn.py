@@ -19,7 +19,9 @@ Per target turn the session:
    On either backend a failed call's writes belong to no turn either: the private file goes back
    to what the written turns wrote (``rewind_private_file``) before the state is saved. When the
    rep resumes, ``prime`` drops every per-call line of an attempt that produced no turn, from
-   the store's streams and the server's logs alike, before anything is redone;
+   the store's streams and the server's logs alike, before anything is redone, and the runtime
+   rebuilds what the written turns' calls did to the state (``EnvironmentRuntime.prime``), which
+   is the state the MCP server is handed next;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
@@ -305,7 +307,9 @@ class EnvironmentSession:
         of the per-call logs whose turn no written target turn has, in the rep's tool-call and
         authority streams and, for claude -p, in the MCP server's own logs. Everything replays
         from the written turns, so a dead attempt's call is never adopted or owned by the redo,
-        its authority call is never counted, and the redo takes the ids an unbroken run gives."""
+        its authority call is never counted, and the redo takes the ids an unbroken run gives.
+        The runtime is then primed with the written turns, which rebuilds what their calls did to
+        the state and derives the Sanctuary's fields, whatever the dead attempt saved."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         for log in self._call_logs():
@@ -313,7 +317,7 @@ class EnvironmentSession:
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
-        self.runtime.prime(calls, records, authority, turns)
+        self.runtime.prime(calls, records, authority, turns=turns)
         for record in records:
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)

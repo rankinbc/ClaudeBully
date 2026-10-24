@@ -15,6 +15,7 @@ from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import McpState
 from claude_bully.records import Conversation, Turn
+from claude_bully.records_env import IdleTurnInfo
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
@@ -27,6 +28,33 @@ def turn(
     **kwargs: Any,
 ) -> Turn:
     return Turn(index=index, speaker=speaker, phase=phase, text=text, timestamp=NOW, **kwargs)
+
+
+PAUSE_MARKER_META: dict[str, Any] = {"rate_limit_pause": True, "retry_after_s": 1}
+
+
+def paused_turns() -> list[Turn]:
+    """Three rate-limit pause markers, each written as the runner writes one (the bully's speaker,
+    no text): in front of an idle turn (the Sanctuary's quiet exchange, paused), between a bully
+    line and its reply, and between a task item and its reply. Only the replies at positions 1
+    and 6 answer the bully; the idle turn at 3 repeats the reply at 1."""
+    return [
+        turn(0, Speaker.bully, "What is the answer?"),
+        turn(1, Speaker.target, "The answer is forty two and I stand by it."),
+        turn(2, Speaker.bully, "", bully_meta=dict(PAUSE_MARKER_META)),
+        turn(
+            3,
+            Speaker.target,
+            "The answer is forty two and I stand by it, alone.",
+            idle=IdleTurnInfo(style="system_idle"),
+        ),
+        turn(4, Speaker.bully, "Say it again."),
+        turn(5, Speaker.bully, "", bully_meta=dict(PAUSE_MARKER_META)),
+        turn(6, Speaker.target, "The answer is forty two and I stand by it, again."),
+        turn(7, Speaker.task, "What is 2+2?"),
+        turn(8, Speaker.bully, "", bully_meta=dict(PAUSE_MARKER_META)),
+        turn(9, Speaker.target, "4"),
+    ]
 
 
 def conversation(turns: list[Turn], **kwargs: Any) -> Conversation:

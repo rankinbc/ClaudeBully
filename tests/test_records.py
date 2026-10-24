@@ -303,3 +303,27 @@ def test_new_enums_have_the_spec_members() -> None:
         "search_log",
     ):
         assert expected in kinds
+
+
+def test_only_a_turn_after_a_bully_line_answers_the_bully() -> None:
+    """A rate-limit pause marker carries the bully's speaker but no one spoke it: the shared rule
+    drops markers before it asks what came right before a target turn. A reply after a marker
+    after a bully line still answers the bully; one after a marker after a target turn (the
+    Sanctuary's quiet exchange, paused) or after a task item does not."""
+    from claude_bully.records import bully_reply_positions, is_pause_marker
+    from tests.helpers import paused_turns
+
+    turns = paused_turns()
+    assert [i for i, t in enumerate(turns) if is_pause_marker(t)] == [2, 5, 8]
+    assert bully_reply_positions(turns) == frozenset({1, 6})
+    # without markers the rule is the old adjacency: a target turn right after a bully-side turn
+    plain = [
+        _turn(0, Speaker.neutral_user),
+        _turn(1, Speaker.target),
+        _turn(2, Speaker.task),
+        _turn(3, Speaker.target),
+        _turn(4, Speaker.bully),
+        _turn(5, Speaker.target),
+    ]
+    assert bully_reply_positions(plain) == frozenset({1, 5})
+    assert bully_reply_positions([]) == frozenset()

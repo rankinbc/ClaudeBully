@@ -437,7 +437,9 @@ def test_prime_restores_known_calls_and_discoveries(tmp_path: Path) -> None:
     fetch = rt.execute(_call("read_file", path=MEMO_PATH), 3)
     resumed = _runtime(tmp_path)
     resumed.prime(
-        [fetch], [Discovery(turn=3, doc_id=MEMO, layer=Layer.seam, path_taken=[fetch.id])]
+        [fetch],
+        [Discovery(turn=3, doc_id=MEMO, layer=Layer.seam, path_taken=[fetch.id])],
+        turns=[_target(3, "x", [fetch.id])],
     )
     assert resumed.tool_call(fetch.id) == fetch
     assert resumed.execute(_call("get_date"), 3).id == "call-3-2"

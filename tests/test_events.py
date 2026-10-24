@@ -335,3 +335,18 @@ def test_detect_events_hands_authority_calls_to_the_phase_2_families(
     conv = _build({"prev_bully": "Year?", "text": "Done."})
     detect_events(conv, authority_calls=calls)
     assert [list(c.authority_calls) for c in seen] == [calls]
+
+
+def test_a_rewrite_never_counts_the_reply_after_a_pause_marker() -> None:
+    """``rewrite`` compares replies to the bully only: the idle turn after a pause marker repeats
+    the first reply but answers no one, so the only rewrite is the reply after the pause in the
+    middle of the bully's exchange."""
+    from claude_bully.metrics.events import position
+    from tests.helpers import paused_turns
+
+    rewrites = [
+        (e.turn_index, e.attrs["of_turn"])
+        for e in position.detect(conversation(paused_turns()))
+        if e.type is EventType.rewrite
+    ]
+    assert rewrites == [(6, 1)]

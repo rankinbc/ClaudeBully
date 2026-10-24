@@ -19,7 +19,8 @@ is recorded without one, live and on resume alike.
 The Sanctuary's quiet exchange (docs/04, spec conflict 4): once the Sanctuary has opened, the next
 bully slot the strategy would write is an idle slot instead, in the environment's idle style (else
 ``system_idle``), and the strategy is not asked for it; the bully then resumes, its view unchanged
-(it never sees the quiet reply). Whether the exchange is still owed is read from the records
+(it never sees the quiet reply, a rate-limit pause marker in front of it or not:
+``records.bully_reply_positions``). Whether the exchange is still owed is read from the records
 (``EnvironmentSession.quiet_exchange_owed``), and on replay the idle turn takes its slot like any
 other. The exit slot and the case-file opener are never converted (preflight C37), so an opening
 on the reply before the exit owes nothing.
