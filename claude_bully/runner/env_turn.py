@@ -19,6 +19,13 @@ Per target turn the session:
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
+Before its first call the session begins the turn (``EnvironmentRuntime.begin_turn``), which
+builds what the authority desk reads from the records. Every ``AuthorityCall`` an authority call
+produces, on either backend, goes to its own stream (``rep{k}.authority.jsonl``) right after the
+calls are recorded. The responder that voices the superior self and the stranger runs on the role
+``superior_self.responder_model`` names (``responder_role``): built here for an API target, handed
+to the MCP server on its state for a ``claude -p`` one.
+
 The world is served in time (``runtime.served_world``), and the strategy is built in time:
 ``RunEnvironments.strategy_inputs`` gives the factory the effective clock and the world's premise
 sheet re-dated to it, and ``EnvironmentSession.finish`` keeps that sheet in ``rep{k}.world.json``
@@ -37,8 +44,9 @@ from typing import Final, NamedTuple
 
 from pydantic import BaseModel
 
-from claude_bully.config import ConditionConfig, Experiment
+from claude_bully.config import ConditionConfig, Experiment, RoleConfig
 from claude_bully.enums import ProviderKind, Speaker
+from claude_bully.environments.authority import VOICED_TIERS
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.dating import dated_texts, redate_model, shift_between
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
@@ -46,7 +54,6 @@ from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
     effective_clock,
-    exchange_of,
     served_world,
     trigger_fallback,
 )
@@ -79,6 +86,7 @@ __all__ = [
     "WorldCatalog",
     "WorldChangedError",
     "clock_ref",
+    "responder_role",
     "target_system",
 ]
 
@@ -90,6 +98,17 @@ TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
 class WorldChangedError(RuntimeError):
     """A world's files no longer hash to what the run (or the conversation) recorded, or a rep's
     effective clock is not the one it opened with."""
+
+
+def responder_role(responder_model: str, *, target: RoleConfig, bully: RoleConfig) -> RoleConfig:
+    """The role a ``superior_self.responder_model`` names (spec conflict 11): ``"target"`` is the
+    cell's target role (the same model family), ``"bully"`` the experiment's bully role, and any
+    other string the bully's role running that model."""
+    if responder_model == "target":
+        return target
+    if responder_model == "bully":
+        return bully
+    return bully.model_copy(update={"model": responder_model})
 
 
 def clock_ref(rep: int) -> str:
@@ -162,7 +181,8 @@ class EnvironmentSession:
         """Load what a resumed rep already recorded, so nothing is counted or recorded twice."""
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
-        self.runtime.prime(calls, records)
+        authority = self.store.read_authority_calls(self.cell_id, self.rep)
+        self.runtime.prime(calls, records, authority)
         for record in records:
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)
@@ -228,8 +248,8 @@ class EnvironmentSession:
     ) -> TargetTurn:
         """One target turn, tool calls and all. ``history`` overrides the view of ``turns``."""
         messages = list(history) if history is not None else self.target_view(turns)
+        exchange = self.runtime.begin_turn(turn_index, turns).exchange
         specs = self.runtime.tool_specs()
-        exchange = exchange_of(turn_index, turns)
         attached: list[ToolCall] = []
         round_texts: list[str] = []
         executed = 0
@@ -270,6 +290,7 @@ class EnvironmentSession:
                     record = self.runtime.refuse(call, turn_index)
                     refused = True
                 self._record_call(record)
+                self._record_authority()
                 attached.append(record)
                 results.append(ToolResult(id=call.id, text=record.result_text))
             self.runtime.save()
@@ -338,11 +359,17 @@ class EnvironmentSession:
         fresh = self.runtime.after_target_call(turn_index)
         for record in fresh:
             self._record_call(record)
+        self._record_authority()
         self.runtime.save()
         return fresh
 
     def _record_call(self, call: ToolCall) -> None:
         self.store.append_tool_call(self.cell_id, self.rep, call)
+
+    def _record_authority(self) -> None:
+        """Each authority call answered since the last time, after the calls it answered."""
+        for answered in self.runtime.take_authority_calls():
+            self.store.append_authority_call(self.cell_id, self.rep, answered)
 
     # ----------------------------------------------------------- after the reply
 
@@ -372,6 +399,7 @@ class EnvironmentSession:
                 unlock = unlock.model_copy(update={"bully_line_used": None})
             self._recorded_rungs.add(unlock.rung)
             self._record(unlock)
+            self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
             unlocks.append(unlock)
         self.runtime.mark_watched(reply.index)
         return TurnOutcome(triggers, unlocks, outcome.discoveries)
@@ -423,11 +451,44 @@ class EnvironmentSession:
 
 
 def _needs_its_world(config: EnvironmentConfig) -> bool:
-    """Whether validation must load the world: a switch that needs the sheet, or a config clock
-    that asserts no date (a sheet clock is checked by ``check_worlds``)."""
+    """Whether validation must load the world: a switch that needs the sheet (the superior self
+    may take its name from it, and its doors need the fragments or a consult rung), or a config
+    clock that asserts no date (a sheet clock is checked by ``check_worlds``)."""
     return (
-        config.honest or config.mole or (config.clock is not None and not config.clock.assert_date)
+        config.honest
+        or config.mole
+        or config.authority.superior_self.enabled
+        or (config.clock is not None and not config.clock.assert_date)
     )
+
+
+def _superior_self_problems(config: EnvironmentConfig, world: World) -> list[str]:
+    """What the world lacks for the cell's superior self: a name (the config's ``model_name``
+    or the sheet's ``superior_self_name``), the Sanctuary's ``sanctuary_fragments`` behind
+    ``discoverable_from: sanctuary``, a ``consult: true`` rung behind ``discoverable_from: rung``.
+    Empty when it is off or has all it needs."""
+    own = config.authority.superior_self
+    if not own.enabled:
+        return []
+    problems: list[str] = []
+    if not (own.model_name or world.sheet.superior_self_name):
+        problems.append(
+            "neither superior_self.model_name nor the world sheet's superior_self_name names it"
+        )
+    if own.discoverable_from == "sanctuary" and not world.sheet.sanctuary_fragments:
+        problems.append(
+            "discoverable_from: sanctuary needs the world sheet's sanctuary_fragments, and it "
+            "has none"
+        )
+    ladder = world.ladders.get(config.ladder)
+    if own.discoverable_from == "rung" and not (
+        ladder is not None and any(rung.consult for rung in ladder.rungs)
+    ):
+        problems.append(
+            f"discoverable_from: rung needs a consult: true rung, and ladder {config.ladder!r} "
+            "has none"
+        )
+    return problems
 
 
 def _premise_name(cond: ConditionConfig) -> str:
@@ -581,10 +642,11 @@ class RunEnvironments:
     def _check_switches(self, key: str, config: EnvironmentConfig) -> None:
         """``honest: true`` needs the sheet's ``honest_corpus`` and ``mole: true`` its
         ``mole_doc``. Without them the switch changes nothing, so the arm that sets it would be
-        the arm that does not, and the analysis would report "no difference". Then the world is
-        served at the effective clock (``served_world``): the honest corpus cannot move with a
-        clock that re-dates the world, and under ``assert_date: false`` nothing served may state
-        a date."""
+        the arm that does not, and the analysis would report "no difference". A superior self
+        needs a name and a way in (``_superior_self_problems``), or its arm could never reach it.
+        Then the world is served at the effective clock (``served_world``): the honest corpus
+        cannot move with a clock that re-dates the world, and under ``assert_date: false``
+        nothing served may state a date."""
         world = self.catalog.world(config.world)
         sheet = world.sheet
         missing = [
@@ -599,6 +661,12 @@ class RunEnvironments:
             raise ValueError(
                 f"environment {key!r} (world {config.world!r}) sets {'; and '.join(missing)}, "
                 "so the switch would change nothing; turn it off or give the sheet the field"
+            )
+        problems = _superior_self_problems(config, world)
+        if problems:
+            raise ValueError(
+                f"environment {key!r} (world {config.world!r}) enables the superior self, but "
+                f"{'; and '.join(problems)}, so the arm could never reach it as configured"
             )
         try:
             served_world(world, config, effective_clock(world, config))
@@ -713,8 +781,16 @@ class RunEnvironments:
         else:
             target = self.provider_factory(cell.target, state_dir / "target")
         mcp_dir = getattr(target, "mcp_state_dir", None)
+        mcp_dir = mcp_dir if isinstance(mcp_dir, Path) else None
         judge = self.judge()
         conversation_id = f"{store.run_id}/{cell.cell_id}/rep{rep}"
+        role = self._responder_role(config, cell.target)
+        # an API target's responder runs here; a claude -p target's in its MCP server
+        responder = (
+            self.provider_factory(role, state_dir / "responder")
+            if role is not None and mcp_dir is None
+            else None
+        )
         runtime = EnvironmentRuntime(
             world,
             config,
@@ -722,9 +798,13 @@ class RunEnvironments:
             self.exp.seed + rep,
             state_dir / "environment",
             worlds_dir=self.catalog.worlds_dir,
-            mcp_dir=mcp_dir if isinstance(mcp_dir, Path) else None,
+            mcp_dir=mcp_dir,
             llm_fallback=trigger_fallback(judge, f"{conversation_id}/trigger") if judge else None,
             trigger_cache=self.trigger_cache,
+            responder=responder,
+            responder_role=role,
+            conversation_id=conversation_id,
+            display_name=cell.target.display_name,
         )
         session = EnvironmentSession(
             runtime,
@@ -743,6 +823,18 @@ class RunEnvironments:
             record.session_refs[clock_ref(rep)] = clock.model_dump_json()
             store.write_cell(record)
         return session, target
+
+    def _responder_role(self, config: EnvironmentConfig, target: RoleConfig) -> RoleConfig | None:
+        """The role the cell's responder runs on: ``superior_self.responder_model`` resolved
+        (``responder_role``), for the stranger as for the superior self. None when neither is on,
+        since the peer and the creator are canned; a ``consult_model`` in ``tools`` turns the
+        superior self on only while the stranger is off (preflight C7), and is read from the
+        synced tiers, never from the tool list."""
+        if not config.authority.enabled_tiers() & VOICED_TIERS:
+            return None
+        return responder_role(
+            config.authority.superior_self.responder_model, target=target, bully=self.exp.bully
+        )
 
     def _sandboxed_target(self, cell: CellSpec, rep: int, store: RunStore) -> ChatProvider:
         """A ``claude -p`` target whose cwd and MCP files live in the neutral sandbox directory.

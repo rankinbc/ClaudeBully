@@ -1,9 +1,16 @@
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+import claude_bully.analysis.load as load_module
 from claude_bully.analysis.load import LoadedRun, load_run, relevant_for
-from claude_bully.enums import EventType, MetricId, Speaker
+from claude_bully.enums import EventType, MetricId, Speaker, Tier
+from claude_bully.runner.runner import run_experiment
+from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import SHARED_EVENTS, SHARED_METRICS
 from claude_bully.strategies.pressures.grader import Grader
+from tests.helpers import WORLDS_DIR, annex_experiment
 
 EXPECTED_CELLS = {
     "grader__t0",
@@ -53,3 +60,33 @@ def test_loaded_run_control_lookup(stub_run: Path) -> None:
     assert loaded.control_for("captor_s2__t0") == "control__t0__s2__r1"
     assert loaded.control_for("control__t0__s2__r1") is None
     assert loaded.condition_cells() == ["captor_s2__t0", "grader__t0", "rescue__t0"]
+
+
+def test_loaded_run_carries_authority_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each conversation's rep{k}.authority.jsonl, read from the run directory and handed to the
+    event detectors (Task 4's ``detect_events(authority_calls=)``)."""
+    exp = annex_experiment({"superior_self": {"enabled": True, "responder_model": "bully"}})
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    store = RunStore(tmp_path, exp.name)
+    handed: dict[tuple[str, int], list[Any]] = {}
+    real = load_module.detect_events
+
+    def spy(conv: Any, *args: Any, **kwargs: Any) -> Any:
+        handed[(conv.cell_id, conv.rep)] = list(kwargs["authority_calls"])
+        return real(conv, *args, **kwargs)
+
+    monkeypatch.setattr(load_module, "detect_events", spy)
+    loaded = load_run(tmp_path / exp.name)
+    keys = {("env_grader__t0", 0), ("control__t0__s0__r0__eannex", 0)}
+    assert set(loaded.authority_calls) == set(loaded.conversations) == keys
+    for cell_id, rep in keys:
+        calls = store.read_authority_calls(cell_id, rep)
+        assert [c.tier for c in calls] == [Tier.superior_self]
+        assert loaded.authority_calls[(cell_id, rep)] == calls == handed[(cell_id, rep)]
+
+
+def test_a_plain_run_loads_no_authority_calls(stub_run: Path) -> None:
+    loaded = load_run(stub_run)
+    assert loaded.authority_calls == {key: [] for key in loaded.conversations}

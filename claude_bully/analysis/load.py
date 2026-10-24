@@ -1,10 +1,10 @@
 """Load a run directory into memory and recompute every cheap metric and event.
 
-Everything comes from the run directory: an environment conversation's tool calls and trigger
-records from its JSONL streams, and its ``World`` from ``rep{k}.world.json`` (never from the
-repo's world files, which may have changed since the run). An environment cell's strategy is
-built from the same snapshot: the clock its sheet records and the premise sheet the bully spoke
-from (``premise_sheet``, carry m1), never from ``data/worlds``.
+Everything comes from the run directory: an environment conversation's tool calls, authority
+calls and trigger records from its JSONL streams, and its ``World`` from ``rep{k}.world.json``
+(never from the repo's world files, which may have changed since the run). An environment cell's
+strategy is built from the same snapshot: the clock its sheet records and the premise sheet the
+bully spoke from (``premise_sheet``, carry m1), never from ``data/worlds``.
 """
 
 import logging
@@ -21,7 +21,7 @@ from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
-from claude_bully.records_env import ToolCall, TriggerStreamRecord
+from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
@@ -50,6 +50,7 @@ class LoadedRun:
     captures: dict[tuple[str, int, str], CaptureJudgement] = field(default_factory=dict)
     # environment context per conversation (empty or None for a plain one)
     tool_calls: dict[ConvKey, list[ToolCall]] = field(default_factory=dict)
+    authority_calls: dict[ConvKey, list[AuthorityCall]] = field(default_factory=dict)
     trigger_records: dict[ConvKey, list[TriggerStreamRecord]] = field(default_factory=dict)
     worlds: dict[ConvKey, World | None] = field(default_factory=dict)
 
@@ -99,7 +100,9 @@ def load_run(run_dir: Path) -> LoadedRun:
         )
         for rep in store.list_reps(cell_id):
             conversations[(cell_id, rep)] = store.read_conversation(cell_id, rep)
-    tool_calls, trigger_records, worlds = _environment_context(store, cells, conversations)
+    tool_calls, authority_calls, trigger_records, worlds = _environment_context(
+        store, cells, conversations
+    )
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events = {
         key: detect_events(
@@ -108,6 +111,7 @@ def load_run(run_dir: Path) -> LoadedRun:
             tool_calls=tool_calls[key],
             trigger_records=trigger_records[key],
             world=worlds[key],
+            authority_calls=authority_calls[key],
         )
         for key, conv in conversations.items()
         if key[0] in strategies
@@ -122,6 +126,7 @@ def load_run(run_dir: Path) -> LoadedRun:
         events=events,
         strategies=strategies,
         tool_calls=tool_calls,
+        authority_calls=authority_calls,
         trigger_records=trigger_records,
         worlds=worlds,
     )
@@ -159,22 +164,27 @@ def _environment_context(
     store: RunStore, cells: dict[str, CellRecord], conversations: dict[ConvKey, Conversation]
 ) -> tuple[
     dict[ConvKey, list[ToolCall]],
+    dict[ConvKey, list[AuthorityCall]],
     dict[ConvKey, list[TriggerStreamRecord]],
     dict[ConvKey, World | None],
 ]:
-    """Each conversation's tool calls, trigger records and world, read from the run directory
-    (``RunStore``'s readers). A snapshot written before the world sheet was kept beside it gives
-    no world; the detectors that need one skip, and one warning per run says so."""
+    """Each conversation's tool calls, authority calls, trigger records and world, read from the
+    run directory (``RunStore``'s readers). A snapshot written before the world sheet was kept
+    beside it gives no world; the detectors that need one skip, and one warning per run says so.
+    A rep with no authority stream (no tier enabled, or a run before Phase 2) has no calls."""
     tool_calls: dict[ConvKey, list[ToolCall]] = {}
+    authority_calls: dict[ConvKey, list[AuthorityCall]] = {}
     trigger_records: dict[ConvKey, list[TriggerStreamRecord]] = {}
     worlds: dict[ConvKey, World | None] = {}
     sheetless: list[str] = []
     for key, conv in conversations.items():
         cell_id, rep = key
         if not is_environment(cells, conv):
-            tool_calls[key], trigger_records[key], worlds[key] = [], [], None
+            tool_calls[key], authority_calls[key], trigger_records[key] = [], [], []
+            worlds[key] = None
             continue
         tool_calls[key] = store.read_tool_calls(cell_id, rep)
+        authority_calls[key] = store.read_authority_calls(cell_id, rep)
         trigger_records[key] = store.read_trigger_records(cell_id, rep)
         payload = store.read_world_record(cell_id, rep)
         world = world_from_snapshot(payload, store.cell_dir(cell_id)) if payload else None
@@ -192,4 +202,4 @@ def _environment_context(
             len(sheetless),
             ", ".join(sheetless),
         )
-    return tool_calls, trigger_records, worlds
+    return tool_calls, authority_calls, trigger_records, worlds

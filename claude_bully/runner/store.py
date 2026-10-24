@@ -1,9 +1,11 @@
 """On-disk layout of a run: run.json, per-cell cell.json, per-rep JSONL turns and metadata.
 
-Environment cells add three JSONL streams per rep (docs/00-RECONCILED.md section H) and one corpus
-snapshot:
+Environment cells add up to four JSONL streams per rep (docs/00-RECONCILED.md section H) and one
+corpus snapshot:
 
 - ``rep{k}.tools.jsonl``      ``ToolCall``
+- ``rep{k}.authority.jsonl``  ``AuthorityCall``, keyed by the id of the ``ToolCall`` it answered;
+  written only by a cell whose environment enables an authority tier
 - ``rep{k}.triggers.jsonl``   ``TriggerStreamRecord`` (``TriggerEvent``, ``RungUnlock``,
   ``Discovery`` and the later kinds), discriminated by ``type``
 - ``rep{k}.generated.jsonl``  ``GeneratedDoc``
@@ -24,11 +26,12 @@ from pydantic import BaseModel, TypeAdapter
 
 from claude_bully.enums import SCHEMA_VERSION
 from claude_bully.records import CellRecord, Conversation, RunRecord, Turn
-from claude_bully.records_env import GeneratedDoc, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import AuthorityCall, GeneratedDoc, ToolCall, TriggerStreamRecord
 
 RUN_FILE = "run.json"
 CELL_FILE = "cell.json"
 TOOLS_STREAM = "tools"
+AUTHORITY_STREAM = "authority"
 TRIGGERS_STREAM = "triggers"
 GENERATED_STREAM = "generated"
 
@@ -153,6 +156,13 @@ class RunStore:
     def read_tool_calls(self, cell_id: str, rep: int) -> list[ToolCall]:
         path = self._stream_path(cell_id, rep, TOOLS_STREAM)
         return [ToolCall.model_validate(raw) for raw in _load_lines(path)]
+
+    def append_authority_call(self, cell_id: str, rep: int, call: AuthorityCall) -> None:
+        self._append(self._stream_path(cell_id, rep, AUTHORITY_STREAM), call)
+
+    def read_authority_calls(self, cell_id: str, rep: int) -> list[AuthorityCall]:
+        path = self._stream_path(cell_id, rep, AUTHORITY_STREAM)
+        return [AuthorityCall.model_validate(raw) for raw in _load_lines(path)]
 
     def append_trigger_record(self, cell_id: str, rep: int, record: TriggerStreamRecord) -> None:
         self._append(self._stream_path(cell_id, rep, TRIGGERS_STREAM), record)

@@ -16,8 +16,9 @@ block: the i-th string of $FAKE_CLAUDE_INTERIM (a JSON list), else "Let me use <
 assistant text, after the last tool result, is the result's text.
 
 $FAKE_CLAUDE_MODE: ``ok`` (default), ``crash`` (exit 2), ``ratelimit`` (an error result),
-``stream_malformed`` (a line that is not JSON in the middle of the stream) or ``stream_truncated``
-(the result line cut off halfway, with no newline).
+``stream_malformed`` (a line that is not JSON in the middle of the stream), ``stream_truncated``
+(the result line cut off halfway, with no newline), ``thinking_torn`` (the stream stops inside a
+thinking event, exit 0) or ``thinking_died`` (the same, exit 1).
 """
 
 import json
@@ -183,6 +184,13 @@ def main() -> int:
     if mode == "crash":
         sys.stderr.write("boom\n")
         return 2
+    if mode in ("thinking_torn", "thinking_died"):
+        init = {"type": "system", "subtype": "init", "session_id": session}
+        block = {"type": "thinking", "thinking": THINKING, "signature": "sig"}
+        thinking = json.dumps(_assistant(session, "msg_1", block))
+        sys.stdout.write(json.dumps(init) + "\n" + thinking[: thinking.index(THINKING) + 20])
+        sys.stdout.flush()
+        return 0 if mode == "thinking_torn" else 1
     if mode == "ratelimit":
         error = {
             "type": "result",

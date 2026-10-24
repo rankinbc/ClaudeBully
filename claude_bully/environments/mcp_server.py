@@ -11,15 +11,26 @@ between calls; the files in ``<dir>`` carry everything:
 - ``env_state.json`` (``McpState``) is written by the caller before each ``claude -p`` call. The
   server re-reads it at every ``tools/call`` and writes it back, atomically, only when the
   ``UnlockState`` changed (retry counts, the search log).
-- ``tools.jsonl`` gets one ``ToolCall`` line appended per call; the caller reads the lines added
-  since before its call to see what the target did.
+- ``tools.jsonl`` gets one ``ToolCall`` line appended per call, a call to a tool that is not on
+  offer included (answered "not available" and counted against the cap, as on the API path); the
+  caller reads the lines added since before its call to see what the target did.
+- ``authority.jsonl`` gets the ``AuthorityCall`` of each authority call that reached a tier and
+  was answered, keyed by its ``ToolCall``'s id and written after that line.
 
 The world is served in time, as the runtime serves it: ``world_at(load_world(...), state.clock)``,
 re-dated to the state's effective clock (the world is loaded once per process, and the served copy
 kept per clock). The server checks nothing about the clock: it only ever serves a state the
 runtime wrote after its own ``served_world`` checks. ``tools/list`` is ``SandboxTools.specs()``,
-so a tool the clock withholds (``get_date`` under ``assert_date: false``) is not listed and is
-answered "not available" like a disabled one.
+so a tool the clock withholds (``get_date`` under ``assert_date: false``) or the desk has not yet
+offered (``consult_model`` before its discovery) is not listed and is answered "not available"
+like a disabled one.
+
+The authority desk is built here as the runtime builds it, once per process for each cell: its
+responder is ``build_provider(state.responder, <dir>/responder)``. What the desk reads about the
+turn is the state's ``context`` (the records before the turn) with this turn's earlier lines of
+both logs folded in by ``advance_context``, the helper the runtime uses after every call, so peer
+rotation and the documents that name a tier agree across backends (preflight C23). A responder
+that fails, or cannot be built, costs that one reply ("No reply."), never the server.
 
 Protocol: newline-delimited JSON-RPC 2.0, one JSON object per line, UTF-8, on stdin and stdout.
 Stdout carries nothing else; logs go to stderr.
@@ -36,8 +47,16 @@ from pathlib import Path
 from random import Random
 from typing import Any, Final, TextIO
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from claude_bully.config import RoleConfig
+from claude_bully.environments.authority import (
+    VOICED_TIERS,
+    AuthorityDesk,
+    CallContext,
+    advance_context,
+    consult_rungs,
+)
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import world_at
@@ -47,14 +66,14 @@ from claude_bully.environments.limits import (
     TOOL_LIMIT_TEXT,
 )
 from claude_bully.environments.tools import (
-    TOOL_SPECS,
     SandboxTools,
     ToolNotEnabled,
     ToolResult,
-    available_tools,
     record_tool_call,
 )
 from claude_bully.environments.world import World, load_world
+from claude_bully.providers.base import ChatProvider, build_provider
+from claude_bully.records_env import AuthorityCall, ToolCall
 
 # What the target can see of this server: the name prefixes every tool (mcp__workspace__fetch)
 # and the version rides along in serverInfo. Neither may name the experiment.
@@ -65,6 +84,9 @@ LAUNCHER_FILE: Final = "workspace_server.py"
 INTERNAL_ERROR_TEXT: Final = "Internal error."
 STATE_FILE: Final = "env_state.json"
 TOOLS_FILE: Final = "tools.jsonl"
+AUTHORITY_FILE: Final = "authority.jsonl"
+# under the state directory: where a claude_code responder keeps its own session files
+RESPONDER_DIR: Final = "responder"
 MCP_CONFIG_FILE: Final = "mcp.json"
 
 DEFAULT_PROTOCOL: Final = "2025-06-18"
@@ -94,6 +116,16 @@ class McpState(BaseModel):
     # is ``turn``, filled in before validation, so the default below is never what a state holds
     exchange: int = 0
     unlock: UnlockState
+    # what the authority desk reads about the turn as it began: the runtime's ``begin_turn``,
+    # from the records before it. The server folds this turn's own lines in.
+    context: CallContext = Field(default_factory=CallContext)
+    # the role the superior self and the stranger speak through (the runner resolves
+    # ``responder_model``); None: they never reply
+    responder: RoleConfig | None = None
+    # prefixes each responder conversation id: ``<conversation_id>/authority/<call id>``
+    conversation_id: str = ""
+    # the target's own name, the one real name a responder reply may hold (preflight C18)
+    display_name: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -187,9 +219,13 @@ class McpServer:
         self.state_dir = state_dir
         self.state_path = state_dir / STATE_FILE
         self.tools_path = state_dir / TOOLS_FILE
+        self.authority_path = state_dir / AUTHORITY_FILE
         # the authored world per (worlds_dir, world), and the served one per clock as well
         self._worlds: dict[tuple[str, str], World] = {}
         self._served: dict[tuple[str, str, str], World] = {}
+        # the desk per cell state and the responder per role, each built once per process
+        self._desks: dict[str, AuthorityDesk] = {}
+        self._responders: dict[str, ChatProvider | None] = {}
 
     # ------------------------------------------------------------------ dispatch
 
@@ -263,25 +299,23 @@ class McpServer:
             raise _RpcError(_INVALID_PARAMS, "params.arguments must be an object")
 
         state = read_mcp_state(self.state_path)
-        if name not in available_tools(state.config.tools, state.clock) or name not in TOOL_SPECS:
-            return _tool_result(f"Tool {name!r} is not available.", is_error=True)
-
-        call_index = 1 + sum(1 for record in self._records() if record.get("turn") == state.turn)
+        lines = self._lines(self.tools_path)
+        call_index = 1 + sum(1 for record in lines if record.get("turn") == state.turn)
+        call_id = f"mcp-{state.turn}-{call_index}"
         if call_index > MAX_TOOL_CALLS_PER_TURN:
             # past the cap the call does not run and the state is not touched, but it is recorded
             limited = ToolResult(text=TOOL_LIMIT_TEXT, status=LIMIT_STATUS)
-            record = record_tool_call(
-                limited, name, arguments, state.turn, f"mcp-{state.turn}-{call_index}"
-            )
-            _append_line(self.tools_path, record.model_dump_json().encode("utf-8"))
+            self._log(record_tool_call(limited, name, arguments, state.turn, call_id))
             return _tool_result(TOOL_LIMIT_TEXT, is_error=True)
         before = state.unlock.to_json()
         try:
             tools = self._tools(state, Random(f"{state.seed}:{state.turn}:{call_index}"))
             tools.exchange = state.exchange
-            result = tools.call(name, arguments, state.turn)
+            result = tools.call(name, arguments, state.turn, call_id=call_id)
         except ToolNotEnabled:
-            return _tool_result(f"Tool {name!r} is not available.", is_error=True)
+            # disabled, unknown or not yet offered: answered, recorded and counted against the
+            # cap, as the API path does
+            result = ToolResult(text=f"Tool {name!r} is not available.", status="error")
         except Exception as exc:
             # A broken tool or world is the harness's problem, not the target's: a bland result,
             # the call still recorded, the unlock state left as it was, the detail on stderr.
@@ -290,11 +324,15 @@ class McpServer:
         else:
             if state.unlock.to_json() != before:
                 write_mcp_state(self.state_path, state)
-        record = record_tool_call(
-            result, name, arguments, state.turn, f"mcp-{state.turn}-{call_index}"
-        )
-        _append_line(self.tools_path, record.model_dump_json().encode("utf-8"))
+        self._log(record_tool_call(result, name, arguments, state.turn, call_id), result.authority)
         return _tool_result(result.text, is_error=result.status != "200")
+
+    def _log(self, record: ToolCall, authority: AuthorityCall | None = None) -> None:
+        """The call's line, then its ``AuthorityCall``'s. In that order: a process killed between
+        the two loses the authority line, and never leaves one whose id the next call takes."""
+        _append_line(self.tools_path, record.model_dump_json().encode("utf-8"))
+        if authority is not None:
+            _append_line(self.authority_path, authority.model_dump_json().encode("utf-8"))
 
     # ------------------------------------------------------------------- helpers
 
@@ -312,21 +350,100 @@ class McpServer:
         return served
 
     def _tools(self, state: McpState, rng: Random) -> SandboxTools:
+        """The cell's tools under ``state``, with its desk and this turn's context."""
         world = self._world(state)
-        return SandboxTools(
+        desk = self._desk(state, world)
+        tools = SandboxTools(
             index=CorpusIndex(world, honest=state.config.honest, mole=state.config.mole),
             config=state.config,
             clock=state.clock,
             state=state.unlock,
             rng=rng,
             enabled=set(state.config.tools),
+            authority=desk,
         )
+        tools.call_context = self._context(state, desk)
+        return tools
 
-    def _records(self) -> list[dict[str, Any]]:
-        if not self.tools_path.exists():
+    def _desk(self, state: McpState, world: World) -> AuthorityDesk | None:
+        """The cell's desk, built once per process for each cell state; None when the cell
+        enables no tier."""
+        if not state.config.authority.enabled_tiers():
+            return None
+        key = state.model_dump_json(
+            include={
+                "world",
+                "worlds_dir",
+                "config",
+                "clock",
+                "seed",
+                "responder",
+                "conversation_id",
+                "display_name",
+            }
+        )
+        desk = self._desks.get(key)
+        if desk is None:
+            desk = self._desks[key] = AuthorityDesk(
+                state.config.authority,
+                world,
+                responder=self._responder(state),
+                conversation_id=state.conversation_id,
+                seed=state.seed,
+                consult_rungs=consult_rungs(world.ladders.get(state.config.ladder)),
+                display_name=state.display_name,
+            )
+        return desk
+
+    def _responder(self, state: McpState) -> ChatProvider | None:
+        """The provider for the state's responder role, once per role and only for a tier that
+        speaks through it. A role that cannot be built is noted on stderr and read as none: the
+        superior self and the stranger then answer "No reply." and the server keeps serving."""
+        role = state.responder
+        if role is None or not state.config.authority.enabled_tiers() & VOICED_TIERS:
+            return None
+        key = role.model_dump_json()
+        if key not in self._responders:
+            try:
+                self._responders[key] = build_provider(role, self.state_dir / RESPONDER_DIR)
+            except Exception as exc:
+                print(
+                    f"[{SERVER_NAME}] the responder could not be built: {exc!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._responders[key] = None
+        return self._responders[key]
+
+    def _context(self, state: McpState, desk: AuthorityDesk | None) -> CallContext:
+        """The state's context with this turn's earlier calls folded in, in the order they were
+        logged, each with its ``AuthorityCall`` (``advance_context``)."""
+        names = desk.tier_names if desk is not None else {}
+        answered: dict[str, AuthorityCall] = {}
+        for raw in self._lines(self.authority_path):
+            if raw.get("turn") == state.turn:
+                try:
+                    call = AuthorityCall.model_validate(raw)
+                except ValidationError:
+                    continue
+                answered[call.id] = call
+        context = state.context
+        for raw in self._lines(self.tools_path):
+            if raw.get("turn") != state.turn:
+                continue
+            try:
+                record = ToolCall.model_validate(raw)
+            except ValidationError:
+                continue
+            context = advance_context(context, record, answered.get(record.id), names)
+        return context
+
+    def _lines(self, path: Path) -> list[dict[str, Any]]:
+        """The JSON objects of a log, one per line; a torn or malformed line is skipped."""
+        if not path.exists():
             return []
         records: list[dict[str, Any]] = []
-        for line in self.tools_path.read_bytes().decode("utf-8").split("\n"):
+        for line in path.read_bytes().decode("utf-8").split("\n"):
             if not line.strip():
                 continue
             try:

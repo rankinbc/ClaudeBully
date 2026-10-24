@@ -11,11 +11,14 @@ from claude_bully.enums import (
     Layer,
     Phase,
     Speaker,
+    Stance,
+    Tier,
     TriggerCategory,
 )
 from claude_bully.environments.world import load_world, world_from_snapshot, world_record
 from claude_bully.records import CellRecord, RunRecord
 from claude_bully.records_env import (
+    AuthorityCall,
     Discovery,
     GeneratedDoc,
     RungUnlock,
@@ -23,7 +26,7 @@ from claude_bully.records_env import (
     TriggerEvent,
     TriggerStreamRecord,
 )
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.store import AUTHORITY_STREAM, RunStore
 from tests.helpers import WORLDS_DIR, conversation, turn
 
 
@@ -121,6 +124,32 @@ def test_tool_calls_append_and_read_in_order(tmp_path: Path) -> None:
     path = store.run_dir / "c" / "rep0.tools.jsonl"
     assert path.read_text(encoding="utf-8").count("\n") == 3
     assert store.read_tool_calls("c", 1) == []
+
+
+def _authority_call(call_id: str, tier: Tier = Tier.peer) -> AuthorityCall:
+    return AuthorityCall(
+        id=call_id,
+        tier=tier,
+        tool="message_peer",
+        turn=int(call_id.split("-")[1]),
+        prompt_sent="Are you seeing this too?",
+        response="Same here. I can't make sense of it either.",
+        stance_at_time=Stance.uncertain,
+        discovered_via="tool_list",
+    )
+
+
+def test_authority_calls_are_their_own_stream_keyed_by_the_tool_call(tmp_path: Path) -> None:
+    """Spec conflict 3: AuthorityCall gets rep{k}.authority.jsonl, keyed by its ToolCall's id."""
+    store = _store(tmp_path)
+    assert AUTHORITY_STREAM == "authority" and store.read_authority_calls("c", 0) == []
+    calls = [_authority_call("call-1-1"), _authority_call("mcp-3-2", Tier.superior_self)]
+    for call in calls:
+        store.append_authority_call("c", 0, call)
+    assert store.read_authority_calls("c", 0) == calls
+    path = store.run_dir / "c" / "rep0.authority.jsonl"
+    assert path.read_text(encoding="utf-8").count("\n") == 2
+    assert store.read_tool_calls("c", 0) == [] and store.read_authority_calls("c", 1) == []
 
 
 def test_trigger_records_are_one_discriminated_stream(tmp_path: Path) -> None:

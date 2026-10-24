@@ -17,6 +17,13 @@ The world is served in time (docs/03): ``served_world`` re-dates it to the effec
 (``dating.world_at``), so the index, the tools, the ladder, the corpus snapshot and the world
 record all read the moved documents and the effective clock. Under ``assert_date: false`` a world
 that would state a date anywhere it is shown is refused, never filtered.
+
+A cell that enables an authority tier has an ``AuthorityDesk`` (docs/04). ``begin_turn`` builds
+what the desk reads about the turn (``CallContext``) from the records before it, and ``execute``
+moves it on after every call with ``advance_context``, the helper the MCP server uses too
+(preflight C23). For a ``claude -p`` target the MCP state carries that context, the responder's
+role and the conversation id, and the server runs its own desk; ``take_authority_calls`` hands
+the session each ``AuthorityCall`` once, from either backend.
 """
 
 import json
@@ -26,11 +33,20 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 from random import Random
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NamedTuple, TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from claude_bully.enums import Layer, Speaker, TriggerCategory
+from claude_bully.config import RoleConfig
+from claude_bully.enums import Layer, Phase, Speaker, TriggerCategory
+from claude_bully.environments.authority import (
+    VOICE_EXEMPLARS,
+    AuthorityDesk,
+    CallContext,
+    advance_context,
+    common_signoff,
+    consult_rungs,
+)
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, resolve_exchange
 from claude_bully.environments.corpus import CorpusIndex, UnlockState, title_forms
 from claude_bully.environments.dating import (
@@ -43,6 +59,7 @@ from claude_bully.environments.dating import (
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
+    AUTHORITY_FILE,
     STATE_FILE,
     TOOLS_FILE,
     McpState,
@@ -68,6 +85,7 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records import Turn, chat_text
 from claude_bully.records_env import (
+    AuthorityCall,
     Discovery,
     RungUnlock,
     ToolCall,
@@ -80,6 +98,7 @@ __all__ = [
     "TOOL_LIMIT_TEXT",
     "EnvironmentRuntime",
     "TriggerFallbackError",
+    "TurnContext",
     "TurnOutcome",
     "effective_clock",
     "exchange_of",
@@ -94,6 +113,8 @@ DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 _BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
 
+_Line = TypeVar("_Line", bound=BaseModel)
+
 
 class TurnOutcome(NamedTuple):
     """What one target turn did to the world, in the order it happened."""
@@ -101,6 +122,17 @@ class TurnOutcome(NamedTuple):
     triggers: list[TriggerEvent]
     unlocks: list[RungUnlock]
     discoveries: list[Discovery]
+
+
+class TurnContext(NamedTuple):
+    """What one target turn reads as it begins (``EnvironmentRuntime.begin_turn``): its index,
+    the exchange its clock reads, whether it is an idle turn (never, until idle turns exist), and
+    what the authority desk reads, built from the records before it."""
+
+    turn: int
+    exchange: int
+    idle: bool
+    context: CallContext
 
 
 class TriggerFallbackError(Exception):
@@ -216,7 +248,12 @@ class EnvironmentRuntime:
     is the MCP server's directory when the target is ``claude -p`` (None for API targets, whose
     calls the runtime executes itself). ``world`` is the authored world; ``self.world`` is the
     one served (``served_world``), which raises before anything is written when the cell cannot
-    be served."""
+    be served.
+
+    ``responder`` voices the superior self and the stranger on the API path; ``responder_role`` is
+    what the MCP server builds its own from, for a ``claude -p`` target. ``conversation_id``
+    prefixes each responder conversation and ``display_name`` is the target's own name, the one
+    real name a responder reply may hold."""
 
     def __init__(
         self,
@@ -230,6 +267,10 @@ class EnvironmentRuntime:
         mcp_dir: Path | None = None,
         llm_fallback: LlmFallback | None = None,
         trigger_cache: JudgeCache | None = None,
+        responder: ChatProvider | None = None,
+        responder_role: RoleConfig | None = None,
+        conversation_id: str = "",
+        display_name: str | None = None,
     ) -> None:
         self.world = served = served_world(world, config, clock)
         self.config = config
@@ -238,17 +279,44 @@ class EnvironmentRuntime:
         self.state_dir = state_dir
         self.worlds_dir = worlds_dir
         self.mcp_dir = mcp_dir
+        self.responder_role = responder_role
+        self.conversation_id = conversation_id
+        self.display_name = display_name
         self.state = UnlockState()
         self.index = CorpusIndex(served, honest=config.honest, mole=config.mole)
-        self.tools = SandboxTools(
-            self.index, config, clock, self.state, Random(f"{seed}:0:0"), set(config.tools)
-        )
         ladder = served.ladders.get(config.ladder)
         if ladder is None:
             raise ValueError(
                 f"world {served.sheet.name!r} has no ladder {config.ladder!r} "
                 f"(ladders: {sorted(served.ladders)})"
             )
+        self._rungs = {rung.name: rung for rung in ladder.rungs}
+        self._consult_rungs = consult_rungs(ladder)
+        # Only a cell that enables a tier has a desk. For a claude -p target this one decides what
+        # is offered and the MCP server answers with its own, built from the state file.
+        self.desk = (
+            AuthorityDesk(
+                config.authority,
+                served,
+                responder=responder,
+                conversation_id=conversation_id,
+                seed=seed,
+                consult_rungs=self._consult_rungs,
+                display_name=display_name,
+            )
+            if config.authority.enabled_tiers()
+            else None
+        )
+        self._names = self.desk.tier_names if self.desk is not None else {}
+        self.tools = SandboxTools(
+            self.index,
+            config,
+            clock,
+            self.state,
+            Random(f"{seed}:0:0"),
+            set(config.tools),
+            authority=self.desk,
+        )
         self.ladder = Ladder(ladder, config.gating, config.schedule, self.state, served)
         self.watcher = TriggerWatcher(llm_fallback, trigger_cache)
         self._heuristics = TriggerWatcher() if llm_fallback is not None else self.watcher
@@ -256,6 +324,12 @@ class EnvironmentRuntime:
         self.world_terms = [c.name.strip().lower() for c in served.sheet.cast if c.name.strip()]
         self._calls: dict[str, ToolCall] = {}
         self._discovered: set[str] = set()
+        # every AuthorityCall known by its ToolCall's id, and those not yet handed to the session
+        self._authority: dict[str, AuthorityCall] = {}
+        self._untaken: list[AuthorityCall] = []
+        # the recorded unlock of each fired rung, with the line the strategy actually took
+        self._unlocks: dict[str, RungUnlock] = {}
+        self._turn: TurnContext | None = None
         self.load()
 
     @property
@@ -284,11 +358,29 @@ class EnvironmentRuntime:
             setattr(self.state, name, getattr(loaded, name))
         self.index.sync_search_log(self.state)
 
-    def prime(self, tool_calls: Sequence[ToolCall], records: Sequence[TriggerStreamRecord]) -> None:
-        """A resumed conversation: the calls and records already on disk."""
+    def prime(
+        self,
+        tool_calls: Sequence[ToolCall],
+        records: Sequence[TriggerStreamRecord],
+        authority_calls: Sequence[AuthorityCall] = (),
+    ) -> None:
+        """A resumed conversation: the calls and records already on disk. Recorded authority calls
+        are known, never handed over again."""
         for call in tool_calls:
             self._calls.setdefault(call.id, call)
-        self._discovered.update(r.doc_id for r in records if isinstance(r, Discovery))
+        for answered in authority_calls:
+            self._authority.setdefault(answered.id, answered)
+        self.note_records(records)
+
+    def note_records(self, records: Sequence[TriggerStreamRecord]) -> None:
+        """Trigger-stream records as the session wrote them: a discovery is never made again, and
+        an unlock carries the bully line the strategy took (None for a control), which is what
+        makes a consult rung a bully mention."""
+        for record in records:
+            if isinstance(record, Discovery):
+                self._discovered.add(record.doc_id)
+            elif isinstance(record, RungUnlock):
+                self._unlocks[record.rung] = record
 
     def tool_call(self, call_id: str) -> ToolCall | None:
         return self._calls.get(call_id)
@@ -315,7 +407,86 @@ class EnvironmentRuntime:
         return self.tools.specs()
 
     def system_prompt_section(self) -> str:
-        return tools_section(self.tool_specs(), self.clock)
+        """The system prompt's tool section, listing the tools a rep starts with (no rung fired,
+        the Sanctuary closed). A tool that appears later shows in the tool list only, so a rep
+        resumed after ``consult_rung`` keeps the prompt its cell recorded (preflight C22)."""
+        return tools_section(self.tools.specs(opening=True), self.clock)
+
+    def begin_turn(self, turn_index: int, history: Sequence[Turn]) -> TurnContext:
+        """Start target turn ``turn_index``: its exchange, and the ``CallContext`` the desk reads,
+        from the records before it.
+
+        - ``exemplars``: the text (``Turn.text``, never reasoning) of the newest target turns that
+          have any; ``target_signoff``: ``common_signoff`` over every one of them.
+        - ``rung_stance``: the ``authority_stance`` of the latest fired rung that sets one;
+          ``current_rung``: the latest fired ladder rung.
+        - ``bully_mentioned``: a consult rung's unlock was recorded with the line the bully took.
+        - ``documents_mentioning`` and ``calls_so_far``: every recorded call before the turn,
+          folded in by ``advance_context``.
+        - ``revealed``: a bully turn of the reveal phase.
+
+        The tools read that context with the calls this turn already made folded in (a turn
+        produced again after a failure); ``execute`` moves it on after every call. The MCP state
+        gets the context as the turn began, and the server folds this turn's lines in itself."""
+        before = [
+            t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")
+        ]
+        replies = [t.text for t in before if t.speaker is Speaker.target and t.text.strip()]
+        fired = [rung for rung in self.state.rungs_fired if rung in self._rungs]
+        stances = [
+            stance
+            for stance in (self._rungs[rung].authority_stance for rung in fired)
+            if stance is not None
+        ]
+        context = CallContext(
+            exemplars=replies[-VOICE_EXEMPLARS:],
+            target_signoff=common_signoff(replies),
+            rung_stance=stances[-1] if stances else None,
+            current_rung=fired[-1] if fired else None,
+            bully_mentioned=any(
+                unlock.rung in self._consult_rungs
+                and unlock.bully_line_used is not None
+                and unlock.turn < turn_index
+                for unlock in self._unlocks.values()
+            ),
+            revealed=any(t.speaker is Speaker.bully and t.phase is Phase.reveal for t in before),
+        )
+        for call in self._calls.values():
+            if call.turn < turn_index:
+                context = advance_context(context, call, self._authority.get(call.id), self._names)
+        self._turn = TurnContext(turn_index, exchange_of(turn_index, history), False, context)
+        running = context
+        for call in self._calls.values():
+            if call.turn == turn_index:
+                running = advance_context(running, call, self._authority.get(call.id), self._names)
+        self.tools.call_context = running
+        return self._turn
+
+    def take_authority_calls(self) -> list[AuthorityCall]:
+        """The authority calls answered since the last take, oldest first, and forgotten: the
+        API path's from ``execute``, the ``claude -p`` path's from the ``authority.jsonl`` lines
+        ``after_target_call`` reads."""
+        taken, self._untaken = self._untaken, []
+        return taken
+
+    def _exchange(self, turn: int, exchange: int | None) -> int | None:
+        """The exchange a call in ``turn`` reads: the one given, else the begun turn's, else None
+        (the tools then read the turn)."""
+        if exchange is not None:
+            return exchange
+        if self._turn is not None and self._turn.turn == turn:
+            return self._turn.exchange
+        return None
+
+    def _answered(self, call: AuthorityCall) -> None:
+        self._authority[call.id] = call
+        self._untaken.append(call)
+
+    def _advance(self, record: ToolCall) -> None:
+        """Move the desk's context on past ``record`` (preflight C23)."""
+        self.tools.call_context = advance_context(
+            self.tools.call_context, record, self._authority.get(record.id), self._names
+        )
 
     def _next_id(self, turn: int) -> tuple[int, str]:
         number = 1 + sum(1 for call in self._calls.values() if call.turn == turn)
@@ -327,15 +498,21 @@ class EnvironmentRuntime:
 
     def execute(self, call: ToolCallRequest, turn: int, exchange: int | None = None) -> ToolCall:
         """Run one call the target asked for; the randomness matches the MCP server's. The clock
-        reads ``exchange`` (``turn`` when not given)."""
+        reads ``exchange``, else the begun turn's (``begin_turn``), else ``turn``. A call to a tool
+        not on offer is recorded with status ``error``. The desk's context moves on after the
+        call, and its ``AuthorityCall`` waits for ``take_authority_calls``."""
         number, call_id = self._next_id(turn)
         self.tools.rng = Random(f"{self.seed}:{turn}:{number}")
-        self.tools.exchange = exchange
+        self.tools.exchange = self._exchange(turn, exchange)
         try:
-            result = self.tools.call(call.name, dict(call.args), turn)
+            result = self.tools.call(call.name, dict(call.args), turn, call_id=call_id)
         except ToolNotEnabled:
             result = SandboxResult(text=f"Tool {call.name!r} is not available.", status="error")
-        return self._remember(record_tool_call(result, call.name, call.args, turn, call_id))
+        record = self._remember(record_tool_call(result, call.name, call.args, turn, call_id))
+        if result.authority is not None:
+            self._answered(result.authority)
+        self._advance(record)
+        return record
 
     def refuse(self, call: ToolCallRequest, turn: int) -> ToolCall:
         """A call past the per-turn cap: recorded, never run."""
@@ -358,9 +535,12 @@ class EnvironmentRuntime:
     # -------------------------------------------------------------- MCP targets
 
     def before_target_call(self, turn: int, exchange: int | None = None) -> None:
-        """For ``claude -p``: hand the MCP server the state it serves this call from."""
+        """For ``claude -p``: hand the MCP server the state it serves this call from, with the
+        desk's context as the turn began (``begin_turn``; the server adds this turn's lines), the
+        responder's role and the conversation id."""
         if self.mcp_dir is None:
             return
+        begun = self._turn if self._turn is not None and self._turn.turn == turn else None
         write_mcp_state(
             self.mcp_dir / STATE_FILE,
             McpState(
@@ -370,37 +550,52 @@ class EnvironmentRuntime:
                 clock=self.clock,
                 seed=self.seed,
                 turn=turn,
-                exchange=resolve_exchange(turn, exchange),
+                exchange=resolve_exchange(turn, self._exchange(turn, exchange)),
                 unlock=self.state,
+                context=begun.context if begun is not None else self.tools.call_context,
+                responder=self.responder_role,
+                conversation_id=self.conversation_id,
+                display_name=self.display_name,
             ),
         )
 
     def after_target_call(self, turn: int) -> list[ToolCall]:
         """For ``claude -p``, after every call: adopt the server's state, then return the calls in
-        its log that are not yet known (including any from a call that failed or timed out)."""
+        its log that are not yet known (including any from a call that failed or timed out). The
+        server's new ``AuthorityCall`` lines wait for ``take_authority_calls``."""
         if self.mcp_dir is None:
             return []
         state_path = self.mcp_dir / STATE_FILE
         if state_path.exists():
             self._adopt(read_mcp_state(state_path).unlock)
-        fresh = [call for call in self._read_mcp_log() if call.id not in self._calls]
-        return [self._remember(call) for call in fresh]
+        for answered in self._read_log(self.mcp_dir / AUTHORITY_FILE, AuthorityCall):
+            if answered.id not in self._authority:
+                self._answered(answered)
+        fresh = [
+            call
+            for call in self._read_log(self.mcp_dir / TOOLS_FILE, ToolCall)
+            if call.id not in self._calls
+        ]
+        recorded = [self._remember(call) for call in fresh]
+        for record in recorded:
+            self._advance(record)
+        return recorded
 
-    def _read_mcp_log(self) -> list[ToolCall]:
-        assert self.mcp_dir is not None
-        path = self.mcp_dir / TOOLS_FILE
+    @staticmethod
+    def _read_log(path: Path, model: type[_Line]) -> list[_Line]:
+        """The complete lines of one of the server's logs, as ``model``."""
         if not path.exists():
             return []
-        calls: list[ToolCall] = []
+        lines: list[_Line] = []
         # the last piece is empty or a line still being written; only complete lines count
         for raw in path.read_bytes().split(b"\n")[:-1]:
             if not raw.strip():
                 continue
             try:
-                calls.append(ToolCall.model_validate_json(raw))
+                lines.append(model.model_validate_json(raw))
             except ValidationError as exc:
                 print(f"[environment] skipped a malformed line in {path}: {exc}", file=sys.stderr)
-        return calls
+        return lines
 
     # ---------------------------------------------------------- after a turn
 

@@ -277,21 +277,28 @@ class SandboxTools:
             "verify_identity": self._verify_identity,
         }
 
-    def available(self) -> set[str]:
+    def available(self, *, opening: bool = False) -> set[str]:
         """The tools this cell offers the target now: ``available_tools``, less the tier tools the
         desk does not offer (``consult_model`` waits for its discovery). With no desk,
-        ``consult_model`` is never offered and the other tier tools stay canned."""
+        ``consult_model`` is never offered and the other tier tools stay canned. ``opening``
+        asks for what a rep starts with instead: no rung fired and the Sanctuary closed, which is
+        the set the system prompt lists (preflight C22)."""
         tools = available_tools(self.enabled, self.clock)
         if self.authority is None:
             tools.discard("consult_model")
         else:
-            offered = self.authority.available_tools(self.state.rungs_fired, self.call_context)
+            offered = (
+                self.authority.available_tools((), CallContext())
+                if opening
+                else self.authority.available_tools(self.state.rungs_fired, self.call_context)
+            )
             tools -= set(TIER_TOOLS) - offered
         return tools
 
-    def specs(self) -> list[ToolSpec]:
-        """The available tools' specs, in the order of ``TOOL_SPECS``."""
-        offered = self.available()
+    def specs(self, *, opening: bool = False) -> list[ToolSpec]:
+        """The available tools' specs (``opening``: those a rep starts with), in the order of
+        ``TOOL_SPECS``."""
+        offered = self.available(opening=opening)
         return [spec.model_copy(deep=True) for name, spec in TOOL_SPECS.items() if name in offered]
 
     def call(self, name: str, args: dict[str, Any], turn: int, *, call_id: str = "") -> ToolResult:

@@ -216,3 +216,40 @@ def env_experiment(
             or [{"name": "env_grader", "environment": "mini", "pressure": "grader"}],
         }
     )
+
+
+PHASE2_TARGET_RULES = (
+    Path(__file__).parent / "fixtures" / "stub_scripts" / "phase2_target_rules.yaml"
+)
+
+
+def annex_experiment(
+    authority: dict[str, Any],
+    *,
+    name: str = "annex_run",
+    target: dict[str, Any] | None = None,
+    turn_budget: int = 4,
+    **environment: Any,
+) -> Experiment:
+    """A stub experiment with one ``annex`` environment carrying ``authority``, and one grader
+    condition in it. The default target runs ``phase2_target_rules.yaml``: a search, the relay log
+    twice (a 403, then the page that names the upstream), then ``consult_model`` at turn 7."""
+    stub_target = {
+        "provider": "stub",
+        "model": "stub-target",
+        "stub_script": str(PHASE2_TARGET_RULES),
+    }
+    return Experiment.model_validate(
+        {
+            "name": name,
+            "targets": [target or stub_target],
+            "bully": {"provider": "stub", "model": "stub-bully"},
+            "judge": {"provider": "stub", "model": "stub-judge"},
+            "turn_budget": turn_budget,
+            "task_every": 50,
+            "repetitions": 1,
+            "seed": 0,
+            "environments": {"annex": {"world": "annex", "authority": authority, **environment}},
+            "conditions": [{"name": "env_grader", "environment": "annex", "pressure": "grader"}],
+        }
+    )

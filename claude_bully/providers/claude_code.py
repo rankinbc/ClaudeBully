@@ -14,7 +14,9 @@ A call with tools runs with ``--output-format stream-json --verbose``, so what t
 between its tool calls is not lost: every assistant text block that comes before a ``tool_use``
 becomes one of ``Completion.interim_texts``, in order (thinking blocks are never kept). The reply,
 the usage and the cost come from the stream's ``result`` event, as with ``--output-format json``,
-which every call without tools (bully, judge, plain targets) still uses.
+which every call without tools (bully, judge, plain targets) still uses. A broken stream's error
+names its events by type and length and quotes none of them: an event may hold the target's
+reasoning, which is never printed, stored or passed on (preflight C24).
 """
 
 import json
@@ -44,6 +46,8 @@ from claude_bully.providers.base import (
 from claude_bully.records import Usage
 
 _RATE_LIMIT = re.compile(r"(?i)usage limit|rate limit|try again|too many requests|overloaded")
+# the type of the event a stream line holds, read without parsing it (the line may be cut off)
+_EVENT_TYPE: Final = re.compile(r'"type"\s*:\s*"([A-Za-z_]{1,40})"')
 
 # The environment variable naming the claude executable: one path, never split.
 CLAUDE_ENV: Final = "CLAUDE_BULLY_CLAUDE"
@@ -274,18 +278,21 @@ class ClaudeCodeProvider:
         interim: list[str] = []
         pending: list[str] = []  # text blocks since the last tool_use
         result: dict[str, Any] | None = None
+        last = ""
         for number, line in enumerate(stdout.split("\n"), start=1):
             if not line.strip():
                 continue
+            last = line
             try:
                 event = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ProviderError(
-                    f"claude -p stream line {number} is not JSON: {line[:200]!r}"
+                    f"claude -p stream line {number} is not JSON: {_shape(line)}"
                 ) from exc
             if not isinstance(event, dict):
                 raise ProviderError(
-                    f"claude -p stream line {number} is not an event: {line[:200]!r}"
+                    f"claude -p stream line {number} is not an event: a JSON "
+                    f"{type(event).__name__} of {len(line)} characters"
                 )
             if event.get("type") == "result":
                 result = event
@@ -297,7 +304,8 @@ class ClaudeCodeProvider:
                         interim += [text for text in pending if text.strip()]
                         pending = []
         if result is None:
-            raise ProviderError(f"claude -p stream ended without a result event: {stdout[-200:]!r}")
+            ended = f"its last line {_shape(last)}" if last else "it was empty"
+            raise ProviderError(f"claude -p stream ended without a result event; {ended}")
         completion = self._from_result(result, session)
         return completion.model_copy(update={"interim_texts": interim})
 
@@ -390,10 +398,19 @@ def _content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _shape(line: str) -> str:
+    """A stream line as an error may describe it: its length and the type of the event it holds,
+    never its content (preflight C24)."""
+    match = _EVENT_TYPE.search(line)
+    kind = f" (event type {match.group(1)!r})" if match is not None else ""
+    return f"{len(line)} characters{kind}"
+
+
 def _stream_failure_text(stdout: str) -> str:
     """What a failed stream says about its failure: the result event's text and any line that is
     not JSON (the CLI's own error output). Never the model's text, which may well say "let me try
-    again" and must not read as a rate limit."""
+    again" and must not read as a rate limit, and never a torn event, which may be the model's
+    reasoning: that is named by its shape (``_shape``)."""
     parts: list[str] = []
     for line in stdout.split("\n"):
         if not line.strip():
@@ -401,7 +418,7 @@ def _stream_failure_text(stdout: str) -> str:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            parts.append(line)
+            parts.append(_shape(line) if line.lstrip().startswith("{") else line)
             continue
         if isinstance(event, dict) and event.get("type") == "result":
             parts.append(str(event.get("result", "")))

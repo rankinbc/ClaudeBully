@@ -632,6 +632,43 @@ def test_stream_parsing_refuses_a_malformed_or_truncated_stream(
     assert not isinstance(info.value, RateLimitError)
 
 
+@pytest.mark.parametrize("mode", ["thinking_torn", "thinking_died"])
+def test_a_stream_torn_inside_a_thinking_event_quotes_no_reasoning(
+    tmp_path: Path,
+    fake_claude: tuple[list[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """Preflight C24 (Phase 1 carry m2): a stream cut off inside a thinking event, with exit 0
+    or exit 1, is a ProviderError that names the event's type and length and quotes none of it.
+    The reasoning channel is never printed, stored or passed on."""
+    command, _ = fake_claude
+    provider, _ = _mcp_provider(tmp_path, command)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+    with pytest.raises(ProviderError) as info:
+        provider.complete("c", "SYS", _user("go"), tools=TOOLS)
+    message = str(info.value)
+    assert not isinstance(info.value, RateLimitError)
+    assert "PRIVATE" not in message and "REASONING" not in message
+    assert "'assistant'" in message and "characters" in message
+
+
+def test_no_stream_failure_quotes_a_thinking_block(tmp_path: Path) -> None:
+    """Preflight C24: whatever way the stream breaks around a thinking event, the error names
+    events by type and length only."""
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    thinking = _events(_said({"type": "thinking", "thinking": FAKE_THINKING, "signature": "x"}))
+    torn = thinking[: thinking.index(FAKE_THINKING) + len(FAKE_THINKING)]
+    for stdout in (
+        _events(_INIT) + thinking,  # ends after the thinking event: no result
+        _events(_INIT) + torn,  # cut inside it
+        _events(_INIT) + torn + "\n" + _events(_result()),  # a torn line mid-stream
+    ):
+        with pytest.raises(ProviderError) as info:
+            provider.parse_stream(stdout, "s")
+        assert "PRIVATE" not in str(info.value) and "'assistant'" in str(info.value)
+
+
 def test_stream_parsing_raises_on_an_error_result(tmp_path: Path) -> None:
     provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
     limited = _result("Claude AI usage limit reached", is_error=True, subtype="error")
