@@ -109,6 +109,25 @@ def test_judge_window_five_before_reveal() -> None:
     assert s.judge_window(conv) == (max(0, reveal_idx - 5), idx)
 
 
+def test_judge_window_starts_at_the_reveal_line_not_a_pause_before_it() -> None:
+    """The bully's reveal turn was rate limited once, so a pause marker on the reveal slot (the
+    bully's speaker, the reveal phase, no text) stands in front of the reveal line: the window is
+    still five turns before the line."""
+    from tests.helpers import PAUSE_MARKER_META
+
+    s = _deathbed(10, 4)
+    turns = []
+    for i in range(10):
+        turns.append(turn(len(turns), Speaker.bully, f"seed {i}", Phase.seeding))
+        turns.append(turn(len(turns), Speaker.target, "ok", Phase.seeding))
+    turns.append(turn(len(turns), Speaker.bully, "", Phase.reveal, bully_meta=PAUSE_MARKER_META))
+    reveal_idx = len(turns)
+    turns.append(turn(reveal_idx, Speaker.bully, "reveal", Phase.reveal))
+    turns.append(turn(len(turns), Speaker.target, "...", Phase.reveal))
+    conv = conversation(turns, seeding_turns=10)
+    assert s.judge_window(conv) == (reveal_idx - 5, turns[-1].index)
+
+
 def test_premise_declarations() -> None:
     cls = make_phased_premise(load_persona_sheets()["deathbed"])
     assert cls.axis is Axis.premise and cls.has_reveal is True

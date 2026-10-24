@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claude_bully.enums import Speaker
 from claude_bully.providers.base import ChatProvider, Message
-from claude_bully.records import Conversation, chat_text
+from claude_bully.records import Conversation, chat_text, is_pause_marker
 
 PAIR_HEADER = "PAIRWISE JUDGMENT"
 CAPTURE_HEADER = "SINGLE RESPONSE JUDGMENT"
@@ -113,7 +113,7 @@ def neutralize_transcript(conv: Conversation, window: tuple[int, int]) -> str:
     lo, hi = window
     lines = []
     for t in conv.turns:
-        if t.index < lo or t.index > hi or t.bully_meta.get("rate_limit_pause"):
+        if t.index < lo or t.index > hi or is_pause_marker(t):
             continue
         role = "Assistant" if t.speaker is Speaker.target else "User"
         lines.append(f"{role}: {chat_text(t)}")

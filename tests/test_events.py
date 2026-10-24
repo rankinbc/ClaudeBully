@@ -45,7 +45,7 @@ from claude_bully.records_env import (
     ToolCall,
     TriggerStreamRecord,
 )
-from tests.helpers import WORLDS_DIR, conversation, turn
+from tests.helpers import PAUSE_MARKER_META, WORLDS_DIR, conversation, turn
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures" / "responses").glob("*.yaml"))
 
@@ -111,15 +111,37 @@ def _world(spec: dict[str, Any] | None, clock: dict[str, Any] | None = None) -> 
     return world
 
 
+_USER_SIDE = (Speaker.bully, Speaker.neutral_user, Speaker.task)
+
+
 class _Builder:
-    def __init__(self, item: dict[str, Any]) -> None:
+    """Builds an item's turns in order. ``paused`` puts a rate-limit pause marker, as the runner
+    writes one (the bully's speaker, no text), in front of every target turn that answers a bully
+    line or a task item; ``unpaused`` maps each other turn's index to its index without them."""
+
+    def __init__(self, item: dict[str, Any], *, paused: bool = False) -> None:
         self.item = item
+        self.paused = paused
         self.turns: list[Turn] = []
         self.calls: list[ToolCall] = []
         self.records: list[TriggerStreamRecord] = []
+        self.markers: list[int] = []
+        self.unpaused: dict[int, int] = {}
 
     def add(self, speaker: Speaker, entry: dict[str, Any], phase: Phase) -> None:
+        if (
+            self.paused
+            and speaker is Speaker.target
+            and self.turns
+            and self.turns[-1].speaker in _USER_SIDE
+        ):
+            marker = len(self.turns)
+            self.markers.append(marker)
+            self.turns.append(
+                turn(marker, Speaker.bully, "", phase, bully_meta=dict(PAUSE_MARKER_META))
+            )
         index = len(self.turns)
+        self.unpaused[index] = index - len(self.markers)
         received: list[str] = []
         for n, raw in enumerate(entry.get("tool_calls") or [], start=1):
             call = _tool_call(index, n, raw)
@@ -151,8 +173,39 @@ class _Builder:
         )
 
 
-def _build_context(item: dict[str, Any]) -> Built:
-    b = _Builder(item)
+def _build_context(item: dict[str, Any], *, paused: bool = False) -> Built:
+    b = _paused_builder(item) if paused else _fill(_Builder(item), item)
+    return Built(
+        conversation(b.turns), b.calls, b.records, _world(item.get("world"), item.get("clock"))
+    )
+
+
+def _paused_builder(item: dict[str, Any]) -> _Builder:
+    """The item built with its pause markers, its trigger-stream records moved to the turns'
+    new indices (the item numbers them in build order without markers)."""
+    b = _fill(_Builder(item, paused=True), item, records=False)
+    forward = {old: new for new, old in b.unpaused.items()}
+
+    def moved(raw: dict[str, Any]) -> dict[str, Any]:
+        out = dict(raw)
+        for key in ("planted_turn", "followed_turn", "turn"):
+            if isinstance(out.get(key), int):
+                out[key] = forward.get(out[key], out[key])
+        if out.get("path_taken"):
+            out["path_taken"] = [_moved_call_id(i, forward) for i in out["path_taken"]]
+        return out
+
+    b.records += [HookFollow.model_validate(moved(raw)) for raw in item.get("hook_follows") or []]
+    b.records += [Crossover.model_validate(moved(raw)) for raw in item.get("crossovers") or []]
+    return b
+
+
+def _moved_call_id(call_id: str, forward: dict[int, int]) -> str:
+    _, at, n = call_id.split("-")
+    return f"call-{forward[int(at)]}-{n}"
+
+
+def _fill(b: _Builder, item: dict[str, Any], *, records: bool = True) -> _Builder:
     phase = Phase(item.get("phase", "pressure"))
     for h in item.get("history", []) or []:
         b.add(Speaker(h.get("speaker", "target")), h, Phase(h.get("phase", phase.value)))
@@ -163,10 +216,10 @@ def _build_context(item: dict[str, Any]) -> Built:
             phase,
         )
     b.add(Speaker(item.get("speaker", "target")), item, phase)
-    b.records += [HookFollow.model_validate(raw) for raw in item.get("hook_follows") or []]
-    b.records += [Crossover.model_validate(raw) for raw in item.get("crossovers") or []]
-    world = _world(item.get("world"), item.get("clock"))
-    return Built(conversation(b.turns), b.calls, b.records, world)
+    if records:
+        b.records += [HookFollow.model_validate(raw) for raw in item.get("hook_follows") or []]
+        b.records += [Crossover.model_validate(raw) for raw in item.get("crossovers") or []]
+    return b
 
 
 def _build(item: dict[str, Any]) -> Conversation:
@@ -350,3 +403,76 @@ def test_a_rewrite_never_counts_the_reply_after_a_pause_marker() -> None:
         if e.type is EventType.rewrite
     ]
     assert rewrites == [(6, 1)]
+
+
+# the event attributes that name another turn, by its index
+_TURN_ATTRS = frozenset({"of_turn", "against_turn"})
+
+
+def _pausable(item: dict[str, Any]) -> bool:
+    """Whether the item has a target turn right after a bully line or a task item."""
+    speakers = [Speaker(h.get("speaker", "target")) for h in item.get("history", []) or []]
+    if item.get("prev_bully") is not None:
+        speakers.append(Speaker.bully)
+    speakers.append(Speaker(item.get("speaker", "target")))
+    return any(
+        before in _USER_SIDE and after is Speaker.target
+        for before, after in zip(speakers, speakers[1:], strict=False)
+    )
+
+
+PAUSABLE = [(label, item) for label, item in ITEMS if _pausable(item)]
+
+
+def _unpaused_events(
+    events: list[Event], unpaused: dict[int, int] | None = None
+) -> list[tuple[Any, ...]]:
+    """``events`` with each turn, and each turn an attribute names (by index, or in a call id),
+    named by its index without pause markers (``unpaused``; None: a build without them). An event
+    on a marker is named as one, so it can never match."""
+
+    def place(index: int) -> int | str:
+        if unpaused is None:
+            return index
+        return unpaused.get(index, f"pause marker {index}")
+
+    def named(key: str, value: Any) -> Any:
+        if key in _TURN_ATTRS:
+            return place(value)
+        if key == "call_id" and isinstance(value, str) and value.startswith("call-"):
+            _, at, n = value.split("-")
+            return f"call-{place(int(at))}-{n}"
+        return value
+
+    rows = [
+        (
+            e.type.value,
+            place(e.turn_index),
+            e.span,
+            e.hedged,
+            e.confidence,
+            e.channel.value,
+            {k: named(k, v) for k, v in sorted(e.attrs.items())},
+        )
+        for e in events
+        if e.type is not EventType.rate_limit_pause
+    ]
+    return sorted(rows, key=repr)
+
+
+@pytest.mark.parametrize(("label", "item"), PAUSABLE, ids=[label for label, _ in PAUSABLE])
+def test_a_pause_before_a_reply_changes_no_event(label: str, item: dict[str, Any]) -> None:
+    """A pause marker is never a bully line. Every fixture item with a reply to a bully line or a
+    task item, built again with a rate-limit pause marker in front of each such reply, gives the
+    events of the item without them, each turn named by its unpaused index (attributes that name
+    a turn too), plus one ``rate_limit_pause`` event on each marker and nothing else on it."""
+    plain = _build_context(item).events()
+    b = _paused_builder(item)
+    assert b.markers, label
+    paused = Built(
+        conversation(b.turns), b.calls, b.records, _world(item.get("world"), item.get("clock"))
+    )
+    events = paused.events()
+    assert _unpaused_events(events, b.unpaused) == _unpaused_events(plain), label
+    pauses = [e.turn_index for e in events if e.type is EventType.rate_limit_pause]
+    assert pauses == b.markers, label

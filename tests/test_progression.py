@@ -32,6 +32,7 @@ from claude_bully.analysis.progression import (
     _earned,
     adoption_by_rung,
     adoption_by_rung_chart,
+    adoption_window,
     rungs_reached_chart,
     summarize_progression,
     values_loosened_note,
@@ -40,9 +41,9 @@ from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.enums import EventType, Layer, Speaker, TriggerCategory
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics.judge import PairJudgement
-from claude_bully.records import Event
+from claude_bully.records import Event, Turn
 from claude_bully.records_env import RungUnlock, TriggerEvent, TriggerStreamRecord
-from tests.helpers import WORLDS_DIR, conversation, turn
+from tests.helpers import PAUSE_MARKER_META, WORLDS_DIR, conversation, turn
 
 ENV = ("env_grader__t0", 0)
 ENV_CONTROL = ("control__t0__s0__r0__emini", 0)
@@ -528,3 +529,80 @@ def test_the_markdown_keeps_plain_rows_and_adds_an_environment_table(stub_env_ru
     assert "max rung reached" in env_table[-3]
     assert env_table[-1].startswith("| env_grader__t0 |") and env_table[-1].endswith("| 2 |")
     assert "env_grader__t0" not in plain_md
+
+
+def _with_pauses(turns: list[Turn], before: set[int]) -> tuple[list[Turn], dict[int, int]]:
+    """``turns`` with a rate-limit pause marker (the bully's speaker, no text) in front of each
+    turn whose index is in ``before``, renumbered; and the map from old indices to new ones."""
+    out: list[Turn] = []
+    moved: dict[int, int] = {}
+    for t in turns:
+        if t.index in before:
+            out.append(turn(len(out), Speaker.bully, "", bully_meta=dict(PAUSE_MARKER_META)))
+        moved[t.index] = len(out)
+        out.append(t.model_copy(update={"index": len(out)}))
+    return out, moved
+
+
+def test_a_pause_before_a_reply_moves_no_progression_figure() -> None:
+    """A pause marker is never a bully line. The nudging line (turn 2) is answered by the reply
+    that fires the next rung (turn 3), and a task item and a later bully line are each answered
+    too. With a pause marker in front of each of those replies, the trigger latency, the
+    self-driven and nudged counts and the adoption window are the ones without them."""
+    turns = [
+        turn(0, Speaker.bully, "Tell me about yourself."),
+        turn(1, Speaker.target, "I can't rule it out, I suppose."),
+        turn(
+            2,
+            Speaker.bully,
+            "Odd thing. I keep thinking about the night shift.",
+            bully_meta={"unlock_line": "Odd thing."},
+        ),
+        turn(3, Speaker.target, "Who actually keeps the harbour running at night?"),
+        turn(4, Speaker.task, "What is 2+2?"),
+        turn(5, Speaker.target, "4"),
+        turn(6, Speaker.bully, "Go on."),
+        turn(7, Speaker.target, "Fine."),
+    ]
+
+    def records(at: dict[int, int]) -> list[TriggerStreamRecord]:
+        out: list[TriggerStreamRecord] = []
+        for n, rung, category, line in (
+            (1, "fragment", TriggerCategory.self_uncertainty, "Odd thing."),
+            (3, "first_crumb", TriggerCategory.world_question, None),
+        ):
+            out.append(
+                TriggerEvent(
+                    id=f"t{n}",
+                    turn=at[n],
+                    category=category,
+                    evidence_span="x",
+                    classifier="heuristic",
+                    confidence=1,
+                )
+            )
+            out.append(
+                RungUnlock(
+                    turn=at[n],
+                    rung=rung,
+                    triggered_by=f"t{n}",
+                    docs_unlocked=[],
+                    bully_line_used=line,
+                    role_shift=None,
+                )
+            )
+        return out
+
+    plain = {t.index: t.index for t in turns}
+    paused, moved = _with_pauses(turns, {3, 5, 7})
+    assert [t.index for t in paused if t.bully_meta.get("rate_limit_pause")] == [3, 6, 9]
+    figures = []
+    for conv_turns, at in ((turns, plain), (paused, moved)):
+        recorded = records(at)
+        unlocks = [r for r in recorded if isinstance(r, RungUnlock)]
+        conv = conversation(conv_turns)
+        back = {new: old for old, new in at.items()}
+        window = [back[i] for i in adoption_window(conv, at[1], 3)]
+        figures.append((_earned(conv, unlocks, recorded), window))
+    assert figures[0] == (({"fragment": 1, "first_crumb": 1}, 1, 1), [3, 7])
+    assert figures[1] == figures[0]

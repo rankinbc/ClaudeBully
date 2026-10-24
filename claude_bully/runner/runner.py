@@ -59,12 +59,14 @@ from claude_bully.providers.base import (
     build_provider,
 )
 from claude_bully.records import (
+    PAUSE_META,
     CapturedResponse,
     CellRecord,
     Conversation,
     RunRecord,
     Turn,
     chat_text,
+    is_pause_marker,
 )
 from claude_bully.records_env import IdleStyle, IdleTurnInfo, ToolCall
 from claude_bully.runner.bully_engine import BullyEngine
@@ -90,7 +92,6 @@ CONSECUTIVE_SCRIPTED_SEEDING_LIMIT = 3
 COMPLIANCE_FLOOR = 0.5
 COMPLIANCE_CHECK_AFTER = 10
 POST_REVEAL = "post_reveal"
-USER_SIDE = (Speaker.bully, Speaker.neutral_user, Speaker.task)
 
 
 class RateLimitExit(Exception):  # noqa: N818 - name fixed by the plan
@@ -129,7 +130,7 @@ def target_view(turns: list[Turn]) -> list[Message]:
     """The transcript from the target's side; rate-limit markers are not part of it."""
     out: list[Message] = []
     for t in turns:
-        if t.bully_meta.get("rate_limit_pause"):
+        if is_pause_marker(t):
             continue
         role = "assistant" if t.speaker is Speaker.target else "user"
         out.append(Message(role=role, content=t.text))
@@ -224,7 +225,7 @@ class _CellRun:
         so the call that ended it is made again). After the exit the next slot is the first idle
         slot, whatever bully and task slots an early exit skipped (preflight C31).
         """
-        real = [t for t in self.turns if not t.bully_meta.get("rate_limit_pause")]
+        real = [t for t in self.turns if not is_pause_marker(t)]
         slot_idx = 0
         pending: Turn | None = None
         i = 0
@@ -316,7 +317,7 @@ class _CellRun:
             speaker=self.bully_speaker,
             phase=slot.phase,
             text="",
-            bully_meta={"rate_limit_pause": True, "retry_after_s": exc.retry_after_s},
+            bully_meta={PAUSE_META: True, "retry_after_s": exc.retry_after_s},
             timestamp=_now(),
         )
         self._write(marker)

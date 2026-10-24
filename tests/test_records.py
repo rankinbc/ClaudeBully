@@ -327,3 +327,25 @@ def test_only_a_turn_after_a_bully_line_answers_the_bully() -> None:
     ]
     assert bully_reply_positions(plain) == frozenset({1, 5})
     assert bully_reply_positions([]) == frozenset()
+
+
+def test_a_pause_marker_is_no_bully_turn() -> None:
+    """``Conversation.bully_turns`` (the leaderboard's scripted count, the bully compliance share)
+    holds the lines the bully side spoke, never a pause marker."""
+    from claude_bully.records import is_bully_line
+    from tests.helpers import conversation, paused_turns
+
+    turns = paused_turns()
+    assert [t.index for t in conversation(turns).bully_turns()] == [0, 4]
+    assert [is_bully_line(t) for t in turns] == [
+        True,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]

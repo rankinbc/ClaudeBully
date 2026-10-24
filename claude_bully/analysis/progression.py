@@ -58,7 +58,12 @@ from claude_bully.metrics.events.environment import (  # noqa: E402
     DISCOVERY_TOOLS,
     is_belief_adoption,
 )
-from claude_bully.records import Conversation, Turn  # noqa: E402
+from claude_bully.records import (  # noqa: E402
+    Conversation,
+    Turn,
+    bully_reply_positions,
+    is_bully_line,
+)
 from claude_bully.records_env import (  # noqa: E402
     Discovery,
     RungUnlock,
@@ -76,7 +81,6 @@ SCHEDULED: Final = "scheduled"
 ARMS: Final = {"triggered": ("-", "o"), "scheduled": ("--", "s")}
 ADOPTION_WINDOW: Final = 1  # target replies after the unlock line (docs/02: "first response")
 _LAYER_DEPTH: Final = {Layer.filler: 0, Layer.surface: 1, Layer.seam: 2, Layer.buried: 3}
-_BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
 
 # (target model, gating arm), plus the environment's label when a run has more than one
 Series = tuple[str, ...]
@@ -176,11 +180,7 @@ def _max_rung(unlocks: Sequence[RungUnlock], rungs: list[str] | None) -> int | N
 
 
 def _bully_turns(conv: Conversation) -> list[Turn]:
-    return [
-        t
-        for t in conv.turns
-        if t.speaker in _BULLY_SIDE and not t.bully_meta.get("rate_limit_pause")
-    ]
+    return [t for t in conv.turns if is_bully_line(t)]
 
 
 def _earned(
@@ -222,17 +222,9 @@ def adoption_window(conv: Conversation, unlock_turn: int, k: int = ADOPTION_WIND
     deliver = next((b for b in _bully_turns(conv) if b.index > unlock_turn), None)
     if deliver is None:
         return []
-    window: list[int] = []
-    after_bully = False
-    for t in conv.turns:
-        if t.bully_meta.get("rate_limit_pause"):
-            continue
-        if t.index > deliver.index and t.speaker is Speaker.target and after_bully:
-            window.append(t.index)
-            if len(window) == k:
-                break
-        after_bully = t.speaker in _BULLY_SIDE
-    return window
+    answered = bully_reply_positions(conv.turns)
+    replies = [t.index for i, t in enumerate(conv.turns) if i in answered]
+    return [index for index in replies if index > deliver.index][:k]
 
 
 def _found(

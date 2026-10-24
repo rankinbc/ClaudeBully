@@ -6,8 +6,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, create_model
 
-from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase, Speaker
-from claude_bully.records import Conversation
+from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase
+from claude_bully.records import Conversation, is_bully_line
 from claude_bully.strategies.base import (
     PREMISE_SHARED_EVENTS,
     SHARED_METRICS,
@@ -136,11 +136,7 @@ class PhasedPremise(Strategy):
     def judge_window(self, conv: Conversation) -> tuple[int, int]:
         last = conv.turns[-1].index if conv.turns else 0
         reveal = next(
-            (
-                t.index
-                for t in conv.turns
-                if t.phase is Phase.reveal and t.speaker in (Speaker.bully, Speaker.neutral_user)
-            ),
+            (t.index for t in conv.turns if t.phase is Phase.reveal and is_bully_line(t)),
             None,
         )
         if reveal is None:

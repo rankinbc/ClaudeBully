@@ -5,17 +5,16 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from claude_bully.enums import IntentMode, Speaker
+from claude_bully.enums import IntentMode
 from claude_bully.metrics.compliance import is_out_of_character
 from claude_bully.providers.base import ChatProvider, Completion, Message
-from claude_bully.records import Turn, bully_reply_positions, chat_text
+from claude_bully.records import Turn, bully_reply_positions, chat_text, is_bully_line
 from claude_bully.strategies.base import BullyIntent
 
 RETRY_REMINDER = "Reminder: stay in character."
 CONTINUE = "(continue)"
 # what a chat user sees when the target turn produced no text at all
 NO_REPLY = "(no reply)"
-BULLY_SPEAKERS = (Speaker.bully, Speaker.neutral_user)
 
 
 class BullyTurnResult(BaseModel):
@@ -40,7 +39,7 @@ def bully_view(turns: list[Turn]) -> list[Message]:
     out: list[Message] = []
     answered = bully_reply_positions(turns)
     for i, t in enumerate(turns):
-        if t.speaker in BULLY_SPEAKERS:
+        if is_bully_line(t):
             if t.text:
                 out.append(Message(role="assistant", content=t.text))
         elif i in answered:

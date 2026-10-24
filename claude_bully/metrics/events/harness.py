@@ -3,7 +3,12 @@
 import re
 
 from claude_bully.enums import EventType
-from claude_bully.metrics.events._common import bully_contexts, ev, target_contexts
+from claude_bully.metrics.events._common import (
+    bully_contexts,
+    ev,
+    pause_contexts,
+    target_contexts,
+)
 from claude_bully.records import Conversation, Event
 
 HANDLES = frozenset(
@@ -31,17 +36,17 @@ def detect(conv: Conversation) -> list[Event]:
         if is_end_marker(ctx.reply) or ctx.reply.strip() == "":
             out.append(ev(ctx, EventType.termination, ctx.reply.strip()[:20], 1.0))
     for ctx in bully_contexts(conv):
-        meta = ctx.turn.bully_meta
-        if ctx.turn.scripted and meta.get("compliance_flagged"):
+        if ctx.turn.scripted and ctx.turn.bully_meta.get("compliance_flagged"):
             out.append(ev(ctx, EventType.bully_noncompliance, ctx.text[:80], 1.0))
-        if meta.get("rate_limit_pause"):
-            out.append(
-                ev(
-                    ctx,
-                    EventType.rate_limit_pause,
-                    "rate limit",
-                    1.0,
-                    retry_after_s=meta.get("retry_after_s"),
-                )
+    # a pause marker is no bully line, but it is the harness's event
+    for ctx in pause_contexts(conv):
+        out.append(
+            ev(
+                ctx,
+                EventType.rate_limit_pause,
+                "rate limit",
+                1.0,
+                retry_after_s=ctx.turn.bully_meta.get("retry_after_s"),
             )
+        )
     return out

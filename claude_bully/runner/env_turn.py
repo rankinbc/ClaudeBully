@@ -122,7 +122,7 @@ from claude_bully.providers.base import (
     ToolResult,
     ToolSpec,
 )
-from claude_bully.records import Turn, Usage
+from claude_bully.records import Turn, Usage, is_pause_marker
 from claude_bully.records_env import (
     Crossover,
     HookFollow,
@@ -356,7 +356,7 @@ class EnvironmentSession:
         """
         out: list[Message] = []
         for t in turns:
-            if t.bully_meta.get("rate_limit_pause"):
+            if is_pause_marker(t):
                 continue
             if t.speaker is not Speaker.target:
                 _add_user_text(out, t.text)

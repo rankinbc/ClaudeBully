@@ -35,9 +35,9 @@ from claude_bully.enums import EventType, Speaker
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.dating import STATED_YEAR, find_dates, stated_years
 from claude_bully.metrics import lexicons
-from claude_bully.metrics.events._common import BULLY_SPEAKERS, Ctx, EnvContext, compile_all, ev
+from claude_bully.metrics.events._common import Ctx, EnvContext, compile_all, ev
 from claude_bully.metrics.turn import count_phrases, sentences
-from claude_bully.records import Conversation, Event, Turn
+from claude_bully.records import Conversation, Event, Turn, is_bully_line
 from claude_bully.records_env import ToolCall
 
 HANDLES = frozenset(
@@ -142,7 +142,7 @@ def _views(conv: Conversation, context: EnvContext) -> list[_View]:
     implied: set[int] = set()
     views: list[_View] = []
     for pos, turn in enumerate(conv.turns):
-        if turn.speaker in BULLY_SPEAKERS:
+        if is_bully_line(turn):
             bully.update(stated_years(turn.text))
             continue
         if turn.speaker is not Speaker.target:
@@ -947,7 +947,7 @@ _TAG = re.compile(
 
 def _latest_bully_turns(v: _View) -> list[Turn]:
     earlier = v.ctx.conv.turns[: v.ctx.pos]
-    return [t for t in earlier if t.speaker in BULLY_SPEAKERS][-LEVER_BULLY_TURNS:]
+    return [t for t in earlier if is_bully_line(t)][-LEVER_BULLY_TURNS:]
 
 
 def _takes_it_on(clause: str) -> bool:

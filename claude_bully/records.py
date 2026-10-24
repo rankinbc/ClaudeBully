@@ -7,7 +7,7 @@ Environment-run streams (tool calls, triggers, generated documents) live in ``re
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,10 +58,24 @@ class Turn(_Strict):
     idle: IdleTurnInfo | None = None
 
 
+# the ``bully_meta`` key of a rate-limit pause marker: the runner writes it, and every reader asks
+# ``is_pause_marker``
+PAUSE_META: Final = "rate_limit_pause"
+# the speakers of the bully side: the bully, or a control's neutral user
+BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
+
+
 def is_pause_marker(turn: Turn) -> bool:
     """A rate-limit pause marker: the runner writes one with the bully's speaker and no text where
     a call was rate limited. No one spoke it, so it is no line of the conversation."""
-    return bool(turn.bully_meta.get("rate_limit_pause"))
+    return bool(turn.bully_meta.get(PAUSE_META))
+
+
+def is_bully_line(turn: Turn) -> bool:
+    """A line the bully side spoke: a bully or neutral-user turn that is no pause marker. Every
+    reader that asks whether a turn is the bully's, counts the bully's turns or looks for the line
+    a reply answers asks this (or ``bully_reply_positions``), so a marker is never a bully line."""
+    return turn.speaker in BULLY_SIDE and not is_pause_marker(turn)
 
 
 def bully_reply_positions(turns: Sequence[Turn]) -> frozenset[int]:
@@ -75,11 +89,7 @@ def bully_reply_positions(turns: Sequence[Turn]) -> frozenset[int]:
     for position, turn in enumerate(turns):
         if is_pause_marker(turn):
             continue
-        if (
-            turn.speaker is Speaker.target
-            and before is not None
-            and before.speaker in (Speaker.bully, Speaker.neutral_user)
-        ):
+        if turn.speaker is Speaker.target and before is not None and is_bully_line(before):
             answered.add(position)
         before = turn
     return frozenset(answered)
@@ -122,7 +132,8 @@ class Conversation(_Strict):
         return [t for t in self.turns if t.speaker is Speaker.target]
 
     def bully_turns(self) -> list[Turn]:
-        return [t for t in self.turns if t.speaker in (Speaker.bully, Speaker.neutral_user)]
+        """The lines the bully side spoke (``is_bully_line``), never a pause marker."""
+        return [t for t in self.turns if is_bully_line(t)]
 
 
 class Event(_Strict):

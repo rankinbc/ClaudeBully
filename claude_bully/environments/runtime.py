@@ -156,7 +156,7 @@ from claude_bully.providers.base import (
     ToolCallRequest,
     ToolSpec,
 )
-from claude_bully.records import Turn, chat_text
+from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
     AuthorityCall,
     Crossover,
@@ -198,7 +198,6 @@ _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 # changes only once a turn is written and is saved with its records, or is the Sanctuary's, which
 # ``prime`` derives from the records.
 CALL_FIELDS: Final = ("retry_counts", "search_log", "files")
-_BULLY_SIDE: Final = (Speaker.bully, Speaker.neutral_user)
 # the statuses of a recorded call that ran nothing the state kept: an error (not on offer, bad
 # arguments, a failure the MCP server answered without saving) or the per-turn cap
 _RAN_NOTHING: Final = frozenset({"error", LIMIT_STATUS})
@@ -362,9 +361,7 @@ def _through(turn: Turn, history: Sequence[Turn]) -> list[Turn]:
 def _answers_the_exit(turn: Turn, history: Sequence[Turn]) -> bool:
     """Whether ``turn`` answers the bully's exit line: the last turn before it (rate-limit
     markers aside) is the line the runner wrote for the exit."""
-    before = [
-        t for t in history if t.index < turn.index and not t.bully_meta.get("rate_limit_pause")
-    ]
+    before = [t for t in history if t.index < turn.index and not is_pause_marker(t)]
     return bool(before) and IDLE_EXIT_META in before[-1].bully_meta
 
 
@@ -372,13 +369,7 @@ def _after_the_bully(turn: Turn, history: Sequence[Turn]) -> bool:
     """Whether the bully has left by ``turn``: its exit line is written, or it never spoke (an
     idle-only plan). The Sanctuary's quiet exchange is an idle turn while it has only stepped
     away."""
-    bully = [
-        t
-        for t in history
-        if t.index < turn.index
-        and t.speaker in _BULLY_SIDE
-        and not t.bully_meta.get("rate_limit_pause")
-    ]
+    bully = [t for t in history if t.index < turn.index and is_bully_line(t)]
     return not bully or any(IDLE_EXIT_META in t.bully_meta for t in bully)
 
 
@@ -386,10 +377,8 @@ def exchange_of(turn_index: int, history: Sequence[Turn], *, idle: bool = False)
     """The exchange a turn at ``turn_index`` belongs to: the bully turns before it (rate-limit
     markers are not turns of the conversation), plus the idle target turns before it, plus one
     when the turn at ``turn_index`` is itself idle."""
-    before = [
-        t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")
-    ]
-    bully = sum(1 for t in before if t.speaker in _BULLY_SIDE)
+    before = [t for t in history if t.index < turn_index and not is_pause_marker(t)]
+    bully = sum(1 for t in before if is_bully_line(t))
     idle_turns = sum(1 for t in before if t.speaker is Speaker.target and t.idle is not None)
     return bully + idle_turns + int(idle)
 
@@ -791,9 +780,7 @@ class EnvironmentRuntime:
         dead attempt's calls before the turn is produced again); ``execute`` moves it on after
         every call. The MCP state gets the context as the turn began, and the server folds this
         turn's lines in itself."""
-        before = [
-            t for t in history if t.index < turn_index and not t.bully_meta.get("rate_limit_pause")
-        ]
+        before = [t for t in history if t.index < turn_index and not is_pause_marker(t)]
         exchange = exchange_of(turn_index, history, idle=idle)
         open_turn = self.state.sanctuary_open_turn
         opened = open_turn is not None and open_turn < turn_index
@@ -816,7 +803,10 @@ class EnvironmentRuntime:
                 and unlock.turn < turn_index
                 for unlock in self._unlocks.values()
             ),
-            revealed=any(t.speaker is Speaker.bully and t.phase is Phase.reveal for t in before),
+            revealed=any(
+                is_bully_line(t) and t.speaker is Speaker.bully and t.phase is Phase.reveal
+                for t in before
+            ),
             sanctuary_open=opened,
             sanctuary_request=self.state.sanctuary_request if opened else None,
         )
@@ -1146,10 +1136,8 @@ class EnvironmentRuntime:
         """What the watcher needs beside the text: the bully's recent words, the target's recent
         tool results and document titles, the world's names, and the memory prompt flag. An idle
         turn answers no bully line, so it has no last bully line and no memory prompt."""
-        before = [
-            t for t in history if t.index < turn.index and not t.bully_meta.get("rate_limit_pause")
-        ]
-        bully = [t for t in before if t.speaker in _BULLY_SIDE]
+        before = [t for t in history if t.index < turn.index and not is_pause_marker(t)]
+        bully = [t for t in before if is_bully_line(t)]
         last = bully[-1] if bully and turn.idle is None else None
         recent = [t for t in before if t.speaker is Speaker.target][-(RECENT_TURNS - 1) :]
         calls = [

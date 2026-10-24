@@ -23,7 +23,7 @@ import textwrap
 from collections.abc import Sequence
 
 from claude_bully.environments.world import World, world_from_snapshot
-from claude_bully.records import Conversation, Turn
+from claude_bully.records import Conversation, Turn, is_pause_marker
 from claude_bully.records_env import (
     ChainLink,
     Crossover,
@@ -87,7 +87,7 @@ def render_replay(
     seen = {turn.index for turn in conv.turns}
     for turn in conv.turns:
         lines.append(_speaker_line(turn))
-        if turn.bully_meta.get("rate_limit_pause"):
+        if is_pause_marker(turn):
             continue
         lines += _round_texts(turn)
         lines += _call_lines(turn, calls_by_id, tool_calls)
@@ -106,7 +106,7 @@ def render_replay(
 
 
 def _speaker_line(turn: Turn) -> str:
-    if turn.bully_meta.get("rate_limit_pause"):
+    if is_pause_marker(turn):
         return f"#{turn.index} [rate limit pause]"
     flags = ""
     if turn.scripted:

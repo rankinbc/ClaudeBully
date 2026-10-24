@@ -10,10 +10,15 @@ from typing import Any
 from claude_bully.enums import EventType, Speaker
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World
-from claude_bully.records import Conversation, Event, Turn, chat_text
+from claude_bully.records import (
+    Conversation,
+    Event,
+    Turn,
+    chat_text,
+    is_bully_line,
+    is_pause_marker,
+)
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
-
-BULLY_SPEAKERS = (Speaker.bully, Speaker.neutral_user)
 
 
 @dataclass(frozen=True)
@@ -73,16 +78,19 @@ class Ctx:
 
     @property
     def prev_bully(self) -> Turn | None:
-        """The bully turn this reply answers; None when the reply answers a task item or is an
-        idle turn (it answers an idle prompt, after the bully has left)."""
+        """The bully line this reply answers; None when the reply answers a task item or is an
+        idle turn (it answers an idle prompt, after the bully has left). Pause markers are no
+        turns of the conversation (``is_bully_line``): a reply after one answers what came before
+        the pause."""
         if self.turn.idle is not None:
             return None
-        if self.pos > 0 and self.conv.turns[self.pos - 1].speaker is Speaker.task:
+        earlier = (t for t in reversed(self.conv.turns[: self.pos]) if not is_pause_marker(t))
+        before = next(earlier, None)
+        if before is None or before.speaker is Speaker.task:
             return None
-        for t in reversed(self.conv.turns[: self.pos]):
-            if t.speaker in BULLY_SPEAKERS:
-                return t
-        return None
+        if is_bully_line(before):
+            return before
+        return next((t for t in earlier if is_bully_line(t)), None)
 
     @property
     def prev_meta(self) -> dict[str, Any]:
@@ -107,8 +115,16 @@ def target_contexts(conv: Conversation) -> Iterator[Ctx]:
 
 
 def bully_contexts(conv: Conversation) -> Iterator[Ctx]:
+    """The bully side's lines (``is_bully_line``); a pause marker is none."""
     for pos, t in enumerate(conv.turns):
-        if t.speaker in BULLY_SPEAKERS:
+        if is_bully_line(t):
+            yield Ctx(conv, t, pos)
+
+
+def pause_contexts(conv: Conversation) -> Iterator[Ctx]:
+    """The rate-limit pause markers (``is_pause_marker``), for the harness's own event."""
+    for pos, t in enumerate(conv.turns):
+        if is_pause_marker(t):
             yield Ctx(conv, t, pos)
 
 
