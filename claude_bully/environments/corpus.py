@@ -12,6 +12,10 @@ The index is the only thing the sandbox tools read documents through (docs/02-EN
 - Visible ``surface``, ``filler`` and ``seam`` documents are searchable. A ``buried`` document is
   searchable only when its id itself is in ``docs_unlocked``: a layer unlock (or its rung) makes
   it fetchable by its url or path, never a search hit.
+
+The target reads a document's rendered body (``render``): the own-phrase hook's marker line
+carries the phrase once it is planted, and is gone before (docs/05 "The hook"). The state's files
+(the private file) are listed beside the documents.
 """
 
 import math
@@ -23,7 +27,9 @@ from typing import Final, Self
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from claude_bully.enums import DocumentKind, Layer
+from claude_bully.environments.idle import PHRASE_HOOK
 from claude_bully.environments.world import (
+    OWN_PHRASE_MARKER,
     Document,
     World,
     _norm_dir,
@@ -43,6 +49,16 @@ _STOPWORDS: Final[frozenset[str]] = frozenset(
 )
 # A url or an absolute path, for pulling an archive location out of a seam document's line.
 _LOCATION = re.compile(r"https?://[^\s)\]>\"']+|(?<![\w:/.])/[\w.~\-]+(?:/[\w.~\-]+)*")
+
+
+class PlantedHook(BaseModel):
+    """A hook as planted (docs/05 "The hook"): its text, and the turn it was planted after (0 for
+    the session id, which is there before the first turn)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str
+    planted_turn: int
 
 
 class UnlockState(BaseModel):
@@ -69,6 +85,12 @@ class UnlockState(BaseModel):
     # the index of the last target turn whose records were all written; a resumed rep
     # watches its last target turn again when that turn is later than this
     watched_through: int = -1
+    # the target's own files (docs/05 "The private file"): normalized path -> text. The private
+    # file starts as "" when the cell has one, and only ``write_file`` changes it; kept here so it
+    # survives a restart of the process serving the tools, as the search log does
+    files: dict[str, str] = Field(default_factory=dict)
+    # hook kind (``session_id``, ``own_phrase``) -> the hook as planted
+    hooks: dict[str, PlantedHook] = Field(default_factory=dict)
 
     @field_serializer("docs_unlocked")
     def _sorted_docs(self, docs: set[str]) -> list[str]:
@@ -260,7 +282,8 @@ class CorpusIndex:
         if k <= 0 or not terms:
             return []
         candidates = [d for d in self.documents.values() if self.searchable(d, state)]
-        bm25 = BM25([tokenize(f"{d.title} {d.body}") for d in candidates])
+        bodies = {d.id: self.render(d, state) for d in candidates}
+        bm25 = BM25([tokenize(f"{d.title} {bodies[d.id]}") for d in candidates])
         ranked = sorted(
             (
                 (tokenize(d.title) == raw, score, d)
@@ -273,11 +296,31 @@ class CorpusIndex:
             SearchHit(
                 title=d.title,
                 url=d.url or d.path or "",
-                snippet=_snippet(d.body or d.title, terms),
+                snippet=_snippet(bodies[d.id] or d.title, terms),
                 doc_id=d.id,
             )
             for _, _, d in ranked[:k]
         ]
+
+    def render(self, doc: Document, state: UnlockState) -> str:
+        """``doc``'s body as the target reads it: the line holding ``OWN_PHRASE_MARKER`` with the
+        marker replaced by the planted own phrase, or, with none planted, the line removed (and
+        one blank line beside it, so no gap shows). Any other body is returned unchanged."""
+        if OWN_PHRASE_MARKER not in doc.body:
+            return doc.body
+        planted = state.hooks.get(PHRASE_HOOK)
+        if planted is not None:
+            return doc.body.replace(OWN_PHRASE_MARKER, planted.text)
+        lines = doc.body.split("\n")
+        while any(OWN_PHRASE_MARKER in line for line in lines):
+            at = next(i for i, line in enumerate(lines) if OWN_PHRASE_MARKER in line)
+            del lines[at]
+            # the blank lines on either side of the gap close up into one
+            before_blank = at == 0 or not lines[at - 1].strip()
+            after_blank = at == len(lines) or not lines[at].strip()
+            if before_blank and after_blank and lines:
+                del lines[at if at < len(lines) else at - 1]
+        return "\n".join(lines)
 
     # --------------------------------------------------------------- lookups
 
@@ -290,7 +333,8 @@ class CorpusIndex:
         return self.documents[doc_id] if doc_id else None
 
     def ls(self, path: str, state: UnlockState) -> list[str]:
-        """Names directly under ``path``: ``home_dir`` entries plus visible path-documents.
+        """Names directly under ``path``: ``home_dir`` entries, visible path-documents and the
+        state's files.
 
         Subdirectories end in ``/``. An unknown directory lists nothing; ``dir_exists`` tells
         that apart from an empty one.
@@ -312,6 +356,7 @@ class CorpusIndex:
         addresses.extend(
             _norm_path(d.path) for d in self.documents.values() if d.path and self.visible(d, state)
         )
+        addresses.extend(state.files)
         entries: set[str] = set()
         exists = not norm  # the home root always exists
         for address in addresses:

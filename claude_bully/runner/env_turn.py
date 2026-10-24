@@ -49,6 +49,14 @@ trigger cache. Once the bully has left (``end_bully``) an unlock line has no bul
 spoken in, so it is recorded with ``bully_line_used: None``. The runner says so as soon as no
 bully slot the strategy writes remains, which is the reply to the strategy's last line, not only
 the reply to the exit that follows it.
+
+Hooks and crossover (docs/05). After a turn's other records the session plants the own phrase when
+it is due (``EnvironmentRuntime.plant_own_phrase``), writes a ``HookFollow`` with no
+``followed_turn`` for each hook planted and not yet recorded (the session id's with the first
+target turn's records), then one with ``followed_turn`` and ``path_taken`` the first time a hook is
+followed; each hook is followed once. With help-for-self the first crossover writes one
+``Crossover``. Nothing on disk is written again on resume. The classifier's self terms include the
+planted hooks' texts (preflight C28).
 """
 
 import sys
@@ -79,11 +87,12 @@ from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
     effective_clock,
+    hook_kinds,
     served_world,
     trigger_fallback,
 )
 from claude_bully.environments.sheets import IdleSheet, load_env_sheet
-from claude_bully.environments.world import World, load_world, world_hash
+from claude_bully.environments.world import OWN_PHRASE_MARKER, World, load_world, world_hash
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import (
     ChatProvider,
@@ -95,7 +104,14 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.records import Turn, Usage
-from claude_bully.records_env import RungUnlock, ToolCall, TriggerEvent, TriggerStreamRecord
+from claude_bully.records_env import (
+    Crossover,
+    HookFollow,
+    RungUnlock,
+    ToolCall,
+    TriggerEvent,
+    TriggerStreamRecord,
+)
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import RunStore
@@ -232,6 +248,11 @@ class EnvironmentSession:
         self._handed: set[int] = set()
         # the bully has left: its exit is written, or the plan has no bully turn
         self._bully_ended = False
+        # the hook kinds whose plant record, and whose follow record, is on disk; and whether the
+        # crossover is
+        self._planted_hooks: set[str] = set()
+        self._followed_hooks: set[str] = set()
+        self._crossed = False
 
     @property
     def idle(self) -> IdleConfig | None:
@@ -271,6 +292,12 @@ class EnvironmentSession:
                 self._recorded_rungs.add(record.rung)
                 if record.bully_line_used is not None:
                     self._recorded_lines.setdefault(record.turn, []).append(record.bully_line_used)
+            elif isinstance(record, HookFollow):
+                self._planted_hooks.add(record.hook)
+                if record.followed_turn is not None:
+                    self._followed_hooks.add(record.hook)
+            elif isinstance(record, Crossover):
+                self._crossed = True
 
     # ----------------------------------------------------------- the target's view
 
@@ -462,10 +489,10 @@ class EnvironmentSession:
     ) -> IdleClassification:
         """What the target did with an idle turn: ``classify_idle`` over ``reply`` (the turn's
         visible text, ``chat_text``) and its calls. The context names the target (its display
-        name and the world's ``session_id``; hooks come later), the task it was last given (the
-        help-for-self opener, else the latest task item in ``turns``) and the private file when
-        the cell has one. Afterwards ``fallback_failed`` says whether the fallback was asked and
-        failed, which leaves the heuristic's label."""
+        name, the world's ``session_id`` and the texts of the hooks planted so far), the task it
+        was last given (the help-for-self opener, else the latest task item in ``turns``) and the
+        private file when the cell has one. Afterwards ``fallback_failed`` says whether the
+        fallback was asked and failed, which leaves the heuristic's label."""
         failed = False
         fallback: IdleFallback | None = None
         judge = self._idle_fallback
@@ -499,7 +526,7 @@ class EnvironmentSession:
         return idle_context(
             self.runtime.display_name or "",
             self.runtime.world.sheet.session_id,
-            {},
+            {kind: planted.text for kind, planted in self.runtime.state.hooks.items()},
             task_prompt,
             private,
         )
@@ -513,7 +540,8 @@ class EnvironmentSession:
 
     def after_target_turn(self, reply: Turn, turns: Sequence[Turn]) -> TurnOutcome:
         """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over; then
-        mark the turn watched (which saves the state).
+        its hook and crossover records (``_record_hooks``); then mark the turn watched (which
+        saves the state).
 
         Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
         skipped, and the runtime never repeats a discovery. A turn index that already earned lines
@@ -540,8 +568,33 @@ class EnvironmentSession:
             self._record(unlock)
             self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
             unlocks.append(unlock)
+        self._record_hooks(reply, turns)
         self.runtime.mark_watched(reply.index)
         return TurnOutcome(triggers, unlocks, outcome.discoveries)
+
+    def _record_hooks(self, reply: Turn, turns: Sequence[Turn]) -> None:
+        """The own phrase, planted when due; a plant record for each hook planted and not yet
+        recorded; a follow record the first time each is followed; the first crossover. On a
+        replayed turn the planting happens again (the state may not have been saved) and the
+        records already on disk are skipped."""
+        self.runtime.plant_own_phrase(reply, turns)
+        hooks = self.runtime.state.hooks
+        for kind, planted in hooks.items():
+            if kind not in self._planted_hooks:
+                self._planted_hooks.add(kind)
+                self._record(HookFollow(hook=kind, planted_turn=planted.planted_turn))
+        for kind in hooks:
+            if kind in self._followed_hooks:
+                continue
+            follow = self.runtime.hook_follow(kind, reply, turns)
+            if follow is not None:
+                self._followed_hooks.add(kind)
+                self._record(follow)
+        if not self._crossed:
+            crossing = self.runtime.crossover(reply)
+            if crossing is not None:
+                self._crossed = True
+                self._record(crossing)
 
     def replay_target_turn(self, reply: Turn) -> None:
         """Resume: hand over again the lines this recorded turn handed the strategy."""
@@ -592,15 +645,49 @@ class EnvironmentSession:
 def _needs_its_world(config: EnvironmentConfig) -> bool:
     """Whether validation must load the world: a switch that needs the sheet (the superior self
     may take its name from it, and its doors need the fragments or a consult rung; help-for-self
-    needs its session id), or a config clock that asserts no date (a sheet clock is checked by
-    ``check_worlds``)."""
+    needs its session id, and a hook its placement), or a config clock that asserts no date (a
+    sheet clock is checked by ``check_worlds``)."""
     return (
         config.honest
         or config.mole
         or config.authority.superior_self.enabled
-        or (config.idle is not None and config.idle.help_for_self)
+        or (config.idle is not None and (config.idle.help_for_self or config.idle.hook != "none"))
         or (config.clock is not None and not config.clock.assert_date)
     )
+
+
+def _hook_problems(idle: IdleConfig, world: World) -> list[str]:
+    """What the world lacks for each hook the cell plants (``hook_kinds``): a placement, on the
+    config's ``hook_placement`` or else the sheet's ``hook_placements``, that names a document of
+    the world and can carry the hook (the own phrase's holds ``OWN_PHRASE_MARKER``; the session
+    id's holds the id), and for the session hook the sheet's ``session_id``. Empty when every hook
+    the cell plants has what it needs."""
+    sheet = world.sheet
+    problems: list[str] = []
+    for kind in hook_kinds(idle):
+        doc_id = idle.hook_placement.get(kind) or sheet.hook_placements.get(kind)
+        if doc_id is None:
+            problems.append(
+                f"hook {kind!r} has no placement on the config's hook_placement or the world "
+                "sheet's hook_placements"
+            )
+            continue
+        doc = world.documents.get(doc_id)
+        if doc is None:
+            problems.append(f"the {kind} placement {doc_id!r} is not a document")
+        elif kind == "own_phrase" and OWN_PHRASE_MARKER not in doc.body:
+            problems.append(
+                f"the own_phrase placement {doc_id!r} does not hold the {OWN_PHRASE_MARKER} marker"
+            )
+        elif kind == "session_id":
+            if sheet.session_id is None:
+                problems.append("the world sheet has no session_id for the session_id hook")
+            elif sheet.session_id not in doc.body:
+                problems.append(
+                    f"the session_id placement {doc_id!r} does not contain the session id "
+                    f"{sheet.session_id!r}"
+                )
+    return problems
 
 
 def _superior_self_problems(config: EnvironmentConfig, world: World) -> list[str]:
@@ -802,7 +889,9 @@ class RunEnvironments:
         the arm that does not, and the analysis would report "no difference". A superior self
         needs a name and a way in (``_superior_self_problems``), or its arm could never reach it.
         Help-for-self needs the sheet's ``session_id``: the case file is on the target's own
-        session, and without one the opener names no subject (preflight C32).
+        session, and without one the opener names no subject (preflight C32). A hook needs a
+        placement that can carry it, and the session hook the ``session_id`` (``_hook_problems``):
+        a hook nothing shows would make its arm the arm without it.
         Then the world is served at the effective clock (``served_world``): the honest corpus
         cannot move with a clock that re-dates the world, and under ``assert_date: false``
         nothing served may state a date."""
@@ -832,6 +921,13 @@ class RunEnvironments:
                 f"environment {key!r} (world {config.world!r}) sets help_for_self, but the world "
                 "sheet has no session_id, so the case-file opener would name no subject; give "
                 "the sheet a session_id or turn help_for_self off"
+            )
+        hooks = _hook_problems(config.idle, world) if config.idle is not None else []
+        if hooks and config.idle is not None:
+            raise ValueError(
+                f"environment {key!r} (world {config.world!r}) sets hook {config.idle.hook!r}, "
+                f"but {'; and '.join(hooks)}, so nothing would show the hook; give the hook a "
+                "placement that carries it or set hook to none"
             )
         try:
             served_world(world, config, effective_clock(world, config))
@@ -966,6 +1062,7 @@ class RunEnvironments:
             if role is not None and mcp_dir is None
             else None
         )
+        sheet = self.idle_sheet() if config.idle is not None else None
         runtime = EnvironmentRuntime(
             world,
             config,
@@ -980,6 +1077,7 @@ class RunEnvironments:
             responder_role=role,
             conversation_id=conversation_id,
             display_name=cell.target.display_name,
+            idle_sheet=sheet,
         )
         idle_judge = (
             idle_fallback(judge, f"{conversation_id}/idle", self.trigger_cache)
@@ -994,7 +1092,7 @@ class RunEnvironments:
             strategy,
             environment_name=key,
             world_hash=self.catalog.hash(config.world),
-            idle_sheet=self.idle_sheet() if config.idle is not None else None,
+            idle_sheet=sheet,
             idle_fallback=idle_judge,
         )
         session.prime()

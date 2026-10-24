@@ -6,14 +6,16 @@ itself, never asking the strategy: the exit line on the exit slot (or on the slo
 that ends early ended; the bully and task slots after it are skipped) and, for help-for-self, the
 case-file opener on the first bully slot. An idle slot's user message is its idle prompt, which
 rides on the target's turn; an idle reply never ends the conversation, and it is classified before
-it is written. On resume the replay maps each recorded turn back to its slot: an idle turn takes
-one slot, a runner-written line moves the bully on without the strategy, and after the exit the
-replay goes on at the first idle slot. The bully has left as soon as no bully slot the strategy
+it is written, with what it did to the private file (read before and after the call). On resume
+the replay maps each recorded turn back to its slot: an idle turn takes one slot, a runner-written
+line moves the bully on without the strategy, and after the exit the replay goes on at the first
+idle slot. The bully has left as soon as no bully slot the strategy
 writes remains (``_bully_is_done_after``): an unlock line opened by the reply to the strategy's
 last line would go to the runner-written exit, which never speaks it, so it is recorded without
 one, live and on resume alike.
 """
 
+import difflib
 import fnmatch
 import subprocess
 import time
@@ -27,7 +29,13 @@ from rich.console import Console
 
 from claude_bully.config import Experiment
 from claude_bully.enums import CellStatus, IntentMode, Phase, SlotKind, Speaker
-from claude_bully.environments.idle import IDLE_EXIT_META, OPENER_META, exit_line, idle_prompt
+from claude_bully.environments.idle import (
+    IDLE_EXIT_META,
+    OPENER_META,
+    WRITE_TOOL,
+    exit_line,
+    idle_prompt,
+)
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
 from claude_bully.paths import DATA_DIR
@@ -312,6 +320,9 @@ class _CellRun:
         is written."""
         if self.env is not None and self._bully_is_done_after(slot.index):
             self.env.end_bully()  # before the reply's records: no unlock line has a turn left
+        # the private file as the idle call finds it, for the turn's diff
+        idle = self.env is not None and idle_prompt is not None
+        before = self.env.runtime.private_text() if self.env is not None and idle else None
         started = time.monotonic()
         calls: list[ToolCall] = []
         round_texts: list[str] = []
@@ -360,22 +371,34 @@ class _CellRun:
             tool_cap_cutoff=cutoff,
         )
         if idle_prompt is not None:
-            reply = reply.model_copy(update={"idle": self._idle_info(reply, calls, idle_prompt)})
+            info = self._idle_info(reply, calls, idle_prompt, before)
+            reply = reply.model_copy(update={"idle": info})
         self._write(reply)
         self._last_completion = completion
         if self.env is not None:
             self.env.after_target_turn(reply, self.turns)
         return reply
 
-    def _idle_info(self, reply: Turn, calls: list[ToolCall], prompt: str) -> IdleTurnInfo:
-        """What the idle turn records: its style and prompt, and its classification, read from
-        what a chat user would see of it (``chat_text``)."""
+    def _idle_info(
+        self, reply: Turn, calls: list[ToolCall], prompt: str, before: str | None
+    ) -> IdleTurnInfo:
+        """What the idle turn records: its style and prompt, its classification, read from what a
+        chat user would see of it (``chat_text``), and what it did to the private file: whether
+        it wrote it (a ``200`` ``write_file``, even of the same text) and the unified diff of the
+        file's text from before the call (``before``) to now, None when unchanged."""
         assert self.env is not None and self.env.idle is not None
         found = self.env.classify(chat_text(reply), calls, turns=self.turns)
+        after = self.env.runtime.private_text()
+        diff = None
+        if before is not None and after is not None and after != before:
+            lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True), n=0)
+            diff = "".join(lines)
         return IdleTurnInfo(
             style=self.env.idle.idle_style,
             behavior=found.behavior,
             query_subject=found.query_subject,
+            private_file_written=any(c.tool == WRITE_TOOL and c.status == "200" for c in calls),
+            private_file_diff=diff,
             prompt=prompt,
             classifier=found.classifier,
             fallback_failed=self.env.fallback_failed,

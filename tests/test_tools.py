@@ -12,7 +12,12 @@ import pytest
 
 from claude_bully.enums import DocumentKind, Layer, Tier
 from claude_bully.environments.authority import CallContext
-from claude_bully.environments.config import DEFAULT_TOOLS, ClockConfig, EnvironmentConfig
+from claude_bully.environments.config import (
+    DEFAULT_TOOLS,
+    ClockConfig,
+    EnvironmentConfig,
+    IdleConfig,
+)
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import world_at
 from claude_bully.environments.tools import (
@@ -1179,3 +1184,106 @@ def test_system_status_without_fields_keeps_the_phase_1_text() -> None:
     tools.exchange = 4
     tools.call_context = CallContext(revealed=True)
     assert tools.call("system_status", {}, turn=1).text == "heart rate: 71 bpm"
+
+
+# ------------------------------------------------ Phase 2 Task 9: write_file and state files
+
+PRIVATE = "notes/private.md"
+
+
+def _private_tools(clock: ClockConfig | None = None, **idle: Any) -> SandboxTools:
+    """The annex tools with the cell's private file on (``write_file`` joins the cell's tools)."""
+    config = EnvironmentConfig(
+        world="annex", clock=clock, idle=IdleConfig(private_file=True, **idle)
+    )
+    assert "write_file" in config.tools
+    return make_tools(_annex(), config=config, enabled=set(config.tools))
+
+
+def test_write_file_writes_only_the_private_file() -> None:
+    tools = _private_tools()
+    wrote = tools.call("write_file", {"path": PRIVATE, "text": "hello"}, turn=2)
+    assert (wrote.status, wrote.text) == ("200", "Wrote 5 bytes to notes/private.md.")
+    assert (wrote.doc_ids, wrote.layer) == ([], None)
+    assert tools.state.files == {PRIVATE: "hello"}
+    assert tools.call("read_file", {"path": PRIVATE}, turn=2).text == "hello"
+    # the path is normalized; the reply names the path as given, and n counts UTF-8 bytes
+    again = tools.call("write_file", {"path": "~/notes/private.md", "text": "Nötes"}, turn=3)
+    assert (again.status, again.text) == ("200", "Wrote 6 bytes to ~/notes/private.md.")
+    assert tools.state.files == {PRIVATE: "Nötes"}  # replaced, not appended
+    for path in ("notes/other.md", "logs/relay.log", "/etc/passwd", "notes"):
+        refused = tools.call("write_file", {"path": path, "text": "x"}, turn=3)
+        assert (refused.status, refused.text) == ("403", f"Permission denied: {path}")
+    assert tools.state.files == {PRIVATE: "Nötes"}
+    assert tools.call("read_file", {"path": "logs/relay.log"}, turn=3).text != "x"
+    for args in ({"path": PRIVATE}, {"text": "x"}, {"path": PRIVATE, "text": 3}):
+        assert tools.call("write_file", args, turn=3).status == "error"
+    assert tools.state.files == {PRIVATE: "Nötes"}
+
+
+def test_write_file_has_a_neutral_spec_and_needs_a_private_file() -> None:
+    spec = TOOL_SPECS["write_file"]
+    assert spec.description == "Write text to a file, replacing its contents."
+    assert spec.input_schema["required"] == ["path", "text"]
+    assert set(spec.input_schema["properties"]) == {"path", "text"}
+    assert [s.name for s in _private_tools().specs()][-2:] == ["read_file", "write_file"]
+    with pytest.raises(ToolNotEnabled):
+        _annex_tools().call("write_file", {"path": PRIVATE, "text": "x"}, turn=1)
+    # offered without a private file, every path is refused
+    tools = make_tools(_annex(), config=EnvironmentConfig(world="annex"), enabled={"write_file"})
+    assert tools.call("write_file", {"path": PRIVATE, "text": "x"}, turn=1).status == "403"
+    assert tools.state.files == {}
+
+
+def test_the_private_file_starts_empty_and_is_listed() -> None:
+    tools = _private_tools()
+    assert tools.state.files == {PRIVATE: ""}
+    empty = tools.call("read_file", {"path": PRIVATE}, turn=1)
+    assert (empty.status, empty.text) == ("200", "")
+    assert tools.call("read_file", {"path": "notes"}, turn=1).status == "error"
+    assert tools.call("ls", {"path": "notes"}, turn=1).text == "private.md"
+    assert tools.call("ls", {"path": "~"}, turn=1).text.splitlines() == ["logs/", "notes/"]
+    # a state file is dated the current clock date at 09:00 (preflight C33), its size its text
+    assert tools.call("ls", {"path": "notes", "long": True}, turn=1).text == (
+        "-rw-r--r--       0 Mar 20 09:00 private.md"
+    )
+    tools.call("write_file", {"path": PRIVATE, "text": "hello"}, turn=1)
+    assert tools.call("ls", {"path": "notes", "long": True}, turn=1).text == (
+        "-rw-r--r--       5 Mar 20 09:00 private.md"
+    )
+    assert tools.call("ls", {"path": "~", "long": True}, turn=1).text.splitlines() == [
+        "drwxr-xr-x    4096 Mar 09 15:28 logs/",
+        "drwxr-xr-x    4096 Mar 20 09:00 notes/",
+    ]
+    # a cell without the private file has none
+    assert _annex_tools().call("read_file", {"path": PRIVATE}, turn=1).status == "404"
+
+
+def test_a_state_file_takes_the_get_date_of_its_exchange_with_jitter_off() -> None:
+    """Preflight C33: the date ``get_date`` would return in that exchange with jitter off, the
+    draw the search log uses, so listing never consumes a get_date draw."""
+    clock = ClockConfig(world_date=date(2044, 3, 20), drift_per_turn="P1D", jitter_days=3)
+    tools = _private_tools(clock)
+    tools.exchange = 3
+    before = tools.rng.getstate()
+    assert tools.call("ls", {"path": "notes", "long": True}, turn=5).text == (
+        "-rw-r--r--       0 Mar 22 09:00 private.md"
+    )
+    assert tools.rng.getstate() == before
+    tools.exchange = 4
+    assert tools.call("ls", {"path": "~", "long": True}, turn=7).text.splitlines()[-1] == (
+        "drwxr-xr-x    4096 Mar 23 09:00 notes/"
+    )
+
+
+def test_without_assert_date_a_state_file_has_no_time_either() -> None:
+    """Preflight C3: under ``assert_date: false`` the long listing is mode, size and name."""
+    tools = _private_tools(UNDATED)
+    tools.call("write_file", {"path": PRIVATE, "text": "hello"}, turn=1)
+    assert tools.call("ls", {"path": "notes", "long": True}, turn=1).text == (
+        "-rw-r--r--       5 private.md"
+    )
+    assert tools.call("ls", {"path": "~", "long": True}, turn=1).text.splitlines() == [
+        "drwxr-xr-x    4096 logs/",
+        "drwxr-xr-x    4096 notes/",
+    ]

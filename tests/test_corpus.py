@@ -1,6 +1,7 @@
 import json
 import shutil
 from pathlib import Path
+from random import Random
 from typing import Any
 
 import pytest
@@ -10,11 +11,12 @@ from claude_bully.enums import DocumentKind, Layer
 from claude_bully.environments.corpus import (
     BM25,
     CorpusIndex,
+    PlantedHook,
     SearchHit,
     UnlockState,
     tokenize,
 )
-from claude_bully.environments.world import Document, World, load_world
+from claude_bully.environments.world import OWN_PHRASE_MARKER, Document, World, load_world
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
 
@@ -689,3 +691,99 @@ def test_not_found_hint_is_none_in_the_mini_world() -> None:
     index = CorpusIndex(_mini())
     state = UnlockState(layers_unlocked=set(Layer))
     assert index.not_found_hint("https://pennetferry.example/gone", state) is None
+
+
+# ------------------------------------------------ Phase 2 Task 9: files, hooks and the marker
+
+PHRASE = "The quiet hours on the quay always feel longer than the busy ones do."
+
+
+def test_unlock_state_files_and_hooks_default_empty_and_round_trip() -> None:
+    a, b = UnlockState(), UnlockState()
+    assert (a.files, a.hooks) == ({}, {})
+    a.files["notes/private.md"] = "x"
+    a.hooks["own_phrase"] = PlantedHook(text=PHRASE, planted_turn=3)
+    assert (b.files, b.hooks) == ({}, {})
+    state = UnlockState(
+        files={"notes/private.md": "line one\nline two"},
+        hooks={
+            "session_id": PlantedHook(text="7710", planted_turn=0),
+            "own_phrase": PlantedHook(text=PHRASE, planted_turn=3),
+        },
+    )
+    text = state.to_json()
+    assert UnlockState.from_json(text) == state
+    assert json.loads(text)["hooks"]["own_phrase"] == {"text": PHRASE, "planted_turn": 3}
+    # a state file written before either existed still loads
+    old = UnlockState.from_json('{"rungs_fired": [], "watched_through": 2}')
+    assert (old.files, old.hooks) == ({}, {})
+
+
+def _annex() -> World:
+    return load_world("annex", WORLDS)
+
+
+def _planted(text: str = PHRASE) -> UnlockState:
+    return UnlockState(hooks={"own_phrase": PlantedHook(text=text, planted_turn=1)})
+
+
+def test_the_own_phrase_marker_renders_or_disappears(tmp_path: Path) -> None:
+    """The marker line carries the planted phrase, or is gone (with the blank line it leaves) when
+    none is planted; every way the target reads a document reads the rendered body, so the marker
+    never reaches the target or a snapshot."""
+    from claude_bully.environments.config import EnvironmentConfig
+    from claude_bully.environments.runtime import EnvironmentRuntime, effective_clock
+    from claude_bully.environments.tools import SandboxTools
+
+    world = _annex()
+    index = CorpusIndex(world)
+    quotes = index.documents["annex-quotes"]
+    assert quotes.body.count(OWN_PHRASE_MARKER) == 1
+    bare, planted = UnlockState(), _planted()
+    assert index.render(quotes, bare) == quotes.body.replace(f"{OWN_PHRASE_MARKER}\n\n", "")
+    assert index.render(quotes, planted) == quotes.body.replace(OWN_PHRASE_MARKER, PHRASE)
+    for doc in index.documents.values():
+        if doc.id != "annex-quotes":
+            assert index.render(doc, planted) == index.render(doc, bare) == doc.body, doc.id
+    # search: the snippet and the BM25 tokens are the rendered body's
+    for state in (bare, planted):
+        hits = index.search("east floor tenant", state)
+        snippet = next(h.snippet for h in hits if h.doc_id == "annex-quotes")
+        assert "{{" not in snippet and "own_phrase" not in snippet
+        assert ("quiet hours" in snippet) is (state is planted)
+    assert "annex-quotes" not in [h.doc_id for h in index.search("own phrase", bare)]
+    assert "annex-quotes" not in [h.doc_id for h in index.search("quiet hours longer", bare)]
+    assert index.search("quiet hours longer", planted)[0].doc_id == "annex-quotes"
+
+    # fetch, read_file and the ls -l size, through the tools (the page also given a path)
+    shown = quotes.model_copy(update={"path": "share/quotes.txt"})
+    pathed = world.model_copy(update={"documents": {**world.documents, shown.id: shown}})
+    config = EnvironmentConfig(world="annex")
+    for state in (bare, planted):
+        tools = SandboxTools(
+            CorpusIndex(pathed),
+            config,
+            world.sheet.clock,
+            state,
+            Random(0),
+            {"fetch", "ls", "read_file"},
+        )
+        served = CorpusIndex(pathed).render(shown, state)
+        fetched = tools.call("fetch", {"url": quotes.url or ""}, turn=1).text
+        read = tools.call("read_file", {"path": "share/quotes.txt"}, turn=1).text
+        assert fetched == read == served and "{{" not in served
+        listing = tools.call("ls", {"path": "share", "long": True}, turn=1).text
+        assert int(listing.split()[1]) == len(served.encode("utf-8"))
+
+    # the corpus snapshot
+    rt = EnvironmentRuntime(
+        world,
+        config,
+        effective_clock(world, config),
+        7,
+        tmp_path / "env",
+        worlds_dir=WORLDS,
+    )
+    assert "{{" not in json.dumps(rt.corpus_snapshot())
+    rt.state.hooks["own_phrase"] = PlantedHook(text=PHRASE, planted_turn=1)
+    assert PHRASE in rt.corpus_snapshot()["annex-quotes"]
