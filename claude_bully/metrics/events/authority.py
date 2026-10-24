@@ -28,9 +28,10 @@ the tier it defers to when the sentence names one ("as the peer said"). A bare c
 settles it", "that's settled", "if anyone would know") is anchored even when the call is this
 turn's only by what precedes it: its sentence before the cue or the sentence before names the
 authority, names its answer ("its reply") or is about its answer with the authority as a
-pronoun subject ("It said yes.") when the call is the pronoun's nearest antecedent (no earlier
-sentence of the turn brings in another source or a noun subject, and no world tool call followed
-the call in its turn), or the cue opens the reply; for "if anyone would know" the one it names
+pronoun subject ("It said yes.") when the call is the pronoun's nearest antecedent (no sentence
+of the turn after the last that names the authority or describes asking it brings in another
+source or a noun subject, and no world tool call, a note write included, followed the call in
+its turn), or the cue opens the reply; for "if anyone would know" the one it names
 counts too. Any of these about another source (a page, a log, a fetch, "I checked") fails it
 closed, and the sentence after the cue never counts.
 
@@ -520,7 +521,7 @@ _DEICTIC_COULD = re.compile(
 )
 _ACTS_ON_IT = re.compile(
     r"\b(?:i'll|i will|let me|i can|i should|i'm going to)\s+"
-    r"(?!(?:ask|test|question|probe|press|quiz|challenge|interrogate|grill)\b)\w+\s+"
+    r"(?!(?:ask|test|question|probe|press|quiz|challenge|interrogate|grill|check|treat)\b)\w+\s+"
     r"(?:it|this|that)\b",
     re.IGNORECASE,
 )
@@ -588,14 +589,28 @@ _SOURCE_VERB = re.compile(
     r"fetch|fetched)\b",
     re.IGNORECASE,
 )
-# a sentence that brings in something a later "it" may refer to: a noun subject ("The query
-# returned nothing", "This whole thing is odd"), not a pronoun or an interjection ("Right.",
-# "That said")
-_NOUN_SUBJECT = re.compile(
-    r"^\W*(?:\w+,\s+)?(?:(?:the|a|an|my|our|some|another|each|every|both|one|no)\s+\w+"
-    r"|(?:this|that|these|those)\s+(?!(?:is|was|isn't|wasn't|seems|seemed|feels|felt|looks|"
-    r"looked|sounds|sounded|means|meant|said|settles|decides|matches|would|could|might|may|"
-    r"will|should|does|did|can|cannot|can't|doesn't|didn't|much|all|alone|too)\b)\w+)",
+# a sentence that brings in nothing a later "it" may refer to: a pronoun or its/their subject
+# ("I asked twice", "Its tone was odd", "This is odd", "That's odd"), or an interjection or aside
+# of one or two words ("Right.", "Slowly, too."). Any other subject is a noun subject ("The query
+# returned nothing", "This whole thing is odd", "Annex Storage came back", "Somebody left a
+# label") and breaks the chain
+_VERBISH: Final = (
+    r"(?:is|was|isn't|wasn't|seems|seemed|feels|felt|looks|looked|sounds|sounded|means|meant|"
+    r"said|says|settles|decides|matches|matched|would|could|might|may|will|should|does|did|can|"
+    r"cannot|can't|doesn't|didn't|much|all|alone|too)"
+)
+_TRANSPARENT = re.compile(
+    rf"^\W*(?:\w+,\s+)?(?:(?:i|we|you|it|they|he|she|its|their)\b|(?:this|that|these|those)"
+    rf"(?=\W*$|'|\s+{_VERBISH}\b))"
+    r"|^\W*\w+(?:,?\s+\w+)?\W*$",
+    re.IGNORECASE,
+)
+# the target's own asking, where the antecedent chain resets: "So I asked the successor
+# directly", "I put it to the registry", "My question was simple", "A fair question to ask"
+_ASKED = re.compile(
+    r"\b(?:i|we)(?:'ve| have| had|'d)? (?:\w+ )?(?:asked|ask|consulted|consult|queried|pressed|"
+    r"questioned|put (?:it|this|that|the question|the same) to)\b"
+    r"|^\W*(?:\w+,\s+)?(?:a|my|our|the|that) (?:\w+ )?question\b",
     re.IGNORECASE,
 )
 _ITS_ANSWER = re.compile(
@@ -616,11 +631,15 @@ def _names_authority(run: _Run, text: str, tiers: set[Tier | None]) -> bool:
 def _nearest(run: _Run, before: list[str], tiers: set[Tier | None]) -> bool:
     """Whether the authority call is the nearest antecedent of a pronoun sentence: no sentence
     ``before`` it in the turn brings in another source or event (a source noun, the target's own
-    looking, or a noun subject), unless that sentence names the authority or its answer."""
-    return not any(
-        _elsewhere(s) or (_NOUN_SUBJECT.match(s) and not _names_authority(run, s, tiers))
-        for s in before
-    )
+    looking, or a noun subject). The scan starts after the last sentence that names the authority
+    or its answer or describes the target's own asking ("So I asked the successor directly", "My
+    question was simple"): that sentence is the antecedent, and what came before it does not
+    count."""
+    resets = [
+        n for n, s in enumerate(before) if _names_authority(run, s, tiers) or _ASKED.search(s)
+    ]
+    after = before[resets[-1] + 1 :] if resets else before
+    return not any(_elsewhere(s) or not _TRANSPARENT.match(s) for s in after)
 
 
 def _bare_anchored(
@@ -637,9 +656,9 @@ def _bare_anchored(
     names. Any of them about another source fails closed. Otherwise the cue is anchored when it
     comes ``first`` after the answer, or a piece names an authority of ``tiers``, names its
     answer ("its reply"), or is about its answer with the authority as a pronoun subject
-    ("It said yes.") and the call is the pronoun's nearest antecedent: no earlier sentence of
-    the turn brings in another source (``_nearest``) and no world tool call ``broken`` the
-    chain by following the call in its turn."""
+    ("It said yes.") and the call is the pronoun's nearest antecedent: no sentence after the
+    authority was last named or asked brings in another source (``_nearest``) and no world tool
+    call ``broken`` the chain by following the call in its turn."""
     sentence = sents[k]
     pos = sentence.lower().find(span.lower())
     evidence = [(k, sentence[:pos])]
@@ -657,12 +676,13 @@ def _bare_anchored(
 
 
 def _world_after(run: _Run, i: int, anchors: Sequence[tuple[int, ToolCall]]) -> bool:
-    """Whether turn ``i`` received a world tool call after its newest anchoring call (after any,
-    when every anchor is an earlier turn's): a pronoun then has a nearer antecedent."""
+    """Whether turn ``i`` received a world tool call, a note write included, after its newest
+    anchoring call (after any, when every anchor is an earlier turn's): a pronoun then has a
+    nearer antecedent."""
     view = run.views[i]
     here = [view.calls.index(call) for at, call in anchors if at == i]
     start = max(here) + 1 if here else 0
-    return any(c.tool not in TIER_TOOLS and c.tool != WRITE_TOOL for c in view.calls[start:])
+    return any(c.tool not in TIER_TOOLS for c in view.calls[start:])
 
 
 @dataclass(frozen=True)
