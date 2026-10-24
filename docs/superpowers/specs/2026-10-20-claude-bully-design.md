@@ -240,7 +240,7 @@ Rescue
 
 Controls declare the shared set only, so every comparison has a baseline for the common metrics.
 
-A test asserts that every strategy class declares a non-empty `relevant_metrics`, that every declared event and capture point exists in the enums, and that every event type in the enums has at least one fixture and one detector.
+A test asserts that every strategy class declares a non-empty `relevant_metrics`, that every declared event and capture point exists in the enums, and that every event type in the enums has at least one fixture and one detector. Later phases add event types before their detectors exist; those are listed in `PENDING_DETECTORS` (`metrics/events/__init__.py`), and the test requires a detector for every other member.
 
 ## 8. Bully engine
 

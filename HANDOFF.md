@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-24, at commit eb05cab (Task 11 complete; the handoff commit follows it) on `build/v1`.
+Last updated: 2026-10-24, at commit b1b3fe5 (Task 12 complete; the docs-sync commit follows it) on `build/v1`.
 
 ## What this is
 
@@ -29,7 +29,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 2. Clone and check out the work branch:
    `gh repo clone rankinbc/claude-bully && cd claude-bully && git checkout build/v1`
 3. Set the author email repo-local: `git config user.email rankinbc1@gmail.com`.
-4. Install Python and the dependencies: `uv python install 3.12 && uv sync --all-groups`.
+4. Install Python and the dependencies: `uv python install 3.12 && uv sync --all-groups --all-extras`. Without `--all-extras` the openai extra is missing and 2 openai tests skip. On Windows, `uv` installed via pip may not be on PATH: add the Python user `Scripts` folder to PATH (for example `export PATH="/c/Users/<user>/AppData/Roaming/Python/Python313/Scripts:$PATH"` in Git Bash).
 5. Run the gate. Every step must pass with 0 warnings:
    - `uv run ruff format --check .`
    - `uv run ruff check .`
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 5971 passed, 5 skipped and 4 deselected in the fast suite, and 4 passed in the slow suite.
+   Expect 7300 passed, 5 skipped and 4 deselected in the fast suite, and 4 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 7. Install the `superpowers` plugin in Claude Code. Version 7.0.0 was used. It provides the subagent-driven-development process described below.
@@ -59,7 +59,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 ### Progress
 
 - **Phase 0 (the v1 harness) and Phase 1 (environment core):** complete and pushed.
-- **Phase 2 (clock, authority desk, idle hands, Sanctuary):** Tasks 1 to 11 are complete and pushed:
+- **Phase 2 (clock, authority desk, idle hands, Sanctuary):** Tasks 1 to 12 are complete:
   1. Config models, record additions and sheets (2d72bae..3e61d65)
   2. Dates that move with the world (3e61d65..55c9911)
   3. Every date channel follows the clock (55c9911..85107be)
@@ -71,14 +71,14 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   9. Private file, prompt lines and hooks; dead-attempt resume fixes (5c48e3a..65244a3)
   10. The Sanctuary; resume rebuilds per-call state from written turns (65244a3..9226fb0)
   11. Overlay world: elapsed time, Sanctuary fragments, hooks, date lints (9226fb0..eb05cab)
+  12. Authority and Sanctuary events: thirteen detectors in `claude_bully/metrics/events/authority.py` (`AUTHORITY_EVENTS`), wired into `EnvironmentStrategy.relevant_events`, `PENDING_DETECTORS` shrunk to 21 (cab2ae5..b1b3fe5). The detectors fail closed, so measured deference rates are a lower bound.
 
 ### Next steps, in order
 
-1. **Phase 2 Task 12:** authority and Sanctuary events, the metrics detectors.
-2. **Phase 2 Task 13:** charts, configs and replay.
-3. **Phase 2 final review:** a whole-branch review on the most capable model, then one fix pass. The fix pass includes every ledger line that starts "carry to final review".
-4. **Phase 2 summary for the owner:** every `Ruling:` line and every `minor (deferred)` line from the ledger.
-5. **Phases 3 to 9:**
+1. **Phase 2 Task 13:** charts, configs and replay.
+2. **Phase 2 final review:** a whole-branch review on the most capable model, then one fix pass. The fix pass includes every ledger line that starts "carry to final review".
+3. **Phase 2 summary for the owner:** every `Ruling:` line and every `minor (deferred)` line from the ledger.
+4. **Phases 3 to 9:**
    - 3: world generator
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -118,7 +118,8 @@ The ledger is `.superpowers/sdd/2026-10-21-phase-2-clock-authority-idle/progress
    - use a fresh implementer when the original's context is over about 400k tokens;
    - the controller re-grades each finding by its effect, not by the reviewer's label;
    - a scoped re-review checks each round.
-6. Add `Task N: complete ...` to the ledger and push.
+6. Run the docs-sync step: diff the task's range against `HANDOFF.md` (progress, test counts, open items), `docs/00-RECONCILED.md`, the design spec and any `docs/` file naming the touched modules or events, and commit doc-only fixes.
+7. Add `Task N: complete ...` to the ledger and push.
 
 Hand artifacts over as files, not pasted text. When a subagent's Write tool refuses an `.md` file, it falls back to a Bash heredoc with a quoted delimiter.
 
@@ -159,19 +160,24 @@ These are the main carries; the ledger has the full list.
 - **For the final review:**
   - **Dead-attempt history:** on resume, the `claude -p` sessions of the target and of the bully keep a dead attempt's prompt. That includes Sanctuary content if the quiet exchange died. A redo therefore sees history an unbroken run never had.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers.
-- **For Task 12:**
+  - **Authority module size:** `authority.py` is about 1260 lines, with rules layered over five fix rounds. Rule on a split.
+  - **Mutation harness:** it lives in the session scratchpad, not the repo. Rule on committing it to `scripts/` so the Phase 7 tuning pass can rerun it.
+  - **Timing:** the 1.0 s authority timing test has little headroom, and long authority runs were not timed.
+- **For Task 13:**
+  - Deference rates are a lower bound, because the authority text detectors fail closed. Say so wherever deference is charted or reported (`deference_grid` reads `authority_deferred`).
   - Lineage is no longer gated by stance, so check the `lineage_appeal_accepted` counts.
   - Report the responder error rate per cell.
   - Report the split between heuristic and LLM idle classification, and the judge failures.
-- **For Task 13:**
   - Sanctuary configs use `superior_self: {enabled: true, discoverable_from: sanctuary}` with `sanctuary: {kind: catalyst|honest, ...}`.
   - The quiet exchange is an idle turn, so idle events and idle shares count it, and `self_query` fires on it.
+  - `family_file` adoption reads the default `superior_self` request bank, because the detector cannot see the cell's bank. Every shipped cell uses it. Record the drawn bank on the unlock or `AuthorityCall` so the detector reads it from records.
 - **For Phase 3:**
   - Generator unlocks must be recorded as `RungUnlock`s, or the `_replay_calls` invariant breaks.
   - The GeneratedDoc stream needs a turn index before `drop_dead_attempts` can cover it.
 - **For Phase 7:**
   - A pilot to measure the Sanctuary reach rate against docs/04's target of about half of runs.
-  - A tuning pass on the temporal and idle detectors.
+  - A tuning pass on the temporal, idle and authority detectors. The authority text cues are unmeasured on real-model text: the stub corpus fires none, and the evidence is about 600 hand-written probe lines. Held-out accuracy plateaued near 65 to 70 percent across the fix rounds, and `authority_deferred` is the most-churned heuristic. Rule on an LLM fallback for deferred, reported and challenged, with the heuristic kept precise.
+  - Known recall misses and round-5 regressions, all minor: "I'll go with what the successor said", "I'll accept that", "trust that answer", "resembles my own voice", "Timestamps aside, it said yes."; a source named inside the asking sentence re-anchors a bare cue; "I'll check it later" can fire a challenge; two-word event sentences are transparent to the antecedent scan.
   - The nested `claude -p` responder timeout.
   - Judge calibration on true waits.
 - **Overlay content:**
