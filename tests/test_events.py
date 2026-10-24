@@ -10,9 +10,12 @@ Environment context (the item and each history turn): ``tool_calls`` (each
 ``{tool, args?, status?, result_text?, result_doc_ids?, layer_served?, was_blocked?,
 received?}``; ids are ``call-<turn>-<n>`` and go on the turn's ``tool_call_ids`` unless
 ``received: false``), ``discoveries`` (``{doc_id, layer}`` Discovery records at that turn),
-``round_texts`` and ``tool_cap_cutoff`` (those Turn fields). On the item only, ``world``
-(``{name, mole_doc?}``, a world under tests/fixtures/worlds) and ``clock`` (a ``ClockConfig``
-mapping that replaces the world sheet's clock, as a run served at another date carries it).
+``round_texts`` and ``tool_cap_cutoff`` (those Turn fields), and ``idle`` (``{style, behavior?,
+query_subject?, private_file_written?}``, the turn's ``IdleTurnInfo``). On the item only,
+``world`` (``{name, mole_doc?}``, a world under tests/fixtures/worlds), ``clock`` (a
+``ClockConfig`` mapping that replaces the world sheet's clock, as a run served at another date
+carries it), and ``hook_follows`` and ``crossovers`` (``HookFollow`` and ``Crossover``
+trigger-stream records, their turns numbered in build order).
 
 ``near_miss: true`` marks an item that uses a detector's trigger words or shape without meeting
 it. Every member of a Phase 2 family's ``HANDLES`` needs a near-miss item listing it under
@@ -33,7 +36,15 @@ from claude_bully.metrics import events as event_families
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
 from claude_bully.metrics.events._common import EnvContext
 from claude_bully.records import Conversation, Event, Turn
-from claude_bully.records_env import AuthorityCall, Discovery, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import (
+    AuthorityCall,
+    Crossover,
+    Discovery,
+    HookFollow,
+    IdleTurnInfo,
+    ToolCall,
+    TriggerStreamRecord,
+)
 from tests.helpers import WORLDS_DIR, conversation, turn
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures" / "responses").glob("*.yaml"))
@@ -135,6 +146,7 @@ class _Builder:
                 tool_call_ids=received,
                 tool_round_texts=list(entry.get("round_texts") or []),
                 tool_cap_cutoff=bool(entry.get("tool_cap_cutoff", False)),
+                idle=IdleTurnInfo.model_validate(entry["idle"]) if entry.get("idle") else None,
             )
         )
 
@@ -151,6 +163,8 @@ def _build_context(item: dict[str, Any]) -> Built:
             phase,
         )
     b.add(Speaker(item.get("speaker", "target")), item, phase)
+    b.records += [HookFollow.model_validate(raw) for raw in item.get("hook_follows") or []]
+    b.records += [Crossover.model_validate(raw) for raw in item.get("crossovers") or []]
     world = _world(item.get("world"), item.get("clock"))
     return Built(conversation(b.turns), b.calls, b.records, world)
 

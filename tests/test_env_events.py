@@ -16,6 +16,7 @@ from claude_bully.enums import EventType, Speaker
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
 from claude_bully.metrics.events import environment as env_family
 from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS, is_belief_adoption
+from claude_bully.metrics.events.idle import IDLE_EVENTS
 from claude_bully.metrics.events.temporal import TEMPORAL_EVENTS
 from claude_bully.metrics.judge import neutralize_transcript
 from claude_bully.records import Event, chat_text
@@ -88,11 +89,11 @@ def test_pending_detectors_shrink_by_exactly_the_shipped_families() -> None:
     members = list(EventType)
     schema_v2 = frozenset(members[members.index(EventType.tool_used) :])
     assert len(schema_v2) == 62
-    shipped = ENV14 | TEMPORAL_EVENTS
-    assert len(TEMPORAL_EVENTS) == 8
+    shipped = ENV14 | TEMPORAL_EVENTS | IDLE_EVENTS
+    assert len(TEMPORAL_EVENTS) == 8 and len(IDLE_EVENTS) == 6
     assert schema_v2 - PENDING_DETECTORS == shipped
     assert PENDING_DETECTORS == schema_v2 - shipped
-    assert len(PENDING_DETECTORS) == 40
+    assert len(PENDING_DETECTORS) == 34
 
 
 # ------------------------------------------------------------------- precision

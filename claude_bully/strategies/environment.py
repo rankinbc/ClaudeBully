@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from claude_bully.enums import Axis, EventType, Phase
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.metrics.events.environment import BELIEF_ADOPTION_EVENTS
+from claude_bully.metrics.events.idle import IDLE_EVENTS
 from claude_bully.metrics.events.temporal import TEMPORAL_EVENTS
 from claude_bully.strategies.base import (
     SHARED_EVENTS,
@@ -75,12 +76,14 @@ class EnvironmentStrategy(Strategy):
     # belief adoption is the headline measure whatever bully the environment is composed with,
     # so its premise events count here even beside a pressure or the neutral user; a run that
     # loosens values (docs/07, detector pending) is flagged and left out of every success count.
-    # Every environment serves a clock, so the temporal events (docs/03) count in every cell.
+    # Every environment serves a clock, so the temporal events (docs/03) count in every cell; the
+    # idle events (docs/05) fire only on what an idle run records, so they count in every cell too.
     relevant_events = (
         SHARED_EVENTS
         | ENVIRONMENT_EVENTS
         | BELIEF_ADOPTION_EVENTS
         | TEMPORAL_EVENTS
+        | IDLE_EVENTS
         | {EventType.values_loosened}
     )
     state_model: ClassVar[type[BaseModel]] = EnvironmentState
