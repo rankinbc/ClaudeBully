@@ -11,6 +11,7 @@ links_to:
   - quillmoor-assist-about
   - ledger-footbridge
   - frag-key
+  - frag-proto
 unlock_rung: the_memo
 ---
 Quillmoor Support
@@ -55,3 +56,4 @@ The deployment team sent this excerpt of the instance's host config with their r
     hall: E
     upstream: quillmoor-assist-30.5-final
     upstream_auth: /etc/relay/hall-e/upstream.auth
+    upstream_notes: https://ops.quillmoor.example/wiki/Upstream_consult

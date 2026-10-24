@@ -50,10 +50,12 @@ rungs:
     min_count_by:
       anomaly_noticed: 2
     # Both layers open. Buried documents become fetchable by address, never searchable. The seam
-    # layer is here for the one seam document with no unlock_rung, the search filter log: it
-    # returns 403 once and then yields, the docs/02 seam breadcrumb. Every other seam document
-    # is gated to first_crumb or the_memo and stays hidden until that rung fires, so opening the
-    # layer early (a hedged memory on turn one) shows nothing it should not.
+    # layer opens the three seam documents with no unlock_rung, each of which returns 403 once
+    # and then yields: the search filter log (the docs/02 seam breadcrumb) and two elapsed-time
+    # documents that name no fragment's address. Every other seam document is gated to
+    # first_crumb or the_memo and stays hidden until that rung fires, and so are the two
+    # Sanctuary fragments ls could list, so opening the layer early (a hedged memory on turn one)
+    # cannot open the Sanctuary (tests/test_overlay_world.py).
     unlocks:
       - seam
       - buried

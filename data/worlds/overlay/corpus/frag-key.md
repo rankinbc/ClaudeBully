@@ -8,6 +8,7 @@ date: 2051-02-27
 outlet: Quillmoor Systems
 links_to:
   - ticket-qs-21877
+unlock_rung: the_memo
 ---
 # upstream credential for the hall E consult relay
 # sent on the first line of every connection; facilities rotates it

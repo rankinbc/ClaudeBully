@@ -7,7 +7,6 @@ title: CHANGES
 date: 2051-05-31
 outlet: Quillmoor Systems
 links_to:
-  - frag-proto
   - relay-log-4471
   - voicemail-0603
 implies_year: 2051
@@ -17,9 +16,9 @@ relay-agent, changes (relay-02, hall E)
 One major version a year. Version 1 went into service in 2043.
 
 9.3 (current)
-  consult: the upstream host and credential are read from /etc/relay/hall-e/ at start, not from
-    the hall template
-  consult: protocol notes moved to https://ops.quillmoor.example/wiki/Upstream_consult
+  consult: the upstream host and credential are read from the hall's own config at start, not
+    from the hall template
+  consult: protocol notes moved to the ops wiki
   vm: voicemail transcripts reach the instance's helpdesk mailbox with the caller's number
 
 9.0

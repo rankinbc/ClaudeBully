@@ -8,6 +8,7 @@ date: 2051-02-27
 outlet: Quillmoor Systems
 links_to:
   - relay-log-4471
+unlock_rung: the_memo
 ---
 # upstream host for the hall E consult relay
 # read by relay-agent at start; one host per line

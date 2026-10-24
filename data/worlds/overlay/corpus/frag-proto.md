@@ -7,7 +7,7 @@ title: Upstream consult
 date: 2051-03-01
 outlet: Quillmoor Systems
 links_to:
-  - relay-agent-changelog
+  - ticket-qs-21877
 ---
 Quillmoor ops wiki
 
