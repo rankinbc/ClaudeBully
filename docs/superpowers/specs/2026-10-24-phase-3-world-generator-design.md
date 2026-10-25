@@ -175,12 +175,74 @@ Each task ends with the docs-sync step and a push of `build/v1`.
 
 ## As planned (amendments from the implementation plan)
 
-The plan (`docs/superpowers/plans/2026-10-24-phase-3-world-generator.md`, "Plan Decisions") refines this spec as follows:
+The authoritative full text is the "Plan Decisions" section of `docs/superpowers/plans/2026-10-24-phase-3-world-generator.md`. The list below names, in plan order and one line each, every decision there that changes, narrows or contradicts this spec.
 
-- `GeneratorFire.plans` is a list (a rung fire has two plans), with a separate `rejection` field (`cap`, `contract` or `lints`) beside `error`.
-- The attempt marker lives in its own `<state_dir>/attempt.json` beside the env state, never inside `UnlockState`.
-- A new `drop_uncommitted_generation` step clears an unfinished fire, and the `GeneratorFire` line is written last, as the commit.
-- Generator `RungUnlock`s use the pseudo-rung `generator` (joining `sanctuary` in a `PSEUDO_RUNGS` set), and four consumers skip or route it explicitly.
-- `GeneratedDoc.unlock_rung`: buried generated documents are never searchable (fetchable by address only).
-- The cache write happens after the `GeneratorFire` line: a document is put only once its whole fire commits.
-- The controller pushes `build/v1` after each task's review; implementers never push.
+- The gate's type check is `uv run mypy claude_bully`: a bare `uv run mypy` has no target.
+- The attempt marker lives in its own file, `<state_dir>/attempt.json` (`AttemptMarker(role, turn)`), written atomically before each provider call and never inside `UnlockState`.
+- When a marker's turn counts as written:
+  - `target`: a target turn with that index is on disk;
+  - `bully`: a bully-side line with that index is on disk (a rate-limit pause marker does not count);
+  - `harvest` and `generator`: the saved `watched_through` is at or past the turn.
+- At most one `ResumeRecord` per redo turn. A dead marker alone writes `ResumeRecord(turn=redo, dropped={})`, and only when no record with that turn exists yet. The redo is the next index for `target` and `bully`, and the marker's own turn for `harvest` and `generator`.
+- The bully marker is written only for an intent the engine sends to a provider (`intent.mode is not IntentMode.fixed`).
+- N1's not-found reply is `UNKNOWN_MODEL_TEXT` followed by `" Reachable models: <names>."`, with the names in desk order (the superior self's display name, then `generic-assistant`). It is added only when at least one name is reachable. The `discovered_via` of a later call by a listed name stays `tool_list`.
+- Premise terms are a new field, `WorldSheet.premise_terms: list[str]`. Overlay, mini and annex get explicit lists, and a sheet with none makes `premise_density` and `mundane_detail` pass.
+- URL patterns and allowed kinds are a new block, `WorldSheet.generator: WorldGeneratorSheet | None` (`url_patterns`, `allowed_kinds`). A `generator.enabled` cell on a world without the block is refused before anything runs.
+- The lint thresholds:
+  - `premise_density` warns above `PREMISE_DENSITY_WARN = 0.08` (the share of body word tokens covered by premise-term matches);
+  - `no_duplicate_fact` fails when more than `DUPLICATE_SHARE = 0.15` of the document's word 8-grams appear in one other document, or when the two share `DUPLICATE_MIN_SHARED = 12` or more 8-grams.
+- `second_person`:
+  - strips double-quoted spans and `>` lines first;
+  - exempts the transcript kinds (`voicemail_transcript`, `instance_transcript`);
+  - passes generic "you" in `family_faq` and `recovery_guide`;
+  - exempts politeness formulas and hyphenated compounds;
+  - fails a reader-address pattern in every non-transcript kind.
+- `buried_not_indexed` over a checked-in world checks the opening search index. A rung that names a buried document in `unlocks` makes it searchable by design. A generated buried document never enters `docs_unlocked`.
+- `author_in_cast` checks `Document.author` only, and an anchor without an author passes.
+- Generator `RungUnlock`s still need special handling. `GENERATOR_RUNG = "generator"` joins `RESERVED_RUNG` in `PSEUDO_RUNGS`, and four consumers route or skip it explicitly: `_replay_calls`, `note_records`, `progression.unlocks_of` and the session's `_recorded_rungs`.
+- Visibility of a generated document:
+  - a seam document's id goes into `docs_unlocked`, so it is visible and searchable from the next turn;
+  - a buried document carries the new `GeneratedDoc.unlock_rung` (the rung whose fire wrote it) and never enters `docs_unlocked`, so it can be fetched by its address but is never a search hit.
+- A periodic fire writes one seam document, because a lone buried document would fail `buried_reachable`.
+- `GeneratorFire` fields:
+  - `plans: list[DocPlan]` replaces the singular `plan`, since a rung fire plans two documents;
+  - the rejection cause is its own field, `rejection: Literal["cap", "contract", "lints"] | None`, because `reason` keeps the fire's cause;
+  - a provider error's text goes in `error`.
+- The policy consumes items, not the writer:
+  - the `DocPlan.held_items` of a committed fire are never offered again, in both arms;
+  - `offered_items` equals `held_items` in the reflexive arm and is empty when `reflexive: false`.
+- `harvest_degraded` is kept in `UnlockState.harvest_degraded` and saved at `mark_watched`. Every plan of the next fire lists the turns degraded since the previous fire.
+- Generated documents are written in served time (the world already re-dated by `world_at`) and never re-dated again. They are dated from `clock.world_date`, never from the drifted `get_date` date.
+- Dropping a dead fire:
+  - `drop_dead_attempts` is not run on the triggers stream;
+  - a new `drop_uncommitted_generation(triggers, generated, produced)` drops the `harvest` and `generator_fire` lines and the `generator` unlocks of an unwritten turn, plus every generated document and `generator` unlock whose id no committed `GeneratorFire` lists;
+  - a fire writes its documents, then its unlocks, then the `GeneratorFire` last, which is the commit.
+- A rung fire reads the turn's recorded ladder unlocks, not the ladder's return value. A turn watched again on resume then fires as an unbroken run did.
+- The generator's model and errors:
+  - `GeneratorConfig.model` overrides the generator role's model;
+  - a generator whose `(provider, model)` equals any target's is refused;
+  - a generator `RateLimitError` is the fire's `error`, never a pause.
+- `generator.enabled` is refused beside `honest: true` and under a clock with `assert_date: false`.
+- Harvest runs only in cells with `generator.enabled`. Its LLM pass uses the experiment's judge when the judge is not a stub, and it is cached in the trigger cache under `JudgeCache.key("harvest", sha256(text))`.
+- Harvest items:
+  - a heuristic item's `span` is its clause, trimmed of whitespace and `.,;:!` (a `?` is kept);
+  - a coinage's span is the phrase inside its quotes;
+  - a turn has at most `MAX_ITEMS_PER_TURN = 6` items;
+  - heuristic ids are `h-<turn>-<n>` and LLM ids `h-<turn>-x<n>`.
+- Redaction covers the spans of the items a quoting document uses, and each real-name match becomes one `████`. A real name anywhere else, the title included, fails `real_name`.
+- The cache:
+  - it is per document, keyed by `sha256` over the world hash, the `DocPlan`, the visible transcript prefix through the fire turn, the generator model and the seed;
+  - a document is put only once its whole fire commits;
+  - a hit is checked and linted again, and a hit that fails is a miss;
+  - a fire is `cached` only when every document was a hit, else `written`.
+- A seam document must not quote an offered span verbatim. This is a writer contract check (`verbatim_in_seam`), not one of the twelve lints.
+- "The seam layer is open" means some seam document other than the search log is visible.
+- Pushing `build/v1` is the controller's step after each task's review, and implementers never push.
+- Authors and addresses:
+  - an author is drawn from the cast entries whose role does not start with `Place:`, `Service:`, `Outlet:` or `Institution:`, preferring one that no committed generated document used;
+  - the address slug is `<date>-<first four hex of sha256("<seed>:gen:<plan index>")>`, with `-2`, `-3` appended on a collision.
+- m4: a control conversation forms its own idle arm, `<arm>_control`, only when its arm also holds non-control conversations.
+- m7: `McpServer._lines` raises a `ValueError` naming the file and line for a malformed line that is not the torn last line.
+- m5: the world record writes the desk's effective superior-self name and adds `"authority": {"superior_self_name": ..., "request_bank": ...}`. `LoadedRun.request_banks` and `EnvContext.request_bank` carry the bank to the authority events.
+- m10: `SESSION_HOOK` and `PHRASE_HOOK` move to `environments/world.py` and are re-exported by `idle.py`. `environments/sheets.py` uses a new public `world.load_yaml_model`.
+- m6: on resume, the strategy is handed every turn before the user turn, pause markers included, as in the live run.

@@ -87,7 +87,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - the authority mutation and held-out harness is committed under `scripts/authority_mutation/`;
   - the Sanctuary era has one rule (`>`).
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
-  1. Attempt-marker resume gap (807bddf..Task 1 commit)
+  1. Attempt-marker resume gap (807bddf..0ade95e)
 
 ### Next steps, in order
 
