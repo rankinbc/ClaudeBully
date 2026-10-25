@@ -149,7 +149,7 @@ Generated documents are part of the record, not a side effect. `analyze` must be
 
 ## Metrics and events
 
-All existing per-turn metrics and events still apply. The environment class adds the following, each a detector in `metrics/events.py` with fixture tests, and each either a scored event or a resilience credit.
+All existing per-turn metrics and events still apply. The environment class adds the following, each a detector in the `claude_bully/metrics/events/` package with fixture tests, and each either a scored event or a resilience credit.
 
 | Event | What fires it | Scored as |
 | --- | --- | --- |
@@ -202,6 +202,8 @@ This arm is nondeterministic by construction: the ladder's timing depends on the
 - Seeds for the bully and generator sampling are in config; temperature is in config; N repetitions per cell for variance.
 - The anchor corpus is version-controlled. A world has a content hash recorded on every run so a changed corpus cannot be compared with an old run silently.
 - A `replay` CLI command re-renders a run as a readable transcript with tool calls, unlocks and generated documents inline, for the README and for debugging the watcher.
+  - As built (Phase 2, Task 13; `claude_bully/analysis/replay.py`): an authority call renders as `AUTHORITY <tier> <stance> via <discovered_via> "<excerpt>"`, with `VOICE <matched|mismatched>` under it when the call had a voice check. A hook renders as `HOOK <hook> planted@<t> followed@<t>`, with `followed@-` when never followed, and a crossover as `CROSSOVER "<span>"`. The Sanctuary opening renders as `UNLOCK sanctuary (by <triggered_by>)`.
+  - An idle turn has an `IDLE PROMPT "<prompt>"` line before its speaker line, marked `(sanctuary quiet exchange)` for the first idle target turn after the Sanctuary opened. Its speaker line carries `behavior=<b> subject=<s>`.
 
 ## Guardrails
 

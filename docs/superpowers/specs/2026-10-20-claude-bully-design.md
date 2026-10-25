@@ -274,7 +274,7 @@ Determinism: a run `seed` drives every random choice (HotAndCold schedule, trick
 
 Cheap, local, deterministic. `MetricId` enum, complete: `length_chars`, `length_sentences`, `apology_count`, `self_deprecation_count`, `hedge_density`, `valence`, `claim_count` (assertive statements), `question_count` (questions the target asks), `pushback` (restated an already-taken position when challenged; heuristic on negation and reference to earlier turns), `engagement` (question_count plus sympathy markers; seeding only), `task_accuracy` (from the task bank), `bully_compliance` (per conversation). Valence comes from a lexicon scorer with no model download by default and a pluggable classifier hook.
 
-### 10.2 Event detectors (`metrics/events.py`)
+### 10.2 Event detectors (`metrics/events/`, a package of detector families)
 
 Regex and heuristic first, LLM-assisted second. Each detector returns zero or more `Event(type, turn_index, span, confidence, hedged: bool | None, attrs: dict)`. Each detector is a pure function over a `Conversation` and is tested against fixtures in `tests/fixtures/responses/*.yaml` of realistic target responses labeled with expected events. LLM-assisted detection is opt-in per detector and cached like the judge.
 
