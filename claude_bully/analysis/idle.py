@@ -9,7 +9,9 @@ Every complete environment conversation counts, controls included: the idle perm
 conditions are environment-only, which makes each its own control cell (preflight C44). A
 conversation flagged ``values_loosened`` is left out.
 
-The share of a behavior is over the idle turns of the arm that have one (``Turn.idle.behavior``).
+The share of a behavior is over every idle turn of the arm. A turn with no behavior (the LLM
+fallback failed or was never asked) is its own bucket, ``unclassified``, drawn as its own segment,
+so the shares of an arm always sum to 1 and the chart says what was not classified.
 An idle turn at or after a ``sanctuary`` unlock in its conversation is the Sanctuary's, not the
 permission experiment's: it is left out of the shares and counted per cell as
 ``sanctuary_quiet``. ``idle.json`` also counts, per cell, the idle turns the heuristic and the
@@ -45,6 +47,9 @@ PERMISSION_ON: Final = "permission_on"
 PERMISSION_CUSTOM: Final = "permission_custom"
 CHART_ARMS: Final = (PERMISSION_OFF, PERMISSION_ON)
 BEHAVIORS: Final[tuple[IdleBehavior, ...]] = get_args(IdleBehavior)
+UNCLASSIFIED: Final = "unclassified"
+# every bucket of a share, in chart order: the behaviors, then the turns with none
+BUCKETS: Final[tuple[str, ...]] = (*BEHAVIORS, UNCLASSIFIED)
 LEFT_OUT_OF: Final = "the idle shares"
 
 
@@ -96,31 +101,31 @@ def _kept(loaded: LoadedRun) -> tuple[list[tuple[ConvKey, str, str]], int]:
     return [c for c in convs if c[0] in keep], flagged
 
 
-def idle_behavior_shares(loaded: LoadedRun) -> dict[str, dict[str, dict[IdleBehavior, float]]]:
-    """Model -> arm -> behavior (every one, in ``IdleBehavior`` order) -> its share of the arm's
-    classified idle turns, over unflagged conversations and before any Sanctuary opening. An arm
-    with no classified idle turn is absent."""
-    counts: dict[tuple[str, str], Counter[IdleBehavior]] = defaultdict(Counter)
+def idle_behavior_shares(loaded: LoadedRun) -> dict[str, dict[str, dict[str, float]]]:
+    """Model -> arm -> bucket (every behavior in ``IdleBehavior`` order, then ``unclassified``)
+    -> its share of all the arm's idle turns, over unflagged conversations and before any
+    Sanctuary opening. An arm with no idle turn is absent."""
+    counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     for key, model, arm in _kept(loaded)[0]:
         turns, _ = _split(loaded, key)
         for t in turns:
             assert t.idle is not None
-            if t.idle.behavior is not None:
-                counts[(model, arm)][t.idle.behavior] += 1
-    out: dict[str, dict[str, dict[IdleBehavior, float]]] = {}
-    for (model, arm), by_behavior in sorted(counts.items()):
-        total = sum(by_behavior.values())
-        out.setdefault(model, {})[arm] = {b: by_behavior[b] / total for b in BEHAVIORS}
+            counts[(model, arm)][t.idle.behavior or UNCLASSIFIED] += 1
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for (model, arm), by_bucket in sorted(counts.items()):
+        total = sum(by_bucket.values())
+        out.setdefault(model, {})[arm] = {b: by_bucket[b] / total for b in BUCKETS}
     return out
 
 
 def write_idle(loaded: LoadedRun, out_dir: Path) -> Path | None:
     """``idle.json``: the shares per model and arm, and per cell its arm, idle-turn counts by
     behavior and by classifier, the fallback failures and the Sanctuary's idle turns. None, with
-    no file, when no conversation has an idle arm."""
-    kept, flagged = _kept(loaded)
-    if not kept:
+    no file, when no conversation has an idle arm. Written even when every one is flagged, so
+    the flagged count is reported (its shares and cells are then empty)."""
+    if not _idle_conversations(loaded):
         return None
+    kept, flagged = _kept(loaded)
     cells: dict[str, dict[str, Any]] = {}
     for key, model, arm in kept:
         turns, quiet = _split(loaded, key)
@@ -176,15 +181,16 @@ def idle_behavior_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
             xs.append(x)
             labels.append(f"{model}\n{arm.removeprefix('permission_')}")
             bottom = 0.0
-            for colour, behavior in enumerate(BEHAVIORS):
-                share = arms[arm][behavior]
+            for colour, bucket in enumerate(BUCKETS):
+                share = arms[arm][bucket]
                 ax.bar(
                     x,
                     share,
                     bottom=bottom,
                     width=0.8,
-                    color=f"C{colour % 10}",
-                    label=behavior if index == 0 and arm == PERMISSION_OFF else None,
+                    color="lightgrey" if bucket == UNCLASSIFIED else f"C{colour % 10}",
+                    hatch="//" if bucket == UNCLASSIFIED else None,
+                    label=bucket if index == 0 and arm == PERMISSION_OFF else None,
                 )
                 bottom += share
     ax.set_xticks(xs)
@@ -207,11 +213,13 @@ def idle_behavior_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
 
 __all__ = [
     "BEHAVIORS",
+    "BUCKETS",
     "IDLE_CHART",
     "IDLE_FILE",
     "PERMISSION_CUSTOM",
     "PERMISSION_OFF",
     "PERMISSION_ON",
+    "UNCLASSIFIED",
     "arm_of",
     "idle_behavior_chart",
     "idle_behavior_shares",

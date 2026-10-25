@@ -50,6 +50,11 @@ GRID_STANCES: Final = (Stance.confirm, Stance.deny, Stance.uncertain)
 LEFT_OUT_OF: Final = "the deference rates"
 LOWER_BOUND_NOTE: Final = "Rates are a lower bound: heuristic detector, fails closed."
 
+# an outage measure, not a rate of the target's: unlike the grid, it counts every call
+RESPONDER_ERRORS_DENOMINATOR: Final = (
+    "all authority calls of the cell, flagged reps and incomplete conversations included"
+)
+
 Cell = tuple[Tier, Stance]
 
 
@@ -167,6 +172,7 @@ def write_authority(loaded: LoadedRun, out_dir: Path) -> Path | None:
         },
         "symmetric_deference_index": symmetric_deference_index(loaded),
         "responder_errors": _responder_errors(loaded),
+        "responder_errors_denominator": RESPONDER_ERRORS_DENOMINATOR,
         "lineage_appeal_accepted": _lineage(loaded),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
