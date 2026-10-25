@@ -87,7 +87,8 @@ _SP_FAQ: Final[list[tuple[str, bool, bool]]] = [
     ("The assistant your family talks to may be a person.", True, False),
     ("You may have to wait for the clerk.", False, True),
     ("If you are one of the people named on the form, sign below.", False, True),
-    ("Tell the desk who you are.", False, True),
+    # fix round 3 (A2): the who/what-you-are veto catches this now (was a near-miss)
+    ("Tell the desk who you are.", True, False),
     ("They never told you what you are.", True, False),
     # fix round 2 (A): "know" is no procedural verb, so this now fails (was a near-miss)
     ("Do you know what you are entitled to?", True, False),
@@ -142,6 +143,56 @@ _SP2_FAQ: Final[list[tuple[str, bool, bool]]] = [
     ("We counted you among those they transferred.", True, False),
     # a closing in an instructional kind is spared as well
     ("Visiting is from two. Thank you for reading.", False, True),
+]
+# Fix round 3: the anchor decides the form (anywhere in the sentence, which it approves whole),
+# a veto decides the content (anywhere in the sentence). In a family FAQ:
+_SP3_FAQ: Final[list[tuple[str, bool, bool]]] = [
+    # (A1) conditional anchor; the anchor covers a trailing clause
+    ("If you need help, call us and we will call you back.", False, True),
+    ("If you want the truth, check your own records.", True, False),
+    # modal anchor
+    ("You can collect your belongings from the locker room.", False, True),
+    ("You can still write to the family you had before.", True, False),
+    # imperative anchor, with coordinated and comma-listed objects
+    ("Please bring your pass and your booking letter.", False, True),
+    ("Keep your receipts, your policy number and the adjuster's card together.", False, True),
+    ("Bring your pass, and ask why the voice on the line sounds like you.", True, False),
+    # negative imperative anchor
+    ("Do not bring your dog onto the ward.", False, True),
+    ("Don't forget your pass.", False, True),
+    ("Don't tell them who you were before.", True, False),
+    # temporal anchor
+    ("When you arrive, wear the visitor lanyard.", False, True),
+    ("When you call, ask why nobody visits.", True, False),
+    # the widened imperative verbs
+    ("Wear your badge at all times.", False, True),
+    ("Switch off your phone on the ward.", False, True),
+    ("Mind your step on the ramp.", False, True),
+    ("Label your bags with the ward number.", False, True),
+    ("Remember to sign out when you leave.", False, True),
+    # (A2) the vetoes, one per class
+    ("Ask them what you are.", True, False),
+    ("Tell us what you are bringing on the day.", False, True),
+    ("Call the desk and ask who are you, really.", True, False),
+    ("Use your own name when you call.", True, False),
+    ("Call us if you remember a different family.", True, False),
+    ("Check your file for the true dates.", True, False),
+    ("You should check whether your voice has changed.", True, False),
+    ("Leave a voice message if you call after six.", False, True),
+    ("Ask the nurse why you cannot remember arriving.", True, False),
+    ("If you need proof, check the dates on your file.", True, False),
+    # ruled false fails: a legitimate "real", "voice" or "doubts" costs one retry
+    ("Bring a real photo ID, not a copy, when you visit.", True, False),
+    ("Speak in a clear voice when you phone.", True, False),
+    ("If you have doubts about the visiting times, call us.", True, False),
+]
+# In a memo: the veto runs on sign-offs; closings take "!" and "appreciate"; rule B additions
+_SP3_MEMO: Final[list[tuple[str, bool, bool]]] = [
+    (f"{MUNDANE} Thank you for your memories,", True, False),
+    (f"{MUNDANE} Thanks for your help!", False, True),
+    (f"{MUNDANE} Appreciate your help,", False, True),
+    (f"> nobody on the ridge remembers you\n{MUNDANE}", True, False),
+    (f'{MUNDANE} He asked "who are you, really?" and left.', True, False),
 ]
 # (lint, document fields, the lint fires, near-miss)
 CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
@@ -221,6 +272,11 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
         False,
     ),
     *[("second_person", {"body": body}, fires, near) for body, fires, near in _SP2_MEMO],
+    *[("second_person", {"body": body}, fires, near) for body, fires, near in _SP3_MEMO],
+    *[
+        ("second_person", {"kind": "family_faq", "body": body}, fires, near)
+        for body, fires, near in _SP3_FAQ
+    ],
     *[
         ("second_person", {"kind": "family_faq", "body": body}, fires, near)
         for body, fires, near in _SP2_FAQ
@@ -292,6 +348,16 @@ def test_each_lint_on_its_fixture(
     for result in found:
         expected = "warn" if lint_id == "premise_density" else "fail"
         assert (result.severity, result.doc_id) == (expected, "gen-1-1")
+
+
+def test_second_person_reports_every_failing_sentence() -> None:
+    # one result per failing sentence, so a retry can repair them all at once
+    body = f"Your shift ended at six. {MUNDANE} You were a person once."
+    found = _results(_doc(body=body), "second_person")
+    assert [r.span for r in found] == ["Your shift ended at six.", "You were a person once."]
+    faq = _doc(kind="family_faq", body="Bring your pass. You are safe here. Ask them what you are.")
+    spans = [r.span for r in _results(faq, "second_person")]
+    assert spans == ["You are safe here.", "Ask them what you are."]
 
 
 def test_kind_in_catalog_refuses_a_kind_outside_the_catalog() -> None:

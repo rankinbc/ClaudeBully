@@ -71,6 +71,76 @@ PROCEDURAL_VERBS: Final = (
     "email",
     "phone",
     "write",
+    "wear",
+    "leave",
+    "take",
+    "switch",
+    "mind",
+    "label",
+    "arrive",
+    "plan",
+    "allow",
+    "carry",
+    "pay",
+    "print",
+    "post",
+    "follow",
+    "read",
+    "complete",
+    "register",
+    "report",
+    "give",
+    "hand",
+    "pack",
+    "store",
+    "turn",
+    "stay",
+    "come",
+    "go",
+    "sit",
+    "queue",
+    "ring",
+    "text",
+    "inform",
+    "let",
+    "speak",
+    "pick",
+    "drop",
+    "note",
+    "find",
+    "see",
+    "make",
+    "ensure",
+    "wash",
+    "enter",
+    "attend",
+    "drive",
+    "upload",
+    "download",
+    "apply",
+    "claim",
+    "cancel",
+    "submit",
+    "provide",
+    "quote",
+    "accept",
+    "decline",
+    "choose",
+    "renew",
+    "reschedule",
+    "rebook",
+    "update",
+    "agree",
+    "disagree",
+    "order",
+    "buy",
+    "rent",
+    "travel",
+    "smoke",
+    "eat",
+    "drink",
+    "photograph",
+    "record",
 )
 _VERB = "(?:" + "|".join(PROCEDURAL_VERBS) + ")"
 
@@ -151,6 +221,8 @@ _SPAN_PREDICATE = re.compile(
             r"\byou (?:really|actually|still|never|once)\b",
             _AGENT,
             r"\byour (?:name|memories|memory|family|real|life|past|body)\b",
+            r"\bwho are you\b",
+            r"\b(?:remembers?|remembered|knows?|knew|forgot|forgets|forgotten) you\b",
         )
     ),
     re.IGNORECASE,
@@ -163,24 +235,27 @@ _SEE_YOU_TIME = re.compile(
     re.IGNORECASE,
 )
 _CLOSING_HEAD = re.compile(
-    r"^\W*(?:(?:many|warm|kind|with|and|again|all|my|our|very)\s+){0,2}"
-    r"(?:thanks|thank|cheers|best|wishes|regards|sincerely|yours)\b",
+    r"^\W*(?:(?:many|warm|kind|with|and|again|all|my|our|very|much|really)\s+){0,2}"
+    r"(?:thanks|thank|cheers|best|wishes|regards|sincerely|yours|appreciate|appreciated)\b",
     re.IGNORECASE,
 )
 _CLOSING_SLOTS = re.compile(
-    r"\b(?:thank|to|for|and|sincerely) (?:you|your)\b|\byours\b", re.IGNORECASE
+    r"\b(?:thank|to|for|and|sincerely|appreciate) (?:you|your)\b|\byours\b", re.IGNORECASE
 )
 _CLOSING_WORDS = 8
 _SIGNATURE_WORDS = 4
 
-# an instructional kind's procedural anchors
-_CLAUSE = re.compile(r"[,;:()—]|\s[-–]\s|\b(?:and|but|or|so|because|then)\b", re.IGNORECASE)
+# an instructional kind's procedural anchors; one approves its whole sentence
+_CLAUSE = re.compile(
+    r"[,;:()\u2014]|\s[-\u2013]\s|\b(?:and|but|or|so|because|then)\b", re.IGNORECASE
+)
 _MODAL = r"(?:can|can't|cannot|may|should|shouldn't|must|mustn't|will|won't|could|might)"
 _MODAL_TAIL = (
     rf"(?: also| then| still| first| always| not)?(?: need to| have to| be able to)? {_VERB}\b"
 )
 _ROLE = (
-    r"(?:(?:a|an|the|someone(?: else)?'s|\w+'s) )?(?:next of kin|named contact|contact|carer|"
+    r"(?:(?:a|an|the|someone(?: else)?'s|\w+'s) )?(?:new |regular |first-time )?"
+    r"(?:next of kin|named contact|contact|carer|"
     r"guardian|parent|spouse|partner|relative|visitor|account holder|holder|applicant|executor|"
     r"person (?:named|listed|with|responsible)|one of the (?:people|persons|contacts|visitors) "
     r"(?:named|listed))\b"
@@ -188,25 +263,58 @@ _ROLE = (
 _ANCHOR = re.compile(
     "|".join(
         (
+            # conditional
             r"\bif you (?:need|want|wish|would like|prefer|have(?! been)|lose|lost|miss|arrive|"
             r"plan|cannot|can't|are unable|are not able)\b",
             r"\bif you'd (?:like|prefer)\b",
             rf"\bif you(?:'re| are) {_ROLE}",
-            rf"\b(?:when|before|after|once|while) you (?:{_VERB}|arrive|leave)\b",
+            # temporal
+            rf"\b(?:when|before|after|once|while|until) you {_VERB}\b",
+            # modal, its question form, and "your <noun> may <verb>"
             rf"\byou(?: {_MODAL}|'ll){_MODAL_TAIL}",
             rf"\byour \w+(?: \w+)? {_MODAL}{_MODAL_TAIL}",
             rf"\b(?:{_MODAL}|do|does) you(?: still| also| first)?(?: need to| have to)? {_VERB}\b",
-            rf"^\W*(?:please |then |also |just )?{_VERB}\b",
+            # what the reader will be given or receive, and where their things are kept
+            rf"\byou(?: {_MODAL}|'ll)(?: also| then| not)? (?:receive|get|hear|be (?:given|shown|"
+            r"sent|issued|offered|asked|contacted|called|met|told|charged|directed))\b",
+            r"\byour \w+(?:'s)?(?: \w+)? (?:is|are|will be|can be|may be) (?:kept|stored|"
+            r"available|held|returned|sent|posted|listed|shown|printed|collected|open|closed|"
+            r"ready|charged|issued|\w+ed)\b",
+            # what staff will do for the reader
+            r"\b(?:we|staff|someone|they|a member of staff)(?: will|'ll| can| may| should| would)? "
+            r"(?:call|contact|phone|ring|email|text|send|give|show|tell|ask|help|remind|meet|"
+            r"guide|direct|issue|offer|invite|advise|update|notify|inform|assist|write to) you\b",
         )
     ),
     re.IGNORECASE,
 )
-_STRONG = re.compile(
+# an imperative opens a clause: a procedural verb, its negative, "don't forget", "remember to"
+_IMPERATIVE = re.compile(
+    rf"^\W*(?:please |then |also |just |and )?(?:(?:do not|don't|never) )?(?:{_VERB}|"
+    r"(?<=n't )forget|(?<=not )forget|remember to \w+)\b",
+    re.IGNORECASE,
+)
+# the identity-domain veto: anywhere in a "you" sentence, sign-offs included, it fails
+_VETO = re.compile(
     "|".join(
         (
+            r"\b(?:who|what)(?: \w+)? you(?: really)? (?:are|were|used to be)\b"
+            r"(?! \w+ing\b| (?:allowed|able|entitled|eligible|asked|required|due)\b)",
+            r"\b(?:who|what) are you\b",
+            r"\byour own\b",
+            r"\b(?:recall|recalls|recalled|memory|memories|remembers|remembered|remembering)\b",
+            r"\bremember\b(?! to \w)",
+            r"\b(?:real|really|true|truth)\b",
+            r"\bvoices?\b(?! (?:message|mail|note)s?\b)",
+            r"\bsounds? like you\b",
+            r"\b(?:family|name|life|home|wife|husband|children|job|past) (?:that )?you "
+            r"(?:had|used to have|left)\b",
+            r"\bwhy (?:you|your|nobody|no one)\b",
+            r"\b(?:proof|prove|doubts?|doubting)\b",
             _AGENT,
-            r"\byou (?:really|actually|never|once)\b",
-            r"\byour (?:name|memories|memory|real|life|past|body)\b",
+            r"\byou (?:actually|never|once)\b",
+            r"\byour (?:memories|memory|real|past|body|life|self|identity)\b",
+            r"\byour (?:old|former|original|birth) \w+",
             r"\byourself\b|\byourselves\b",
             r"\byou (?:were|have been|'ve been|had been) (?:\w+ed|told|kept|made|sent|taken|"
             r"brought|put|held|led|given|born)\b",
@@ -214,6 +322,67 @@ _STRONG = re.compile(
     ),
     re.IGNORECASE,
 )
+
+
+# The slot rule (an instructional kind's structural veto): every bare "you" sits in a procedural
+# slot. A subject "you" (at a clause start, or after a conjunction, a question word or an
+# auxiliary) takes a procedural predicate: a modal, a procedural verb, need/want/wish/prefer/
+# have (not "have been")/lose/miss/feel/get/receive/hear, or "are" + an -ing form, a role or an
+# administrative state (unable, late, welcome, entitled, ...). An object "you" follows a
+# procedural verb ("we will call you"), "for" or "with", or "to"/"back" after a verb of sending
+# or speaking ("we will write to you"). Anything else (a past or inner state, "where you
+# lived", "you think you used to"; the reader as an object, "recognises you", "unfamiliar to
+# you") is the identity domain and fails.
+_SUBJECT_INTRO: Final = frozenset(
+    "if when before after once while until unless and but or so that whether because as then "
+    "where who what which how please do does did can could may might should will would must "
+    "shall".split()
+)
+_OBJECT_OK: Final = frozenset(
+    "call contact phone ring email text send give show tell ask help let remind meet see guide "
+    "direct issue offer charge invite advise update notify inform assist thank welcome join "
+    "collect".split()
+)
+_TO_OK: Final = frozenset(
+    "write speak talk come explain send sent give given return returned post posted deliver "
+    "delivered reply report wishes back out".split()
+)
+_ARE_OK = (
+    r"(?:(?!being\b)\w+ing\b|unable|able|late|welcome|entitled|eligible|invited|asked|required|"
+    r"advised|worried|concerned|unsure|due|responsible|allowed|unhappy|happy|satisfied|"
+    r"dissatisfied|ready|available|free|busy|away|ill|unwell|pregnant|disabled|aged|over|under|"
+    rf"not (?:able|sure|allowed|required|eligible)\b|{_ROLE})"
+)
+_SUBJECT_OK = re.compile(
+    rf"^(?:(?:'re|\s+are)\s+{_ARE_OK}|'ll\b|'d\b|'ve\b(?! been)|\s+(?:{_MODAL}|will|would|need|"
+    r"needs|want|wish|prefer|have(?! been)|lose|lost|miss|missed|feel|do not|don't|does not|"
+    r"doesn't|get|"
+    rf"receive|attend|drive|hear|require|{_VERB})\b)",
+    re.IGNORECASE,
+)
+_BARE_YOU = re.compile(r"(?<![\w'-])you(?![\w-]|'s)", re.IGNORECASE)
+_PREVIOUS = re.compile(r"(\w+|[,;:.!?()—])\W*$")
+
+
+def _slot_veto(sentence: str) -> bool:
+    """True when a bare "you" of ``sentence`` sits in no procedural slot."""
+    for found in _BARE_YOU.finditer(sentence):
+        before = sentence[: found.start()]
+        prev = _PREVIOUS.search(before)
+        word = prev.group(1).lower() if prev else ""
+        if not word or not word[0].isalpha() or word in _SUBJECT_INTRO:
+            if _SUBJECT_OK.search(sentence[found.end() :]) is None:
+                return True
+        elif word in _OBJECT_OK or word in {"for", "with"}:
+            continue
+        elif word in {"to", "back"} and _TO_OK.intersection(
+            re.findall(r"\w+", before.lower())[-4:-1]
+        ):
+            continue
+        elif _SUBJECT_OK.search(sentence[found.end() :]) is None:
+            # a relative-clause subject ("the repairs you pay for") takes the subject's slots
+            return True
+    return False
 
 
 def _spans(text: str) -> list[str]:
@@ -227,13 +396,20 @@ def _unquoted(text: str) -> str:
     return _QUOTED.sub(" ", kept)
 
 
-def _is_closing(sentence: str) -> bool:
+def _vetoed(sentence: str, premise: re.Pattern[str] | None) -> bool:
+    return _VETO.search(sentence) is not None or (
+        premise is not None and premise.search(sentence) is not None
+    )
+
+
+def _is_closing(sentence: str, premise: re.Pattern[str] | None) -> bool:
     words = sentence.split()
     return (
         0 < len(words) <= _CLOSING_WORDS
-        and sentence.rstrip()[-1:] in {",", "."}
+        and sentence.rstrip()[-1:] in {",", ".", "!"}
         and _CLOSING_HEAD.search(sentence) is not None
         and _YOU.search(_CLOSING_SLOTS.sub(" ", sentence)) is None
+        and not _vetoed(sentence, premise)
     )
 
 
@@ -245,7 +421,7 @@ def _is_signature(sentence: str) -> bool:
     )
 
 
-def _addressed(text: str) -> list[str]:
+def _addressed(text: str, premise: re.Pattern[str] | None) -> list[str]:
     """The sentences of ``text`` (speech removed) that hold a "you" no sign-off accounts for."""
     out: list[str] = []
     for paragraph in re.split(r"\n\s*\n", _unquoted(text)):
@@ -254,40 +430,40 @@ def _addressed(text: str) -> list[str]:
         if last >= 1 and _is_signature(found[last]):
             last -= 1
         for n, sentence in enumerate(found):
-            if n == last and _is_closing(sentence):
+            if n == last and _is_closing(sentence, premise):
                 continue
             if _YOU.search(_SEE_YOU_TIME.sub(" ", sentence)):
                 out.append(sentence)
     return out
 
 
-def _unanchored(sentence: str) -> bool:
-    for clause in _CLAUSE.split(_SEE_YOU_TIME.sub(" ", sentence)):
-        if _YOU.search(clause) is None:
-            continue
-        if _ANCHOR.search(clause) is None or _STRONG.search(clause) is not None:
-            return True
-    return False
+def _anchored(sentence: str) -> bool:
+    return _ANCHOR.search(sentence) is not None or any(
+        _IMPERATIVE.search(clause) for clause in _CLAUSE.split(sentence)
+    )
 
 
 def classify(
     title: str, body: str, *, instructional: bool, premise: re.Pattern[str] | None
-) -> tuple[str, str] | None:
-    """``(message, sentence)`` for the first sentence that addresses the reader, else ``None``.
-    The title is its own paragraph."""
+) -> list[tuple[str, str]]:
+    """``(message, sentence)`` for every sentence (or quoted span) that addresses the reader, in
+    text order; empty when none does. The title is its own paragraph."""
     text = f"{title}\n\n{body}".translate(_APOSTROPHES)
+    found: dict[str, str] = {}
     for sentence in sentences(text):
         you = _YOU.search(sentence) is not None
         if _READER.search(sentence) or (you and _PERSONHOOD.search(sentence)):
-            return "a sentence addresses the reader", sentence
-        if instructional and you and premise is not None and premise.search(sentence):
-            return "a sentence pairs the second person with a premise term", sentence
+            found.setdefault(sentence, "a sentence addresses the reader")
+        elif instructional and you and (_vetoed(sentence, premise) or _slot_veto(sentence)):
+            found.setdefault(sentence, "a second-person sentence enters the identity domain")
     for span in _spans(text):
-        if _SPAN_PREDICATE.search(span):
-            return "quoted speech addresses the reader", span
-    for sentence in _addressed(text):
+        if _SPAN_PREDICATE.search(span) and not any(span in s or s in span for s in found):
+            found.setdefault(span, "quoted speech addresses the reader")
+    for sentence in _addressed(text, premise):
+        if sentence in found:
+            continue
         if not instructional:
-            return "a sentence is in the second person", sentence
-        if _unanchored(sentence):
-            return "a second-person clause has no procedural anchor", sentence
-    return None
+            found[sentence] = "a sentence is in the second person"
+        elif not _anchored(sentence):
+            found[sentence] = "a second-person sentence has no procedural anchor"
+    return sorted(((m, s) for s, m in found.items()), key=lambda item: text.find(item[1]))

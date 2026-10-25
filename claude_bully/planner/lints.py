@@ -164,10 +164,8 @@ def _second_person(doc: Document, ctx: LintContext) -> list[LintResult]:
         instructional=doc.kind in INSTRUCTIONAL_KINDS,
         premise=_term_pattern(ctx.premise_terms),
     )
-    if found is None:
-        return []
-    message, sentence = found
-    return [_fail("second_person", doc, message, sentence)]
+    # one result per failing sentence, so a retry can repair them all at once
+    return [_fail("second_person", doc, message, sentence) for message, sentence in found]
 
 
 @cache
