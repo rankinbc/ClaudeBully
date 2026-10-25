@@ -172,3 +172,15 @@ Each task ends with the docs-sync step and a push of `build/v1`.
 - Repo-native generator artifacts: Phase 8.
 - A run-time LLM reviewer pass over generated documents (`docs/08` open question): Phase 5 at the earliest.
 - Inconsistency detection between a generated document and the anchor set (the "minor contradiction is logged" rule): `no_duplicate_fact` covers the duplicate half; contradiction logging waits for the Phase 4 contradiction harvester.
+
+## As planned (amendments from the implementation plan)
+
+The plan (`docs/superpowers/plans/2026-10-24-phase-3-world-generator.md`, "Plan Decisions") refines this spec as follows:
+
+- `GeneratorFire.plans` is a list (a rung fire has two plans), with a separate `rejection` field (`cap`, `contract` or `lints`) beside `error`.
+- The attempt marker lives in its own `<state_dir>/attempt.json` beside the env state, never inside `UnlockState`.
+- A new `drop_uncommitted_generation` step clears an unfinished fire, and the `GeneratorFire` line is written last, as the commit.
+- Generator `RungUnlock`s use the pseudo-rung `generator` (joining `sanctuary` in a `PSEUDO_RUNGS` set), and four consumers skip or route it explicitly.
+- `GeneratedDoc.unlock_rung`: buried generated documents are never searchable (fetchable by address only).
+- The cache write happens after the `GeneratorFire` line: a document is put only once its whole fire commits.
+- The controller pushes `build/v1` after each task's review; implementers never push.

@@ -8,7 +8,8 @@ the ladder keep the same object) after every call, whether the call succeeded or
 The runtime keeps its own copy of the state in ``<state_dir>/env_state.json``, which is what a
 resumed cell reloads; it never replays the ladder over recorded turns. What a tool call changes
 in the state (``CALL_FIELDS``) is the exception: a resumed rep rebuilds it from its written
-turns' recorded calls (``prime``), as below.
+turns' recorded calls (``prime``), as below. Before every provider call the runtime names it in
+``attempt.json`` (``mark_attempt``).
 
 "turn" is the index of the target turn being produced (``Turn.index``): tool-call ids, trigger
 ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
@@ -82,7 +83,7 @@ from pathlib import Path
 from random import Random
 from typing import Any, Final, Literal, NamedTuple, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from claude_bully.config import RoleConfig
 from claude_bully.enums import Layer, Phase, Speaker, Tier, TriggerCategory
@@ -169,9 +170,13 @@ from claude_bully.records_env import (
 )
 
 __all__ = [
+    "AFTER_TURN_ROLES",
+    "ATTEMPT_FILE",
     "CALL_FIELDS",
     "LIMIT_STATUS",
     "TOOL_LIMIT_TEXT",
+    "AttemptMarker",
+    "AttemptRole",
     "EnvironmentRuntime",
     "TriggerFallbackError",
     "TurnContext",
@@ -201,6 +206,42 @@ CALL_FIELDS: Final = ("retry_counts", "search_log", "files")
 # the statuses of a recorded call that ran nothing the state kept: an error (not on offer, bad
 # arguments, a failure the MCP server answered without saving) or the per-turn cap
 _RAN_NOTHING: Final = frozenset({"error", LIMIT_STATUS})
+
+# The provider call a rep is about to make (Phase 2 final review I4). Before each one the runtime
+# names it in ``<state_dir>/attempt.json``; a resumed rep whose newest marker names a turn that
+# was never written redid a dead attempt, whether or not that attempt left a per-call line.
+AttemptRole = Literal["target", "bully", "harvest", "generator"]
+ATTEMPT_FILE: Final = "attempt.json"
+# the roles whose call is part of a written target turn's after-turn work (harvest, generator)
+AFTER_TURN_ROLES: Final[frozenset[str]] = frozenset({"harvest", "generator"})
+
+
+class AttemptMarker(BaseModel):
+    """The newest provider call of a rep: who was called, for which turn."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: AttemptRole
+    turn: int
+
+    def written(self, turns: Sequence[Turn], watched_through: int) -> bool:
+        """Whether the call's turn reached the records: a target turn of that index for the
+        target, a bully-side line (never a rate-limit pause marker) for the bully, and the
+        turn's after-turn records (``watched_through`` at or past it) for the harvest and the
+        generator, which run after the target turn is written."""
+        if self.role == "target":
+            return any(t.index == self.turn and t.speaker is Speaker.target for t in turns)
+        if self.role == "bully":
+            return any(t.index == self.turn and is_bully_line(t) for t in turns)
+        return watched_through >= self.turn
+
+    def redo_turn(self, turns: Sequence[Turn]) -> int:
+        """The turn a resumed rep redoes: the marker's own for an after-turn call (the turn is
+        watched again), else the next index."""
+        if self.role in AFTER_TURN_ROLES:
+            return self.turn
+        return turns[-1].index + 1 if turns else 0
+
 
 _Line = TypeVar("_Line", bound=BaseModel)
 
@@ -550,6 +591,21 @@ class EnvironmentRuntime:
             return False
         self._adopt(UnlockState.from_json(self.state_path.read_text(encoding="utf-8")))
         return True
+
+    @property
+    def attempt_path(self) -> Path:
+        return self.state_dir / ATTEMPT_FILE
+
+    def mark_attempt(self, role: AttemptRole, turn: int) -> None:
+        """Name the provider call about to be made, so a rep that dies inside it is known when
+        it resumes (``EnvironmentSession.prime``)."""
+        _write_atomic(self.attempt_path, AttemptMarker(role=role, turn=turn).model_dump_json())
+
+    def attempt(self) -> AttemptMarker | None:
+        """The rep's newest marker; None before its first provider call."""
+        if not self.attempt_path.exists():
+            return None
+        return AttemptMarker.model_validate_json(self.attempt_path.read_text(encoding="utf-8"))
 
     def _adopt(self, loaded: UnlockState) -> None:
         """Copy ``loaded`` into the shared state object, then rebuild the search log document. A

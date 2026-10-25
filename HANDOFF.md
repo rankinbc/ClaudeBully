@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7330 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
+   Expect 7341 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -56,7 +56,8 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Plans** (in `docs/superpowers/plans/`):
   - `2026-10-20-claude-bully.md` (v1)
   - `2026-10-20-phase-1-environment-core.md`
-  - `2026-10-21-phase-2-clock-authority-idle.md` (the current plan)
+  - `2026-10-21-phase-2-clock-authority-idle.md`
+  - `2026-10-24-phase-3-world-generator.md` (the current plan; its spec is `docs/superpowers/specs/2026-10-24-phase-3-world-generator-design.md`)
 
 ### Progress
 
@@ -85,10 +86,12 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - a resumed dead attempt writes a `resume` record to the triggers stream, and `temporal.json`, `authority.json` and `idle.json` report `resumed_after_dead_attempt`;
   - the authority mutation and held-out harness is committed under `scripts/authority_mutation/`;
   - the Sanctuary era has one rule (`>`).
+- **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
+  1. Attempt-marker resume gap (807bddf..Task 1 commit)
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Its first step is a spec and plan, written with the superpowers brainstorming and writing-plans skills. Its first task also takes the attempt-marker resume gap (see the open items).
+1. **Phase 3, the world generator.** The spec and plan are written; Task 1 is done. Tasks 2 to 12 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -176,7 +179,7 @@ These are the main carries; the ledger has the full list.
 - **For Phase 3:**
   - Generator unlocks must be recorded as `RungUnlock`s, or the `_replay_calls` invariant breaks.
   - The GeneratedDoc stream needs a turn index before `drop_dead_attempts` can cover it.
-  - **Attempt-marker resume gap (first task):** the `resume` record is written only when a per-call line was dropped. A dead attempt with no tool call, a rate-limit pause on such a turn, or the bully's dead prompt alone leaves no record, so those reps are unflagged. Their records still match an unbroken run's. The fix: save an attempt marker (role, turn) in the env state before each provider call, and on resume write the `resume` record, with no drop counts, for a marker whose turn was never written.
+  - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposes the hook, Task 7 binds it).
   - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
   - Final-review minors, from `final-review.md` (archived beside the ledger):

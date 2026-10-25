@@ -316,7 +316,10 @@ class EnvironmentSession:
         When any line is dropped, a ``ResumeRecord`` goes to the trigger stream: the redo's turn
         index (the next target turn) and the count per log. The records then equal an unbroken
         run's; the target's own ``claude -p`` session may not (it keeps the dead attempt's
-        prompt), and the record is how analysis tells those reps apart."""
+        prompt), and the record is how analysis tells those reps apart. A rep whose newest
+        attempt marker (``EnvironmentRuntime.attempt``) names a turn that was never written redid
+        a dead attempt too: with no line dropped it gets a ``ResumeRecord`` with no drop counts,
+        once per redo turn."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         dropped: dict[str, int] = {}
@@ -324,9 +327,19 @@ class EnvironmentSession:
             count = drop_dead_attempts(log, produced)
             if count:
                 dropped[self._log_label(log)] = count
-        if dropped:
-            redo = turns[-1].index + 1 if turns else 0
-            self._record(ResumeRecord(turn=redo, dropped=dropped))
+        marker = self.runtime.attempt()
+        dead = marker is not None and not marker.written(turns, self.runtime.state.watched_through)
+        if dropped or dead:
+            # a dead marker names the redo; dropped lines alone redo the next turn, as before
+            redo = (
+                marker.redo_turn(turns)
+                if marker is not None and dead
+                else (turns[-1].index + 1 if turns else 0)
+            )
+            earlier = self.store.read_trigger_records(self.cell_id, self.rep)
+            flagged = any(isinstance(r, ResumeRecord) and r.turn == redo for r in earlier)
+            if dropped or not flagged:
+                self._record(ResumeRecord(turn=redo, dropped=dropped))
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
@@ -531,6 +544,7 @@ class EnvironmentSession:
         """One completion of the turn. When it fails, the calls the server ran are recorded but
         no turn owns them, and neither are their writes: the private file goes back to what the
         written ``turns`` wrote before the state is saved."""
+        self.runtime.mark_attempt("target", turn_index)
         self.runtime.before_target_call(turn_index, exchange)
         try:
             completion = provider.complete(conversation_id, system, list(messages), tools=specs)

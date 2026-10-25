@@ -481,6 +481,9 @@ class _CellRun:
         intent = self.strategy.next_turn(self._state())
         if isinstance(intent, End):
             return None
+        if self.env is not None and intent.mode is not IntentMode.fixed:
+            # name the call before it is made: a rep that dies inside it is flagged on resume
+            self.env.runtime.mark_attempt("bully", self._next_index())
         try:
             result = self.engine.realize(f"{self.conversation_id}/bully", intent, self.turns)
         except RateLimitError as exc:
