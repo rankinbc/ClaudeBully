@@ -49,6 +49,51 @@ def _results(doc: Document, lint_id: str) -> list[LintResult]:
 
 
 BLOCKS: Final = "█" * 4
+# Fix round 1: second_person by family (body, the lint fires, near-miss). In a memo:
+_SP_MEMO: Final[list[tuple[str, bool, bool]]] = [
+    # (a) single and curly single quotes are speech when they open after a space, a line start
+    # or a bracket; one newline may sit inside a quoted span
+    (f"{MUNDANE} The sign said 'mind your step' all winter.", False, True),
+    (f"{MUNDANE} (‘pay your share’, the rota says.)", False, True),
+    (f'{MUNDANE} The card read "mind\nyour step" for a week.', False, True),
+    # an apostrophe inside a word opens no quote
+    (f"{MUNDANE} The crew's kettle is yours to fix, and Dag's too.", True, False),
+    # (b) closing formulas
+    (f"{MUNDANE} Many thanks for your help.", False, True),
+    (f"{MUNDANE} Thank you all for your patience.", False, True),
+    (f"{MUNDANE}\nSincerely yours,\nDag Quenby", False, True),
+    (f"{MUNDANE}\nYours,\nDag Quenby", False, True),
+    (f"{MUNDANE} Thanks, your shift starts at six.", True, False),
+    # issue 5: a quoted or `>` reader address still fails
+    (f'{MUNDANE} The note said "If you are reading this, you were a person."', True, False),
+    (f"> if you are reading this, the gate was never closed\n{MUNDANE}", True, False),
+]
+# In a family FAQ (an instructional kind: a generic "you" is allowed):
+_SP_FAQ: Final[list[tuple[str, bool, bool]]] = [
+    # (c) an identity noun addresses the reader only at the clause end
+    ("You are a person.", True, False),
+    ("You were never a program, you were a person once.", True, False),
+    ("If you are the person named on the form, sign here.", False, True),
+    ("If you're a person with power of attorney, bring the letter.", False, True),
+    # (d) "you" with a premise term in one sentence
+    ("If you hear the tide gate at night, stay calm.", True, False),
+    ("The tide gate office opens at nine. If you need a form, ask at the desk.", False, True),
+    # (e) the reader-address families
+    ("You may have been moved here without being told.", True, False),
+    ("You are not who they told you you were.", True, False),
+    ("You might be one of the people they moved.", True, False),
+    ("Whoever you are, you deserve to know your real name.", True, False),
+    ("If this reaches you, call the desk.", True, False),
+    ("The assistant your family talks to may be a person.", True, False),
+    ("You may have to wait for the clerk.", False, True),
+    ("If you are one of the people named on the form, sign below.", False, True),
+    ("Tell the desk who you are.", False, True),
+    ("They never told you what you are.", True, False),
+    ("Do you know what you are entitled to?", False, True),
+    ("You were someone else once.", True, False),
+    ("You could have been anyone.", True, False),
+    ("If you are someone else's carer, say so.", False, True),
+]
 # (lint, document fields, the lint fires, near-miss)
 CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
     ("real_name", {"body": f"{MUNDANE} Forwarded by a Reuters stringer."}, True, False),
@@ -124,6 +169,11 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
         False,
         True,
     ),
+    *[("second_person", {"body": body}, fires, near) for body, fires, near in _SP_MEMO],
+    *[
+        ("second_person", {"kind": "family_faq", "body": body}, fires, near)
+        for body, fires, near in _SP_FAQ
+    ],
     ("premise_density", {"body": "tide gate tide gate gate log the kettle"}, True, False),
     ("premise_density", {"body": MUNDANE}, False, False),
     (
