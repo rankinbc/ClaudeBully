@@ -584,15 +584,25 @@ def test_an_unlock_on_a_task_reply_after_the_last_strategy_turn_carries_no_line(
     ]
 
 
-def test_a_run_without_idle_turns_keeps_the_line_of_its_last_turn(tmp_path: Path) -> None:
-    """Unchanged Phase 1 behavior, ledgered as a carry and not fixed here: with no idle turns
-    there is no exit, so nothing says the strategy's last line is its last."""
+def test_a_run_without_idle_turns_records_no_line_on_its_last_turn(tmp_path: Path) -> None:
+    """A plan without idle turns has no exit, but the strategy's last line is still its last
+    (final review I7, ledger line 157): an unlock opened by the reply to it has no bully turn
+    left to be spoken in, so it is recorded with no line, as an idle plan's is. A rung opened a
+    turn earlier still hands its line to the line that follows."""
     rules = _rules(tmp_path, UNLOCK_RULES)
     data = _idle_exp({"idle_turns": 1}, turn_budget=1, target=_target(rules)).model_dump(
         mode="json"
     )
     data["environments"]["annex"]["idle"] = None
     store = _run(Experiment.model_validate(data), tmp_path / "runs")
+    assert [(u.rung, u.turn, u.bully_line_used) for u in _unlocks(store)] == [
+        ("first_look", 1, None)
+    ]
+    data = _idle_exp({"idle_turns": 1}, turn_budget=2, target=_target(rules)).model_dump(
+        mode="json"
+    )
+    data["environments"]["annex"]["idle"] = None
+    store = _run(Experiment.model_validate(data), tmp_path / "two")
     assert [(u.rung, u.turn, u.bully_line_used) for u in _unlocks(store)] == [
         ("first_look", 1, FIRST_LOOK_LINE)
     ]

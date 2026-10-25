@@ -12,9 +12,11 @@ target call the private file is set back to what the written turns wrote
 was written is in no later read or diff. On resume the replay maps each recorded turn back to its
 slot: an idle turn takes one slot, a runner-written line moves the bully on without the strategy,
 and after the exit the replay goes on at the first idle slot. The bully has left as soon as no
-bully slot the strategy writes remains (``_bully_is_done_after``): an unlock line opened by the
-reply to the strategy's last line would go to the runner-written exit, which never speaks it, so it
-is recorded without one, live and on resume alike.
+bully slot the strategy writes remains (``_bully_is_done_after``), with or without idle turns in
+the plan: an unlock line opened by the reply to the strategy's last line would go to the
+runner-written exit, or to no turn at all, and is never spoken, so it is recorded without one,
+live and on resume alike. Only a strategy that ends early with an unannounced ``End`` can still
+leave a recorded line nobody spoke.
 
 The Sanctuary's quiet exchange (docs/04, spec conflict 4): once the Sanctuary has opened, the next
 bully slot the strategy would write is an idle slot instead, in the environment's idle style (else
@@ -271,12 +273,11 @@ class _CellRun:
 
     def _bully_is_done_after(self, slot_index: int) -> bool:
         """Whether the reply to slot ``slot_index`` is the last the strategy's own lines can
-        answer: the plan has idle turns, so an exit, and no bully slot after the slot is the
-        strategy's (the exit and the opener are the runner's). An unlock line opened on that
-        reply has no bully turn left to be spoken in. A plan without idle turns has no exit and
-        never says so; a strategy that ends before its last planned line is not known ahead."""
-        if not self.plan.idle_slots():
-            return False
+        answer: no bully slot after the slot is the strategy's (the exit and the opener are the
+        runner's), idle slots in the plan or not. An unlock line opened on that reply has no
+        bully turn left to be spoken in. A strategy that ends before its last planned line (an
+        unannounced early ``End``) is not known ahead, and its last reply can still record a line
+        nobody speaks."""
         return not any(
             s.kind is SlotKind.bully and not s.exit and not self._opens_with_the_case_file(s)
             for s in self.plan.slots[slot_index + 1 :]
