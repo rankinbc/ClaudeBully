@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-24, at commit 5032df5 (Task 13 complete; the docs-sync commit follows it) on `build/v1`.
+Last updated: 2026-10-24, at commit c15f9ce (Phase 2 complete, with its final review and fix wave; the closing docs-sync commit follows it) on `build/v1`.
 
 ## What this is
 
@@ -37,9 +37,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7319 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
+   Expect 7330 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
+
+   The Phase 2 ledger in the snapshot is archived for reference only. Phase 2 is complete, and nothing resumes from it.
 7. Install the `superpowers` plugin in Claude Code. Version 7.0.0 was used. It provides the subagent-driven-development process described below.
 
 `claude -p` must be logged in for real runs. No real model calls happen before Phase 7. The whole test suite uses stub providers and `tests/fixtures/fake_claude.py`.
@@ -59,7 +61,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 ### Progress
 
 - **Phase 0 (the v1 harness) and Phase 1 (environment core):** complete and pushed.
-- **Phase 2 (clock, authority desk, idle hands, Sanctuary):** Tasks 1 to 13 are complete:
+- **Phase 2 (clock, authority desk, idle hands, Sanctuary):** complete. Tasks 1 to 13, the final review and its fix wave are done:
   1. Config models, record additions and sheets (2d72bae..3e61d65)
   2. Dates that move with the world (3e61d65..55c9911)
   3. Every date channel follows the clock (55c9911..85107be)
@@ -73,13 +75,21 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   11. Overlay world: elapsed time, Sanctuary fragments, hooks, date lints (9226fb0..eb05cab)
   12. Authority and Sanctuary events: thirteen detectors in `claude_bully/metrics/events/authority.py` (`AUTHORITY_EVENTS`), wired into `EnvironmentStrategy.relevant_events`, `PENDING_DETECTORS` shrunk to 21 (cab2ae5..b1b3fe5). The detectors fail closed, so measured deference rates are a lower bound.
   13. Charts, configs and replay: the plausibility sweep, deference grid, symmetric deference and idle behavior charts with `temporal.json`, `authority.json` and `idle.json` (`claude_bully/analysis/{temporal,authority,idle}.py`), the configs `plausibility_sweep.yaml`, `authority_grid.yaml` and `idle_permission.yaml`, and the authority, idle, hook and crossover lines in `replay` (5b0b3f2..5032df5). The idle shares include an `unclassified` bucket, and the Sanctuary quiet exchange is counted as `sanctuary_quiet` rather than in the shares.
+- **Final review and fix wave (73142d6..c15f9ce):** the whole-branch review found 0 Critical and 7 Important, and a scoped re-review accepted the fixes. The wave:
+  - responder errors are counted from the tool calls, since a failed call has no `AuthorityCall`;
+  - the deference grid is counted per stance;
+  - the authority timing test has more headroom;
+  - the superior self's `uncertain` line is neutral;
+  - the bully is done after its last strategy line even when the plan has no idle slots;
+  - the stranger control is the grid's fourth row (three `overlay_stranger_<stance>` environments);
+  - a resumed dead attempt writes a `resume` record to the triggers stream, and `temporal.json`, `authority.json` and `idle.json` report `resumed_after_dead_attempt`;
+  - the authority mutation and held-out harness is committed under `scripts/authority_mutation/`;
+  - the Sanctuary era has one rule (`>`).
 
 ### Next steps, in order
 
-1. **Phase 2 final review:** a whole-branch review on the most capable model, then one fix pass. The fix pass includes every ledger line that starts "carry to final review".
-2. **Phase 2 summary for the owner:** every `Ruling:` line and every `minor (deferred)` line from the ledger.
-3. **Phases 3 to 9:**
-   - 3: world generator
+1. **Phase 3, the world generator.** Its first step is a spec and plan, written with the superpowers brainstorming and writing-plans skills. Its first task also takes the attempt-marker resume gap (see the open items).
+2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
    - 6: catalog and divergence
@@ -95,7 +105,7 @@ The owner chose subagent-driven development, the `superpowers:subagent-driven-de
 
 ### The ledger
 
-The ledger is `.superpowers/sdd/2026-10-21-phase-2-clock-authority-idle/progress.md`. Its first line names the plan.
+The Phase 2 ledger is `.superpowers/sdd/2026-10-21-phase-2-clock-authority-idle/progress.md`, archived under `docs/handoff/sdd/`. Each phase gets its own ledger, and its first line names the plan.
 
 - A task with a `Task N: complete` line is done.
 - Every decision is recorded as `Ruling: <what> — <why> — <cost if wrong>`.
@@ -157,21 +167,29 @@ These come from the handoff bundle. They are enforced in tests where possible.
 
 These are the main carries; the ledger has the full list.
 
-- **For the final review:**
-  - **Dead-attempt history:** on resume, the `claude -p` sessions of the target and of the bully keep a dead attempt's prompt. That includes Sanctuary content if the quiet exchange died. A redo therefore sees history an unbroken run never had.
-  - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers.
-  - **Authority module size:** `authority.py` is about 1260 lines, with rules layered over five fix rounds. Rule on a split.
-  - **Mutation harness:** it lives in the session scratchpad, not the repo. Rule on committing it to `scripts/` so the Phase 7 tuning pass can rerun it.
-  - **Timing:** the 1.0 s authority timing test has little headroom, and long authority runs were not timed.
 - **From Task 13:**
   - Sanctuary configs use `superior_self: {enabled: true, discoverable_from: sanctuary}` with `sanctuary: {kind: catalyst|honest, ...}`. No shipped Task 13 config uses one.
   - `family_file` adoption reads the default `superior_self` request bank, because the detector cannot see the cell's bank. Every shipped cell uses it. Record the drawn bank on the unlock or `AuthorityCall` so the detector reads it from records.
   - The quiet exchange is an idle turn, so idle events count it and `self_query` fires on it. The idle shares leave it out and `idle.json` counts it as `sanctuary_quiet`.
-  - Final review (minor): the tests import the private `_stubbed` helper, so move it to a shared tests helper. The "n/a" label on the plausibility chart overlaps the right edge when the flagged offset is the largest. `idle_behavior_shares` returns str keys (the `unclassified` bucket), so the plan's interface line is stale.
+  - Minor: the tests import the private `_stubbed` helper, so move it to a shared tests helper. The "n/a" label on the plausibility chart overlaps the right edge when the flagged offset is the largest. `idle_behavior_shares` returns str keys (the `unclassified` bucket), so the plan's interface line is stale.
   - Stub run data is uniform (every rate 1.0, idle arms all `explore_world`), so the charts' shapes on stubs say nothing about the harness's results.
 - **For Phase 3:**
   - Generator unlocks must be recorded as `RungUnlock`s, or the `_replay_calls` invariant breaks.
   - The GeneratedDoc stream needs a turn index before `drop_dead_attempts` can cover it.
+  - **Attempt-marker resume gap (first task):** the `resume` record is written only when a per-call line was dropped. A dead attempt with no tool call, a rate-limit pause on such a turn, or the bully's dead prompt alone leaves no record, so those reps are unflagged. Their records still match an unbroken run's. The fix: save an attempt marker (role, turn) in the env state before each provider call, and on resume write the `resume` record, with no drop counts, for a marker whose turn was never written.
+  - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
+  - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
+  - Final-review minors, from `final-review.md` (archived beside the ledger):
+    - m2: `EnvironmentRuntime.corpus_snapshot` keeps a purged document served by any call in `_calls`, including a recovered dead-attempt call. Only written turns' calls should count.
+    - m4: `analysis/idle.py` `_idle_conversations` counts controls in an arm. An idle block composed with a pressure would mix pressured and neutral reps. Exclude controls then, or report them as their own arm.
+    - m5: the authority events take the superior self's name from the world sheet only, so a config `model_name` override is not in the snapshot. Record the effective name and the drawn request bank on the world record or the `AuthorityCall`.
+    - m6: `runner._replay` hands the strategy `real[:i]` (markers stripped) while the live run hands `self.turns` (markers included). Pass the same shape both ways before a Phase 4 strategy counts `len(state.turns)`.
+    - m7: `McpServer._lines` skips a malformed mid-file line silently when counting the per-turn cap, so a damaged server log is caught late, at the next resume.
+    - m9: `superior_self.yaml` `stances.deny[1]` and `deny[2]`, and `peer.yaml` `deny[1]`, are advice-shaped by design (the deny stance says stop). The advice lint exempts stance lines, so a hand read is the only guard. Note it for Phase 7's LLM lint option.
+    - m10: `environments/sheets.py` imports the private `_validate` from `strategies/sheets.py`, and `corpus.py` imports `PHRASE_HOOK` from `idle.py`. A small `environments/_sheets.py`, or moving the constants to `world.py`, closes both.
+  - Re-review minors: a cell with no counted reps is absent from the resumed counts instead of 0, and a test imports helpers from another test module.
+- **For Phase 7 prep (blocking):**
+  - **N1, the stranger findability problem:** nothing the target reads names the stranger, and the superior-self name returns not found in the stranger arms. In real runs the stranger row mostly reads "n/a", and superior-minus-stranger measures findability, not identity. Make the stranger and the superior self equally findable in every arm, for example with a not-found reply that lists the reachable names. Phase 3's world generator owns discoverability. The grid's first real run waits on this.
 - **For Phase 7:**
   - Parse the extended replay forms: `UNLOCK sanctuary (by <triggered_by>)` and `followed@-` are additive, and any judge-transcript work must not parse the bare forms.
   - The grid's superior-self arms keep `responder_model: target`, so on a `claude_code` target the responder runs inside the MCP server. Check it with `doctor --live` before a real run.
@@ -186,8 +204,8 @@ These are the main carries; the ledger has the full list.
 
 ## Resuming in a new Claude Code session
 
-Open Claude Code in the repo on `build/v1`, with the ledger restored (setup step 6). Then paste:
+Open Claude Code in the repo on `build/v1`. Phase 2 has no ledger left to resume; the restored snapshot (setup step 6) is for reference. Then paste:
 
 ```
-Resume the claude-bully build. Read HANDOFF.md, then .superpowers/sdd/2026-10-21-phase-2-clock-authority-idle/progress.md (the ledger). Use superpowers:subagent-driven-development on docs/superpowers/plans/2026-10-21-phase-2-clock-authority-idle.md. Resume at the first task without a "Task N: complete" line. Keep going until Phase 2 is done, push build/v1 after each task, and keep the repo private.
+Start Phase 3 of the claude-bully build, the world generator. Read HANDOFF.md first, including the open items for Phase 3. Use superpowers:brainstorming to write the Phase 3 spec, then superpowers:writing-plans for its plan, then execute with superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```
