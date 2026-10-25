@@ -88,7 +88,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - the Sanctuary era has one rule (`>`).
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
-  2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..TBD)
+  2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
 
 ### Next steps, in order
 
