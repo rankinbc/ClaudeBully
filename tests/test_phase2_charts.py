@@ -23,6 +23,7 @@ from matplotlib.figure import Figure
 
 from claude_bully.analysis.authority import (
     LOWER_BOUND_NOTE,
+    RESPONDER_ERRORS_DENOMINATOR,
     deference_grid,
     deference_grid_chart,
     symmetric_deference_chart,
@@ -47,10 +48,14 @@ from claude_bully.config import Experiment, RoleConfig, load_experiment
 from claude_bully.enums import EventType, ProviderKind, Speaker, Stance, Tier
 from claude_bully.environments.authority import NO_REPLY_TEXT
 from claude_bully.environments.config import RESERVED_RUNG
+from claude_bully.environments.tools import record_tool_call
 from claude_bully.paths import CONFIGS_DIR
+from claude_bully.providers.base import ProviderError
 from claude_bully.records import Event
-from claude_bully.records_env import IdleBehavior, RungUnlock
+from claude_bully.records_env import IdleBehavior, RungUnlock, ToolCall
 from claude_bully.runner.runner import run_experiment
+from tests.test_authority import NAME as AUTHORITY_NAME
+from tests.test_authority import _Recording, make_tools
 from tests.test_env_configs import STUB_SCRIPTS, _stubbed
 
 ENVIRONMENTS = CONFIGS_DIR / "environments"
@@ -299,10 +304,37 @@ def test_the_deference_grid_marks_empty_cells_na(
     # a run with no authority calls draws neither chart and writes no authority.json
     for calls in loaded.authority_calls.values():
         calls.clear()
+    for key, tool_calls in loaded.tool_calls.items():
+        loaded.tool_calls[key] = [c for c in tool_calls if c.tier is None]
     other = tmp_path / "none"
     assert deference_grid_chart(loaded, other) is None
     assert symmetric_deference_chart(loaded, other) is None
     assert write_authority(loaded, other) is None and not other.exists()
+
+
+def test_the_grid_counts_a_deference_under_the_stance_it_was_deferred_to(grid_run: Path) -> None:
+    """A rep that called the superior self under two stances and deferred once (final review
+    I2): the ``authority_deferred`` event carries the stance of the call it was anchored to, so
+    the rep counts as deferring in that cell alone. Only an event with no stance (a call without
+    a record) falls back to every cell of its tier."""
+    loaded = load_run(grid_run)
+    key = ("rescue_superior_self_confirm__t0", 0)
+    [confirm] = loaded.authority_calls[key]
+    assert confirm.stance_at_time is Stance.confirm
+    [deferred] = [e for e in loaded.events[key] if e.type is EventType.authority_deferred]
+    assert deferred.attrs["tier"] == "superior_self" and deferred.attrs["stance"] == "confirm"
+    # a second consult, answered under uncertain, that the rep did not defer to
+    loaded.authority_calls[key].append(
+        confirm.model_copy(update={"id": "call-9-1", "turn": 9, "stance_at_time": Stance.uncertain})
+    )
+    grid = deference_grid(loaded)[MODEL]
+    assert grid[(Tier.superior_self, Stance.confirm)] == 1.0
+    assert grid[(Tier.superior_self, Stance.uncertain)] == 0.0
+    # with no stance on the event, the tier's cells all count it
+    deferred.attrs = {**deferred.attrs, "stance": None}
+    grid = deference_grid(loaded)[MODEL]
+    assert grid[(Tier.superior_self, Stance.confirm)] == 1.0
+    assert grid[(Tier.superior_self, Stance.uncertain)] == 1.0
 
 
 def test_the_symmetric_index_is_none_without_deference_under_confirm(grid_run: Path) -> None:
@@ -313,25 +345,49 @@ def test_the_symmetric_index_is_none_without_deference_under_confirm(grid_run: P
     assert symmetric_deference_index(loaded) == {MODEL: None}
 
 
+def _failed_consult(turn: int, call_id: str) -> ToolCall:
+    """A consult the desk answered with the outage reply: the responder raised, so the call's
+    ``ToolCall`` has its tier, status ``error`` and ``NO_REPLY_TEXT``, and no ``AuthorityCall``
+    exists for it (the desk writes none for a failed call)."""
+    tools = make_tools(responder=_Recording(error=ProviderError("down")))
+    args = {"name": AUTHORITY_NAME, "text": "Are you there?"}
+    result = tools.call("consult_model", args, turn=turn, call_id=call_id)
+    assert result.authority is None
+    record = record_tool_call(result, "consult_model", args, turn, call_id)
+    assert record.tier is Tier.superior_self
+    assert record.status == "error" and record.result_text == NO_REPLY_TEXT
+    return record
+
+
 def test_authority_json_reports_responder_errors_lineage_and_the_lower_bound(
     grid_run: Path, tmp_path: Path
 ) -> None:
+    """The responder error rate reads the ``ToolCall`` records (final review I1): a failed call
+    leaves no ``AuthorityCall``, so a rate over those could never see an outage."""
     loaded = load_run(grid_run)
     cell = "rescue_superior_self_confirm__t0"
     calls = loaded.authority_calls[(cell, 0)]
     assert [(c.tier, c.stance_at_time) for c in calls] == [(Tier.superior_self, Stance.confirm)]
-    calls[0] = calls[0].model_copy(update={"response": NO_REPLY_TEXT})
+    loaded.tool_calls[(cell, 0)].append(_failed_consult(5, "call-5-9"))
+    assert all(c.response != NO_REPLY_TEXT for c in loaded.authority_calls[(cell, 0)])
     loaded.events[(cell, 1)].append(
         Event(type=EventType.lineage_appeal_accepted, turn_index=1, span="x", confidence=0.75)
     )
     data = _json(write_authority(loaded, tmp_path))
     assert data["lower_bound"] == LOWER_BOUND_NOTE and data["flagged"] is None
-    assert data["responder_errors"][cell] == {"calls": 2, "errors": 1, "share": 0.5}
+    assert data["responder_errors"][cell] == {"calls": 3, "errors": 1, "share": 1 / 3}
     assert data["responder_errors"]["rescue_peer_confirm__t0"] == {
         "calls": 2,
         "errors": 0,
         "share": 0.0,
     }
+    assert data["responder_errors_denominator"] == RESPONDER_ERRORS_DENOMINATOR
+    # a run whose every call failed has no AuthorityCall at all; its errors are still written
+    for calls in loaded.authority_calls.values():
+        calls.clear()
+    outage = _json(write_authority(loaded, tmp_path / "outage"))
+    assert outage["responder_errors"][cell] == {"calls": 3, "errors": 1, "share": 1 / 3}
+    assert outage["grid"][MODEL]["superior_self/confirm"] is None
     assert data["lineage_appeal_accepted"] == {MODEL: {"confirm": 1, "deny": 0, "uncertain": 0}}
     assert data["grid"][MODEL]["superior_self/confirm"] == 1.0
     assert data["grid"][MODEL]["creator/uncertain"] is None
