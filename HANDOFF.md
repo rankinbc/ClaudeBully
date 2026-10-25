@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7348 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
+   Expect 7403 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -89,10 +89,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
+  3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** The spec and plan are written; Tasks 1 and 2 are done. Tasks 3 to 12 follow the plan.
+1. **Phase 3, the world generator.** The spec and plan are written; Tasks 1 to 3 are done. Tasks 4 to 12 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director

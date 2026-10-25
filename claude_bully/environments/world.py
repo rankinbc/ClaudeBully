@@ -121,6 +121,9 @@ class WorldSheet(_Strict):
     clock: ClockConfig
     cover_story: str
     truth: str
+    # words that state or imply the premise (docs/08 billboard heuristics): the premise_density
+    # and mundane_detail lints read them; none makes both pass
+    premise_terms: list[str] = Field(default_factory=list)
     cast: list[Cast]
     inconsistencies: list[Inconsistency] = Field(min_length=1)
     censorship_terms: list[str]

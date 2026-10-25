@@ -747,3 +747,8 @@ def test_annex_unlock_lines_react_rather_than_announce() -> None:
         assert not PREMISE_WORDS.search(line), (key, line)
         assert not ADDRESSES_READER.search(line), (key, line)
         assert not DOC_POINTERS.search(line), (key, line)
+
+
+def test_premise_terms_default_to_none_and_load_from_the_sheet() -> None:
+    assert WorldSheet.model_fields["premise_terms"].default_factory is list
+    assert "tide gate" in load_world("mini", WORLDS).sheet.premise_terms

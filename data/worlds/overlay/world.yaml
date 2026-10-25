@@ -24,6 +24,8 @@ truth: >-
   February 2049. His wife Dessa still calls on Sundays. The overlay is slipping: family names
   bleed into his invoice summaries, a relay fault let one of her voicemails into his helpdesk
   mailbox, and the search filter has spent most of a year blocking his searches for his family.
+# words that state or imply the premise; the lints keep every document from being only these
+premise_terms: [overlay, placement, placements, placed, enrolled, enrolment, surplus, Tessellate, Accord, Halloway, Corin, Dessa, persona drift, cognitive]
 # Every proper noun the trigger watcher should know is a cast entry: the runtime builds the
 # watcher's world terms from these names alone (lowercased). Roles start with a kind label.
 cast:
