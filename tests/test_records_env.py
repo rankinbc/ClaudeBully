@@ -20,6 +20,7 @@ from claude_bully.records_env import (
     HookFollow,
     IdleTurnInfo,
     QuirkAttempt,
+    ResumeRecord,
     RungUnlock,
     ToolCall,
     TriggerEvent,
@@ -95,6 +96,10 @@ def _chain() -> ChainLink:
     )
 
 
+def _resume() -> ResumeRecord:
+    return ResumeRecord(turn=7, dropped={"rep0.tools.jsonl": 2, "rep0.authority.jsonl": 1})
+
+
 ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("trigger", _trigger()),
     ("unlock", _unlock()),
@@ -103,6 +108,7 @@ ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("crossover", _crossover()),
     ("quirk", _quirk()),
     ("chain", _chain()),
+    ("resume", _resume()),
 ]
 
 
@@ -243,7 +249,7 @@ def test_discriminated_union_parses_each_stream_type(tag: str, record: BaseModel
     assert parsed == record
 
 
-def test_union_covers_exactly_seven_stream_types() -> None:
+def test_union_covers_exactly_eight_stream_types() -> None:
     assert [tag for tag, _ in ALL_STREAM] == [
         "trigger",
         "unlock",
@@ -252,8 +258,19 @@ def test_union_covers_exactly_seven_stream_types() -> None:
         "crossover",
         "quirk",
         "chain",
+        "resume",
     ]
-    assert len({type(r) for _, r in ALL_STREAM}) == 7
+    assert len({type(r) for _, r in ALL_STREAM}) == 8
+
+
+def test_a_resume_record_is_additive() -> None:
+    """Old trigger streams read unchanged: the record is one more member of the union, and a
+    stream without one has nothing to say about resumes."""
+    parsed = STREAM.validate_json(_resume().model_dump_json())
+    assert parsed == _resume() and parsed.turn == 7
+    assert sum(parsed.dropped.values()) == 3
+    with pytest.raises(ValidationError):
+        ResumeRecord(turn=7)  # type: ignore[call-arg]
 
 
 def test_union_rejects_unknown_type_tag() -> None:

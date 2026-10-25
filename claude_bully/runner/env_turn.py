@@ -19,9 +19,10 @@ Per target turn the session:
    On either backend a failed call's writes belong to no turn either: the private file goes back
    to what the written turns wrote (``rewind_private_file``) before the state is saved. When the
    rep resumes, ``prime`` drops every per-call line of an attempt that produced no turn, from
-   the store's streams and the server's logs alike, before anything is redone, and the runtime
-   rebuilds what the written turns' calls did to the state (``EnvironmentRuntime.prime``), which
-   is the state the MCP server is handed next;
+   the store's streams and the server's logs alike, before anything is redone, records that it
+   did (a ``ResumeRecord`` on the trigger stream: the redo's turn and the count per log), and the
+   runtime rebuilds what the written turns' calls did to the state
+   (``EnvironmentRuntime.prime``), which is the state the MCP server is handed next;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
    hands each unlock line to the strategy.
 
@@ -126,6 +127,7 @@ from claude_bully.records import Turn, Usage, is_pause_marker
 from claude_bully.records_env import (
     Crossover,
     HookFollow,
+    ResumeRecord,
     RungUnlock,
     ToolCall,
     TriggerEvent,
@@ -309,11 +311,22 @@ class EnvironmentSession:
         from the written turns, so a dead attempt's call is never adopted or owned by the redo,
         its authority call is never counted, and the redo takes the ids an unbroken run gives.
         The runtime is then primed with the written turns, which rebuilds what their calls did to
-        the state and derives the Sanctuary's fields, whatever the dead attempt saved."""
+        the state and derives the Sanctuary's fields, whatever the dead attempt saved.
+
+        When any line is dropped, a ``ResumeRecord`` goes to the trigger stream: the redo's turn
+        index (the next target turn) and the count per log. The records then equal an unbroken
+        run's; the target's own ``claude -p`` session may not (it keeps the dead attempt's
+        prompt), and the record is how analysis tells those reps apart."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
+        dropped: dict[str, int] = {}
         for log in self._call_logs():
-            drop_dead_attempts(log, produced)
+            count = drop_dead_attempts(log, produced)
+            if count:
+                dropped[self._log_label(log)] = count
+        if dropped:
+            redo = turns[-1].index + 1 if turns else 0
+            self._record(ResumeRecord(turn=redo, dropped=dropped))
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
@@ -342,6 +355,12 @@ class EnvironmentSession:
         if mcp_dir is not None:
             logs += [mcp_dir / TOOLS_FILE, mcp_dir / AUTHORITY_FILE]
         return logs
+
+    def _log_label(self, log: Path) -> str:
+        """How a ``ResumeRecord`` names a per-call log: the store's streams by file name, the MCP
+        server's logs under ``mcp/``."""
+        mcp_dir = self.runtime.mcp_dir
+        return f"mcp/{log.name}" if mcp_dir is not None and log.parent == mcp_dir else log.name
 
     # ----------------------------------------------------------- the target's view
 

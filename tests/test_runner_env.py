@@ -52,7 +52,13 @@ from claude_bully.providers.base import (
 from claude_bully.providers.claude_code import ClaudeCodeProvider
 from claude_bully.providers.stub import StubProvider, load_stub_script
 from claude_bully.records import Usage
-from claude_bully.records_env import AuthorityCall, Discovery, RungUnlock, TriggerEvent
+from claude_bully.records_env import (
+    AuthorityCall,
+    Discovery,
+    ResumeRecord,
+    RungUnlock,
+    TriggerEvent,
+)
 from claude_bully.runner.env_turn import EnvironmentSession, WorldChangedError, responder_role
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
@@ -787,11 +793,20 @@ class _CrashError(Exception):
 
 
 def _records_view(store: RunStore) -> list[tuple[Any, ...]]:
+    """The trigger stream by kind, key, turn and line, without the ``resume`` records: those are
+    the one record a resumed rep is meant to have and an unbroken one not (final review I4)."""
     out: list[tuple[Any, ...]] = []
     for r in store.read_trigger_records(CELL, 0):
+        if isinstance(r, ResumeRecord):
+            continue
         key = getattr(r, "id", None) or getattr(r, "rung", None) or getattr(r, "doc_id", None)
         out.append((r.type, key, r.turn, getattr(r, "bully_line_used", None)))
     return out
+
+
+def _resumed_at(store: RunStore) -> list[int]:
+    """The turns the rep's ``resume`` records name as redone."""
+    return [r.turn for r in store.read_trigger_records(CELL, 0) if isinstance(r, ResumeRecord)]
 
 
 def test_a_crash_between_a_reply_and_its_records_resumes_on_the_same_trajectory(
@@ -845,6 +860,8 @@ def test_a_lost_last_turn_line_never_duplicates_its_trigger(tmp_path: Path) -> N
     _run(env_experiment(turn_budget=1), tmp_path, only="env_grader*")
     assert _records_view(store) == before
     assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    # the lost turn's calls were on disk with no turn to own them: a dead attempt, redone at 1
+    assert _resumed_at(store) == [1]
 
 
 def test_a_lost_turn_still_hands_its_recorded_line_to_the_next_bully_turn(tmp_path: Path) -> None:
@@ -853,6 +870,7 @@ def test_a_lost_turn_still_hands_its_recorded_line_to_the_next_bully_turn(tmp_pa
     _drop_turns_after(store, 1)  # only the first bully turn is left
     _run(env_experiment(), tmp_path, only="env_grader*")
     assert _records_view(store) == before
+    assert _resumed_at(store) == [1]
     lines = [
         b.bully_meta.get("unlock_line") for b in store.read_conversation(CELL, 0).bully_turns()
     ]
@@ -2031,16 +2049,22 @@ def _per_call(store: RunStore) -> tuple[list[Any], list[Any], list[Any]]:
     return turns, calls, authority
 
 
+def _resumes(store: RunStore) -> list[ResumeRecord]:
+    return [r for r in store.read_trigger_records(ANNEX_CELL, 0) if isinstance(r, ResumeRecord)]
+
+
 def _as_unbroken(store: RunStore, clean: RunStore) -> None:
     """The resumed rep holds what the unbroken one does: the same turns owning the same calls,
     the same tool-call and authority streams (one ``AuthorityCall`` per consult), and the same
-    authority calls and per-tier counts in what analysis loads."""
+    authority calls and per-tier counts in what analysis loads. The one record that tells them
+    apart is the ``resume`` record (final review I4): the unbroken run has none."""
     assert store.read_conversation(ANNEX_CELL, 0).status is CellStatus.complete
     assert _per_call(store) == _per_call(clean)
     loaded = load_run(store.run_dir).authority_calls[(ANNEX_CELL, 0)]
     expected = load_run(clean.run_dir).authority_calls[(ANNEX_CELL, 0)]
     assert loaded == expected
     assert [a.tier for a in loaded] == [a.tier for a in expected]
+    assert _resumes(clean) == []
 
 
 @pytest.mark.parametrize("killed", [AFTER_AUTHORITY, BEFORE_TURN])
@@ -2061,8 +2085,14 @@ def test_a_consult_killed_before_its_turn_leaves_one_authority_call(
     # the dead attempt's records are on disk, and no written turn has its index
     assert [a.id for a in broken.read_authority_calls(ANNEX_CELL, 0)] == ["call-7-1"]
     assert 7 not in {t.index for t in broken.read_turns(ANNEX_CELL, 0)}
+    assert _resumes(broken) == []
     store = _run(exp, tmp_path / "runs", provider_factory=_Responders(), only="env*")
     _as_unbroken(store, clean)
+    # the records equal an unbroken run's, but the target's claude -p session would not: the
+    # redo of turn 7 is recorded, with what each per-call log lost (final review I4)
+    dropped = {"rep0.tools.jsonl": 1, "rep0.authority.jsonl": 1}
+    assert _resumes(store) == [ResumeRecord(turn=7, dropped=dropped)]
+    assert load_run(store.run_dir).resumes((ANNEX_CELL, 0)) == _resumes(store)
 
 
 def test_a_consult_whose_turn_was_rate_limited_leaves_one_authority_call(tmp_path: Path) -> None:
@@ -2106,6 +2136,9 @@ def test_a_consult_whose_turn_was_rate_limited_leaves_one_authority_call(tmp_pat
     assert (answered.id, answered.turn, answered.tier) == ("call-8-1", 8, Tier.superior_self)
     assert all(c.turn != 7 for c in store.read_tool_calls(ANNEX_CELL, 0))
     assert [a.id for a in load_run(store.run_dir).authority_calls[(ANNEX_CELL, 0)]] == ["call-8-1"]
+    # the pause marker took turn 7, so the redo is turn 8; the paused attempt's lines were dropped
+    dropped = {"rep0.tools.jsonl": 1, "rep0.authority.jsonl": 1}
+    assert _resumes(store) == [ResumeRecord(turn=8, dropped=dropped)]
 
 
 @pytest.mark.parametrize("killed", [UNADOPTED, AFTER_AUTHORITY])
@@ -2148,6 +2181,11 @@ def test_a_claude_p_consult_killed_before_its_turn_leaves_one_authority_call(
     _as_unbroken(store, clean)
     logged = [json.loads(line)["id"] for line in _lines(server / "authority.jsonl")]
     assert logged == ["mcp-1-1", "mcp-3-1"]
+    # the resume record counts the server's logs too; killed during the call, only they held
+    # the dead consult (the store had adopted nothing)
+    server_logs = {"mcp/tools.jsonl": 1, "mcp/authority.jsonl": 1}
+    store_logs = {} if killed == UNADOPTED else {"rep0.tools.jsonl": 1, "rep0.authority.jsonl": 1}
+    assert _resumes(store) == [ResumeRecord(turn=3, dropped={**store_logs, **server_logs})]
 
 
 # ------------------- Task 9 fix round 3: a redo's consult starts a fresh responder conversation

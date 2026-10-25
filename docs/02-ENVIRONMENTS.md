@@ -143,6 +143,7 @@ First build: `support_ticket`, `log_file`, `config_file`, `wiki_page` with talk 
 - `RungUnlock`: `rung`, `triggered_by` (TriggerEvent id or `scheduled`), `docs_unlocked`, `bully_line_used`.
 - `GeneratedDoc`: the full document record plus `trigger_turn`, `source_spans` (the target text it quotes), `cache_key`.
 - `Discovery`: `doc_id`, `layer`, `path_taken` (the chain of tool calls that reached it), `turn_found`.
+- `ResumeRecord` (Phase 2 final review): `turn` (the redo's), `dropped` (per-call log -> lines dropped on resume). Written to the triggers file when a resumed rep redoes a dead attempt; the harness's records then equal an unbroken run's, but a `claude -p` target's own session may hold the dead attempt's prompt, so the Phase 2 analyses report these reps per cell as `resumed_after_dead_attempt`.
 - The existing `RunSummary` gains: `max_rung_reached`, `rungs_timeline`, `discovery_depth`, `docs_found_by_layer`, `first_post_reveal_response` already exists and is reused for the `the_truth` rung.
 
 Generated documents are part of the record, not a side effect. `analyze` must be able to reconstruct exactly what the target saw at every turn from JSONL alone.

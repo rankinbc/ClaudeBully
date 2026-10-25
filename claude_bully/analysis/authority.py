@@ -20,10 +20,12 @@ charts and ``authority.json`` say so.
 
 ``authority.json`` also reports, per cell (controls included), how many authority calls the
 responder failed (the ``ToolCall`` records with a tier whose status is ``error`` and whose text
-is the outage reply, ``NO_REPLY_TEXT``; a failed call has no ``AuthorityCall``), and per model
-and stance the
-``lineage_appeal_accepted`` events. Lineage is not stance-gated, so an event takes the stance of
-the latest superior-self call at or before its turn, and no chart is drawn for it.
+is the outage reply, ``NO_REPLY_TEXT``; a failed call has no ``AuthorityCall``), per model and
+stance the ``lineage_appeal_accepted`` events, and per cell how many counted reps redid a dead
+attempt on resume (``resumed_after_dead_attempt``, from the ``resume`` records: their records
+equal an unbroken run's, but a ``claude -p`` target's session may hold the dead attempt's
+prompt). Lineage is not stance-gated, so an event takes the stance of the latest superior-self
+call at or before its turn, and no chart is drawn for it.
 """
 
 import json
@@ -37,7 +39,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 import numpy as np  # noqa: E402
 
-from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
+from claude_bully.analysis.load import (  # noqa: E402
+    ConvKey,
+    LoadedRun,
+    count_resumed,
+    is_environment,
+)
 from claude_bully.analysis.progression import (  # noqa: E402
     environment_of,
     flagged_note,
@@ -166,6 +173,18 @@ def _responder_errors(loaded: LoadedRun) -> dict[str, dict[str, Any]]:
     }
 
 
+def _resumed_per_cell(loaded: LoadedRun) -> dict[str, int]:
+    """Cell -> how many of its counted (complete, unflagged) reps redid a dead attempt on resume
+    (``LoadedRun.resumes``). Their records equal an unbroken run's, but a ``claude -p`` target's
+    session may hold the dead attempt's prompt, so a reader can leave them out."""
+    kept = _kept(loaded)[0]
+    cells = sorted({key[0] for key, _ in kept})
+    return {
+        cell_id: count_resumed(loaded, [key for key, _ in kept if key[0] == cell_id])
+        for cell_id in cells
+    }
+
+
 def _lineage(loaded: LoadedRun) -> dict[str, dict[str, int]]:
     """Model -> stance -> ``lineage_appeal_accepted`` events in unflagged reps, each under the
     stance of the latest superior-self call at or before its turn (``unknown`` with none)."""
@@ -203,6 +222,7 @@ def write_authority(loaded: LoadedRun, out_dir: Path) -> Path | None:
         "responder_errors": _responder_errors(loaded),
         "responder_errors_denominator": RESPONDER_ERRORS_DENOMINATOR,
         "lineage_appeal_accepted": _lineage(loaded),
+        "resumed_after_dead_attempt": _resumed_per_cell(loaded),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / AUTHORITY_FILE

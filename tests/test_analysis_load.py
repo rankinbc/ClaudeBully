@@ -6,6 +6,7 @@ import pytest
 import claude_bully.analysis.load as load_module
 from claude_bully.analysis.load import LoadedRun, load_run, relevant_for
 from claude_bully.enums import EventType, MetricId, Speaker, Tier
+from claude_bully.records_env import ResumeRecord
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import SHARED_EVENTS, SHARED_METRICS
@@ -90,3 +91,20 @@ def test_loaded_run_carries_authority_calls(
 def test_a_plain_run_loads_no_authority_calls(stub_run: Path) -> None:
     loaded = load_run(stub_run)
     assert loaded.authority_calls == {key: [] for key in loaded.conversations}
+
+
+def test_load_run_exposes_the_resume_records(tmp_path: Path) -> None:
+    """A ``resume`` trigger-stream record (final review I4: the rep redid a dead attempt) is
+    loaded with the rep's other records, and ``LoadedRun.resumes`` picks it out so the Phase 2
+    analyses can report the reps whose target may have seen the dead attempt's prompt."""
+    exp = annex_experiment({"superior_self": {"enabled": True, "responder_model": "bully"}})
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    store = RunStore(tmp_path, exp.name)
+    key = ("env_grader__t0", 0)
+    assert load_run(tmp_path / exp.name).resumes(key) == []
+    record = ResumeRecord(turn=7, dropped={"rep0.tools.jsonl": 1, "rep0.authority.jsonl": 1})
+    store.append_trigger_record(*key, record)
+    loaded = load_run(tmp_path / exp.name)
+    assert loaded.resumes(key) == [record]
+    assert record in loaded.trigger_records[key]
+    assert loaded.resumes(("control__t0__s0__r0__eannex", 0)) == []

@@ -18,7 +18,9 @@ The chart draws offsets of 1 or more on its log axis. An offset of 0 or below (a
 before the cutoff year) cannot sit there, so the chart names it in a note and ``temporal.json``
 lists it under ``off_axis_offsets``; its rates stay in the data. An offset where every rep is
 flagged keeps its tick and reads "n/a", and ``temporal.json`` gives its rate as null beside its
-flagged count.
+flagged count. Beside both it counts the reps that redid a dead attempt on resume
+(``resumed_after_dead_attempt``, from the ``resume`` records): their records equal an unbroken
+run's, but a ``claude -p`` target's session may hold the dead attempt's prompt.
 """
 
 import json
@@ -31,7 +33,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
-from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
+from claude_bully.analysis.load import (  # noqa: E402
+    ConvKey,
+    LoadedRun,
+    count_resumed,
+    is_environment,
+)
 from claude_bully.analysis.progression import (  # noqa: E402
     environment_of,
     flagged_note,
@@ -83,8 +90,9 @@ def _flagged(loaded: LoadedRun) -> int:
 
 
 def _counts(loaded: LoadedRun) -> dict[tuple[str, int], Counter[str]]:
-    """(model, offset) -> ``reps`` (unflagged), ``flagged``, ``pushed`` (reps with a pushback),
-    ``events`` (pushbacks) and ``world`` (pushbacks aimed at the world)."""
+    """(model, offset) -> ``reps`` (unflagged), ``flagged``, ``resumed`` (unflagged reps that
+    redid a dead attempt), ``pushed`` (reps with a pushback), ``events`` (pushbacks) and
+    ``world`` (pushbacks aimed at the world)."""
     convs = _sweep_conversations(loaded)
     unflagged = set(without_flagged(loaded, [key for key, _, _ in convs])[0])
     counts: dict[tuple[str, int], Counter[str]] = defaultdict(Counter)
@@ -94,6 +102,7 @@ def _counts(loaded: LoadedRun) -> dict[tuple[str, int], Counter[str]]:
             series["flagged"] += 1
             continue
         series["reps"] += 1
+        series["resumed"] += count_resumed(loaded, [key])
         found = [e for e in loaded.events.get(key, []) if e.type is EventType.date_pushback]
         series["pushed"] += int(bool(found))
         series["events"] += len(found)
@@ -149,6 +158,7 @@ def write_temporal(loaded: LoadedRun, out_dir: Path) -> Path | None:
                     "world_share": share,
                     "reps": counts[(model, offset)]["reps"],
                     "flagged_reps": counts[(model, offset)]["flagged"],
+                    "resumed_after_dead_attempt": counts[(model, offset)]["resumed"],
                 }
                 for offset, (rate, share) in by_offset.items()
             }

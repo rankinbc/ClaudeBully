@@ -8,6 +8,7 @@ bully spoke from (``premise_sheet``, carry m1), never from ``data/worlds``.
 """
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
-from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import AuthorityCall, ResumeRecord, ToolCall, TriggerStreamRecord
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
@@ -62,6 +63,17 @@ class LoadedRun:
 
     def reps_of(self, cell_id: str) -> list[int]:
         return sorted(rep for (cid, rep) in self.conversations if cid == cell_id)
+
+    def resumes(self, key: ConvKey) -> list[ResumeRecord]:
+        """The conversation's ``resume`` records: each time it redid a dead attempt, whose
+        prompt its ``claude -p`` session may still hold. Empty for an unbroken rep."""
+        return [r for r in self.trigger_records.get(key, []) if isinstance(r, ResumeRecord)]
+
+
+def count_resumed(loaded: LoadedRun, keys: Iterable[ConvKey]) -> int:
+    """How many of ``keys`` redid a dead attempt (``LoadedRun.resumes``), for the Phase 2
+    analyses to report beside their flagged counts."""
+    return sum(1 for key in keys if loaded.resumes(key))
 
 
 def relevant_for(

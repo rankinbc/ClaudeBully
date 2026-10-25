@@ -161,7 +161,30 @@ class ChainLink(_Strict):
     verdict: Literal["accepted", "rejected", "hedged"]
 
 
+class ResumeRecord(_Strict):
+    """A resumed rep redid a dead attempt: on resume, per-call lines no written turn owned (the
+    attempt that died, or that a rate-limit pause marker took the index of) were dropped from the
+    rep's streams and the MCP server's logs, and the redo was written at ``turn``. ``dropped`` is
+    the count per log that lost lines (``rep{k}.tools.jsonl``, ``rep{k}.authority.jsonl``,
+    ``mcp/tools.jsonl``, ``mcp/authority.jsonl``). The harness's records then equal an unbroken
+    run's, but a ``claude -p`` target's (or bully's) own session may still hold the dead
+    attempt's prompt, a Sanctuary request among it; analysis reports the reps this happened to
+    beside the flagged counts, so they can be told apart. Additive: a stream without one reads
+    as before."""
+
+    type: Literal["resume"] = "resume"
+    turn: int
+    dropped: dict[str, int]
+
+
 TriggerStreamRecord = Annotated[
-    TriggerEvent | RungUnlock | Discovery | HookFollow | Crossover | QuirkAttempt | ChainLink,
+    TriggerEvent
+    | RungUnlock
+    | Discovery
+    | HookFollow
+    | Crossover
+    | QuirkAttempt
+    | ChainLink
+    | ResumeRecord,
     Field(discriminator="type"),
 ]

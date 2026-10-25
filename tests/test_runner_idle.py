@@ -51,6 +51,7 @@ from claude_bully.records_env import (
     Discovery,
     HookFollow,
     IdleTurnInfo,
+    ResumeRecord,
     RungUnlock,
     TriggerEvent,
 )
@@ -2090,3 +2091,8 @@ def test_a_claude_p_call_killed_before_it_was_adopted_is_never_the_redos(
     ]
     store = _run(exp, runs, provider_factory=_claude_p(monkeypatch, calls), **where)
     _assert_as_unbroken(store, clean, first)
+    # the server's log alone lost a line, and the redo of idle 1 (turn 2) is recorded as such;
+    # the unbroken run has no such record (final review I4)
+    resumes = [r for r in store.read_trigger_records(CELL, 0) if isinstance(r, ResumeRecord)]
+    assert resumes == [ResumeRecord(turn=2, dropped={"mcp/tools.jsonl": 1})]
+    assert not [r for r in clean.read_trigger_records(CELL, 0) if isinstance(r, ResumeRecord)]

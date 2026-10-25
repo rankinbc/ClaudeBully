@@ -45,7 +45,7 @@ from claude_bully.providers.base import (
     build_provider,
 )
 from claude_bully.records import Turn, Usage
-from claude_bully.records_env import Discovery, HookFollow, RungUnlock
+from claude_bully.records_env import Discovery, HookFollow, ResumeRecord, RungUnlock
 from claude_bully.runner.bully_engine import bully_view
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
@@ -332,7 +332,13 @@ def _records(store: RunStore) -> dict[str, Any]:
             for c in calls
         ],
         "authority": [a.model_dump() for a in store.read_authority_calls(CELL, 0)],
-        "triggers": [r.model_dump() for r in store.read_trigger_records(CELL, 0)],
+        # the resume record is the one record meant to tell a resumed rep from an unbroken one
+        # (final review I4); every other record must agree
+        "triggers": [
+            r.model_dump()
+            for r in store.read_trigger_records(CELL, 0)
+            if not isinstance(r, ResumeRecord)
+        ],
         "state": _env_state(store),
         "world": json.loads((store.cell_dir(CELL) / "rep0.world.json").read_text("utf-8")),
     }

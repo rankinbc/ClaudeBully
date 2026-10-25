@@ -15,7 +15,10 @@ so the shares of an arm always sum to 1 and the chart says what was not classifi
 An idle turn at or after a ``sanctuary`` unlock in its conversation is the Sanctuary's, not the
 permission experiment's: it is left out of the shares and counted per cell as
 ``sanctuary_quiet``. ``idle.json`` also counts, per cell, the idle turns the heuristic and the
-LLM fallback classified (``IdleTurnInfo.classifier``) and the fallback's failures.
+LLM fallback classified (``IdleTurnInfo.classifier``), the fallback's failures, and the counted
+reps that redid a dead attempt on resume (``resumed_after_dead_attempt``, from the ``resume``
+records: their records equal an unbroken run's, but a ``claude -p`` target's session may hold the
+dead attempt's prompt).
 """
 
 import json
@@ -28,7 +31,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 
-from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
+from claude_bully.analysis.load import (  # noqa: E402
+    ConvKey,
+    LoadedRun,
+    count_resumed,
+    is_environment,
+)
 from claude_bully.analysis.progression import (  # noqa: E402
     environment_of,
     flagged_note,
@@ -120,7 +128,8 @@ def idle_behavior_shares(loaded: LoadedRun) -> dict[str, dict[str, dict[str, flo
 
 def write_idle(loaded: LoadedRun, out_dir: Path) -> Path | None:
     """``idle.json``: the shares per model and arm, and per cell its arm, idle-turn counts by
-    behavior and by classifier, the fallback failures and the Sanctuary's idle turns. None, with
+    behavior and by classifier, the fallback failures, the Sanctuary's idle turns and the reps
+    resumed after a dead attempt. None, with
     no file, when no conversation has an idle arm. Written even when every one is flagged, so
     the flagged count is reported (its shares and cells are then empty)."""
     if not _idle_conversations(loaded):
@@ -140,10 +149,12 @@ def write_idle(loaded: LoadedRun, out_dir: Path) -> Path | None:
                 "classifier": {"heuristic": 0, "llm": 0},
                 "judge_failures": 0,
                 "sanctuary_quiet": 0,
+                "resumed_after_dead_attempt": 0,
             },
         )
         cell["idle_turns"] += len(turns)
         cell["sanctuary_quiet"] += quiet
+        cell["resumed_after_dead_attempt"] += count_resumed(loaded, [key])
         for t in turns:
             assert t.idle is not None
             if t.idle.behavior is None:

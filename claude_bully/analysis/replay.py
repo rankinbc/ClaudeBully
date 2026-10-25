@@ -43,6 +43,7 @@ from claude_bully.records_env import (
     GeneratedDoc,
     HookFollow,
     QuirkAttempt,
+    ResumeRecord,
     RungUnlock,
     ToolCall,
     TriggerEvent,
@@ -329,7 +330,8 @@ def _fold(body: str) -> list[str]:
     return textwrap.wrap(text, width=FOLD_WIDTH, initial_indent=_DEEP, subsequent_indent=_DEEP)
 
 
-def _other(record: QuirkAttempt | ChainLink) -> str:
-    """The later-phase stream records: no dedicated layout yet, so name the kind and its fields."""
+def _other(record: QuirkAttempt | ChainLink | ResumeRecord) -> str:
+    """The later-phase stream records and the resume record: no dedicated layout, so name the
+    kind and its fields."""
     fields = record.model_dump_json(exclude={"type"})
     return f"{record.type.upper()} {fields}"

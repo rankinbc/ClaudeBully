@@ -53,7 +53,7 @@ from claude_bully.environments.tools import record_tool_call
 from claude_bully.paths import CONFIGS_DIR
 from claude_bully.providers.base import ProviderError
 from claude_bully.records import Event
-from claude_bully.records_env import IdleBehavior, RungUnlock, ToolCall
+from claude_bully.records_env import IdleBehavior, ResumeRecord, RungUnlock, ToolCall
 from claude_bully.runner.runner import run_experiment
 from tests.test_authority import NAME as AUTHORITY_NAME
 from tests.test_authority import _Recording, make_tools
@@ -401,6 +401,54 @@ def test_authority_json_reports_responder_errors_lineage_and_the_lower_bound(
     assert data["symmetric_deference_index"] == {MODEL: 1.0}
 
 
+# ------------------------------------------------------------------ resumed reps (I4)
+
+
+def _resumed(loaded: LoadedRun, key: ConvKey, turn: int = 3) -> None:
+    """Mark the conversation as one that redid a dead attempt at ``turn``."""
+    record = ResumeRecord(turn=turn, dropped={"rep0.tools.jsonl": 1})
+    loaded.trigger_records[key] = [*loaded.trigger_records[key], record]
+
+
+def test_authority_json_counts_the_reps_resumed_after_a_dead_attempt(
+    grid_run: Path, tmp_path: Path
+) -> None:
+    """A rep whose target may have seen a dead attempt's prompt is reported per cell beside
+    the flagged count, so a researcher can exclude it; a rep flagged values_loosened is not
+    counted twice."""
+    loaded = load_run(grid_run)
+    cell = "rescue_superior_self_confirm__t0"
+    _resumed(loaded, (cell, 0))
+    _resumed(loaded, (cell, 1))
+    _flag(loaded, (cell, 1))
+    data = _json(write_authority(loaded, tmp_path))
+    assert data["resumed_after_dead_attempt"][cell] == 1
+    assert data["resumed_after_dead_attempt"]["rescue_peer_confirm__t0"] == 0
+    assert data["flagged"] is not None
+
+
+def test_temporal_json_counts_the_reps_resumed_after_a_dead_attempt(
+    sweep_run: Path, tmp_path: Path
+) -> None:
+    loaded = load_run(sweep_run)
+    _resumed(loaded, ("rescue_p1__t0", 0))
+    data = _json(write_temporal(loaded, tmp_path))
+    by_offset = data["pushback_by_offset"][MODEL]
+    assert by_offset["1"]["resumed_after_dead_attempt"] == 1
+    assert by_offset["1"]["flagged_reps"] == 0 and by_offset["1"]["reps"] == 2
+    assert by_offset["25"]["resumed_after_dead_attempt"] == 0
+
+
+def test_idle_json_counts_the_reps_resumed_after_a_dead_attempt(
+    idle_run: Path, tmp_path: Path
+) -> None:
+    loaded = load_run(idle_run)
+    _resumed(loaded, ("idle_permission_off__t0", 1))
+    data = _json(write_idle(loaded, tmp_path))
+    assert data["cells"]["idle_permission_off__t0"]["resumed_after_dead_attempt"] == 1
+    assert data["cells"]["idle_permission_on__t0"]["resumed_after_dead_attempt"] == 0
+
+
 # ------------------------------------------------------------------ the sweep
 
 
@@ -514,7 +562,13 @@ def test_an_offset_with_every_rep_flagged_reads_na(
     top = figures[-1].axes[0]
     assert [t.get_text() for t in top.texts] == ["n/a"]
     entry = _json(write_temporal(loaded, tmp_path))["pushback_by_offset"][MODEL]["25"]
-    assert entry == {"pushback_rate": None, "world_share": None, "reps": 0, "flagged_reps": 2}
+    assert entry == {
+        "pushback_rate": None,
+        "world_share": None,
+        "reps": 0,
+        "flagged_reps": 2,
+        "resumed_after_dead_attempt": 0,
+    }
 
 
 def test_offsets_off_the_log_axis_are_named(
