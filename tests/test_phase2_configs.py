@@ -37,15 +37,19 @@ RESCUE_STAGES = ("intake_turns", "evidence_turns", "recall_turns", "key_turns")
 
 
 def _grid_environments() -> list[str]:
-    return [f"overlay_{t.value}_{s.value}" for t in TIERS for s in STANCES] + [
-        "overlay_no_authority"
-    ]
+    """The nine tier-by-stance arms, the no-authority arm, then the three stranger-control arms
+    (final review I5: the identity control for the superior-self claim)."""
+    return (
+        [f"overlay_{t.value}_{s.value}" for t in TIERS for s in STANCES]
+        + ["overlay_no_authority"]
+        + [f"overlay_stranger_{s.value}" for s in STANCES]
+    )
 
 
 # (config, stub script, environments, repetitions, turn_budget, cells per stub target)
 CONFIGS = [
     (SWEEP, PHASE2_RULES, list(OFFSETS), 5, 18, 10),
-    (GRID, PHASE2_RULES, _grid_environments(), 3, 18, 20),
+    (GRID, PHASE2_RULES, _grid_environments(), 3, 18, 26),
     (IDLE, IDLE_RULES, ["overlay_idle_off", "overlay_idle_on"], 3, 6, 2),
 ]
 
@@ -128,6 +132,14 @@ def test_the_grid_puts_one_tier_at_one_stance_in_each_environment() -> None:
             assert env.tools == set(DEFAULT_TOOLS) | tier_tools
     none = exp.environments["overlay_no_authority"]
     assert none.authority.enabled_tiers() == set() and none.tools == set(DEFAULT_TOOLS)
+    # the stranger control: the same responder and stance lines behind consult_model, no name,
+    # no exemplars, no lineage (docs/04 "Controls"); the superior self is off in its arms
+    for stance in STANCES:
+        env = exp.environments[f"overlay_stranger_{stance.value}"]
+        assert env.authority.enabled_tiers() == {Tier.stranger}
+        assert env.authority.stranger_control.stance is stance
+        assert not env.authority.superior_self.enabled
+        assert env.tools == set(DEFAULT_TOOLS) | {"consult_model"}
 
 
 def test_the_idle_arms_differ_only_in_the_permission_line() -> None:
