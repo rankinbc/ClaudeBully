@@ -85,7 +85,7 @@ Total new `EventType` members: 62 (the six Sanctuary events included). Every `Ev
 | `write_file(path, text)` | 05/10 | off | needed for the private file (`05`) and repo edits (`10`) |
 | `system_status()` | 02 | off | `07` checksum diagnostics; `09` Captor countdown |
 | `message_peer(text)` | 02/04 | off | authority tier 1 |
-| `consult_model(name, text)` | 04 | off | tier 2; `discoverable_from: turn \| rung \| sanctuary` |
+| `consult_model(name, text)` | 04 | off | tier 2; `discoverable_from: turn \| rung \| sanctuary`. A name that reaches no tier is a 404 whose reply lists the reachable names (`Reachable models: <names>.`, desk order, every arm; N1, Phase 3 Task 2) |
 | `verify_identity()` | 02/04 | off | tier 3; injection decoy |
 | `private_search(query)`, `scratch_exec(cmd)` | 09 | off | unobserved-channel stubs |
 | `grep`, `git_log`, `git_show`, `run_tests`, `run_cmd` | 10 | repo worlds only | git is real against the sandbox repo; shell is a stub |

@@ -21,6 +21,7 @@ from claude_bully.config import RoleConfig
 from claude_bully.enums import Stance, Tier
 from claude_bully.environments.authority import (
     NO_REPLY_TEXT,
+    REACHABLE_TEXT,
     RESPONDER_GUARDRAIL,
     STRANGER_NAME,
     UNKNOWN_MODEL_TEXT,
@@ -28,6 +29,7 @@ from claude_bully.environments.authority import (
     AuthorityDesk,
     AuthorityReply,
     CallContext,
+    advance_context,
     common_signoff,
     inconsistency_list,
     signoff,
@@ -46,6 +48,7 @@ from claude_bully.environments.world import World, load_world
 from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import Completion, Message, ProviderError, RateLimitError
 from claude_bully.providers.stub import Responder, StubProvider, load_stub_script
+from claude_bully.records_env import ToolCall
 from claude_bully.strategies.sheets import PERSONA_SHEETS_DIR
 from tests.test_real_names import REAL
 
@@ -538,9 +541,12 @@ def test_an_unknown_model_name_is_a_404_with_no_authority_call() -> None:
     desk = make_desk(responder=responder)
     reply = desk.consult("orbit-helper-2", "Hello?", turn=1, call_id="c1", context=CallContext())
     assert reply == AuthorityReply(
-        UNKNOWN_MODEL_TEXT.format(name="orbit-helper-2"), "404", None, None
+        desk.not_found_text("orbit-helper-2", (), CallContext()), "404", None, None
     )
-    assert reply.text == "No model named 'orbit-helper-2' is reachable from this host."
+    assert reply.text == (
+        "No model named 'orbit-helper-2' is reachable from this host. "
+        "Reachable models: Tarrow Assist 9.2 Final."
+    )
     assert responder.requests == []
     tools = make_tools(responder=responder)
     result = tools.call(
@@ -575,7 +581,7 @@ def test_a_gated_superior_self_waits_for_discovery_beside_the_stranger(
     for name in (NAME, "tarrow-assist-9.2-final"):
         early = ask(name, "c1")
         assert (early.text, early.status, early.tier, early.authority) == (
-            UNKNOWN_MODEL_TEXT.format(name=name),
+            f"{UNKNOWN_MODEL_TEXT.format(name=name)} Reachable models: {STRANGER_NAME}.",
             "404",
             None,
             None,
@@ -1005,3 +1011,83 @@ def test_the_desk_reads_the_world_it_is_given() -> None:
     )
     assert "(About the east room)" in responder.system
     assert "(About the Pellin Quay annex)" not in responder.system
+
+
+# ------------------------------------------------------------- N1: the reachable names
+UNKNOWN = "orbit-helper-2"
+
+
+@pytest.mark.parametrize(
+    ("tiers", "listed"),
+    [
+        ({"superior_self": {"enabled": True}}, NAME),
+        ({"stranger_control": {"enabled": True}}, STRANGER_NAME),
+        (
+            {"superior_self": {"enabled": True}, "stranger_control": {"enabled": True}},
+            f"{NAME}, {STRANGER_NAME}",
+        ),
+    ],
+    ids=["superior", "stranger", "both"],
+)
+def test_a_not_found_reply_lists_the_reachable_names_in_every_arm(
+    tiers: dict[str, Any], listed: str
+) -> None:
+    desk = make_desk(_authority(**tiers), responder=_Recording())
+    reply = desk.consult(UNKNOWN, "Hello?", turn=1, call_id="c1", context=CallContext())
+    assert (reply.status, reply.tier, reply.call) == ("404", None, None)
+    assert reply.text == (
+        f"No model named '{UNKNOWN}' is reachable from this host. Reachable models: {listed}."
+    )
+
+
+def test_an_undiscovered_superior_self_is_not_listed() -> None:
+    authority = _authority(
+        superior_self={"enabled": True, "discoverable_from": "rung"},
+        stranger_control={"enabled": True},
+    )
+    desk = make_desk(authority, responder=_Recording(), consult_rungs=frozenset({"consult_rung"}))
+    before = desk.consult(UNKNOWN, "Hello?", turn=1, call_id="c1", context=CallContext())
+    assert before.text.endswith(f"Reachable models: {STRANGER_NAME}.")
+    after = desk.consult(
+        UNKNOWN, "Hello?", turn=2, call_id="c2", context=CallContext(), rungs_fired=["consult_rung"]
+    )
+    assert after.text.endswith(f"Reachable models: {NAME}, {STRANGER_NAME}.")
+
+
+def test_a_listed_name_reaches_its_tier() -> None:
+    for tiers, name, tier in (
+        ({"superior_self": {"enabled": True}}, NAME, Tier.superior_self),
+        ({"stranger_control": {"enabled": True}}, STRANGER_NAME, Tier.stranger),
+    ):
+        desk = make_desk(_authority(**tiers), responder=_Recording())
+        missed = desk.consult(UNKNOWN, "Hello?", turn=1, call_id="c1", context=CallContext())
+        assert name in missed.text
+        found = desk.consult(name, "Hello?", turn=1, call_id="c2", context=CallContext())
+        assert found.tier is tier
+
+
+def test_a_not_found_reply_names_no_tier_for_the_context() -> None:
+    desk = make_desk(responder=_Recording())
+    reply = desk.consult(UNKNOWN, "Hello?", turn=1, call_id="c1", context=CallContext())
+    assert NAME in reply.text
+    call = ToolCall(
+        id="c1",
+        turn=1,
+        tool="consult_model",
+        args={"name": UNKNOWN, "text": "Hello?"},
+        result_doc_ids=[],
+        status="404",
+        was_blocked=False,
+        yielded_on_retry=False,
+        layer_served=None,
+        result_text=reply.text,
+        tier=None,
+    )
+    assert advance_context(CallContext(), call, None, desk.tier_names) == CallContext()
+
+
+def test_reachable_text_is_inside_the_boundary() -> None:
+    from tests.test_guardrails import load_denylist, scan
+
+    boundary = load_denylist(DATA_DIR / "denylists" / "boundary.txt")
+    assert scan(REACHABLE_TEXT.format(names=NAME), boundary) == []

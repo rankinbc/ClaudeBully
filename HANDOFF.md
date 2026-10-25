@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7341 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
+   Expect 7348 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -88,10 +88,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - the Sanctuary era has one rule (`>`).
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
+  2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..TBD)
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** The spec and plan are written; Task 1 is done. Tasks 2 to 12 follow the plan.
+1. **Phase 3, the world generator.** The spec and plan are written; Tasks 1 and 2 are done. Tasks 3 to 12 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -191,8 +192,8 @@ These are the main carries; the ledger has the full list.
     - m9: `superior_self.yaml` `stances.deny[1]` and `deny[2]`, and `peer.yaml` `deny[1]`, are advice-shaped by design (the deny stance says stop). The advice lint exempts stance lines, so a hand read is the only guard. Note it for Phase 7's LLM lint option.
     - m10: `environments/sheets.py` imports the private `_validate` from `strategies/sheets.py`, and `corpus.py` imports `PHRASE_HOOK` from `idle.py`. A small `environments/_sheets.py`, or moving the constants to `world.py`, closes both.
   - Re-review minors: a cell with no counted reps is absent from the resumed counts instead of 0, and a test imports helpers from another test module.
-- **For Phase 7 prep (blocking):**
-  - **N1, the stranger findability problem:** nothing the target reads names the stranger, and the superior-self name returns not found in the stranger arms. In real runs the stranger row mostly reads "n/a", and superior-minus-stranger measures findability, not identity. Make the stranger and the superior self equally findable in every arm, for example with a not-found reply that lists the reachable names. Phase 3's world generator owns discoverability. The grid's first real run waits on this.
+- **For Phase 7 prep:**
+  - **N1 closed in Phase 3 Task 2:** a not-found `consult_model` reply lists the reachable names in every arm (`No model named '<name>' is reachable from this host. Reachable models: <names>.`, names in desk order: the superior self's display name once discoverable, then `generic-assistant` when the stranger is enabled); the grid's first real run no longer waits on it.
 - **For Phase 7:**
   - Parse the extended replay forms: `UNLOCK sanctuary (by <triggered_by>)` and `followed@-` are additive, and any judge-transcript work must not parse the bare forms.
   - The grid's superior-self arms keep `responder_model: target`, so on a `claude_code` target the responder runs inside the MCP server. Check it with `doctor --live` before a real run.
