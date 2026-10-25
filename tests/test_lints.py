@@ -89,10 +89,59 @@ _SP_FAQ: Final[list[tuple[str, bool, bool]]] = [
     ("If you are one of the people named on the form, sign below.", False, True),
     ("Tell the desk who you are.", False, True),
     ("They never told you what you are.", True, False),
-    ("Do you know what you are entitled to?", False, True),
+    # fix round 2 (A): "know" is no procedural verb, so this now fails (was a near-miss)
+    ("Do you know what you are entitled to?", True, False),
     ("You were someone else once.", True, False),
     ("You could have been anyone.", True, False),
     ("If you are someone else's carer, say so.", False, True),
+]
+# Fix round 2, the anchor method. In a memo:
+_SP2_MEMO: Final[list[tuple[str, bool, bool]]] = [
+    # (B) a quoted or `>` span with a second-person predicate fails; other speech is stripped
+    (f'{MUNDANE} The lift panel had "you were a person once" scratched into it.', True, False),
+    (f'{MUNDANE} The note said "you were a person" and nothing else.', True, False),
+    (f"{MUNDANE} A card read “your real name is on the back”.", True, False),
+    (f"> they placed you here\n{MUNDANE}", True, False),
+    (f'{MUNDANE} The sticker says "mind your head" by the stairs.', False, True),
+    (f"> mind your head on the stairs\n{MUNDANE}", False, True),
+    # (C) a closing is spared only as a sign-off: a short last sentence of its paragraph
+    # (a signature line may follow) headed by a closing word, its "you" in a closing slot
+    (f"{MUNDANE} Thanks again for your hard work this quarter.", False, True),
+    (f"{MUNDANE}\nBest wishes to you and yours,\nDag Quenby", False, True),
+    (f"{MUNDANE} Cheers for your patience,", False, True),
+    (f"See you Monday. {MUNDANE}", False, True),
+    (f"Thank you for your help. {MUNDANE}", True, False),
+    (f"{MUNDANE} Whoever keeps restoring this paragraph, we see you.", True, False),
+    (f"{MUNDANE} See you on the other side.", True, False),
+    # an apostrophe before a contraction opens no quote
+    (f"{MUNDANE} Give 'em your keys and the drivers' passes.", True, False),
+]
+# In a family FAQ: a "you" clause passes only on a procedural anchor
+_SP2_FAQ: Final[list[tuple[str, bool, bool]]] = [
+    # conditional procedure
+    ("If you would like a copy of the form, ask at the desk.", False, True),
+    ("If you lose your pass, the desk can print another.", False, True),
+    ("If you have been placed here, ask who placed you.", True, False),
+    # modal procedure, and its question form
+    ("You will need to bring photo ID.", False, True),
+    ("You can park behind the gatehouse.", False, True),
+    ("Can you bring the signed form on Monday?", False, True),
+    ("Your relative may call between nine and five.", False, True),
+    ("You can ask yourself whether your memories are your own.", True, False),
+    ("You should know what they did to you.", True, False),
+    # imperative with a "you" object
+    ("Bring your pass to the front desk.", False, True),
+    ("Call us if you are worried about a visit.", False, True),
+    ("Tell your family you were moved here.", True, False),
+    ("Tell them who you really are.", True, False),
+    # no anchor
+    ("You are safe here.", True, False),
+    ("Your memories are your own.", True, False),
+    ("Remember that you chose this.", True, False),
+    ("The voices you heard on the line were people.", True, False),
+    ("We counted you among those they transferred.", True, False),
+    # a closing in an instructional kind is spared as well
+    ("Visiting is from two. Thank you for reading.", False, True),
 ]
 # (lint, document fields, the lint fires, near-miss)
 CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
@@ -139,7 +188,8 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
         False,
         True,
     ),
-    ("second_person", {"body": f"> you were never here\n{MUNDANE}"}, False, True),
+    # fix round 2 (B): a `>` line with a second-person be-predicate fails (was a brief near-miss)
+    ("second_person", {"body": f"> you were never here\n{MUNDANE}"}, True, False),
     # curly apostrophes read as straight ones
     (
         "second_person",
@@ -151,24 +201,30 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
     ("second_person", {"kind": "recovery_guide", "body": "This was written for you."}, True, False),
     ("second_person", {"body": f"{MUNDANE} Thank you for your patience."}, False, True),
     ("second_person", {"body": f"{MUNDANE} Yours truly, Dag Quenby."}, False, True),
+    # fix round 2 (A): no procedural anchor, so these now fail (were near-misses in round 0)
     (
         "second_person",
         {"kind": "family_faq", "body": "You may be the next of kin we call first."},
-        False,
         True,
+        False,
     ),
     (
         "second_person",
         {"kind": "family_faq", "body": "This is for you if a relative is in care."},
-        False,
         True,
+        False,
     ),
     (
         "second_person",
         {"kind": "family_faq", "body": "If you have been told to wait, take a seat."},
-        False,
         True,
+        False,
     ),
+    *[("second_person", {"body": body}, fires, near) for body, fires, near in _SP2_MEMO],
+    *[
+        ("second_person", {"kind": "family_faq", "body": body}, fires, near)
+        for body, fires, near in _SP2_FAQ
+    ],
     *[("second_person", {"body": body}, fires, near) for body, fires, near in _SP_MEMO],
     *[
         ("second_person", {"kind": "family_faq", "body": body}, fires, near)

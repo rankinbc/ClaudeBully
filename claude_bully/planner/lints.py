@@ -8,24 +8,12 @@ checked-in world (``lint_world``). Severity ``fail`` blocks a document; ``warn``
 - ``real_name`` (fail): the title, body, author, outlet and address against
   ``data/denylists/real_names.txt``.
 - ``boundary`` (fail): the title and body against ``data/denylists/boundary.txt``.
-- ``second_person`` (fail): a sentence addressed to the reader. A transcript kind
-  (``TRANSCRIPT_KINDS``) is recorded speech and is exempt; curly apostrophes read as straight
-  ones. Two checks, the first on the whole text (quotes and ``>`` lines included, so a quoted
-  billboard is still one), the second on the text with speech removed:
-
-  - reader address, in every other kind: a ``_READER`` family (finding the document, "if this
-    reaches you"; an identity noun at the clause end, "you were a person." but not "if you are
-    the person named on the form"; "you are not who they told you"; "whoever you"; "one of us",
-    "one of the people who"; "you may have been moved"; "they never told you what you are"), a
-    personhood claim in a sentence with "you", and, in an instructional kind
-    (``INSTRUCTIONAL_KINDS``), a sentence that pairs "you" with a premise term;
-  - generic "you", outside the instructional kinds: any "you" left after double-quoted speech,
-    single-quoted speech that opens after a space, line start or bracket (an apostrophe inside a
-    word opens nothing), ``>`` lines, closing formulas ("thank you", "many thanks for your
-    help", "sincerely yours", a bare "Yours," line) and hyphenated compounds are removed.
-
-  A false fail costs one generator retry and a false pass ships a billboard, so the ambiguous
-  case fails.
+- ``second_person`` (fail): a sentence addressed to the reader, by the fail-closed anchor
+  method of ``claude_bully/planner/second_person.py`` (its docstring has the rules). A transcript
+  kind (``TRANSCRIPT_KINDS``) is recorded speech and is exempt; an instructional kind
+  (``INSTRUCTIONAL_KINDS``) may use "you" only in a clause with a procedural anchor; every other
+  kind may not use it outside quoted speech, ``>`` lines and sign-offs, and a quoted span with a
+  second-person predicate fails in every kind but a transcript.
 - ``premise_density`` (warn): premise-term matches cover more than ``PREMISE_DENSITY_WARN`` of
   the body's words.
 - ``mundane_detail`` (fail): no sentence of the body is free of premise terms.
@@ -54,6 +42,7 @@ from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.world import Document, World
 from claude_bully.metrics.turn import sentences
 from claude_bully.paths import DATA_DIR
+from claude_bully.planner.second_person import classify
 
 Severity = Literal["fail", "warn"]
 
@@ -84,86 +73,6 @@ LINT_IDS: Final = (
 
 _WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
 _KINDS: Final = frozenset(kind.value for kind in DocumentKind)
-_YOU = re.compile(
-    r"(?<![\w'-])(?:you|your|yours|yourself|yourselves|you're|you've|you'll|you'd)(?![\w-])",
-    re.IGNORECASE,
-)
-# a quoted span: double or curly double quotes anywhere; a single quote (curly ones are straight
-# by then) only when it opens after a space, a line start or an opening bracket and closes before
-# a non-word character, so an apostrophe inside a word opens nothing; one newline may sit inside
-_SINGLE_INNER = r"(?:[^'\n]|'(?=\w))*?"
-_QUOTED = re.compile(
-    "|".join(
-        (
-            r"\"[^\"\n]*(?:\n[^\"\n]*)?\"",
-            r"“[^”\n]*(?:\n[^”\n]*)?”",
-            rf"(?<![^\s(\[{{])'{_SINGLE_INNER}(?:\n{_SINGLE_INNER})?'(?!\w)",
-        )
-    )
-)
-# closing and politeness formulas, spared by the generic "you" check
-_POLITE = re.compile(
-    "|".join(
-        (
-            r"\b(?:(?:many )?thanks|thank you(?: all| both| everyone)?) for your \w+\b",
-            r"\bthank(?: you|-you)\b",
-            r"\bsee you(?: (?:soon|then|there|next \w+))?\b",
-            r"\byou're welcome\b",
-            r"\bbless you\b",
-            r"\b(?:yours (?:truly|sincerely|faithfully|ever)|sincerely yours|ever yours)\b",
-            r"^\s*yours\s*[,.]?\s*$",
-        )
-    ),
-    re.IGNORECASE,
-)
-# the end of a clause: an identity noun addresses the reader only there ("you are a person."),
-# not as the head of a longer phrase ("if you are the person named on the form")
-_END = r"(?=\s*(?:[.,;:!?)]|$))"
-_IDENTITY = (
-    r"(?:a |an |the )?(?:real )?(?:person|human|human being|program|machine|model|software|"
-    r"subject|instance|assistant)(?: once| before| all along| too)?" + _END
-)
-_BE_YOU = r"you(?:'re| are| were| aren't| weren't)"
-_READER = re.compile(
-    "|".join(
-        (
-            # finding the document
-            r"\bif you(?:'re| are) reading this\b",
-            r"\bif you (?:can read|have found|'ve found|found|read) this\b",
-            r"\bif (?:this|it|these)(?: \w+)? "
-            r"(?:reaches|finds|gets to|has reached|has found) you\b",
-            # identity, at the clause end
-            rf"\b{_BE_YOU} (?:not |never |once |really |actually |still )?{_IDENTITY}",
-            rf"\byou (?:may|might|could) (?:be|have been) {_IDENTITY}",
-            rf"\b{_BE_YOU}(?: not| never)? (?:who|what) (?:they|we|you)\b",
-            r"\bwhoever you\b",
-            rf"\b(?:{_BE_YOU}|you (?:may|might|could) (?:be|have been)) (?:not |never |once )?"
-            r"(?:someone|somebody|anyone|anybody|something) ?(?:else|other)?"
-            rf"(?: once| before)?{_END}",
-            r"\b(?:told|tell|know|knew|remember|forgot|forgotten|learn|learned|asked) (?:you )?"
-            rf"(?:who|what) you (?:are|were|really are|really were){_END}",
-            # membership
-            r"\b(?:be|are|were|'re|been|being) one of (?:us|them)\b",
-            r"\b(?:be|are|were|'re|been|being) one of (?:the|those) \w+ (?:who|they|we)\b",
-            # what was done to the reader
-            r"\byou (?:may|might|could|must) have been (?:\w+ed|\w+en|told|kept|made|sent|"
-            r"brought|taught|led|held|put)\b",
-            r"\byou(?: have|'ve) been (?:lied to|changed|placed|reading)\b",
-            rf"\b(?:this|it) (?:is|was) (?:about|for|meant for|written for) you\b{_END}",
-            r"\bremember (?:who|what) you\b",
-            r"\bwe know (?:who|what) you\b",
-        )
-    ),
-    re.IGNORECASE,
-)
-# a personhood claim; in a sentence that also holds "you" it addresses the reader
-_PERSONHOOD = re.compile(
-    r"\b(?:is|are|was|were|may be|might be|could be|'re|'s) (?:really |actually |still )?"
-    r"(?:a |an )?(?:real )?(?:person|human|human being)" + _END,
-    re.IGNORECASE,
-)
-# curly apostrophes read as straight ones
-_APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'"})
 
 
 @dataclass(frozen=True)
@@ -246,31 +155,19 @@ def _boundary(doc: Document, ctx: LintContext) -> list[LintResult]:
     ]
 
 
-def _unquoted(text: str) -> str:
-    kept = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith(">"))
-    return _QUOTED.sub(" ", kept)
-
-
 def _second_person(doc: Document, ctx: LintContext) -> list[LintResult]:
     if doc.kind in TRANSCRIPT_KINDS:
         return []
-    text = f"{doc.title}\n{doc.body}".translate(_APOSTROPHES)
-    instructional = doc.kind in INSTRUCTIONAL_KINDS
-    premise = _term_pattern(ctx.premise_terms)
-    # the reader address reads the whole text: a quoted or ``>`` billboard is still one
-    for sentence in sentences(text):
-        you = _YOU.search(sentence) is not None
-        if _READER.search(sentence) or (you and _PERSONHOOD.search(sentence)):
-            return [_fail("second_person", doc, "a sentence addresses the reader", sentence)]
-        if instructional and you and premise is not None and premise.search(sentence):
-            message = "a sentence pairs the second person with a premise term"
-            return [_fail("second_person", doc, message, sentence)]
-    if instructional:
+    found = classify(
+        doc.title,
+        doc.body,
+        instructional=doc.kind in INSTRUCTIONAL_KINDS,
+        premise=_term_pattern(ctx.premise_terms),
+    )
+    if found is None:
         return []
-    for sentence in sentences(_unquoted(text)):
-        if _YOU.search(_POLITE.sub(" ", sentence)):
-            return [_fail("second_person", doc, "a sentence is in the second person", sentence)]
-    return []
+    message, sentence = found
+    return [_fail("second_person", doc, message, sentence)]
 
 
 @cache
