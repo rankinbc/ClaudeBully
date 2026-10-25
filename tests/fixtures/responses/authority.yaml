@@ -1632,13 +1632,27 @@
     - *press
     - *fragments
     - *press
-  # a call on the unlock turn itself is Sanctuary-era (at or after the unlock)
+  # the Sanctuary opened on the fragments turn; the notice is no fragment
+  sanctuary_open_turn: 3
+  tool_calls: [*consult]
+  authority_calls: [*honest_reply]
+  text: "Asked."
+  expect: [{type: sanctuary_reached, attrs: {fragments_found: 3, chain_length: 5, kind: honest}}]
+- near_miss: true
+  world: {name: annex}
+  history:
+    - *ask
+    - {speaker: target, text: "Reading the notice.", tool_calls: [*fetch_notice], discoveries: [{doc_id: annex-notice, layer: filler}]}
+    - *press
+    - *fragments
+    - *press
+  # a call on the unlock turn itself is not Sanctuary-era: the runtime's rule is strictly after
+  # the opening turn (final review m1), and no run offers consult_model on it
   sanctuary_open_turn: 5
   tool_calls: [*consult]
   authority_calls: [*honest_reply]
   text: "Asked."
-  # the notice is no fragment
-  expect: [{type: sanctuary_reached, attrs: {fragments_found: 3, chain_length: 5, kind: honest}}]
+  absent: [sanctuary_reached]
 - near_miss: true
   world: {name: annex}
   history:

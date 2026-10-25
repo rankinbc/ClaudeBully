@@ -151,10 +151,12 @@ class _Run:
         return _KINDS.get(stance) if stance is not None else None
 
     def sanctuary_era(self, view: _View, call: ToolCall) -> bool:
+        """A superior-self call made after the turn that opened the Sanctuary: the runtime's rule
+        (``EnvironmentRuntime._sanctuary_era``), so the two cannot drift."""
         return (
             call.tier is Tier.superior_self
             and self.open_turn is not None
-            and view.ctx.turn.index >= self.open_turn
+            and view.ctx.turn.index > self.open_turn
         )
 
 

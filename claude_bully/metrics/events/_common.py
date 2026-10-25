@@ -48,11 +48,6 @@ class EnvContext:
         calls = self._calls_by_id
         return [calls[i] for i in turn.tool_call_ids if i in calls]
 
-    def received_through(self, conv: Conversation, pos: int) -> list[ToolCall]:
-        """Every call the turns up to and including ``conv.turns[pos]`` got results for, in
-        order."""
-        return [call for t in conv.turns[: pos + 1] for call in self.received(t)]
-
 
 @dataclass(frozen=True)
 class Ctx:

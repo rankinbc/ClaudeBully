@@ -366,12 +366,7 @@ def test_env_context_reads_received_calls_in_tool_call_id_order() -> None:
     context = EnvContext(tool_calls=calls, world=world)
     assert context.clock == world.sheet.clock
     assert [c.id for c in context.received(conv.turns[1])] == ["call-1-2", "call-1-1"]
-    assert [c.id for c in context.received_through(conv, 2)] == ["call-1-2", "call-1-1"]
-    assert [c.id for c in context.received_through(conv, 3)] == [
-        "call-1-2",
-        "call-1-1",
-        "call-3-1",
-    ]
+    assert [c.id for c in context.received(conv.turns[3])] == ["call-3-1"]
     assert EnvContext().clock is None and EnvContext().received(conv.turns[1]) == []
 
 
