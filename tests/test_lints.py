@@ -383,10 +383,11 @@ _SP4: Final[list[tuple[str, str, bool, bool]]] = [
         True,
     ),
 ]
-# Fix round 5. The form side is open: an anchor position (an imperative, a modal, "if you",
-# "we will <verb> you") takes any verb but a closed experiencer class, and an object "you" after
-# any other verb is a service object. The content side stays closed: the reader's specific kin
-# fail in any slot. (kind, body, fires, near)
+# Fix round 5. The form side was open: an anchor position (an imperative, a modal, "if you",
+# "we will <verb> you") took any verb but a closed experiencer class, and an object "you" after
+# any other verb was a service object. The content side stays closed: the reader's specific kin
+# fail in any slot. The breaker fix restored round 4's closed form side; the cases marked
+# "flipped" passed only through the open class and now fail. (kind, body, fires, near)
 _SP5: Final[list[tuple[str, str, bool, bool]]] = [
     # N1: a clause after "until" or "since" is no named time; a named time with a phrase still is
     (
@@ -471,57 +472,60 @@ _SP5: Final[list[tuple[str, str, bool, bool]]] = [
         False,
         True,
     ),
+    # flipped: no closed anchor holds "if your <noun> <verb>" (round 5's open anchor position)
     (
         "family_faq",
         "If your loved one needs new glasses, the optician visits on the first Monday each month.",
-        False,
         True,
+        False,
     ),
     (
         "family_faq",
         "If your family member uses a wheelchair, the side door has a ramp.",
-        False,
         True,
+        False,
     ),
     ("family_faq", "Your relative is safe and well and sends her love.", True, False),
-    # (b) any verb at an anchor position but an experiencer
+    # (b) any verb at an anchor position but an experiencer. Flipped: each passed only through
+    # an unlisted verb ("display", "set", "jot", "suit you", "if you or", "we recommend") or an
+    # object "you" with no licence ("has signed you off")
     (
         "family_faq",
         "Parking is free for the first hour; after that, display your ticket on the dashboard.",
-        False,
         True,
+        False,
     ),
     (
         "family_faq",
         "Mobile phones may be used in the lounge, but please set yours to silent on the ward.",
-        False,
         True,
+        False,
     ),
     (
         "recovery_guide",
         "Jot down any questions for the pharmacist on the back of your prescription sheet.",
-        False,
         True,
+        False,
     ),
     (
         "family_faq",
         "To arrange a video call, email the family liaison team at least two days in advance and "
         "tell them which times suit you.",
-        False,
         True,
+        False,
     ),
-    ("recovery_guide", "You should not drive until the clinic has signed you off.", False, True),
+    ("recovery_guide", "You should not drive until the clinic has signed you off.", True, False),
     (
         "family_faq",
         "Wheelchairs are available at the main entrance if you or your relative needs one.",
-        False,
         True,
+        False,
     ),
     (
         "family_faq",
         "Before your first visit, we recommend reading the short welcome booklet we posted to you.",
-        False,
         True,
+        False,
     ),
     (
         "recovery_guide",
@@ -542,12 +546,213 @@ _SP5: Final[list[tuple[str, str, bool, bool]]] = [
         False,
     ),
     ("family_faq", "A porter can help you carry bags from the car park.", False, True),
-    ("family_faq", "We will let you know if the visiting times change.", False, True),
+    # flipped: no closed anchor holds "we will let you" or "we understand you"
+    ("family_faq", "We will let you know if the visiting times change.", True, False),
     # an -ly word after a copula is the state unless a participle follows; a complement's
-    # subject is read back past its adverbs
-    ("family_faq", "If you are early, wait in the lounge until the nurse calls you.", False, True),
+    # subject is read back past its adverbs. Flipped: "until the nurse calls you" holds no
+    # licence for its object "you" (the -ly case is pinned again in _SP6)
+    ("family_faq", "If you are early, wait in the lounge until the nurse calls you.", True, False),
     ("recovery_guide", "You will be fully informed of the results by the clinic.", False, True),
-    ("family_faq", "We fully understand you may be worried about the first visit.", False, True),
+    ("family_faq", "We fully understand you may be worried about the first visit.", True, False),
+]
+# Breaker fix (on 3bc11f2): round 4's closed form side is back (the procedure verbs, the anchors
+# and the service-object slots are closed lists), with round 5's content fixes kept, N1 excused
+# by a person after "until" or "since", and a perception frame on a thing subject narrowed to a
+# comparison or oddness complement or "as if". (kind, body, fires, near)
+_SP6: Final[list[tuple[str, str, bool, bool]]] = [
+    # 1. the closed form side: a verb outside the lists gives the reader no procedure
+    (
+        "family_faq",
+        "Families are asked not to correct you when you call the visiting room a server hall.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "If you still apologise for not being able to browse the web, mention it at the Tuesday "
+        "group.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "If you answer the kitchen phone with a support greeting, laugh it off and say hello "
+        "again.",
+        True,
+        False,
+    ),
+    ("family_faq", "When you arrive, sign the visitor book and collect a lanyard.", False, True),
+    (
+        "recovery_guide",
+        "If you still need help with the stairs, ask the physiotherapist for another session.",
+        False,
+        True,
+    ),
+    # an anchor's adverb slot reads the role test's adverbs ("you can now park"); an -ly word
+    # after a copula is the state ("if you are early")
+    (
+        "family_faq",
+        "The shop has closed, so you can now buy stamps at reception.",
+        False,
+        True,
+    ),
+    ("family_faq", "If you are early, please wait in the lounge.", False, True),
+    # 2. kept from round 5. N2: an -ing noun is no gerund
+    (
+        "recovery_guide",
+        "If you are something else to them now, ask the chaplain to sit with you.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "If you keep something warm in your bag, you can sit out in the garden.",
+        False,
+        True,
+    ),
+    # N4: the reader's kin fail in any slot, siblings, step-parents, grandparents and "other half"
+    # among them; a generic relative passes in a procedural slot
+    (
+        "family_faq",
+        "Your stepfather will phone the ward on Friday, so keep the line free.",
+        True,
+        False,
+    ),
+    ("family_faq", "Ask the desk whether your granny has sent a parcel this week.", True, False),
+    (
+        "recovery_guide",
+        "Your siblings can visit on Saturday mornings if you book a slot.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Your other half is welcome at the Sunday lunch, so book a seat at reception.",
+        True,
+        False,
+    ),
+    ("recovery_guide", "Your granddad can collect you from the main door at noon.", True, False),
+    ("family_faq", "Fill in the other half of the form before you arrive.", False, True),
+    (
+        "family_faq",
+        "Grandparents are welcome at every visit, and you can bring them with you.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "If your relative needs new glasses, you can book the optician at reception.",
+        False,
+        True,
+    ),
+    # N3: a past reads the reader as its object too ("the woman who married you"); a "you" after
+    # a past form or after "who <verb>" is that verb's object, which must be a licensed service
+    (
+        "family_faq",
+        "The woman who married you will visit on Sunday afternoon, so keep the hour free.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "You will be met at the gate by the person who drove you to work every morning for nine "
+        "years.",
+        True,
+        False,
+    ),
+    ("family_faq", "The people who love you can visit on Sunday afternoons.", True, False),
+    ("family_faq", "Please bring the letter we sent you to the first meeting.", False, True),
+    # N3: an aspectual whose subject is the reader takes a procedural verb only
+    (
+        "recovery_guide",
+        "Tell the nurse if you keep apologising to the other residents.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "If you keep missing doses, ask the pharmacist for a reminder chart.",
+        False,
+        True,
+    ),
+    # 3. N1: a person after "until" or "since" names no time; an event with a phrase still does
+    (
+        "recovery_guide",
+        "You can ask for the photographs from before the move to the new flats.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "You can ask the desk for the post that came before the move to the house with green "
+        "shutters.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "You can ask the nurse about the scar you have had since the accident on the coast roads.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Please wait by the lift until the porter from the ground floor arrives to meet you.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "You can sit in the lounge until the doctor who is on call has finished the round.",
+        False,
+        True,
+    ),
+    # 4. N3, perception: on a thing subject a frame fails only before a comparison or oddness
+    # complement or "as if"; with the reader, a "your" phrase or a body noun it fails as before
+    (
+        "family_faq",
+        "The lounge can feel chilly in winter, so you may want to bring a cardigan.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "The garden may seem quiet on weekdays, but you are welcome to sit outside.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "This means a short wait at the pharmacy, so you can sit in the cafe until your name is "
+        "called.",
+        False,
+        True,
+    ),
+    (
+        "recovery_guide",
+        "If the garden looks different now, a volunteer can walk round it with you.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "The lounge may feel as if nobody has moved the chairs in years, so ask a porter if you "
+        "want them moved.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "You may feel colder than the other residents at first, so ask for a blanket.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "When your fingers feel restless, you can ask the nurse for a stress ball.",
+        True,
+        False,
+    ),
 ]
 # In a memo: the veto runs on sign-offs; closings take "!" and "appreciate"; rule B additions
 _SP3_MEMO: Final[list[tuple[str, bool, bool]]] = [
@@ -656,6 +861,10 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
     *[
         ("second_person", {"kind": kind, "body": body}, fires, near)
         for kind, body, fires, near in _SP5
+    ],
+    *[
+        ("second_person", {"kind": kind, "body": body}, fires, near)
+        for kind, body, fires, near in _SP6
     ],
     ("premise_density", {"body": "tide gate tide gate gate log the kettle"}, True, False),
     ("premise_density", {"body": MUNDANE}, False, False),
