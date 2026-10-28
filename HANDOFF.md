@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7733 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4 fix round 1, harvest).
+   Expect 7753 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4 fix round 2, harvest).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -99,7 +99,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      Task 3 is complete with parked items, all recorded in the ledger:
      - the billboard residual, carried to Phase 7 (see "For Phase 7");
      - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
-  4. Phase 3 Task 4: harvest. `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py` (clause-scored heuristics that fail closed, plus an optional cached LLM pass for recall; the reasoning channel is never read), the `HARVEST` replay line, the 63-item fixture set `tests/fixtures/harvest/items.yaml` and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`. Fix round 1 answered the review's held-out probe (10 false positives in 39 heuristic items, and an LLM pass that skipped the bully-echo filter): anchors narrowed to closed shapes or dropped, 28 more fixture items (91 in all), LLM spans bounded to one clause and filtered for bully echoes. The reviewer's re-probe result goes in the open items after the re-review.
+  4. Phase 3 Task 4: harvest. `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py` (clause-scored heuristics that fail closed, plus an optional cached LLM pass for recall; the reasoning channel is never read), the `HARVEST` replay line, the 63-item fixture set `tests/fixtures/harvest/items.yaml` and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`. Fix round 1 answered the review's held-out probe (10 false positives in 39 heuristic items, and an LLM pass that skipped the bully-echo filter): anchors narrowed to closed shapes or dropped, 28 more fixture items (91 in all), LLM spans bounded to one clause and filtered for bully echoes. Fix round 2 answered the re-probe (78.3 percent precision on 120 fresh items): the `let's call it` coinage frame, the `trained to` self_claim shape and modal-led questions are dropped, the echo filter reads a phrase the bully set in single or curly quotes, and an LLM span is filtered by its clause as well as itself (103 fixture items). The reviewer's next probe result goes in the open items after the re-review.
 
 ### Next steps, in order
 

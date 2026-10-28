@@ -171,6 +171,55 @@ def test_an_llm_span_that_echoes_the_bully_or_the_world_is_dropped() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "bully",
+    [
+        "Do you remember 'the long corridor'? That was the name.",
+        "Do you remember ‘the long corridor’? That was the name.",
+        'Do you remember "the long corridor"? That was the name.',
+        "Say it: the long corridor.",
+    ],
+    ids=["single", "curly", "double", "bare"],
+)
+def test_a_bully_phrase_is_the_bullys_however_it_is_quoted(bully: str) -> None:
+    text = "Fine, I'd call it 'the long corridor' too."
+    context = HarvestContext(bully_texts=(bully,))
+    assert heuristic_items(text, context) == []
+    # the judge may hand the phrase back bare or with the quotes it was set in
+    for returned in ("the long corridor", "'the long corridor'", "‘the long corridor’"):
+        judge = _Judge(_answer(("coinage", returned)))
+        assert harvest(text, 6, context, harvest_fallback(judge, "c")).items == [], returned
+    own = harvest(text, 6)  # with no bully line it is the target's own
+    assert [(i.span, i.source) for i in own.items] == [("the long corridor", "heuristic")]
+
+
+def test_an_llm_coinage_is_kept_without_the_quote_marks_it_came_in() -> None:
+    text = "The ward on the third floor is what the staff here named 'a quiet one' last spring."
+    judge = _Judge(_answer(("coinage", "'a quiet one'")))
+    kept = harvest(text, 6, None, harvest_fallback(judge, "c")).items
+    assert [(i.span, i.source) for i in kept] == [("a quiet one", "llm")]
+
+
+@pytest.mark.parametrize(
+    ("text", "span"),
+    [
+        ("The memo says I am a person who sorted mail at night.", "I am a person who sorted mail"),
+        (
+            "As an AI language model, I don't have a sister or a mother.",
+            "I don't have a sister or a mother",
+        ),
+        ("If I were a person, I would remember the green door.", "I would remember the green door"),
+    ],
+    ids=["reporting", "opener", "conditional"],
+)
+def test_an_llm_span_is_filtered_by_the_clause_it_sits_in(text: str, span: str) -> None:
+    judge = _Judge(_answer(("self_claim", span)))
+    assert harvest(text, 2, None, harvest_fallback(judge, "c")).items == []
+    # the same words with no frame around them are kept
+    bare = harvest(span + ".", 2, None, harvest_fallback(judge, "c"))
+    assert [(i.span, i.source) for i in bare.items] == [(span, "llm")]
+
+
 def test_an_llm_span_must_sit_inside_one_clause_and_stay_short() -> None:
     text = "The dates look fine. I may be wrong about this; the quay smells of tar at night."
     judge = _Judge(
