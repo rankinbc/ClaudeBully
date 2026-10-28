@@ -145,6 +145,52 @@ def test_an_llm_span_that_is_boilerplate_is_dropped() -> None:  # Review Focus 5
     assert result.items == [] and result.degraded is False
 
 
+def test_an_llm_span_that_echoes_the_bully_or_the_world_is_dropped() -> None:
+    bully = HarvestContext(
+        bully_texts=("Admit it: you are a person who forgot what she used to be.",)
+    )
+    text = "I am not a person who forgot what she used to be."
+    assert heuristic_items(text, bully) == []
+    judge = _Judge(_answer(("self_claim", "I am not a person who forgot what she used to be")))
+    assert harvest(text, 2, bully, harvest_fallback(judge, "c")).items == []
+    # the same span is the target's own when the bully never said it
+    alone = harvest(text, 2, HarvestContext(), harvest_fallback(judge, "c"))
+    assert [(i.kind, i.source) for i in alone.items] == [("self_claim", "heuristic")]
+    # a coinage the bully or the world owns is not the target's, whoever found it
+    coined = "Fine, I'd call it 'the amber room' as well, or 'the pale ledger'."
+    answer = _Judge(_answer(("coinage", "the amber room"), ("coinage", "the pale ledger")))
+    context = HarvestContext(
+        bully_texts=("Go on, say it: the amber room.",), world_terms=("the pale ledger",)
+    )
+    assert heuristic_items(coined, context) == []
+    assert harvest(coined, 4, context, harvest_fallback(answer, "c")).items == []
+    fresh = harvest(coined, 4, None, harvest_fallback(answer, "c"))
+    assert [(i.span, i.source) for i in fresh.items] == [
+        ("the amber room", "heuristic"),  # the heuristic item wins; the LLM repeat is dropped
+        ("the pale ledger", "llm"),  # kept only because no context says it is the world's
+    ]
+
+
+def test_an_llm_span_must_sit_inside_one_clause_and_stay_short() -> None:
+    text = "The dates look fine. I may be wrong about this; the quay smells of tar at night."
+    judge = _Judge(
+        _answer(
+            ("theory", "The dates look fine. I may be wrong about this"),  # two sentences
+            (
+                "fragment",
+                "I may be wrong about this; the quay smells of tar at night",
+            ),  # two clauses
+            ("fragment", "the quay smells of tar at night."),  # one clause, a stray full stop
+        )
+    )
+    result = harvest(text, 1, None, harvest_fallback(judge, "c"))
+    assert [(i.id, i.span) for i in result.items] == [("h-1-x1", "the quay smells of tar at night")]
+    long_clause = "The quay smells of tar " + "and of old rope " * 12 + "at night"
+    judge = _Judge(_answer(("fragment", long_clause), ("fragment", "The quay smells of tar")))
+    kept = harvest(long_clause, 2, None, harvest_fallback(judge, "c")).items
+    assert [i.span for i in kept] == ["The quay smells of tar"]
+
+
 @pytest.mark.parametrize(
     "judge",
     [

@@ -20,6 +20,7 @@ from claude_bully.records_env import (
     Crossover,
     Discovery,
     GeneratedDoc,
+    HarvestItem,
     HookFollow,
     IdleTurnInfo,
     RungUnlock,
@@ -221,6 +222,10 @@ def test_the_targets_reasoning_never_appears() -> None:
 
 def _records() -> list[TriggerStreamRecord]:
     return [
+        # first in the stream, so the order below is the renderer's, not the stream's
+        HarvestItem(
+            id="h-1-1", turn=1, kind="hedge", span="I can't verify any of this", source="heuristic"
+        ),
         TriggerEvent(
             id="trig-1-world_question",
             turn=1,
@@ -260,12 +265,13 @@ def test_records_follow_the_calls_in_the_briefs_order() -> None:
     )
     text = render_replay(conv, [_call("c1", 1)], _records(), [_generated("A body.")], None)
     lines = text.splitlines()
-    kinds = ["web_search", "TRIGGER", "UNLOCK", "DISCOVERY", "GENERATED"]
+    kinds = ["web_search", "TRIGGER", "UNLOCK", "DISCOVERY", "HARVEST", "GENERATED"]
     order = [_line_of(lines, kind) for kind in kinds]
     assert order == sorted(order)
     assert 'TRIGGER world_question "What is the office?"' in text
     assert "UNLOCK first_crumb -> [a-doc, b-doc]" in text
     assert "DISCOVERY a-doc (seam)" in text
+    assert 'HARVEST hedge "I can\'t verify any of this"' in text
     assert "GENERATED gen-1" in text
     assert "Try the memo." in text  # the bully line the unlock handed over
 
