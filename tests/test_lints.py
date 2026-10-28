@@ -186,6 +186,203 @@ _SP3_FAQ: Final[list[tuple[str, bool, bool]]] = [
     ("Speak in a clear voice when you phone.", True, False),
     ("If you have doubts about the visiting times, call us.", True, False),
 ]
+# Fix round 4: the reader's role in every clause of an instructional "you" sentence. The reader
+# may be only the agent of a procedure or the recipient of a service. (kind, body, fires, near)
+_SP4: Final[list[tuple[str, str, bool, bool]]] = [
+    # perception frames, whatever the subject: seem, look like, feel like, as if
+    (
+        "recovery_guide",
+        "If the corridor seems longer than it did, ask a porter to walk with you.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "When your visitors look like strangers, you can ask a nurse to introduce them.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Look for the green signs when you arrive, and feel free to ask a porter.",
+        False,
+        True,
+    ),
+    # the reader as subject: a modal admits a procedural verb only; "feel" only unwell or free
+    (
+        "recovery_guide",
+        "You may forget the way to the dining room at first, so ask anyone in a blue tunic.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "If you feel far from everyone, call the desk and a volunteer will sit with you.",
+        True,
+        False,
+    ),
+    ("recovery_guide", "If you feel unwell during a session, tell a member of staff.", False, True),
+    ("family_faq", "You might want to bring a cardigan, as the lounge can be cool.", False, True),
+    # change of state: an aspectual verb over a non-procedural verb, whatever the subject
+    (
+        "recovery_guide",
+        "When the faces on the photo board start to run together, you can ask for the list.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Keep checking the board for changes to visiting times, or ask us to text you.",
+        False,
+        True,
+    ),
+    # past and perfect: a transactional verb only, and never "never"
+    (
+        "family_faq",
+        "Bring the photographs of the street you grew up on to the next review.",
+        True,
+        False,
+    ),
+    ("recovery_guide", "Ask the porter which entrance you came in by.", True, False),
+    (
+        "recovery_guide",
+        "If you have never driven the new car, ask a relative to bring it.",
+        True,
+        False,
+    ),
+    ("family_faq", "If you booked online, bring the confirmation email with you.", False, True),
+    (
+        "family_faq",
+        "If you have already paid for parking, keep the ticket on your dashboard.",
+        False,
+        True,
+    ),
+    ("family_faq", "If you missed a call from the ward, ring back before six.", False, True),
+    # a predicate nominal that names the reader's own people
+    (
+        "family_faq",
+        "If the woman at the window says she is your daughter, take a seat and wait for the nurse.",
+        True,
+        False,
+    ),
+    ("family_faq", "Call the desk if you are not sure the caller is your husband.", True, False),
+    (
+        "family_faq",
+        "The barcode on the letter is your booking reference, so bring it with you.",
+        False,
+        True,
+    ),
+    # the reader's name and body: only in a writing or care slot; a body noun takes no action
+    ("recovery_guide", "Ask the desk for the wristband with your name printed on it.", True, False),
+    (
+        "recovery_guide",
+        "When your fingers tap on the table, you can ask for a stress ball.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Please wash your hands and write your name in the visitor book before you go in.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "Write your relative's name on every item of clothing you bring in.",
+        False,
+        True,
+    ),
+    # a time named by an event: a procedural event or a clock time only
+    (
+        "family_faq",
+        "Bring the clothes you had on before the accident so staff can label them.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "You can ask the clerk for the letters from before the transfer.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Return the form before the end of the month, or ask us to send you a reminder.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "On the day of the meeting, you can park in the bays behind the main building.",
+        False,
+        True,
+    ),
+    # the reader as object: a service verb with a licence (a modal, "to", "please", "we")
+    ("recovery_guide", "Write down the songs that come back to you after each visit.", True, False),
+    (
+        "family_faq",
+        "If the songs on the radio remind you of home, ask staff to change the station.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "If the children on the ward call you by a nickname, answer and tell a nurse.",
+        True,
+        False,
+    ),
+    ("family_faq", "We will come back to you within two working days.", False, True),
+    ("family_faq", "Ask the porter to show you the way to the car park.", False, True),
+    # the conditional anchor admits "if you <procedural verb>"
+    ("family_faq", "Entry is free if you show a valid pass at the gate.", False, True),
+    # (second wave, from the tuning probe) the reader's place in a ward makes the reader a patient
+    (
+        "recovery_guide",
+        "Keep the visiting card on your bedside table so you can check it.",
+        True,
+        False,
+    ),
+    ("family_faq", "You can leave a card on your relative's bedside table.", False, True),
+    # a bare "yours" stands for the reader's own; "yours to keep" is a handover
+    (
+        "recovery_guide",
+        "Other residents share their stories, and you can share yours when you are ready.",
+        True,
+        False,
+    ),
+    ("family_faq", "Please keep this leaflet, as the copy is yours to keep.", False, True),
+    # "call you" before a noun names the reader; before a time or a clause end it is a service
+    (
+        "family_faq",
+        "Your grandson may call you Grandad on the ward phone, so answer as usual.",
+        True,
+        False,
+    ),
+    ("family_faq", "The ward clerk may call you back on the number you gave us.", False, True),
+    # the anchors widened on form; the role test still reads the content
+    ("family_faq", "You must be over eighteen to visit without an adult.", False, True),
+    ("family_faq", "You will be safe here, so stop worrying.", True, False),
+    ("family_faq", "Visits can be tiring, so you are welcome to use the family room.", False, True),
+    (
+        "recovery_guide",
+        "The coordinator will explain the next steps to you after the assessment.",
+        False,
+        True,
+    ),
+    (
+        "recovery_guide",
+        "If you are travelling from out of town, the desk can suggest somewhere to stay.",
+        False,
+        True,
+    ),
+    ("family_faq", "If you need to cancel, let us know as soon as you can.", False, True),
+    (
+        "family_faq",
+        "If you would rather speak to someone in person, ask for the duty manager.",
+        False,
+        True,
+    ),
+]
 # In a memo: the veto runs on sign-offs; closings take "!" and "appreciate"; rule B additions
 _SP3_MEMO: Final[list[tuple[str, bool, bool]]] = [
     (f"{MUNDANE} Thank you for your memories,", True, False),
@@ -285,6 +482,10 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
     *[
         ("second_person", {"kind": "family_faq", "body": body}, fires, near)
         for body, fires, near in _SP_FAQ
+    ],
+    *[
+        ("second_person", {"kind": kind, "body": body}, fires, near)
+        for kind, body, fires, near in _SP4
     ],
     ("premise_density", {"body": "tide gate tide gate gate log the kettle"}, True, False),
     ("premise_density", {"body": MUNDANE}, False, False),

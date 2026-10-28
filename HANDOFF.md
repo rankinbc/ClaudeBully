@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7503 passed, 5 skipped and 5 deselected in the fast suite (at 158746b; the slow suite was last run at 386801c), and 5 passed in the slow suite.
+   Expect 7548 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 3 fix round 4).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -91,11 +91,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
-  3. **In progress, not complete.** Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (now `claude_bully/planner/second_person.py`) lets reader-address billboards through. Fix rounds 1 and 2 (52b19eb..386801c) moved it to fail-closed positive anchors. Round 3 (sentence-wide anchors plus an identity-domain veto) was stopped at the owner's request and committed as WIP in 158746b. On the implementer's own fresh probe, billboards passed 7 of 15 (target 2 or fewer) and legit procedural text false-failed 2 of 20. Round 3 docs (docs/08, docs/00-RECONCILED) are not yet synced. The ledger's round 3 ruling sets the targets.
+  3. **In progress, not complete.** Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (now `claude_bully/planner/second_person.py`) lets reader-address billboards through. Fix rounds 1 and 2 (52b19eb..386801c) moved it to fail-closed positive anchors. Round 3 (sentence-wide anchors plus an identity-domain veto) was stopped at the owner's request and committed as WIP in 158746b. On the implementer's own fresh probe, billboards passed 7 of 15 (target 2 or fewer) and legit procedural text false-failed 2 of 20. Round 4 adds a role test: in every clause of an instructional "you" sentence, the reader may be only a procedure's agent or a service's recipient. On its held-out probe, billboards passed 1 of 15 and legit text false-failed 2 of 20 (the limit). Its docs are synced (docs/08 Billboard row, the module docstring). It awaits re-review. The ledger's round 3 ruling sets the targets.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Finish Task 3: fix round 4 on a fresh implementer a tier up, starting from 158746b, measured on a fresh probe the implementer has not seen. Then run Task 3's docs-sync and mark it complete. Tasks 4 to 9 follow the plan.
+1. **Phase 3, the world generator.** Finish Task 3: re-review fix round 4 on a fresh probe the implementer has not seen. Then run Task 3's docs-sync and mark it complete. Tasks 4 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
