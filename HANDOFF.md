@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-24, at commit c15f9ce (Phase 2 complete, with its final review and fix wave; the closing docs-sync commit follows it) on `build/v1`.
+Last updated: 2026-10-28, at commit 158746b on `build/v1`. Phase 3 is in progress: Tasks 1 and 2 are complete, and Task 3 is mid-fix with its round 3 work committed as WIP.
 
 ## What this is
 
@@ -37,11 +37,13 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7467 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite.
+   Expect 7503 passed, 5 skipped and 5 deselected in the fast suite (at 158746b; the slow suite was last run at 386801c), and 5 passed in the slow suite.
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
-   The Phase 2 ledger in the snapshot is archived for reference only. Phase 2 is complete, and nothing resumes from it.
+   The Phase 3 ledger (`2026-10-24-phase-3-world-generator/progress.md`) is the live one, and work resumes from it. The per-range `review-*.diff` files were left out of the snapshot; regenerate any you need with `review-package`. The Phase 2 ledger is archived for reference only.
+
+   The Phase 2 summary that lived in the untracked `output/` folder is copied under `docs/handoff/output/`.
 7. Install the `superpowers` plugin in Claude Code. Version 7.0.0 was used. It provides the subagent-driven-development process described below.
 
 `claude -p` must be logged in for real runs. No real model calls happen before Phase 7. The whole test suite uses stub providers and `tests/fixtures/fake_claude.py`.
@@ -89,11 +91,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
-  3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554)
+  3. **In progress, not complete.** Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (now `claude_bully/planner/second_person.py`) lets reader-address billboards through. Fix rounds 1 and 2 (52b19eb..386801c) moved it to fail-closed positive anchors. Round 3 (sentence-wide anchors plus an identity-domain veto) was stopped at the owner's request and committed as WIP in 158746b. On the implementer's own fresh probe, billboards passed 7 of 15 (target 2 or fewer) and legit procedural text false-failed 2 of 20. Round 3 docs (docs/08, docs/00-RECONCILED) are not yet synced. The ledger's round 3 ruling sets the targets.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** The spec and plan are written; Tasks 1 to 3 are done. Tasks 4 to 12 follow the plan.
+1. **Phase 3, the world generator.** Finish Task 3: fix round 4 on a fresh implementer a tier up, starting from 158746b, measured on a fresh probe the implementer has not seen. Then run Task 3's docs-sync and mark it complete. Tasks 4 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -209,8 +211,8 @@ These are the main carries; the ledger has the full list.
 
 ## Resuming in a new Claude Code session
 
-Open Claude Code in the repo on `build/v1`. Phase 2 has no ledger left to resume; the restored snapshot (setup step 6) is for reference. Then paste:
+Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Start Phase 3 of the claude-bully build, the world generator. Read HANDOFF.md first, including the open items for Phase 3. Use superpowers:brainstorming to write the Phase 3 spec, then superpowers:writing-plans for its plan, then execute with superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Task 3 is mid-fix: run second_person fix round 4 on a fresh implementer starting from 158746b, per the round 3 ruling's targets, then docs-sync and complete Task 3. Continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```
