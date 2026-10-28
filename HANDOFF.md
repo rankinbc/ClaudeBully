@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-28, at Task 4's docs-sync on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete, Task 4 (harvest) is built and awaits its review, and Task 5 is next.
+Last updated: 2026-10-28, at Task 4 fix round 3 (5faa77e) on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete. Task 4 (harvest) is mid-fix: round 3 is committed, and its scoped re-review has not run yet.
 
 ## What this is
 
@@ -103,7 +103,12 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Task 4 (harvest) is built and awaits its review (carries in `task-4-carries.md` beside the ledger); resume at Task 5 once it is accepted. Tasks 5 to 9 follow the plan.
+1. **Phase 3, the world generator.** Finish Task 4 (harvest), which is mid-fix:
+   - Dispatch the round 3 scoped re-review: a fresh opus reviewer with a fresh held-out probe, over `858ad84..5faa77e`. It verifies I1 (heuristic precision of at least 95%) and I2b (reported speech filtered on both paths), per `task-4-findings-round3.md` beside the ledger.
+   - If findings remain, rounds 4 and 5 go to a fresh implementer a tier up. The round 1 to 3 implementer is past 400k tokens of context.
+   - Then run docs-sync, add the probe result to the open items, and mark Task 4 complete.
+
+   Tasks 5 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -223,5 +228,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete and Task 4 is built (review pending). Check the ledger for Task 4's review, then resume at Task 5 and continue with Tasks 5 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete. Task 4 is mid-fix: dispatch its round 3 scoped re-review (858ad84..5faa77e, fresh probe, per task-4-findings-round3.md), finish its fix loop and docs-sync, then resume at Task 5 and continue with Tasks 5 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```

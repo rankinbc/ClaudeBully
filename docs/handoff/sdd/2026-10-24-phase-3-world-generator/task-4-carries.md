@@ -16,4 +16,4 @@
 
   The brief's code was scored 63/63 when the plan was written. If a fixture fails after transcription, fix the transcription first. Change a rule only for a real defect, and report every rule change.
 - **Environment.** `uv` is on PATH; skip the plan's `export PATH=/c/Users/badmin/...` line. Run `uv sync --all-groups --all-extras` once if an import of an extra fails.
-- **Gate counts at BASE.** 7590 passed, 5 skipped and 5 deselected; slow 5 passed.
+- **Gate counts at BASE (34ae36b).** 7625 passed, 5 skipped and 5 deselected; slow 5 passed.
