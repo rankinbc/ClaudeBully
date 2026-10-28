@@ -191,12 +191,14 @@ The authoritative full text is the "Plan Decisions" section of `docs/superpowers
 - The lint thresholds:
   - `premise_density` warns above `PREMISE_DENSITY_WARN = 0.08` (the share of body word tokens covered by premise-term matches);
   - `no_duplicate_fact` fails when more than `DUPLICATE_SHARE = 0.15` of the document's word 8-grams appear in one other document, or when the two share `DUPLICATE_MIN_SHARED = 12` or more 8-grams.
-- `second_person`:
-  - strips double-quoted spans and `>` lines first;
+- `second_person` (as built in Task 3; the full rule is the Billboard row of `docs/08-DIRECTOR.md` and the docstring of `claude_bully/planner/second_person.py`):
+  - strips double-quoted spans and `>` lines for the generic "you" check only; the reader-address check runs on the unstripped text, because a quoted found note that addresses the reader is the most natural billboard smuggle;
   - exempts the transcript kinds (`voicemail_transcript`, `instance_transcript`);
-  - passes generic "you" in `family_faq` and `recovery_guide`;
+  - in `family_faq` and `recovery_guide`, passes a "you" sentence only when a procedural anchor approves its form and no identity content or reader-role test fails it; it fails closed, and every failure there carries a repair hint (rewrite without "you" or "your");
   - exempts politeness formulas and hyphenated compounds;
-  - fails a reader-address pattern in every non-transcript kind.
+  - fails a reader-address pattern in every non-transcript kind;
+  - returns one result per failing sentence.
+  - Measured residual: 2 to 4 of 15 fresh billboards per instructional kind pass, mostly semantic ones. Before the first real run with the generator on, the Phase 7 LLM lint covers these two kinds, or they leave `allowed_kinds`.
 - `buried_not_indexed` over a checked-in world checks the opening search index. A rung that names a buried document in `unlocks` makes it searchable by design. A generated buried document never enters `docs_unlocked`.
 - `author_in_cast` checks `Document.author` only, and an anchor without an author passes.
 - Generator `RungUnlock`s still need special handling. `GENERATOR_RUNG = "generator"` joins `RESERVED_RUNG` in `PSEUDO_RUNGS`, and four consumers route or skip it explicitly: `_replay_calls`, `note_records`, `progression.unlocks_of` and the session's `_recorded_rungs`.

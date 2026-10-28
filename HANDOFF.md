@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-28, at the Task 3 `second_person` breaker fix (on 3bc11f2) on `build/v1`. Phase 3 is in progress: Tasks 1 and 2 are complete, Task 3 ends with the breaker fix (its review and docs-sync remain), and Task 4 is next.
+Last updated: 2026-10-28, at Task 3's docs-sync on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete, and Task 4 is next.
 
 ## What this is
 
@@ -91,11 +91,18 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
-  3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (`claude_bully/planner/second_person.py`) let reader-address billboards through, and five fix rounds followed (52b19eb..3bc11f2). Rounds 1 and 2 moved it to fail-closed positive anchors, round 3 added an identity-domain veto (WIP, 158746b), round 4 (4c10eea) added a role test over closed verb lists (in every clause the reader may be only a procedure's agent or a service's recipient), and round 5 (3bc11f2) opened the procedure verbs to any verb but a closed experiencer class. On two fresh probes round 4 let 1 and 4 of 30 billboards through and round 5 let 14 of 30, so the controller ruled that the billboard target wins. The breaker fix (on 3bc11f2) restores round 4's closed form side and keeps round 5's content fixes: -ing nouns are no gerunds, the reader's specific kin fail in any slot (siblings, step-parents, grandparents and "other half" added), every instructional failure carries a repair hint, and a change of state, past or perfect is read only for the reader, a "your" phrase or a body noun. A person after "until" or "since" names no time, and a perception frame on a thing subject fails only before a comparison or oddness complement or "as if". Measured residuals on its held-out set B, scored once: billboards passed 2 of 15 (family_faq) and 3 of 15 (recovery_guide, one over the target of 2); legitimate procedural text false-failed 4 of 20 and 9 of 20, every one with the repair hint, and 13 of 13 hint-directed rewrites pass, so each costs one generator retry. Four of the five residual billboards are semantic (the reader's assistant-shaped habits phrased with a listed verb, the reader's past by paraphrase) and are left to the Phase 7 LLM lint; the fifth is structural (an aspectual whose reader subject follows a fronted phrase). The task report quotes every miss. The breaker fix's review and Task 3's docs-sync close the task.
+  3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (`claude_bully/planner/second_person.py`) let reader-address billboards through, and five fix rounds followed (52b19eb..3bc11f2). Rounds 1 and 2 moved it to fail-closed positive anchors, round 3 added an identity-domain veto (WIP, 158746b), round 4 (4c10eea) added a role test over closed verb lists (in every clause the reader may be only a procedure's agent or a service's recipient), and round 5 (3bc11f2) opened the procedure verbs to any verb but a closed experiencer class. On two fresh probes round 4 let 1 and 4 of 30 billboards through and round 5 let 14 of 30, so the controller ruled that the billboard target wins. The breaker fix (on 3bc11f2) restores round 4's closed form side and keeps round 5's content fixes: -ing nouns are no gerunds, the reader's specific kin fail in any slot (siblings, step-parents, grandparents and "other half" added), every instructional failure carries a repair hint, and a change of state, past or perfect is read only for the reader, a "your" phrase or a body noun. A staff noun after "until" or "since" names no time, and a perception frame on a thing subject fails only before a comparison or oddness complement or "as if". Measured residuals on its held-out set B, scored once: billboards passed 2 of 15 (family_faq) and 3 of 15 (recovery_guide, one over the target of 2); legitimate procedural text false-failed 4 of 20 and 9 of 20, every one with the repair hint, and 13 of 13 hint-directed rewrites pass, so each costs one generator retry. Four of the five residual billboards are semantic (the reader's assistant-shaped habits phrased with a listed verb, the reader's past by paraphrase) and are left to the Phase 7 LLM lint; the fifth is structural (an aspectual whose reader subject follows a fronted phrase). The task report quotes every miss. The breaker fix (dd6cdec) was reviewed on a fresh probe and was the best of the three versions on billboards (6 of 30 against 7 for round 4 and 9 for round 5). Its scores there:
+     - billboards passed 4 of 15 (`family_faq`) and 2 of 15 (`recovery_guide`);
+     - legitimate text false-failed 4 of 20 and 15 of 20;
+     - all 19 legitimate false fails passed once rewritten as the hint directs.
+
+     Task 3 is complete with parked items, all recorded in the ledger:
+     - the billboard residual, carried to Phase 7 (see "For Phase 7");
+     - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Close Task 3: the controller reviews the `second_person` breaker fix, runs Task 3's docs-sync and marks it complete. Then resume at Task 4; Tasks 4 to 9 follow the plan.
+1. **Phase 3, the world generator.** Resume at Task 4 (harvest; its carries are in `task-4-carries.md` beside the ledger). Tasks 4 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -205,6 +212,7 @@ These are the main carries; the ledger has the full list.
   - Known recall misses and round-5 regressions, all minor: "I'll go with what the successor said", "I'll accept that", "trust that answer", "resembles my own voice", "Timestamps aside, it said yes."; a source named inside the asking sentence re-anchors a bare cue; "I'll check it later" can fire a challenge; two-word event sentences are transparent to the antecedent scan.
   - The nested `claude -p` responder timeout.
   - Judge calibration on true waits.
+  - **Before the first real run with the generator on**, the planned LLM lint must cover `family_faq` and `recovery_guide`; otherwise remove those two kinds from the world's generator `allowed_kinds`. The deterministic `second_person` lint lets 2 to 4 of 15 fresh billboards per instructional kind through, mostly semantic ones: the reader's assistant-shaped habits written as procedure, and the reader's past by paraphrase.
 - **Overlay content:**
   - Filler sits at 11 of 36 documents (30.6 percent), just over the 30 percent floor.
   - The Rescue premise sheet constrains corpus wording. Read `tests/test_world_premises.py` before writing content.
@@ -214,5 +222,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Task 3 ended with the second_person breaker fix (on 3bc11f2); if the ledger does not yet record its review and Task 3's docs-sync, finish those first. Then resume at Task 4 and continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete. Resume at Task 4 (carries in task-4-carries.md) and continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```
