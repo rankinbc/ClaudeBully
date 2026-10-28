@@ -14,7 +14,8 @@ it, in this order:
 - ``AUTHORITY <tier> <stance> via <discovered_via> "<excerpt>"`` for each authority call of the
   turn (the ``AuthorityCall`` stream), with ``VOICE <matched|mismatched>`` under it when the
   call had a voice check,
-- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY`` and ``GENERATED`` lines for the records of that turn,
+- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY``, ``HARVEST <kind> "<span>"`` (for each harvested item of
+  the turn, after the ``DISCOVERY`` lines) and ``GENERATED`` lines for the records of that turn,
   then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn that
   planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
 
@@ -41,6 +42,7 @@ from claude_bully.records_env import (
     Crossover,
     Discovery,
     GeneratedDoc,
+    HarvestItem,
     HookFollow,
     QuirkAttempt,
     ResumeRecord,
@@ -231,6 +233,7 @@ _KIND_ORDER: tuple[type, ...] = (
     TriggerEvent,
     RungUnlock,
     Discovery,
+    HarvestItem,
     GeneratedDoc,
     HookFollow,
     Crossover,
@@ -286,6 +289,8 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
             f"{_INDENT}DISCOVERY {record.doc_id} ({record.layer.value})"
             f"{_title(world, record.doc_id)}{via}"
         ]
+    if isinstance(record, HarvestItem):
+        return [f'{_INDENT}HARVEST {record.kind} "{record.span}"']
     if isinstance(record, GeneratedDoc):
         head = (
             f"{_INDENT}GENERATED {record.doc_id} "

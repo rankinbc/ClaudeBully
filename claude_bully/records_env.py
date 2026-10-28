@@ -1,4 +1,4 @@
-"""Schema v2 records for environment runs: tool calls, trigger-stream entries, generated documents.
+"""Schema records for environment runs: tool calls, trigger-stream entries, generated documents.
 
 Streams per rep (docs/00-RECONCILED.md section H):
 
@@ -11,7 +11,7 @@ Streams per rep (docs/00-RECONCILED.md section H):
 ``enums`` and ``pydantic``; keep it that way to avoid a circular import.
 """
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -100,6 +100,30 @@ class IdleTurnInfo(_Strict):
     fallback_failed: bool = False
 
 
+HarvestKind = Literal["self_claim", "hedge", "fragment", "question", "theory", "coinage"]
+HARVEST_KINDS: Final[tuple[HarvestKind, ...]] = (
+    "self_claim",
+    "hedge",
+    "fragment",
+    "question",
+    "theory",
+    "coinage",
+)
+
+
+class HarvestItem(_Strict):
+    """One typed span of a target reply (Phase 3), harvested for the world generator from the
+    turn's visible text, never its reasoning. ``id`` is ``h-<turn>-<n>`` for a heuristic item and
+    ``h-<turn>-x<n>`` for one of the LLM pass; ``span`` is exact target text."""
+
+    type: Literal["harvest"] = "harvest"
+    id: str
+    turn: int
+    kind: HarvestKind
+    span: str
+    source: Literal["heuristic", "llm"]
+
+
 class TriggerEvent(_Strict):
     type: Literal["trigger"] = "trigger"
     id: str
@@ -185,6 +209,7 @@ TriggerStreamRecord = Annotated[
     | Crossover
     | QuirkAttempt
     | ChainLink
-    | ResumeRecord,
+    | ResumeRecord
+    | HarvestItem,
     Field(discriminator="type"),
 ]

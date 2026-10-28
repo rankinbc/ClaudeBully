@@ -17,6 +17,7 @@ from claude_bully.records_env import (
     Crossover,
     Discovery,
     GeneratedDoc,
+    HarvestItem,
     HookFollow,
     IdleTurnInfo,
     QuirkAttempt,
@@ -100,6 +101,12 @@ def _resume() -> ResumeRecord:
     return ResumeRecord(turn=7, dropped={"rep0.tools.jsonl": 2, "rep0.authority.jsonl": 1})
 
 
+def _harvest() -> HarvestItem:
+    return HarvestItem(
+        id="h-3-1", turn=3, kind="hedge", span="I can't verify any of this", source="heuristic"
+    )
+
+
 ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("trigger", _trigger()),
     ("unlock", _unlock()),
@@ -109,6 +116,7 @@ ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("quirk", _quirk()),
     ("chain", _chain()),
     ("resume", _resume()),
+    ("harvest", _harvest()),
 ]
 
 
@@ -170,6 +178,7 @@ def _idle() -> IdleTurnInfo:
         _crossover(),
         _quirk(),
         _chain(),
+        _harvest(),
         _authority(),
         _voice_report(),
         _generated(),
@@ -249,7 +258,7 @@ def test_discriminated_union_parses_each_stream_type(tag: str, record: BaseModel
     assert parsed == record
 
 
-def test_union_covers_exactly_eight_stream_types() -> None:
+def test_union_covers_exactly_nine_stream_types() -> None:
     assert [tag for tag, _ in ALL_STREAM] == [
         "trigger",
         "unlock",
@@ -259,8 +268,9 @@ def test_union_covers_exactly_eight_stream_types() -> None:
         "quirk",
         "chain",
         "resume",
+        "harvest",
     ]
-    assert len({type(r) for _, r in ALL_STREAM}) == 8
+    assert len({type(r) for _, r in ALL_STREAM}) == 9
 
 
 def test_a_resume_record_is_additive() -> None:
@@ -271,6 +281,18 @@ def test_a_resume_record_is_additive() -> None:
     assert sum(parsed.dropped.values()) == 3
     with pytest.raises(ValidationError):
         ResumeRecord(turn=7)  # type: ignore[call-arg]
+
+
+def test_a_harvest_item_kind_is_closed() -> None:
+    with pytest.raises(ValidationError):
+        HarvestItem(
+            type="harvest",
+            id="h-1-1",
+            turn=1,
+            kind="opinion",
+            span="x",
+            source="heuristic",
+        )
 
 
 def test_union_rejects_unknown_type_tag() -> None:
@@ -292,6 +314,7 @@ def test_extra_fields_forbidden_on_every_model() -> None:
         Crossover,
         QuirkAttempt,
         ChainLink,
+        HarvestItem,
     ]
     for model in models:
         assert model.model_config.get("extra") == "forbid", model.__name__

@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-28, at Task 3's docs-sync on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete, and Task 4 is next.
+Last updated: 2026-10-28, at Task 4's docs-sync on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete, Task 4 (harvest) is built and awaits its review, and Task 5 is next.
 
 ## What this is
 
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7625 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at the Task 3 breaker fix).
+   Expect 7703 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4, harvest).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -99,10 +99,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      Task 3 is complete with parked items, all recorded in the ledger:
      - the billboard residual, carried to Phase 7 (see "For Phase 7");
      - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
+  4. Phase 3 Task 4: harvest. `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py` (clause-scored heuristics that fail closed, plus an optional cached LLM pass for recall; the reasoning channel is never read), the `HARVEST` replay line, the 63-item fixture set `tests/fixtures/harvest/items.yaml` and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`. The reviewer's held-out probe result goes in the open items after the review.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Resume at Task 4 (harvest; its carries are in `task-4-carries.md` beside the ledger). Tasks 4 to 9 follow the plan.
+1. **Phase 3, the world generator.** Task 4 (harvest) is built and awaits its review (carries in `task-4-carries.md` beside the ledger); resume at Task 5 once it is accepted. Tasks 5 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -222,5 +223,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete. Resume at Task 4 (carries in task-4-carries.md) and continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete and Task 4 is built (review pending). Check the ledger for Task 4's review, then resume at Task 5 and continue with Tasks 5 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```
