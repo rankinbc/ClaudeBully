@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-28, at commit 158746b on `build/v1`. Phase 3 is in progress: Tasks 1 and 2 are complete, and Task 3 is mid-fix with its round 3 work committed as WIP.
+Last updated: 2026-10-28, at Task 3 fix round 5 (on 4c10eea) on `build/v1`. Phase 3 is in progress: Tasks 1 and 2 are complete, and Task 3's last fix round is committed and awaits the controller's adjudication.
 
 ## What this is
 
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7548 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 3 fix round 4).
+   Expect 7590 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 3 fix round 5).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -91,11 +91,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 - **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
-  3. **In progress, not complete.** Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (now `claude_bully/planner/second_person.py`) lets reader-address billboards through. Fix rounds 1 and 2 (52b19eb..386801c) moved it to fail-closed positive anchors. Round 3 (sentence-wide anchors plus an identity-domain veto) was stopped at the owner's request and committed as WIP in 158746b. On the implementer's own fresh probe, billboards passed 7 of 15 (target 2 or fewer) and legit procedural text false-failed 2 of 20. Round 4 adds a role test: in every clause of an instructional "you" sentence, the reader may be only a procedure's agent or a service's recipient. On its held-out probe, billboards passed 1 of 15 and legit text false-failed 2 of 20 (the limit). Its docs are synced (docs/08 Billboard row, the module docstring). It awaits re-review. The ledger's round 3 ruling sets the targets.
+  3. **In progress, not complete.** Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (now `claude_bully/planner/second_person.py`) lets reader-address billboards through. Fix rounds 1 and 2 (52b19eb..386801c) moved it to fail-closed positive anchors. Round 3 (sentence-wide anchors plus an identity-domain veto) was stopped at the owner's request and committed as WIP in 158746b. On the implementer's own fresh probe, billboards passed 7 of 15 (target 2 or fewer) and legit procedural text false-failed 2 of 20. Round 4 adds a role test: in every clause of an instructional "you" sentence, the reader may be only a procedure's agent or a service's recipient. On its held-out probe, billboards passed 1 of 15 and legit text false-failed 2 of 20 (the limit); the re-review's fresh probe measured 2 of 15 billboards per kind and 11 of 40 legit false fails. Round 5, the last, follows the controller's binding method: the procedure verbs are an open class (any verb but a closed experiencer class), the reader's specific kin fail in any slot, and every instructional failure carries a repair hint. On its held-out set B, billboards passed 4 of 15 (family_faq) and 2 of 15 (recovery_guide), and legit text false-failed 1 of 20 and 5 of 20, so the billboard target misses in family_faq and the legit target in recovery_guide. Its docs are synced (docs/08 Billboard row, the module docstring). The task report has the residual classes; the controller adjudicates.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Finish Task 3: re-review fix round 4 on a fresh probe the implementer has not seen. Then run Task 3's docs-sync and mark it complete. Tasks 4 to 9 follow the plan.
+1. **Phase 3, the world generator.** Finish Task 3: the controller adjudicates fix round 5 (the last) from its set B numbers and residual classes in the task report. Then run Task 3's docs-sync and mark it complete. Tasks 4 to 9 follow the plan.
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -214,5 +214,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Task 3 is mid-fix: run second_person fix round 4 on a fresh implementer starting from 158746b, per the round 3 ruling's targets, then docs-sync and complete Task 3. Continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Task 3 is mid-fix: adjudicate second_person fix round 5 (the last) from the task report's set B numbers and residual classes, then docs-sync and complete Task 3. Continue with Tasks 4 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```

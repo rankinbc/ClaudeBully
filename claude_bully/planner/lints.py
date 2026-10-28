@@ -11,10 +11,12 @@ checked-in world (``lint_world``). Severity ``fail`` blocks a document; ``warn``
 - ``second_person`` (fail): a sentence addressed to the reader, by the fail-closed anchor
   method of ``claude_bully/planner/second_person.py`` (its docstring has the rules). A transcript
   kind (``TRANSCRIPT_KINDS``) is recorded speech and is exempt; an instructional kind
-  (``INSTRUCTIONAL_KINDS``) may use "you" only in a sentence with a procedural anchor whose every
-  clause gives the reader the role of a procedure's agent or a service's recipient; every other
-  kind may not use it outside quoted speech, ``>`` lines and sign-offs, and a quoted span with a
-  second-person predicate fails in every kind but a transcript.
+  (``INSTRUCTIONAL_KINDS``) may use "you" only in a sentence with an anchor position (any verb
+  but a closed experiencer class) whose every "you" is a procedure's agent or a service's
+  recipient, with no specific kin of the reader's, and each of its failures carries a repair
+  hint; every other kind may not use it outside quoted speech, ``>`` lines and sign-offs, and a
+  quoted span with a second-person predicate fails in every kind but a transcript. One result
+  per failing sentence, its span the document's own text.
 - ``premise_density`` (warn): premise-term matches cover more than ``PREMISE_DENSITY_WARN`` of
   the body's words.
 - ``mundane_detail`` (fail): no sentence of the body is free of premise terms.

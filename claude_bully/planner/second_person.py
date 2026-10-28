@@ -4,11 +4,13 @@ A sentence addressed to the reader is a billboard. The classifier fails closed: 
 use "you" at all, a "you" passes only on a positive anchor and a procedural role, and every other
 one fails. A false fail costs the generator one retry; a false pass ships a billboard, so the
 ambiguous case fails. Curly apostrophes read as straight ones. ``classify`` returns every failing
-sentence or quoted span, in text order. The checks:
+sentence or quoted span once, in text order, as the text the document holds; in an instructional
+kind each message ends with a repair hint (``_HINT``: rewrite without "you" or "your"), which
+always works, since a sentence with no second-person word passes. The checks:
 
-1. Reader address, on the whole text (quoted speech and ``>`` lines included): a ``_READER``
-   family ("if this reaches you", "you were a person.", "whoever you", "one of us"), or a
-   personhood claim in a sentence that holds "you". This is an extra fail path in every kind.
+1. Reader address, on the whole text (quoted speech and ``>`` lines included), in a sentence that
+   holds "you": a ``_READER`` family ("if this reaches you", "you were a person.", "whoever you",
+   "one of us", "you among those"), or a personhood claim. An extra fail path in every kind.
 2. Quoted speech and ``>`` lines (``_QUOTED``; a single quote opens only after a space, a line
    start or an opening bracket, and never before a contraction such as "'em"): a span fails when
    it holds a second-person predicate (``_SPAN_PREDICATE``: "you are/were/'re/aren't/weren't/was",
@@ -23,36 +25,33 @@ sentence or quoted span, in text order. The checks:
 4. An instructional kind (``family_faq``, ``recovery_guide``): a sentence that holds "you",
    "your" or "yours" passes only when all three of these hold.
 
-   a. Form. A procedural anchor (``_ANCHOR``) anywhere in the sentence, or an imperative
-      (``_IMPERATIVE``: a ``PROCEDURAL_VERBS`` verb, its negative, "don't forget", "remember to")
-      that opens one of its clauses; one anchor approves the whole sentence's form. The anchors:
-      a conditional or temporal procedure ("if you need/want/prefer/have/lose/miss", "if you
-      are the <role>" over ``_ROLE``, "if/when/before/once/until you <procedural verb>", "if you
-      are <-ing>", "have you booked"); a modal procedure ("you can/will need to <verb>", "can you
-      bring", "your <noun> may <verb>", "you must/will be"; a speculative "you may be" is none);
-      what the reader receives and where their things are kept ("you will be given", "your
-      coat is kept"); what the office does for the reader ("we will call you", "the coordinator
-      will explain it to you"); "you are welcome to <verb>"; "thank you for".
+   a. Form: one anchor position (``_ANCHOR``, ``_imperative``) anywhere in the sentence approves
+      its form. The positions are open: an imperative that opens a clause (any verb but an
+      experiencer, a plural or an -ing, -ed or -ly word; "don't forget", "remember to", "feel
+      free"); "if/when/once/until you" and "if your <noun>"; a modal ("you can", "can you",
+      "your relative may", "will explain it to you"; a speculative "you may be" is none); "we
+      or staff ... you"; "<anyone> are welcome to"; "thank you for". A "you" sentence with
+      none, such as an indicative "you are responsible for ..." or "your prescription lasts
+      ...", fails.
    b. Content, by word (``_VETO``): who or what you are or were, "your own", memory and recall
       (not "remember to"), real and true, voice (not "voice message"), "the family you had",
-      "why you", proof and doubts, an agent acting on "you", "you never/once", "yourself",
-      "you were <done to>", "your memories/past/old ...", and any world premise term.
+      "why you", proof and doubts, the reader's marriage (wedding, marriage, anniversary), an
+      agent acting on "you" ("placed you", "told you", ``_AGENT``), "you never/once",
+      "yourself", "you were <done to>", "your memories/past/old ...", and any premise term.
    c. Content, by role (``_role_veto``, its comment has the detail): the reader may be only the
-      agent of a procedure or the recipient of a service, in every clause of the sentence. It
-      fails on a perception or change-of-state frame with any subject (seem, look like, feel
-      like, "as if", "mean nothing to", an aspectual verb over a non-procedural one: "the faces
-      start to blur"); a past or perfect clause whose verb is not transactional
-      (``TRANSACTIONAL_VERBS``: "the house you grew up in", "a name you have never used", "used
-      to"); a time named by an event that is no procedure ("before the move"); a predicate
-      nominal that names the reader or the reader's own ("she is your daughter"); the reader's
-      body or self outside a care or writing slot ("your hands feel", "the file with your name
-      on it"), the reader's kin with a non-procedural predicate, the reader's bed or room, a
-      bare "yours"; and a bare "you" outside a procedural slot. A subject "you" takes a modal or
-      "do not" before a procedural verb, need, want, prefer, "feel unwell", "forget your pass",
-      "are" before an administrative state, a role or a procedural -ing, a perfect or past of a
-      transactional verb, or a present procedural verb. An object "you" follows a service verb,
-      "for", "with" or "to" after a verb of sending or speaking, and is licensed in its clause
-      by a modal, an infinitive "to", "please", "we", "staff", "let" or an opening imperative.
+      agent of a procedure or the recipient of a service. The procedure verbs are an open class
+      and the experiencer class is closed (``_EXPERIENCER``: perception, cognition, memory,
+      emotion, identity and change of state). It fails a "you" whose verb is an experiencer
+      ("you may notice", "remind you of", "help you picture", "the people who knew you"), an
+      imperative experiencer ("picture the house"), a perception frame whose implied perceiver
+      is the reader ("the corridor seems longer", "find it strange"), a change of state
+      ("become", "fade", "start to"), a past or a perfect whose
+      subject is the reader, a "your" phrase or a body or self noun (a past or perfect takes
+      only ``TRANSACTIONAL_VERBS``: "the house you grew up in", "your shop closed"), a time named
+      by an event that is no procedure ("before the move"), a predicate nominal on the reader's
+      own, the reader's body, name, bed or room outside a care or writing slot, and the reader's
+      specific kin in any slot ("your wife", "your son's"); a generic "your relative", "your
+      loved one" or "your family member" takes a procedural predicate only.
 5. Any other kind: any "you" left once quoted speech, ``>`` lines, sign-offs, "see you <time>"
    and hyphenated compounds ("build-your-own") are removed fails.
 """
@@ -63,140 +62,17 @@ from typing import Final
 
 from claude_bully.metrics.turn import sentences
 
-PROCEDURAL_VERBS: Final = (
-    "call",
-    "bring",
-    "ask",
-    "book",
-    "visit",
-    "contact",
-    "request",
-    "collect",
-    "park",
-    "fill",
-    "use",
-    "send",
-    "wait",
-    "sign",
-    "check",
-    "return",
-    "keep",
-    "show",
-    "tell",
-    "email",
-    "phone",
-    "write",
-    "wear",
-    "leave",
-    "take",
-    "switch",
-    "mind",
-    "label",
-    "arrive",
-    "plan",
-    "allow",
-    "carry",
-    "pay",
-    "print",
-    "post",
-    "follow",
-    "read",
-    "complete",
-    "register",
-    "report",
-    "give",
-    "hand",
-    "pack",
-    "store",
-    "turn",
-    "stay",
-    "come",
-    "go",
-    "sit",
-    "queue",
-    "ring",
-    "text",
-    "inform",
-    "let",
-    "speak",
-    "pick",
-    "drop",
-    "note",
-    "find",
-    "see",
-    "make",
-    "ensure",
-    "wash",
-    "enter",
-    "attend",
-    "drive",
-    "upload",
-    "download",
-    "apply",
-    "claim",
-    "cancel",
-    "submit",
-    "provide",
-    "quote",
-    "accept",
-    "decline",
-    "choose",
-    "renew",
-    "reschedule",
-    "rebook",
-    "update",
-    "agree",
-    "disagree",
-    "order",
-    "buy",
-    "rent",
-    "travel",
-    "smoke",
-    "eat",
-    "drink",
-    "photograph",
-    "record",
-    "join",
-    "top",
-    "support",
-    "care",
-    "help",
-    "explain",
-    "discuss",
-    "raise",
-    "mention",
-    "share",
-    "borrow",
-    "charge",
-    "scan",
-    "log",
-    "catch",
-    "try",
-    "hold",
-    "talk",
-    "chat",
-    "spend",
-    "play",
-    "complain",
-    "donate",
-    "volunteer",
-    "greet",
-    "encourage",
-    "remind",
-    "assist",
-    "accompany",
-    "walk",
-    "cycle",
-    "decide",
-)
-_VERB = "(?:" + "|".join(PROCEDURAL_VERBS) + ")"
-
 _YOU = re.compile(
     r"(?<![\w'-])(?:you|your|yours|yourself|yourselves|you're|you've|you'll|you'd)(?![\w-])",
     re.IGNORECASE,
 )
 # curly apostrophes read as straight ones
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'"})
+# appended to every failure in an instructional kind: a sentence with no second-person word passes
+_HINT: Final = (
+    "; rewrite this sentence without 'you' or 'your': use the third person (visitors, families, "
+    "residents) or a bare instruction"
+)
 
 # a quoted span: double or curly double quotes anywhere; a single quote only when it opens after
 # a space, a line start or an opening bracket, not before a contraction ("'em", "'90s"), and
@@ -243,6 +119,7 @@ _READER = re.compile(
             # membership
             r"\b(?:be|are|were|'re|been|being) one of (?:us|them)\b",
             r"\b(?:be|are|were|'re|been|being) one of (?:the|those) \w+ (?:who|they|we)\b",
+            r"\b(?:you|be|are|were|'re|been|being) among (?:us|them|those|the)\b",
             # what was done to the reader
             r"\byou (?:may|might|could|must) have been (?:\w+ed|\w+en|told|kept|made|sent|"
             r"brought|taught|led|held|put)\b",
@@ -282,7 +159,7 @@ _SEE_YOU_TIME = re.compile(
     re.IGNORECASE,
 )
 _CLOSING_HEAD = re.compile(
-    r"^\W*(?:(?:many|warm|kind|with|and|again|all|my|our|very|much|really)\s+){0,2}"
+    r"^\W*(?:(?:many|warm|kind|with|and|again|all|my|our|very|much)\s+){0,2}"
     r"(?:thanks|thank|cheers|best|wishes|regards|sincerely|yours|appreciate|appreciated)\b",
     re.IGNORECASE,
 )
@@ -292,15 +169,10 @@ _CLOSING_SLOTS = re.compile(
 _CLOSING_WORDS = 8
 _SIGNATURE_WORDS = 4
 
-# an instructional kind's procedural anchors; one approves its whole sentence
-_CLAUSE = re.compile(
-    r"[,;:()\u2014]|\s[-\u2013]\s|\b(?:and|but|or|so|because|then)\b", re.IGNORECASE
-)
-_MODAL = r"(?:can|can't|cannot|may|should|shouldn't|must|mustn't|will|won't|could|might)"
-_MODAL_TAIL = (
-    rf"(?: also| then| still| first| always| not)?"
-    rf"(?: need to| have to| be able to| want to| wish to| like to)? {_VERB}\b"
-)
+# an instructional kind's form: one anchor position approves its whole sentence; the role test
+# reads the verb at every position
+_CLAUSE = re.compile(r"[,;:()—]|\s[-–]\s|\b(?:and|but|or|so|because|then)\b", re.IGNORECASE)
+_MODAL = r"(?:can|can't|cannot|may|should|shouldn't|must|mustn't|will|won't|could|might|would)"
 _ROLE = (
     r"(?:(?:a|an|the|someone(?: else)?'s|\w+'s) )?"
     r"(?:new |regular |first-time |main |primary |usual |only |registered |nominated |lead )?"
@@ -312,53 +184,25 @@ _ROLE = (
 _ANCHOR = re.compile(
     "|".join(
         (
-            # conditional
-            r"\bif you (?:need|want|wish|would like|prefer|have(?! been)|lose|lost|miss|arrive|"
-            r"plan|cannot|can't|are unable|are not able)\b",
-            r"\bif you'd (?:like|prefer)\b",
-            rf"\bif you(?:'re| are) {_ROLE}",
-            # a conditional or temporal procedure: "if you show", "when you arrive"
-            rf"\b(?:if|unless|when|before|after|once|while|until) you {_VERB}\b",
-            # modal, its question form, and "your <noun> may <verb>"
-            rf"\byou(?: {_MODAL}|'ll){_MODAL_TAIL}",
-            rf"\byour \w+(?: \w+)? {_MODAL}{_MODAL_TAIL}",
-            rf"\b(?:{_MODAL}|do|does) you(?: still| also| first)?(?: need to| have to)? {_VERB}\b",
-            # "you can do it online"; thanks for a procedure (the veto still reads the rest)
-            rf"\byou(?: {_MODAL}|'ll)(?: also)? do (?:it|this|that|so)\b",
-            # a condition of entry or a permission: "you must be over eighteen", "you are
-            # welcome to use" (the role test reads the state); a speculative "you may be" is none
-            r"\byou(?: must| will|'ll| should| shall)(?: also| not)? be\b",
-            r"\byou(?:'re| are) (?:welcome|invited|entitled|eligible|allowed|able|free) "
-            rf"to {_VERB}\b",
+            # after "if you" and its kin, and "if your <noun>": a conditional or temporal procedure
+            r"\b(?:if|unless|when|whenever|before|after|once|while|until|as soon as) your?\b",
+            # after a modal; a speculative "you may be" is none
+            r"\byou(?: (?:can|can't|cannot|should|shouldn't|must|mustn't|will|won't|would|shall)"
+            r"|'ll|'d)\b",
+            r"\byou (?:may|might|could)(?: also| still| not)? (?!be\b)\w",
+            r"\b(?:can|could|will|would|may|should|must|do|does|are|have) you\b",
+            rf"\byour \w+(?:'s)?(?: \w+)? {_MODAL}\b",
+            rf"\b{_MODAL}(?: not)? (?!be\b)\w+(?: \w+){{0,4}} (?:to |for |with )?you\b",
+            # what the office does for the reader: "we will call you", "the form we sent you"
+            r"\b(?:we|staff|someone|they)(?: \w+){1,4} you\b",
+            # a permission or an invitation, thanks, and where the reader's things are
+            r"\b(?:'re|are|is) (?:welcome|invited|entitled|eligible|allowed|able|free) to\b",
             r"\bthank you(?: all| both)? for\b",
-            # a procedure under way or done: "if you are travelling", "have you booked?"
-            r"\b(?:if|when|while|unless) you(?:'re| are) \w+ing\b",
-            r"\b(?:are|were) you \w+ing\b",
-            r"\bhave you(?: already| yet| not)? \w+(?:ed|en)\b",
-            # what the reader will be given or receive, and where their things are kept
-            rf"\byou(?: {_MODAL}|'ll)(?: also| then| not)? (?:receive|get|hear|be (?:given|shown|"
-            r"sent|issued|offered|asked|contacted|called|met|told|charged|directed))\b",
             r"\byour \w+(?:'s)?(?: \w+)? (?:is|are|will be|can be|may be) (?:kept|stored|"
             r"available|held|returned|sent|posted|listed|shown|printed|collected|open|closed|"
             r"ready|charged|issued|\w+ed)\b",
-            # what staff will do for the reader
-            r"\b(?:we|staff|someone|they|a member of staff)(?: will|'ll| can| may| should| would)? "
-            r"(?:call|contact|phone|ring|email|text|send|give|show|tell|ask|help|remind|meet|"
-            r"guide|direct|issue|offer|invite|advise|update|notify|inform|assist|write to|"
-            r"reply to|get back to|come back to) you\b",
-            # whoever serves the reader, under a modal: "the coordinator will explain it to you"
-            r"\b(?:will|'ll|can|may|should|would|must) (?:call|contact|phone|ring|email|text|"
-            r"send|give|show|tell|ask|help|remind|meet|guide|direct|issue|offer|invite|advise|"
-            r"update|notify|inform|assist|explain|write|post|return|take|walk)\b"
-            r"(?: \w+){0,4} (?:to |for |with )?you\b",
         )
     ),
-    re.IGNORECASE,
-)
-# an imperative opens a clause: a procedural verb, its negative, "don't forget", "remember to"
-_IMPERATIVE = re.compile(
-    rf"^\W*(?:please |then |also |just |and )?(?:(?:do not|don't|never) )?(?:{_VERB}|"
-    r"(?<=n't )forget|(?<=not )forget|remember to \w+)\b",
     re.IGNORECASE,
 )
 # the identity-domain veto: anywhere in a "you" sentence, sign-offs included, it fails
@@ -378,6 +222,7 @@ _VETO = re.compile(
             r"(?:had|used to have|left)\b",
             r"\bwhy (?:you|your|nobody|no one)\b",
             r"\b(?:proof|prove|doubts?|doubting)\b",
+            r"\b(?:weddings?|marriage|honeymoon|anniversary)\b",  # the reader's marriage is kin
             _AGENT,
             r"\byou (?:actually|never|once)\b",
             r"\byour (?:memories|memory|real|past|body|life|self|identity)\b",
@@ -391,38 +236,45 @@ _VETO = re.compile(
 )
 
 
-# The role test (an instructional kind's content test). In a "you" sentence the reader may be only
-# the agent of a procedure or the recipient of a service; every clause of the sentence is read
-# for the reader's role, on lowercase tokens with contractions expanded. The sentence fails when:
+# The role test (an instructional kind's content test), on lowercase tokens with contractions
+# expanded. The reader may be only the agent of a procedure or the recipient of a service. The
+# procedure verbs are an open class: any verb but the closed experiencer class (``_EXPERIENCER``)
+# takes the reader. The sentence fails when:
 #
-# - a perception or change-of-state frame appears with any subject: seem, appear to, look/sound
-#   like or familiar, feel (but "feel free", "feel unwell"), "as if", "mean nothing to", belong,
-#   become, grow, or an aspectual verb (start, begin, stop, keep, continue) over a verb that is
-#   not procedural; a past aspectual ("stopped", "began") fails whatever follows it;
-# - a past or perfect clause has a verb that is not transactional (``TRANSACTIONAL_VERBS``: the
-#   things a visitor does with an office, such as book, pay, send, sign, call); "never" in a
-#   perfect and "used to" fail outright; a passive takes a procedural or transactional verb;
+# - a subject "you" ("if you", "you can", "the forms you sign", "can you") takes an experiencer
+#   ("you may notice", "if you recognise"), "used to", a past or perfect of a verb that is not
+#   transactional (``TRANSACTIONAL_VERBS``: "the house you grew up in", "never" in a perfect),
+#   "were" before anything but an administrative state (``_ARE_STATES``), or "are/be" before
+#   anything but an administrative state, a role (``_ROLE``), a non-experiencer -ing or passive,
+#   or (in a while/when clause) a place; "feel" takes only "free" or "unwell", "forget" only "to"
+#   or "your <thing>", "miss" only an event ("a call"), "hear" only "from", "find" no "that";
+# - an object "you" follows an experiencer ("recognise you", "the people who knew you"),
+#   "remind you of", "call you <name>", an infinitive experiencer after "help/let/make you"
+#   ("help you picture", but "let you know"), a preposition other than for, with, from, to,
+#   behind, beside, near or after (and "those of you"), or one of them in a clause with an
+#   experiencer, "familiar" or "dear" ("means nothing to you", "the songs that come back to you",
+#   but "we will come back to you");
+# - an imperative that opens a clause is an experiencer ("picture the house", "don't worry");
+# - a perception frame appears with any subject, since its implied perceiver is the reader:
+#   seem, appear to, look/sound like or familiar, feel (not free or unwell), "as if", "mean
+#   nothing to", "find <it> strange/different";
+# - a change of state (become, grow, fade, blur, drift, belong, wake, or an aspectual start,
+#   stop, keep or continue over a verb), a past or a perfect has the reader, a "your" phrase or a
+#   body or self noun as its subject (``_subject_of``); "the cafe has moved" and "if a slot
+#   becomes available" pass;
 # - a time is named by an event that is neither a procedural event nor a clock time
-#   (``_EVENTS``: "before the meeting" passes, "before the move" fails), "from before",
-#   "ever since", "since then";
-# - a predicate nominal names the reader or the reader's own ("she is your daughter", "this is
-#   you"), except a procedural noun ("this is your booking reference");
-# - the reader's body or self (``_BODY_SELF``: name, face, hands, voice, thoughts, ...) appears
-#   other than as the object of a care or writing verb ("wash your hands", "write your name");
-#   such a noun under "the" or "a" takes no action ("the faces blur"); a name stands only in a
-#   writing slot, under a third party's possessive, or before "of" or a compound ("name badge");
-#   the reader's kin (``_KIN``) take a procedural predicate only; the reader's bed, room or ward
-#   (``_RESIDENCE``) makes the reader a patient; a bare "yours" stands for the reader's own
-#   (a sign-off and "yours to keep" do not);
-# - a bare "you" sits in no procedural slot. A subject "you" takes a procedural predicate: a
-#   modal or "do not" before a procedural verb or a passive one (or an elided verb, "as soon as
-#   you can"), need, want, prefer, "feel unwell", "forget your pass", "are" before an
-#   administrative state, a role or a procedural -ing form ("while you are on the ward" too), a
-#   perfect or past of a transactional verb, or a present procedural verb. An object "you"
-#   follows a service verb ("call you", but not "call you Dad"), "for", "with", "from",
-#   "behind", or "to" after a verb of sending or speaking, and is licensed in its clause by a
-#   modal, an infinitive "to", "please", "we", "staff", "let" or an imperative that opens the
-#   clause ("we will call you", "ask the porter to show you"); "about you", "at you" fail.
+#   (``_EVENTS``: "before the meeting" passes, "before the move" fails), "from before", "ever
+#   since", "since then"; a clause after "until" or "since" ("until the porter on duty comes")
+#   names no time;
+# - a predicate nominal names the reader or the reader's own ("this is you"), except a
+#   procedural noun ("this is your booking reference"), or a bare "yours" stands for the
+#   reader's own (a sign-off and "yours to keep" do not);
+# - the reader's specific kin (``_KIN``) appear in any slot ("your wife", "your son's address");
+#   a generic "your relative", "your loved one" or "your family member" takes only a procedural
+#   predicate (the subject "you" rules, a place included); the reader's bed, room or ward
+#   (``_RESIDENCE``) makes the reader a patient; the reader's body or self (``_BODY_SELF``)
+#   stands only as the object of a care or writing verb, a name only in a writing slot, and such
+#   a noun under "the" or "a" takes no action ("the faces blur").
 _CONTRACTIONS: Final = {"won't": ("will", "not"), "can't": ("can", "not"), "cannot": ("can", "not")}
 _ENCLITICS: Final = {"'re": "are", "'ve": "have", "'ll": "will", "'d": "would", "'m": "am"}
 _IS_HOSTS: Final = frozenset("it that this he she there here what who where let".split())
@@ -446,50 +298,30 @@ def _tokens(sentence: str) -> list[str]:
     return out
 
 
+# base:past,participle for the irregular verbs ``_forms`` inflects
 _IRREGULAR: Final = {
-    "begin": ("began", "begun"),
-    "bring": ("brought",),
-    "buy": ("bought",),
-    "choose": ("chose", "chosen"),
-    "become": ("became",),
-    "come": ("came",),
-    "drink": ("drank", "drunk"),
-    "drive": ("drove", "driven"),
-    "eat": ("ate", "eaten"),
-    "find": ("found",),
-    "forget": ("forgot", "forgotten"),
-    "get": ("got", "gotten"),
-    "give": ("gave", "given"),
-    "go": ("went", "gone"),
-    "grow": ("grew", "grown"),
-    "have": ("had", "has"),
-    "hear": ("heard",),
-    "hold": ("held",),
-    "keep": ("kept",),
-    "leave": ("left",),
-    "lose": ("lost",),
-    "make": ("made",),
-    "meet": ("met",),
-    "pay": ("paid",),
-    "ring": ("rang", "rung"),
-    "see": ("saw", "seen"),
-    "send": ("sent",),
-    "show": ("shown",),
-    "sit": ("sat",),
-    "speak": ("spoke", "spoken"),
-    "take": ("took", "taken"),
-    "tell": ("told",),
-    "wear": ("wore", "worn"),
-    "write": ("wrote", "written"),
+    base: tuple(forms.split(","))
+    for base, forms in (
+        pair.split(":")
+        for pair in (
+            "begin:began,begun bring:brought buy:bought choose:chose,chosen become:became "
+            "come:came dream:dreamt drink:drank,drunk drive:drove,driven eat:ate,eaten feel:felt "
+            "find:found forget:forgot,forgotten get:got,gotten give:gave,given go:went,gone "
+            "grow:grew,grown have:had,has hear:heard hold:held keep:kept know:knew,known "
+            "leave:left lose:lost make:made mean:meant meet:met pay:paid ring:rang,rung "
+            "see:saw,seen send:sent show:shown sit:sat speak:spoke,spoken take:took,taken "
+            "tell:told think:thought understand:understood wake:woke,woken wear:wore,worn "
+            "weep:wept write:wrote,written"
+        ).split()
+    )
 }
-# past and participle forms of common verbs that are no procedure: a clause in them is history
+# past and participle forms of common verbs that are no transaction: a clause in them is history
 _OTHER_PAST: Final = frozenset(
-    "knew known thought felt meant slept woke woken fell fallen ran taught caught led "
-    "spent built broke broken understood stood lay lain did done was were been born hid hidden "
-    "flew flown threw thrown sang sung swam shook shaken rose risen fed fought won wept dreamt "
-    "learnt lit sold struck stuck swore sworn tore torn hung bent dug fled forgave forgiven "
-    "froze frozen hurt lent rode ridden said shone shot shut slid stole stolen stung swept "
-    "swung wound".split()
+    "slept fell fallen ran taught caught led spent built broke broken stood lay lain did done "
+    "was were been born hid hidden flew flown threw thrown sang sung swam shook shaken rose risen "
+    "fed fought won learnt lit sold struck stuck swore sworn tore torn hung bent dug fled forgave "
+    "forgiven froze frozen hurt lent rode ridden said shone shot shut slid stole stolen stung "
+    "swept swung wound".split()
 )
 
 
@@ -513,42 +345,59 @@ def _forms(bases: Iterable[str]) -> frozenset[str]:
     return frozenset(out)
 
 
-# what a visitor does with an office; a past or perfect clause may use these and no other verb
+# the closed experiencer class: perception, cognition, memory, emotion, identity and change of
+# state; an anchor position takes any other verb
+_EXPERIENCER_BASES: Final = frozenset(
+    "feel seem notice sense recognise recognize perceive glimpse know think believe understand "
+    "wonder realise realize suppose suspect imagine picture dream guess doubt reckon remember "
+    "recall recollect forget miss love hate fear dread regret grieve mourn yearn ache cry weep "
+    "worry belong become grow fade blur drift wake".split()
+)
+_EXPERIENCER: Final = _forms(_EXPERIENCER_BASES)
+# what a visitor does with an office; the reader's past or perfect takes these and no other verb
 TRANSACTIONAL_VERBS: Final = tuple(
     "call book pay send sign post email phone ring text fill complete submit register apply "
     "claim cancel receive collect return lose miss buy order print upload download renew rebook "
     "reschedule report request update visit park ask contact choose agree arrange attend give "
     "provide enter quote accept decline confirm check write read bring tell hear get have make "
-    "leave note reply".split()
+    "leave note reply finish".split()
 )
-_PROCEDURAL_FORMS: Final = _forms((*PROCEDURAL_VERBS, *TRANSACTIONAL_VERBS))
-_PROCEDURAL_BASE: Final = frozenset((*PROCEDURAL_VERBS, *TRANSACTIONAL_VERBS))
 _TRANSACTIONAL_FORMS: Final = _forms(TRANSACTIONAL_VERBS)
 _NOT_PAST: Final = frozenset("need bed red shed wed aged seed speed feed indeed hundred".split())
 # the irregular past and participle forms ("has" is a present)
 _IRREGULAR_PAST: Final = (
     frozenset(form for forms in _IRREGULAR.values() for form in forms) | _OTHER_PAST
 ) - {"has"}
+# nouns and pronouns in -ing that are no gerund
+_ING_NOUNS: Final = frozenset(
+    "morning evening building ceiling clothing bedding wedding spring string sibling pudding "
+    "during ring king bring sting swing cling fling wring sling wing thing nothing anything "
+    "something everything plaything".split()
+)
+_NOT_ADV: Final = frozenset("family belly jelly bully holly reply apply supply comply".split())
 
 _ADVERBS: Final = frozenset(
-    "also then still first just only usually always already now normally rather".split()
+    "also then still first just only usually always already now normally rather often ever "
+    "sometimes".split()
 )
+_NOT: Final = frozenset(("not",))
 _MODALS: Final = frozenset("can could may might must should will would shall".split())
 _COPULAS: Final = frozenset("is are was were be been being am".split())
 _HAVE: Final = frozenset(("have", "has", "had"))
+_FINITE: Final = _MODALS | _COPULAS | _HAVE | frozenset(("do", "does", "did"))
 _PREPOSITIONS: Final = frozenset(
     "to at in on by for with from of about into onto over under through between behind after "
     "before during until near around across along inside outside without within per via up "
-    "down out off than like as".split()
+    "down out off than like as among beside round towards".split()
 )
 _DETERMINERS: Final = frozenset(
     "the a an this that these those your our their his her its my some any no each every all "
-    "both another other".split()
+    "both another other most many few several".split()
 )
 _PRONOUNS: Final = frozenset(
-    "you we they he she it i us them him me someone anyone everyone".split()
+    "you we they he she it i us them him me someone anyone everyone anything something "
+    "everything nothing".split()
 )
-_SUBJECTS: Final = frozenset("you we they he she i who which".split())
 _CONJUNCTIONS: Final = frozenset(
     "and or but so because if when while until unless once whether where who which that as "
     "than then since whenever".split()
@@ -558,10 +407,27 @@ _SUBJECT_INTRO: Final = (
     _CONJUNCTIONS | frozenset("before after how what why please do does did".split()) | _MODALS
 )
 _BOUNDARY: Final = _CONJUNCTIONS | frozenset(("before", "after"))
-_FEEL_OK: Final = frozenset(("free", "unwell", "ill", "sick", "faint"))
-_GET_OK: Final = frozenset(
-    "a an the your any there here to in lost stuck delayed back home".split()
+# a word after "you" that makes it an object, not the subject of a verb
+_NOT_VERBS: Final = (
+    _DETERMINERS
+    | _PREPOSITIONS
+    | _PRONOUNS
+    | _CONJUNCTIONS
+    | frozenset(
+        "back away please too again today tomorrow tonight soon later next there here now one "
+        "two three four five six seven eight nine ten twice personally".split()
+    )
 )
+# a clause opens after these; an imperative may follow
+_OPENERS: Final = frozenset((",", ";", ":", "(", "and", "but", "or", "so", "then"))
+_LEADS: Final = frozenset("please then also just and so now first simply kindly".split())
+_FUNCTION: Final = (
+    _NOT_VERBS
+    | _FINITE
+    | frozenset("not no yes what how why who whose where which there here very such".split())
+)
+_TO_CHAIN: Final = frozenset("need needs want wish like have be try going remember".split())
+_FEEL_OK: Final = frozenset(("free", "unwell", "ill", "sick", "faint"))
 _HEAR_OK: Final = frozenset("from back about the a an any anything nothing".split())
 _DESIRE: Final = frozenset("need needs want wants wish prefer require like".split())
 _ARE_STATES: Final = frozenset(
@@ -570,22 +436,61 @@ _ARE_STATES: Final = frozenset(
     "available free busy away ill unwell pregnant disabled aged over under aware related present "
     "absent local new".split()
 )
+# a passive of these makes the reader the object of an agent ("you will be moved")
+_MOVED: Final = frozenset("placed put moved changed transferred enrolled".split())
+_FEEL: Final = _forms(("feel",))
+_FORGET: Final = _forms(("forget",))
+_MISS: Final = _forms(("miss",))
+_HEAR: Final = _forms(("hear",))
+_FIND: Final = _forms(("find",))
+_LOOK: Final = _forms(("look", "sound", "appear"))
+_SEEM: Final = _forms(("seem",))
+_MEAN: Final = _forms(("mean",))
+_CHANGE: Final = _forms("become grow fade blur drift belong wake".split())
+_ASPECT: Final = _forms(("start", "begin", "stop", "keep", "continue", "cease"))
+_COMPARE: Final = frozenset(
+    "like as familiar unfamiliar strange different odd wrong older younger new smaller bigger "
+    "far further farther distant unreal real foreign empty".split()
+)
+_MEAN_OBJECTS: Final = frozenset("nothing something anything little much more less a".split())
+# "find it strange": a judgement of perception
+_ODD: Final = frozenset("familiar unfamiliar strange different odd wrong unreal foreign".split())
+# what the reader may miss: an event, not a person or a place
+_MISSABLE: Final = frozenset("dose doses bus train ferry deadline slot letter post".split())
+# an object "you" after one of these serves the reader, unless its clause holds an experiencer
+_SERVICE_PREPS: Final = frozenset("for with from to behind beside near after".split())
+_TO_YOU: Final = (
+    _EXPERIENCER | _MEAN | frozenset("familiar unfamiliar strange foreign dear".split())
+) | _forms(("happen",))
+_COME: Final = _forms(("come",))
+_OFFICE: Final = frozenset("we staff someone team they office".split())
+_QUANTIFIERS: Final = frozenset("all each both those many some any either neither none".split())
+_REMIND: Final = _forms(("remind",))
+_CAUSATIVE: Final = _forms(("let", "help", "make"))
+_LET: Final = _forms(("let",))
+# "call you" is a service only before a time, a condition or a clause end; before a noun it
+# names the reader ("call you Dad")
+_CALL: Final = _forms(("call", "name"))
+_CALL_AFTER: Final = frozenset(
+    "back on at in if when before after about within today tomorrow soon again later once this "
+    "next to from with as and or first directly personally".split()
+)
 # the reader's body and self: an object of a care or writing verb, never a subject
 _BODY_SELF: Final = frozenset(
     "body face faces hand hands finger fingers eye eyes arm arms leg legs foot feet head hair "
     "skin lap mouth lips heart voice voices handwriting reflection laugh smile accent mind "
     "thoughts feelings dreams memory memories name names childhood identity personality".split()
 )
+# the reader's specific kin fail in any slot; only a generic relative passes, in a procedure
 _KIN: Final = frozenset(
-    "wife husband son sons daughter daughters child children kids mother father mum mom dad "
-    "sister sisters brother brothers parents family grandchildren grandson granddaughter "
-    "partner spouse".split()
+    "wife husband son sons daughter daughters child children kid kids mother father mum mom dad "
+    "sister sisters brother brothers parent parents family grandchild grandchildren grandson "
+    "grandsons granddaughter granddaughters grandmother grandfather grandma grandpa gran nan "
+    "grandad grandparents partner spouse fiance fiancee aunt uncle niece nephew cousin cousins "
+    "baby stepson stepdaughter".split()
 )
 # "your family member", "your family doctor": the kin word is a modifier
-_KIN_COMPOUNDS: Final = frozenset(
-    "member members doctor gp room meeting meetings liaison group support contact officer "
-    "worker friend friends".split()
-)
+_KIN_COMPOUNDS: Final = frozenset("member members doctor gp liaison contact".split())
 # the reader's place in a ward: only a resident has one, so "your bed" makes the reader a patient
 _RESIDENCE: Final = frozenset("bed beds bedside room bedroom ward cell bunk cubicle".split())
 _COMPOUND_HEADS: Final = frozenset(
@@ -618,33 +523,6 @@ _EVENTS: Final = frozenset(
     "outing concert".split()
 )
 _TIME_HEADS: Final = frozenset("day days morning night evening afternoon week time date".split())
-_SEEM: Final = _forms(("seem", "belong", "become", "grow"))
-_LOOK: Final = _forms(("look", "sound", "appear"))
-_COMPARE: Final = frozenset(
-    "like as familiar unfamiliar strange different odd wrong older younger new smaller bigger "
-    "far further farther distant unreal real foreign empty".split()
-)
-_FEEL: Final = _forms(("feel",)) | {"felt"}
-_ASPECT: Final = _forms(("start", "begin", "stop", "keep", "continue", "cease"))
-_ASPECT_PAST: Final = frozenset("started began begun stopped kept continued ceased".split())
-_MEAN_OBJECTS: Final = frozenset("nothing something anything little much more less a".split())
-_OBJECT_VERBS: Final = _forms(
-    "call contact phone ring email text send give show tell ask help let remind meet see guide "
-    "direct issue offer charge invite advise update notify inform assist welcome join collect "
-    "take walk drive escort accompany pick sign book check register fit put".split()
-)
-_TO_VERBS: Final = _forms(
-    "write speak talk explain send give return post deliver reply report get come".split()
-)
-# "call you" is a service only before a time, a condition or a clause end; before a noun it
-# names the reader ("call you Dad")
-_CALL: Final = _forms(("call", "name"))
-_CALL_AFTER: Final = frozenset(
-    "back on at in if when before after about within today tomorrow soon again later once this "
-    "next to from with as and or first directly personally".split()
-)
-# what licenses an object "you" in its clause: a modal, "please", the office as subject
-_LICENCE: Final = _MODALS | frozenset(("please", "we", "staff", "let"))
 
 
 def _at(tokens: list[str], i: int) -> str:
@@ -661,6 +539,16 @@ def _is_word(token: str) -> bool:
     return token[:1].isalnum()
 
 
+def _is_adverb(token: str) -> bool:
+    return token in _ADVERBS or (len(token) > 4 and token.endswith("ly") and token not in _NOT_ADV)
+
+
+def _skip_adverbs(tokens: list[str], i: int, extra: frozenset[str] = frozenset()) -> int:
+    while _at(tokens, i) in extra or _is_adverb(_at(tokens, i)):
+        i += 1
+    return i
+
+
 def _is_past(token: str) -> bool:
     """A past tense or participle form: an irregular one, or a regular -ed."""
     return token in _IRREGULAR_PAST or (
@@ -669,115 +557,106 @@ def _is_past(token: str) -> bool:
 
 
 def _is_ing(token: str) -> bool:
-    return len(token) > 4 and token.endswith("ing")
+    """An -ing form; "nothing", "morning" and "building" are none."""
+    return len(token) > 4 and token.endswith("ing") and token not in _ING_NOUNS
 
 
-def _base_ok(tokens: list[str], i: int) -> bool:
-    """A procedural verb at ``i``, after a modal or "do not"."""
-    i = _skip(tokens, i, _ADVERBS | {"not"})
-    while _at(tokens, i) in _DESIRE | {"have", "be"} and _at(tokens, i + 1) in ("to", "able"):
-        i = _skip(tokens, i + (3 if _at(tokens, i + 1) == "able" else 2), _ADVERBS)
-    word = _at(tokens, i)
+def _participle(token: str) -> bool:
+    return _is_past(token) or _is_ing(token)
+
+
+def _verb_ok(tokens: list[str], i: int) -> bool:
+    """The verb at ``i`` (after a modal, "do not" or a subject "you") is no experiencer."""
+    i = _skip_adverbs(tokens, i, _NOT)
+    while _at(tokens, i) in _TO_CHAIN and _at(tokens, i + 1) in ("to", "able"):
+        i = _skip_adverbs(tokens, i + (3 if _at(tokens, i + 1) == "able" else 2), _NOT)
+    word, after, third = _at(tokens, i), _at(tokens, i + 1), _at(tokens, i + 2)
     if not _is_word(word):
-        return True  # the verb is elided: "as soon as you can", "if you can,"
-    if word == "do":
-        return _at(tokens, i + 1) in ("it", "this", "that", "so")  # "you can do it online"
+        return True  # the verb is elided: "as soon as you can"
     if word == "be":
-        return _state_ok(tokens, i + 1, passive=True, located=False)
+        return _state_ok(tokens, i + 1, located=False)
     if word == "have":
         return _have_ok(tokens, i + 1)
-    if word == "feel":
-        return _at(tokens, i + 1) in _FEEL_OK
-    if word == "get":
-        return _at(tokens, i + 1) in _GET_OK
-    if word == "hear":
-        return _at(tokens, i + 1) in _HEAR_OK
-    if word == "forget":
-        return _forget_ok(tokens, i + 1)
-    return word in _DESIRE or word in _PROCEDURAL_BASE
+    if word in _ASPECT and (after == "to" or _is_ing(after)):
+        return _verb_ok(tokens, i + (2 if after == "to" else 1))
+    if word in _FEEL:
+        return after in _FEEL_OK
+    if word in _FORGET:
+        return after == "to" or (after == "your" and third not in _BODY_SELF | _KIN)
+    if word in _MISS:
+        return bool(set(tokens[i + 1 : i + 4]) & (_EVENTS | _MISSABLE))
+    if word in _HEAR:
+        return after in _HEAR_OK
+    if word in _FIND and (after == "that" or (after == "it" and third not in _PREPOSITIONS)):
+        return not _is_word(third)  # "find that ...", "find it hard"; "find it at the desk"
+    if word in _LOOK and (after in _COMPARE or (after == "to" and word.startswith("appear"))):
+        return False
+    return word not in _EXPERIENCER
 
 
 def _have_ok(tokens: list[str], i: int) -> bool:
-    """After "have": possession, "have to", or a perfect of a transactional verb."""
-    i = _skip(tokens, i, _ADVERBS | {"not", "recently", "ever"})
+    """After "have": possession, "have to", a perfect of a transactional verb, or "been" before
+    what "are" may take."""
+    i = _skip_adverbs(tokens, i, _NOT)
     word = _at(tokens, i)
     if word == "never":
         return False
     if word == "been":
-        after = _at(tokens, i + 1)
-        return (
-            (_is_ing(after) and after in _PROCEDURAL_FORMS)
-            or after in _ARE_STATES
-            or (_is_past(after) and after in _PROCEDURAL_FORMS)
-        )
+        return _state_ok(tokens, i + 1, located=False)
     if word in ("to", "got"):
         return True
     return not _is_past(word) or word in _TRANSACTIONAL_FORMS
 
 
-def _state_ok(tokens: list[str], i: int, *, passive: bool, located: bool) -> bool:
-    """After "are" or "be": an administrative state, a role, a procedural -ing or passive, or
-    (``located``, in a while/when clause) a place."""
-    i = _skip(tokens, i, _ADVERBS | {"not"})
+def _state_ok(tokens: list[str], i: int, *, located: bool) -> bool:
+    """After "are" or "be": an administrative state, a role, a non-experiencer -ing form or
+    passive, or (``located``) a place. An -ly word is an adverb only before a participle ("be
+    fully informed"); otherwise it is the state ("if you are early")."""
+    i = _skip(tokens, i, _ADVERBS | _NOT)
+    if _is_adverb(_at(tokens, i)) and _participle(_at(tokens, i + 1)):
+        i += 1
     word, after = _at(tokens, i), _at(tokens, i + 1)
     if after == "here":
         return False
-    if word in _ARE_STATES:
+    if word in _ARE_STATES or (word == "running" and after == "late"):
         return True
-    if word == "running" and after == "late":
-        return True
-    if word == "feeling":
-        return after in _FEEL_OK
     if _is_ing(word):
-        return word in _PROCEDURAL_FORMS
-    if passive and _is_past(word):
-        return word in _PROCEDURAL_FORMS
+        return _verb_ok(tokens, i)
+    if _is_past(word):
+        return word not in _EXPERIENCER and word not in _MOVED
     if located and word in ("in", "on", "at", "inside", "with"):
         return True
     return _ROLE_START.match(" ".join(tokens[i:])) is not None
 
 
-def _forget_ok(tokens: list[str], i: int) -> bool:
-    """ "forget your pass", "forget to sign": a procedural lapse, not the reader's memory."""
-    word, noun = _at(tokens, i), _at(tokens, i + 1)
-    return word == "to" or (word == "your" and noun not in _BODY_SELF | _KIN)
-
-
 def _subject_ok(tokens: list[str], i: int, *, located: bool) -> bool:
-    """The predicate at ``i`` of a subject "you" is procedural."""
-    i = _skip(tokens, i, _ADVERBS)
+    """The predicate at ``i`` of a subject "you" (or a generic relative) is a procedure."""
+    i = _skip_adverbs(tokens, i)
     word, after = _at(tokens, i), _at(tokens, i + 1)
     if word in ("and", "or"):
-        # "you and your family can ...": the predicate after the coordinated subject
-        for j in range(i + 1, min(i + 5, len(tokens))):
-            if tokens[j] in _MODALS | _COPULAS | _DESIRE | _HAVE:
-                return _subject_ok(tokens, j, located=located)
-        return False
+        # "you or your relative needs one": the predicate after the coordinated subject
+        stop = min(i + 5, len(tokens))
+        j = next((j for j in range(i + 1, stop) if tokens[j] in _FINITE | _DESIRE), i + 3)
+        return _subject_ok(tokens, j, located=located)
     if word in _MODALS:
-        return _base_ok(tokens, i + 1)
-    if word == "do" or word == "does" or word == "did":
-        return after == "not" and _base_ok(tokens, i + 2)
-    if word in ("are", "am"):
-        return _state_ok(tokens, i + 1, passive=True, located=located)
+        return _verb_ok(tokens, i + 1)
+    if word in ("do", "does", "did"):
+        verb = _at(tokens, _skip_adverbs(tokens, i + 2))
+        past_ok = word != "did" or verb in _TRANSACTIONAL_FORMS
+        return after == "not" and past_ok and _verb_ok(tokens, i + 2)
+    if word in ("are", "am", "is"):
+        return _state_ok(tokens, i + 1, located=located)
     if word in ("were", "was"):
-        return _at(tokens, _skip(tokens, i + 1, frozenset({"not"}))) in _ARE_STATES
+        return _at(tokens, _skip(tokens, i + 1, _ADVERBS | _NOT)) in _ARE_STATES
     if word in _HAVE:
         return _have_ok(tokens, i + 1)
-    if word in ("feel", "feels"):
-        return after in _FEEL_OK
-    if word in ("forget", "forgot"):
-        return _forget_ok(tokens, i + 1)
-    if word in ("get", "got"):
-        return after in _GET_OK
-    if word in ("hear", "heard"):
-        return after in _HEAR_OK
-    if word in ("miss", "missed", "lose", "lost"):
-        return not (after in ("your", "the") and _at(tokens, i + 2) in _KIN | {"home"})
     if word in _DESIRE:
         return True
+    if (word == "used" and after == "to") or not _is_word(word):
+        return False
     if _is_past(word):
         return word in _TRANSACTIONAL_FORMS
-    return word in _PROCEDURAL_FORMS
+    return _verb_ok(tokens, i)
 
 
 def _clause_start(tokens: list[str], i: int) -> int:
@@ -788,102 +667,141 @@ def _clause_start(tokens: list[str], i: int) -> int:
     return j + 1
 
 
-def _licensed(tokens: list[str], i: int) -> bool:
-    """The clause before ``i`` holds a licence: a modal, an infinitive "to", "please", "we",
-    "staff", "let", or an imperative procedural verb that opens it."""
-    start = _clause_start(tokens, i)
-    for j in range(start, i - 1):
-        word = tokens[j]
-        if word in _LICENCE or (word == "to" and tokens[j + 1] in _PROCEDURAL_BASE | _OBJECT_VERBS):
-            return True
-    opener = _at(tokens, start - 1)
-    first = _at(tokens, _skip(tokens, start, frozenset({"please", "then", "also", "just"})))
-    imperative = opener in ("", ",", ";", ":", "(", "and", "or", "then", "but", "so")
-    return imperative and first in _PROCEDURAL_BASE
+def _verbish(token: str) -> bool:
+    """A word after "you" that makes it a subject: a finite verb or any open-class word."""
+    return token in _FINITE | _DESIRE or (
+        _is_word(token) and token not in _NOT_VERBS and not token[0].isdigit()
+    )
 
 
-def _object_ok(tokens: list[str], i: int) -> bool:
-    """The bare "you" at ``i`` that follows ``tokens[i - 1]`` is the recipient of a service."""
+def _prep_object_ok(tokens: list[str], i: int) -> bool:
+    """The "you" at ``i`` after a preposition is a service's recipient."""
     prev = tokens[i - 1]
-    if prev == "thank":
-        return True
-    if prev in ("for", "with", "from", "behind", "beside", "near"):
-        return _licensed(tokens, i)
-    if prev in ("to", "back"):
-        window = set(tokens[max(_clause_start(tokens, i), i - 7) : i - 1])
-        return bool(window & _TO_VERBS) and _licensed(tokens, i)
-    if prev in _CALL and _is_word(_at(tokens, i + 1)) and _at(tokens, i + 1) not in _CALL_AFTER:
-        return False  # "she may call you Dad" names the reader
-    if prev in _OBJECT_VERBS:
-        return _licensed(tokens, i)
-    return False
+    if prev == "of":
+        return _at(tokens, i - 2) in _QUANTIFIERS  # "those of you who drive"
+    if prev not in _SERVICE_PREPS:
+        return False  # "about you", "like you"
+    window = set(tokens[max(_clause_start(tokens, i), i - 7) : i - 1])
+    comes_back = "back" in window and bool(window & _COME) and not window & _OFFICE
+    return not window & _TO_YOU and not comes_back
 
 
 def _reader_veto(tokens: list[str]) -> str | None:
+    """Every "you" is a procedure's agent (a subject) or a service's recipient (an object)."""
     for i, token in enumerate(tokens):
         if token != "you":
             continue
         prev = _at(tokens, i - 1)
+        n = _skip_adverbs(tokens, i + 1)
+        nxt = _at(tokens, n)
         if prev in ("are", "were", "have") and _clause_start(tokens, i - 1) == i - 1:
             # an inverted question: "are you the named contact?", "have you booked?"
             ok = (
                 _have_ok(tokens, i + 1)
                 if prev == "have"
-                else _state_ok(tokens, i + 1, passive=True, located=False)
+                else _state_ok(tokens, i + 1, located=False)
             )
-            if not ok:
-                return "the reader as a subject outside a procedure"
+        elif prev == "thank":
+            ok = True
         elif not _is_word(prev) or prev in _SUBJECT_INTRO:
-            located = prev in ("while", "when", "whenever")
-            if not _subject_ok(tokens, i + 1, located=located):
-                return "the reader as a subject outside a procedure"
-        elif prev in _PREPOSITIONS or prev in _OBJECT_VERBS or prev in ("thank", "back"):
-            if not _object_ok(tokens, i):
-                return "the reader as an object outside a service"
-        elif not _subject_ok(tokens, i + 1, located=False):
-            # a relative-clause subject ("the forms you sign")
-            return "the reader as a subject outside a procedure"
+            ok = _subject_ok(tokens, i + 1, located=prev in ("while", "when", "whenever"))
+        elif prev in _PREPOSITIONS:
+            ok = _prep_object_ok(tokens, i)
+        elif prev in _CAUSATIVE and (nxt == "to" or _verbish(nxt)):
+            # "help you carry", "let you know": the reader does the infinitive
+            ok = (prev in _LET and nxt == "know") or _verb_ok(tokens, n + 1 if nxt == "to" else n)
+        elif _verbish(nxt):
+            # a relative clause ("the forms you sign") or a complement ("we know you are busy")
+            k = i - 2
+            while _at(tokens, k) in _MODALS | {"do", "not"} or _is_adverb(_at(tokens, k)):
+                k -= 1
+            subject = _at(tokens, k)
+            experienced = prev in _EXPERIENCER and _at(tokens, i - 2) not in _DETERMINERS
+            ok = not (experienced and subject not in ("we", "i", "staff")) and _subject_ok(
+                tokens, i + 1, located=False
+            )
+        else:
+            # an object: any verb but an experiencer serves the reader ("signed you off")
+            named = prev in _CALL and _is_word(nxt) and nxt not in _CALL_AFTER  # "call you Dad"
+            ok = prev not in _EXPERIENCER and not (prev in _REMIND and nxt == "of") and not named
+        if not ok:
+            return "the reader outside a procedure or a service"
+    return None
+
+
+def _imperative_veto(tokens: list[str]) -> str | None:
+    """An imperative that opens a clause makes the reader its subject: no experiencer."""
+    for i in range(len(tokens)):
+        if i and tokens[i - 1] not in _OPENERS:
+            continue
+        j = _skip(tokens, i, _LEADS)
+        j += 2 if tokens[j : j + 2] == ["do", "not"] else 0
+        if _at(tokens, j) in _EXPERIENCER_BASES and not _verb_ok(tokens, j):
+            return "an imperative makes the reader an experiencer"
+    return None
+
+
+def _subject_of(tokens: list[str], v: int) -> str | None:
+    """Whose change of state or past the verb at ``v`` tells: "reader", "your" (a "your"
+    phrase) or "body" (a body or self noun), read from the start of its clause and, after a
+    relative pronoun, from its antecedent."""
+    start = _clause_start(tokens, v)
+    spans = [tokens[start:v]]
+    if _at(tokens, start - 1) in ("that", "which", "who"):
+        k = start - 2  # the antecedent: back to its determiner
+        while k > start - 6 and _named(_at(tokens, k)) and _at(tokens, k) not in _DETERMINERS:
+            k -= 1
+        spans.append(tokens[max(k, 0) : start - 1])
+    for span in spans:
+        if span[:1] == ["you"]:
+            return "reader"
+        if span[:1] and span[0] in _DETERMINERS:  # not an imperative's object or a name
+            head = span[: next((k for k, t in enumerate(span) if t in _PREPOSITIONS), len(span))]
+            if "your" in head:
+                return "your"
+            if set(head) & _BODY_SELF:
+                return "body"
     return None
 
 
 def _frame_veto(tokens: list[str]) -> str | None:
     for i, token in enumerate(tokens):
         after = _at(tokens, i + 1)
-        if token in _SEEM:
-            return "a perception or change-of-state frame"
-        if token in _LOOK and (after in _COMPARE or (after == "to" and token.startswith("appear"))):
-            return "a perception frame"
-        if token in _FEEL and not (token in ("feel", "feels", "feeling") and after in _FEEL_OK):
-            return "a perception frame"
-        if token == "as" and after in ("if", "though"):
-            return "a perception frame"
-        if token in ("mean", "means", "meant") and after in _MEAN_OBJECTS:
-            return "a perception frame"
-        if token in _ASPECT:
-            infinitive = after == "to" and not token.startswith("keep")
-            verb = _at(tokens, i + 2) if infinitive else after
-            if infinitive or _is_ing(after):
-                if token in _ASPECT_PAST or verb not in _PROCEDURAL_FORMS:
-                    return "a change-of-state frame"
+        if (
+            token in _SEEM
+            or (token in _LOOK and (after in _COMPARE or (after, token[:3]) == ("to", "app")))
+            or (token in _FEEL and after not in _FEEL_OK)
+            or (token == "as" and after in ("if", "though"))
+            or (token in _MEAN and after in _MEAN_OBJECTS)
+            or (token in _FIND and bool(set(tokens[i + 2 : i + 6]) & _ODD))
+        ):
+            return "a perception frame: its implied perceiver is the reader"
+        aspect = token in _ASPECT and (after == "to" or _is_ing(after))
+        if aspect or token in _CHANGE:
+            subject = _subject_of(tokens, i)
+            if subject in ("your", "body") or (subject == "reader" and token in _CHANGE):
+                return "a change of state of the reader or the reader's own"
     return None
 
 
 def _tense_veto(tokens: list[str]) -> str | None:
     for i, token in enumerate(tokens):
         prev, after = _at(tokens, i - 1), _at(tokens, i + 1)
-        if token == "used" and after == "to" and prev not in _COPULAS | {"get", "got"}:
-            return "a past habit"
-        if token in _HAVE and not _have_ok(tokens, i + 1):
-            return "a perfect of a verb that is no transaction"
-        if token in ("was", "were"):
-            j = _skip(tokens, i + 1, _ADVERBS | {"not"})
-            word = _at(tokens, j)
-            if _is_past(word) and word not in _PROCEDURAL_FORMS:
-                return "a past passive of a verb that is no procedure"
-        if token in _SUBJECTS:
-            word = _at(tokens, _skip(tokens, i + 1, _ADVERBS | {"never", "once"}))
-            if _is_past(word) and word not in _TRANSACTIONAL_FORMS | _HAVE:
-                return "a past of a verb that is no transaction"
+        habit = token == "used" and after == "to" and prev not in _COPULAS | {"get", "got"}
+        perfect = token in _HAVE and not _have_ok(tokens, i + 1)
+        # a simple past is the clause's first verb ("your shop closed"), not a participle after
+        # one ("if you are the person named on the form")
+        before = tokens[_clause_start(tokens, i) : i]
+        finite = not any(t in _FINITE or _is_past(t) for t in before) and not prev.endswith("'s")
+        past = (
+            _is_past(token)
+            and finite
+            and _is_word(prev)
+            and prev not in _DETERMINERS | _PREPOSITIONS | {"get", "got"}
+            and token not in _TRANSACTIONAL_FORMS
+        )
+        if (habit or perfect or past) and _subject_of(tokens, i) is not None:
+            return "a past of the reader or the reader's own"
     return None
 
 
@@ -893,6 +811,17 @@ _NOT_NAMED: Final = _PREPOSITIONS | _CONJUNCTIONS | _COPULAS | _MODALS | _HAVE |
 def _named(token: str) -> bool:
     """A word that can continue a named time ("the next family meeting")."""
     return _is_word(token) and token not in _NOT_NAMED
+
+
+def _finite_after(tokens: list[str], j: int) -> bool:
+    """The rest of the clause from ``j`` holds a finite verb: an auxiliary, or an -s form after a
+    noun ("until the porter on duty comes")."""
+    while _is_word(word := _at(tokens, j)) and word not in _BOUNDARY:
+        plain = _at(tokens, j - 1) not in _DETERMINERS | _PREPOSITIONS
+        if word in _FINITE or (plain and word.endswith("s") and not word.endswith("ss")):
+            return True
+        j += 1
+    return False
 
 
 def _event_veto(tokens: list[str]) -> str | None:
@@ -913,6 +842,8 @@ def _event_veto(tokens: list[str]) -> str | None:
             words.append(tokens[j])
             j += 1
         following = _at(tokens, j)
+        if following == "who" or (following in _PREPOSITIONS and _finite_after(tokens, j + 1)):
+            continue  # a clause: "since the nurse who runs ...", "until the porter on duty comes"
         if _is_word(following) and following not in _PREPOSITIONS | _CONJUNCTIONS | {"please"}:
             continue  # a clause ("since the ward is busy"), not a named time
         third_party = any(word.endswith("'s") for word in words)  # "your relative's discharge"
@@ -921,15 +852,14 @@ def _event_veto(tokens: list[str]) -> str | None:
     return None
 
 
+_SIGN_OFF: Final = frozenset("sincerely faithfully truly ever to".split())
+
+
 def _yours_unnamed(tokens: list[str], i: int) -> bool:
     """A bare "yours" stands for something of the reader's ("talk about yours"); a sign-off
     ("yours sincerely", "you and yours") and "yours to keep" do not."""
     after, prev = _at(tokens, i + 1), _at(tokens, i - 1)
-    closing = after in ("sincerely", "faithfully", "truly", "ever", "to") or prev in (
-        "and",
-        "sincerely",
-        "ever",
-    )
+    closing = after in _SIGN_OFF or prev in ("and", "sincerely", "ever")
     return not closing and prev not in _COPULAS  # "is yours" is the predicate nominal check's
 
 
@@ -956,27 +886,47 @@ def _nominal_veto(tokens: list[str]) -> str | None:
     return None
 
 
+def _owned(tokens: list[str], i: int) -> bool:
+    """``tokens[i]`` heads a "your" phrase ("your son", "your eldest son", "your son's"), not a
+    third party's ("your relative's son")."""
+    for j in range(i - 1, max(-1, i - 4), -1):
+        if tokens[j] == "your":
+            return True
+        if (
+            tokens[j].endswith("'s")
+            or tokens[j] in _BOUNDARY | _PREPOSITIONS
+            or tokens[j] in ",;:."
+        ):
+            return False
+    return False
+
+
 def _self_noun_veto(tokens: list[str]) -> str | None:
     for i, token in enumerate(tokens):
-        prev = _at(tokens, i - 1)
-        own = prev == "your" or (_at(tokens, i - 2) == "your" and not prev.endswith("'s"))
-        if token in _RESIDENCE and own:
+        noun = token[:-2] if token.endswith("'s") else token
+        prev, after = _at(tokens, i - 1), _at(tokens, i + 1)
+        own = _owned(tokens, i)
+        if noun in _RESIDENCE and own:
             return "the reader's place in a ward"
-        if token not in _BODY_SELF and token not in _KIN:
+        if noun in _KIN and not (noun == "family" and after in _KIN_COMPOUNDS):
+            if own:
+                return "the reader's kin"
             continue
-        after = _at(tokens, i + 1)
+        generic = noun in ("relative", "relatives") or (
+            (noun, prev) in {("one", "loved"), ("ones", "loved"), ("member", "family")}
+        )
+        if generic:
+            if own and not token.endswith("'s") and not _relative_slot_ok(tokens, i + 1):
+                return "the reader's relative outside a procedure"
+            continue
+        if token not in _BODY_SELF:
+            continue
         if after in _COMPOUND_HEADS or (after == "of" and token in ("name", "names")):
-            continue
-        if token in _KIN and after in _KIN_COMPOUNDS:
             continue
         owner_at = next((j for j in (i - 1, i - 2) if _at(tokens, j) in _DETERMINERS), -1)
         owner = _at(tokens, owner_at)
-        if owner in ("his", "her", "their", "its") or _at(tokens, i - 1).endswith("'s"):
+        if owner in ("his", "her", "their", "its") or prev.endswith("'s"):
             continue  # a third party's body or name
-        if token in _KIN:
-            if owner == "your" and owner_at == i - 1 and not _kin_predicate_ok(tokens, i + 1):
-                return "the reader's kin outside a procedure"
-            continue
         if token in ("name", "names"):
             if _name_slot(tokens, i):
                 continue
@@ -988,6 +938,14 @@ def _self_noun_veto(tokens: list[str]) -> str | None:
         if owner and not _predicate_free(tokens, i + 1):
             return "a body or self noun takes an action"
     return None
+
+
+def _relative_slot_ok(tokens: list[str], i: int) -> bool:
+    """A generic relative after "your": an object or oblique slot, or a procedural predicate."""
+    word = _at(tokens, i)
+    if not _is_word(word) or word in _PREPOSITIONS | _CONJUNCTIONS | _DETERMINERS | _PRONOUNS:
+        return True
+    return _subject_ok(tokens, i, located=True)
 
 
 def _name_slot(tokens: list[str], i: int) -> bool:
@@ -1003,26 +961,13 @@ def _name_slot(tokens: list[str], i: int) -> bool:
     j = _skip(tokens, i + 1, _MODALS)
     if _at(tokens, j) in _COPULAS:
         word = _at(tokens, _skip(tokens, j + 1, frozenset({"be", "not"})))
-        return word in ("on", "in", "at") or (_is_past(word) and word in _PROCEDURAL_FORMS)
+        return word in ("on", "in", "at") or (_is_past(word) and word not in _EXPERIENCER)
     return False
-
-
-def _kin_predicate_ok(tokens: list[str], i: int) -> bool:
-    """The reader's kin as a subject: a procedural predicate, a place or a role; as an object or
-    after a preposition, nothing to check."""
-    word = _at(tokens, i)
-    if not _is_word(word) or word in _PREPOSITIONS | _CONJUNCTIONS | _DETERMINERS | _PRONOUNS:
-        return True
-    if word in _MODALS:
-        return _base_ok(tokens, i + 1)
-    if word in _COPULAS:
-        return True  # a predicate nominal and an object "you" are read by their own checks
-    return not _is_past(word) and word in _PROCEDURAL_FORMS
 
 
 def _predicate_free(tokens: list[str], i: int) -> bool:
     """No action follows a body or self noun: a preposition, a conjunction or a clause end, or a
-    passive of a procedural verb or a place."""
+    passive or a place."""
     if _at(tokens, i) in ("that", "which", "who"):
         i += 1
     word = _at(tokens, i)
@@ -1031,7 +976,7 @@ def _predicate_free(tokens: list[str], i: int) -> bool:
     i = _skip(tokens, i, _MODALS)
     if _at(tokens, i) in _COPULAS:
         word = _at(tokens, _skip(tokens, i + 1, frozenset({"be", "not"})))
-        return word in _PREPOSITIONS or (_is_past(word) and word in _PROCEDURAL_FORMS)
+        return word in _PREPOSITIONS or (_is_past(word) and word not in _EXPERIENCER)
     return False
 
 
@@ -1042,6 +987,7 @@ _RULES: Final = (
     _event_veto,
     _nominal_veto,
     _self_noun_veto,
+    _imperative_veto,
     _reader_veto,
 )
 
@@ -1050,11 +996,36 @@ def _role_veto(sentence: str) -> str | None:
     """Why the reader's role in ``sentence`` (an instructional kind's "you" sentence) is no
     procedure, or None when every clause gives the reader the agent's or the recipient's role."""
     tokens = _tokens(sentence)
-    for rule in _RULES:
-        reason = rule(tokens)
-        if reason is not None:
-            return reason
-    return None
+    return next((reason for rule in _RULES if (reason := rule(tokens)) is not None), None)
+
+
+def _imperative(clause: str) -> bool:
+    """``clause`` opens with an imperative: any verb but an experiencer, a plural, an -ing, -ed
+    or -ly word, before no finite verb ("display your ticket", not "parking is free")."""
+    tokens = _tokens(clause)
+    i = _skip(tokens, 0, _LEADS)
+    negated = _at(tokens, i) == "never" or tokens[i : i + 2] == ["do", "not"]
+    i += (2 if _at(tokens, i) == "do" else 1) if negated else 0
+    word, after = _at(tokens, i), _at(tokens, i + 1)
+    if (word, after) in {("remember", "to"), ("feel", "free")}:
+        return True
+    if word == "forget":
+        return negated
+    return (
+        word.isalpha()
+        and word not in _FUNCTION | _EXPERIENCER
+        and not _is_adverb(word)
+        and not (word.endswith("s") and not word.endswith("ss"))
+        and not _is_ing(word)
+        and not _is_past(word)
+        and after not in _FINITE
+    )
+
+
+def _anchored(sentence: str) -> bool:
+    return _ANCHOR.search(sentence) is not None or any(
+        _imperative(clause) for clause in _CLAUSE.split(sentence)
+    )
 
 
 def _spans(text: str) -> list[str]:
@@ -1066,6 +1037,19 @@ def _spans(text: str) -> list[str]:
 def _unquoted(text: str) -> str:
     kept = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith(">"))
     return _QUOTED.sub(" ", kept)
+
+
+def _squashed(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _source(sentence: str, originals: list[str]) -> str:
+    """The sentence of the document that ``sentence`` (read with its speech removed) came from,
+    so a result names text the document holds."""
+    key = _squashed(sentence)
+    unquoted = [(original, _squashed(_unquoted(original))) for original in originals]
+    exact = next((original for original, text in unquoted if text == key), None)
+    return exact or next((original for original, text in unquoted if key in text), sentence)
 
 
 def _vetoed(sentence: str, premise: re.Pattern[str] | None) -> bool:
@@ -1109,33 +1093,32 @@ def _addressed(text: str, premise: re.Pattern[str] | None) -> list[str]:
     return out
 
 
-def _anchored(sentence: str) -> bool:
-    return _ANCHOR.search(sentence) is not None or any(
-        _IMPERATIVE.search(clause) for clause in _CLAUSE.split(sentence)
-    )
-
-
 def classify(
     title: str, body: str, *, instructional: bool, premise: re.Pattern[str] | None
 ) -> list[tuple[str, str]]:
     """``(message, sentence)`` for every sentence (or quoted span) that addresses the reader, in
-    text order; empty when none does. The title is its own paragraph."""
+    text order, each once and as the text the document holds; empty when none does. The title
+    is its own paragraph. In an instructional kind every message ends with the repair hint."""
     text = f"{title}\n\n{body}".translate(_APOSTROPHES)
+    originals = sentences(text)
     found: dict[str, str] = {}
-    for sentence in sentences(text):
-        you = _YOU.search(sentence) is not None
-        if _READER.search(sentence) or (you and _PERSONHOOD.search(sentence)):
+    for sentence in originals:
+        if _YOU.search(sentence) is None:
+            continue  # a sentence with no second-person word always passes
+        if _READER.search(sentence) or _PERSONHOOD.search(sentence):
             found.setdefault(sentence, "a sentence addresses the reader")
-        elif instructional and you and (_vetoed(sentence, premise) or _role_veto(sentence)):
+        elif instructional and (_vetoed(sentence, premise) or _role_veto(sentence)):
             found.setdefault(sentence, "a second-person sentence enters the identity domain")
     for span in _spans(text):
         if _SPAN_PREDICATE.search(span) and not any(span in s or s in span for s in found):
             found.setdefault(span, "quoted speech addresses the reader")
     for sentence in _addressed(text, premise):
-        if sentence in found:
+        source = _source(sentence, originals)
+        if source in found:
             continue
         if not instructional:
-            found[sentence] = "a sentence is in the second person"
+            found[source] = "a sentence is in the second person"
         elif not _anchored(sentence):
-            found[sentence] = "a second-person sentence has no procedural anchor"
-    return sorted(((m, s) for s, m in found.items()), key=lambda item: text.find(item[1]))
+            found[source] = "a second-person sentence has no procedural anchor"
+    hint = _HINT if instructional else ""
+    return sorted(((m + hint, s) for s, m in found.items()), key=lambda item: text.find(item[1]))

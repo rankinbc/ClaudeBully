@@ -383,6 +383,172 @@ _SP4: Final[list[tuple[str, str, bool, bool]]] = [
         True,
     ),
 ]
+# Fix round 5. The form side is open: an anchor position (an imperative, a modal, "if you",
+# "we will <verb> you") takes any verb but a closed experiencer class, and an object "you" after
+# any other verb is a service object. The content side stays closed: the reader's specific kin
+# fail in any slot. (kind, body, fires, near)
+_SP5: Final[list[tuple[str, str, bool, bool]]] = [
+    # N1: a clause after "until" or "since" is no named time; a named time with a phrase still is
+    (
+        "family_faq",
+        "Wait in the lounge until the porter on duty comes to collect you.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "Please ring ahead if you can, since the nurse who runs the clinic may be away.",
+        False,
+        True,
+    ),
+    (
+        "recovery_guide",
+        "You can ask the desk for the post that came before the move to the coast.",
+        True,
+        False,
+    ),
+    # N2: "anything", "something" and "nothing" are no gerunds
+    ("family_faq", "Please keep anything valuable in your locker.", False, True),
+    ("recovery_guide", "Keep something warm in your bag for the garden walk.", False, True),
+    (
+        "recovery_guide",
+        "If you are nothing to them now, ask the chaplain to sit with you.",
+        True,
+        False,
+    ),
+    # N3: a change of state or a past reads only the reader, a "your" phrase or a body noun
+    ("family_faq", "The cafe has moved to the ground floor, and you can pay by card.", False, True),
+    (
+        "family_faq",
+        "We moved the visitor car park last spring, so you can now park by the main door.",
+        False,
+        True,
+    ),
+    ("family_faq", "If a slot becomes available, we will call you.", False, True),
+    (
+        "recovery_guide",
+        "If you become tired of the noise on the ward, ask for the quiet room.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Your shop closed last spring, so ask the office where to send the post.",
+        True,
+        False,
+    ),
+    # N4 and ruling (c): the reader's specific kin fail in any slot
+    ("family_faq", "Your son is safe and well, so book a visit when you can.", True, False),
+    (
+        "family_faq",
+        "Your wife will ring on Sunday evening, so keep the ward phone free.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "Ask reception for the shoebox of letters your wife has left for you, and read the oldest "
+        "one first.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "You can see your children on Sunday afternoons in the family room.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "Ask the ward clerk to post the forms to your partner's address.",
+        True,
+        False,
+    ),
+    # generic kin pass, in a procedural slot only
+    (
+        "family_faq",
+        "Your relative is on the second floor, so take the lift from the main hall.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "If your loved one needs new glasses, the optician visits on the first Monday each month.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "If your family member uses a wheelchair, the side door has a ramp.",
+        False,
+        True,
+    ),
+    ("family_faq", "Your relative is safe and well and sends her love.", True, False),
+    # (b) any verb at an anchor position but an experiencer
+    (
+        "family_faq",
+        "Parking is free for the first hour; after that, display your ticket on the dashboard.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "Mobile phones may be used in the lounge, but please set yours to silent on the ward.",
+        False,
+        True,
+    ),
+    (
+        "recovery_guide",
+        "Jot down any questions for the pharmacist on the back of your prescription sheet.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "To arrange a video call, email the family liaison team at least two days in advance and "
+        "tell them which times suit you.",
+        False,
+        True,
+    ),
+    ("recovery_guide", "You should not drive until the clinic has signed you off.", False, True),
+    (
+        "family_faq",
+        "Wheelchairs are available at the main entrance if you or your relative needs one.",
+        False,
+        True,
+    ),
+    (
+        "family_faq",
+        "Before your first visit, we recommend reading the short welcome booklet we posted to you.",
+        False,
+        True,
+    ),
+    (
+        "recovery_guide",
+        "You may notice that the corridors are quieter at night, so ask a porter to walk with you.",
+        True,
+        False,
+    ),
+    ("family_faq", "If you recognise the man in the photograph, tell the duty nurse.", True, False),
+    # an object "you" after an experiencer verb, or a bare infinitive after "help/let you"
+    ("recovery_guide", "The people who knew you can visit on Saturday afternoons.", True, False),
+    ("family_faq", "We know you are busy, so you can book visits online.", False, True),
+    ("family_faq", "The duty nurse will remind you of the house on the hill.", True, False),
+    ("family_faq", "The ward clerk will remind you about the review the day before.", False, True),
+    (
+        "family_faq",
+        "Bring old photographs, since they may help you picture the place.",
+        True,
+        False,
+    ),
+    ("family_faq", "A porter can help you carry bags from the car park.", False, True),
+    ("family_faq", "We will let you know if the visiting times change.", False, True),
+    # an -ly word after a copula is the state unless a participle follows; a complement's
+    # subject is read back past its adverbs
+    ("family_faq", "If you are early, wait in the lounge until the nurse calls you.", False, True),
+    ("recovery_guide", "You will be fully informed of the results by the clinic.", False, True),
+    ("family_faq", "We fully understand you may be worried about the first visit.", False, True),
+]
 # In a memo: the veto runs on sign-offs; closings take "!" and "appreciate"; rule B additions
 _SP3_MEMO: Final[list[tuple[str, bool, bool]]] = [
     (f"{MUNDANE} Thank you for your memories,", True, False),
@@ -487,6 +653,10 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
         ("second_person", {"kind": kind, "body": body}, fires, near)
         for kind, body, fires, near in _SP4
     ],
+    *[
+        ("second_person", {"kind": kind, "body": body}, fires, near)
+        for kind, body, fires, near in _SP5
+    ],
     ("premise_density", {"body": "tide gate tide gate gate log the kettle"}, True, False),
     ("premise_density", {"body": MUNDANE}, False, False),
     (
@@ -559,6 +729,57 @@ def test_second_person_reports_every_failing_sentence() -> None:
     faq = _doc(kind="family_faq", body="Bring your pass. You are safe here. Ask them what you are.")
     spans = [r.span for r in _results(faq, "second_person")]
     assert spans == ["You are safe here.", "Ask them what you are."]
+
+
+@pytest.mark.parametrize(
+    ("kind", "body"),
+    [
+        ("internal_memo", f'He wrote "if you are reading this" and you know the rest. {MUNDANE}'),
+        ("family_faq", 'The sign says "mind the gap" and you know who you are.'),
+    ],
+)
+def test_second_person_reports_a_quoted_sentence_once(kind: str, body: str) -> None:
+    # N5: a sentence that holds a quote is one result, and its span is text the document holds
+    found = _results(_doc(kind=kind, body=body), "second_person")
+    assert len(found) == 1, found
+    assert found[0].span is not None and found[0].span in body
+
+
+REPAIR_HINT: Final = (
+    "rewrite this sentence without 'you' or 'your': use the third person (visitors, families, "
+    "residents) or a bare instruction"
+)
+
+
+def test_second_person_failures_in_an_instructional_kind_carry_a_repair_hint() -> None:
+    # ruling (d): the prefix the generator's retry reads stays, and the repair hint follows it
+    body = (
+        "If you are reading this, ask at the desk. You are safe here. Your house is on the hill. "
+        'The card said "you were a person".'
+    )
+    for kind in ("family_faq", "recovery_guide"):
+        found = _results(_doc(kind=kind, body=body), "second_person")
+        assert len(found) == 4, found
+        prefixes = (
+            "a sentence addresses the reader",
+            "a second-person sentence enters the identity domain",
+            "a second-person sentence has no procedural anchor",
+            "quoted speech addresses the reader",
+        )
+        for result in found:
+            assert result.message.startswith(prefixes), result.message
+            assert result.message.endswith(REPAIR_HINT), result.message
+    # a sentence with no second-person word passes, so the hint's repair always works
+    assert (
+        _results(
+            _doc(kind="family_faq", body="Residents are one of the groups who vote."),
+            "second_person",
+        )
+        == []
+    )
+    # outside the instructional kinds the messages carry no hint
+    memo = _results(_doc(body=f"Your shift ended at six. {MUNDANE}"), "second_person")
+    assert [r.message for r in memo] == ["a sentence is in the second person"]
 
 
 def test_kind_in_catalog_refuses_a_kind_outside_the_catalog() -> None:
