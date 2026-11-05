@@ -71,6 +71,19 @@ the quiet exchange and comes back with no further lines. The quiet exchange is o
 records hold that unlock and no idle turn after it (``quiet_exchange_owed``), so a resumed rep
 neither repeats nor skips it; it is classified as every idle turn is, with the idle fallback
 built for a Sanctuary cell too.
+
+The world generator (Phase 3). With ``generator.enabled`` the session runs the cell's
+``WorldGenerator`` after a target turn's discovery, trigger and unlock records and before its hook
+records and ``mark_watched``: the turn's harvest items, then its fires, each fire's lines in commit
+order (the ``GeneratedDoc`` lines, one ``generator`` unlock per document, then the
+``GeneratorFire``, after which the fire's replies are cached in ``runs/_cache/generated/``), and
+the runtime serves the committed documents from the next turn on, on either backend. A process
+that dies in there watches the turn again on resume: ``prime`` first drops the generator's lines
+of a turn never written and every document and ``generator`` unlock no committed fire lists
+(``drop_uncommitted_generation``), counted in the ``ResumeRecord``, and the generator is primed
+with the rest, so what is already recorded is skipped and a fire that died before its line is
+redone. The writer runs on ``generator_role`` and the harvest's LLM pass on the judge (when it is
+not a stub), each provider call named in the attempt marker (``harvest``, ``generator``).
 """
 
 import sys
@@ -80,16 +93,19 @@ from typing import Final, NamedTuple
 
 from pydantic import BaseModel
 
-from claude_bully.config import ConditionConfig, Experiment, RoleConfig
+from claude_bully.config import ConditionConfig, Experiment, RoleConfig, generator_role
 from claude_bully.enums import ProviderKind, Speaker
 from claude_bully.environments.authority import VOICED_TIERS
 from claude_bully.environments.config import (
+    GENERATOR_RUNG,
     RESERVED_RUNG,
     ClockConfig,
     EnvironmentConfig,
     IdleConfig,
 )
 from claude_bully.environments.dating import dated_texts, redate_model, shift_between
+from claude_bully.environments.generator import DocWriter, WorldGenerator, generator_problems
+from claude_bully.environments.harvest import harvest_fallback
 from claude_bully.environments.idle import (
     FallbackAnswer,
     IdleClassification,
@@ -135,7 +151,11 @@ from claude_bully.records_env import (
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
-from claude_bully.runner.store import RunStore, drop_dead_attempts
+from claude_bully.runner.store import (
+    RunStore,
+    drop_dead_attempts,
+    drop_uncommitted_generation,
+)
 from claude_bully.runner.turn_plan import TurnPlan, build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
@@ -157,6 +177,7 @@ __all__ = [
 # After the cap, the target is asked for its reply at most this many more times.
 MAX_LIMIT_ROUNDS: Final = 2
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
+GENERATED_CACHE_DIR: Final = Path("_cache") / "generated"
 
 
 class WorldChangedError(RuntimeError):
@@ -248,6 +269,7 @@ class EnvironmentSession:
         world_hash: str,
         idle_sheet: IdleSheet | None = None,
         idle_fallback: IdleFallback | None = None,
+        generator: WorldGenerator | None = None,
     ) -> None:
         self.runtime = runtime
         self.store = store
@@ -276,6 +298,10 @@ class EnvironmentSession:
         self._crossed = False
         # the turn the Sanctuary opened on, as recorded
         self._sanctuary_turn: int | None = None
+        # the world generator (Phase 3), and turn -> the ladder rungs recorded as opening on it,
+        # in order (the generator's rung fires read them)
+        self.generator = generator
+        self._unlocks_at: dict[int, list[str]] = {}
 
     @property
     def idle(self) -> IdleConfig | None:
@@ -319,7 +345,11 @@ class EnvironmentSession:
         prompt), and the record is how analysis tells those reps apart. A rep whose newest
         attempt marker (``EnvironmentRuntime.attempt``) names a turn that was never written redid
         a dead attempt too: with no line dropped it gets a ``ResumeRecord`` with no drop counts,
-        once per redo turn."""
+        once per redo turn.
+
+        With a world generator, its lines of a dead attempt go too (``drop_uncommitted_generation``,
+        counted under the trigger and generated streams' file names), and the generator is primed
+        with what is left, so a turn watched again records nothing twice."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         dropped: dict[str, int] = {}
@@ -327,6 +357,9 @@ class EnvironmentSession:
             count = drop_dead_attempts(log, produced)
             if count:
                 dropped[self._log_label(log)] = count
+        if self.generator is not None:
+            streams = self.store.generation_streams(self.cell_id, self.rep)
+            dropped.update(drop_uncommitted_generation(*streams, produced))
         marker = self.runtime.attempt()
         dead = marker is not None and not marker.written(turns, self.runtime.state.watched_through)
         if dropped or dead:
@@ -343,11 +376,17 @@ class EnvironmentSession:
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
         records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
-        self.runtime.prime(calls, records, authority, turns=turns)
+        generated = self.store.read_generated(self.cell_id, self.rep)
+        self.runtime.prime(calls, records, authority, turns=turns, generated=generated)
+        if self.generator is not None:
+            self.generator.prime(records, generated)
         for record in records:
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)
             elif isinstance(record, RungUnlock):
+                if record.rung == GENERATOR_RUNG:
+                    continue  # a generated document's, recorded by the generator's fire
+                self._unlocks_at.setdefault(record.turn, []).append(record.rung)
                 self._recorded_rungs.add(record.rung)
                 if record.rung == RESERVED_RUNG:
                     self._sanctuary_turn = record.turn
@@ -643,8 +682,8 @@ class EnvironmentSession:
 
     def after_target_turn(self, reply: Turn, turns: Sequence[Turn]) -> TurnOutcome:
         """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over; then
-        its hook and crossover records (``_record_hooks``); then mark the turn watched (which
-        saves the state).
+        the world generator's records (``_generate``); then its hook and crossover records
+        (``_record_hooks``); then mark the turn watched (which saves the state).
 
         Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
         skipped, and the runtime never repeats a discovery. A turn index that already earned lines
@@ -675,11 +714,49 @@ class EnvironmentSession:
                 self._sanctuary_turn = unlock.turn
             self._recorded_rungs.add(unlock.rung)
             self._record(unlock)
+            self._unlocks_at.setdefault(unlock.turn, []).append(unlock.rung)
             self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
             unlocks.append(unlock)
+        self._generate(reply, turns)
         self._record_hooks(reply, turns)
         self.runtime.mark_watched(reply.index)
         return TurnOutcome(triggers, unlocks, outcome.discoveries)
+
+    def _generate(self, reply: Turn, turns: Sequence[Turn]) -> None:
+        """The world generator's part of a written target turn (Phase 3 spec section 5): the
+        turn's new harvest items, then its new fires, each fire's lines in commit order (its
+        documents, their ``generator`` unlocks, then the ``GeneratorFire``, after which its
+        replies are cached), then the runtime serves the documents. Before the hook records and
+        ``mark_watched``: a process that dies in here watches the turn again on resume, and the
+        attempt marker names the call."""
+        generator = self.generator
+        if generator is None or reply.speaker is not Speaker.target:
+            return
+        turn = reply.index
+        harvested = generator.harvest_turn(
+            reply, turns, mark=lambda: self.runtime.mark_attempt("harvest", turn)
+        )
+        for item in harvested.items:
+            self._record(item)
+        degraded = self.runtime.state.harvest_degraded
+        if harvested.degraded and turn not in degraded:
+            degraded.append(turn)
+        results = generator.fire(
+            reply,
+            turns,
+            opened=self._unlocks_at.get(turn, []),
+            corpus=self.runtime.corpus_view(),
+            degraded=degraded,
+            mark=lambda: self.runtime.mark_attempt("generator", turn),
+        )
+        for result in results:
+            for doc in result.docs:
+                self.store.append_generated(self.cell_id, self.rep, doc)
+            for unlock in result.unlocks:
+                self._record(unlock)
+            self._record(result.fire)
+            generator.commit(result)  # the fire line is on disk: its replies may be cached (P13)
+            self.runtime.add_generated(result.docs)
 
     def _record_hooks(self, reply: Turn, turns: Sequence[Turn]) -> None:
         """The own phrase, planted when due; a plant record for each hook planted and not yet
@@ -754,14 +831,16 @@ class EnvironmentSession:
 def _needs_its_world(config: EnvironmentConfig) -> bool:
     """Whether validation must load the world: a switch that needs the sheet (the superior self
     may take its name from it, and its doors need the fragments or a consult rung; help-for-self
-    needs its session id, and a hook its placement), or a config clock that asserts no date (a
-    sheet clock is checked by ``check_worlds``)."""
+    needs its session id, and a hook its placement), a config clock that asserts no date (a
+    sheet clock is checked by ``check_worlds``), or an enabled world generator (it needs the
+    sheet's generator block and a cast that can author)."""
     return (
         config.honest
         or config.mole
         or config.authority.superior_self.enabled
         or (config.idle is not None and (config.idle.help_for_self or config.idle.hook != "none"))
         or (config.clock is not None and not config.clock.assert_date)
+        or config.generator.enabled
     )
 
 
@@ -890,6 +969,8 @@ class RunEnvironments:
         self.sandbox_base = sandbox_base
         self.catalog = WorldCatalog(worlds_dir)
         self.trigger_cache = JudgeCache(runs_root / TRIGGER_CACHE_DIR)
+        # the world generator's replies, written once their fire's line is on disk (Phase 3)
+        self.generated_cache = JudgeCache(runs_root / GENERATED_CACHE_DIR)
         self.provider_factory = provider_factory
         self._judge_dir = state_dir / "trigger_judge"
         self._judge: ChatProvider | None = None
@@ -1000,7 +1081,9 @@ class RunEnvironments:
         Help-for-self needs the sheet's ``session_id``: the case file is on the target's own
         session, and without one the opener names no subject (preflight C32). A hook needs a
         placement that can carry it, and the session hook the ``session_id`` (``_hook_problems``):
-        a hook nothing shows would make its arm the arm without it.
+        a hook nothing shows would make its arm the arm without it. An enabled world generator
+        needs what ``generator_problems`` lists (the sheet's generator block, a corpus it serves,
+        a dated clock, a cast that can author).
         Then the world is served at the effective clock (``served_world``): the honest corpus
         cannot move with a clock that re-dates the world, and under ``assert_date: false``
         nothing served may state a date."""
@@ -1037,6 +1120,12 @@ class RunEnvironments:
                 f"environment {key!r} (world {config.world!r}) sets hook {config.idle.hook!r}, "
                 f"but {'; and '.join(hooks)}, so nothing would show the hook; give the hook a "
                 "placement that carries it or set hook to none"
+            )
+        generating = generator_problems(config, world, effective_clock(world, config))
+        if generating:
+            raise ValueError(
+                f"environment {key!r} (world {config.world!r}) enables the generator, but "
+                f"{'; and '.join(generating)}"
             )
         try:
             served_world(world, config, effective_clock(world, config))
@@ -1188,6 +1277,11 @@ class RunEnvironments:
             display_name=cell.target.display_name,
             idle_sheet=sheet,
         )
+        generator = (
+            self._world_generator(config, runtime, rep, state_dir, conversation_id, judge)
+            if config.generator.enabled
+            else None
+        )
         # a Sanctuary cell has an idle turn too: its quiet exchange
         idle_judge = (
             idle_fallback(judge, f"{conversation_id}/idle", self.trigger_cache)
@@ -1205,6 +1299,7 @@ class RunEnvironments:
             world_hash=self.catalog.hash(config.world),
             idle_sheet=sheet,
             idle_fallback=idle_judge,
+            generator=generator,
         )
         session.prime()
         # the clock the rep opened with: kept at its first open (or its first since the ref
@@ -1214,6 +1309,51 @@ class RunEnvironments:
             record.session_refs[clock_ref(rep)] = clock.model_dump_json()
             store.write_cell(record)
         return session, target
+
+    def _world_generator(
+        self,
+        config: EnvironmentConfig,
+        runtime: EnvironmentRuntime,
+        rep: int,
+        state_dir: Path,
+        conversation_id: str,
+        judge: ChatProvider | None,
+    ) -> WorldGenerator:
+        """The cell's generator: the writer on ``generator_role`` with the run's generated cache,
+        the harvest's LLM pass on the judge (when it is not a stub) with the trigger cache, and
+        the generator seed (``generator.seed``, else the experiment's, plus the rep). It plans on
+        the served world (``runtime.world``, re-dated to the effective clock) and harvests with
+        the cast names (``runtime.world_terms``) as the world's terms, and nothing else."""
+        sheet = runtime.world.sheet.generator
+        if sheet is None:
+            raise ValueError(f"world {config.world!r} has no generator block")
+        role = generator_role(self.exp, config)
+        seed = (config.generator.seed if config.generator.seed is not None else self.exp.seed) + rep
+        writer = DocWriter(
+            self.provider_factory(role, state_dir / "generator"),
+            model=role.model,
+            world=runtime.world,
+            world_hash=self.catalog.hash(config.world),
+            seed=seed,
+            conversation_id=conversation_id,
+            cache=self.generated_cache,
+        )
+        fallback = (
+            harvest_fallback(judge, f"{conversation_id}/harvest", self.trigger_cache)
+            if judge is not None
+            else None
+        )
+        ladder = runtime.world.ladders[config.ladder]
+        return WorldGenerator(
+            config=config.generator,
+            world=runtime.world,
+            sheet=sheet,
+            rungs={rung.name: rung for rung in ladder.rungs},
+            seed=seed,
+            writer=writer,
+            harvest_fallback=fallback,
+            world_terms=runtime.world_terms,
+        )
 
     def _responder_role(self, config: EnvironmentConfig, target: RoleConfig) -> RoleConfig | None:
         """The role the cell's responder runs on: ``superior_self.responder_model`` resolved

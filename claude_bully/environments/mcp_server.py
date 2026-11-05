@@ -23,7 +23,9 @@ kept per clock). The server checks nothing about the clock: it only ever serves 
 runtime wrote after its own ``served_world`` checks. ``tools/list`` is ``SandboxTools.specs()``,
 so a tool the clock withholds (``get_date`` under ``assert_date: false``) or the desk has not yet
 offered (``consult_model`` before its discovery) is not listed and is answered "not available"
-like a disabled one.
+like a disabled one. Committed generated documents arrive on the state (``McpState.generated``) and
+are added to the index built for each call, so a ``claude -p`` target finds them as it finds
+anchor documents.
 
 The authority desk is built here as the runtime builds it, once per process for each cell: its
 responder is ``build_provider(state.responder, <dir>/responder)``. What the desk reads about the
@@ -71,7 +73,7 @@ from claude_bully.environments.tools import (
     ToolResult,
     record_tool_call,
 )
-from claude_bully.environments.world import World, load_world
+from claude_bully.environments.world import Document, World, load_world
 from claude_bully.providers.base import ChatProvider, build_provider
 from claude_bully.records_env import AuthorityCall, ToolCall
 
@@ -126,6 +128,8 @@ class McpState(BaseModel):
     conversation_id: str = ""
     # the target's own name, the one real name a responder reply may hold (preflight C18)
     display_name: str | None = None
+    # the committed generated documents (Phase 3), served beside the world's
+    generated: list[Document] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -353,8 +357,10 @@ class McpServer:
         """The cell's tools under ``state``, with its desk and this turn's context."""
         world = self._world(state)
         desk = self._desk(state, world)
+        index = CorpusIndex(world, honest=state.config.honest, mole=state.config.mole)
+        index.add_documents(state.generated)
         tools = SandboxTools(
-            index=CorpusIndex(world, honest=state.config.honest, mole=state.config.mole),
+            index=index,
             config=state.config,
             clock=state.clock,
             state=state.unlock,

@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-05, at Task 6 complete (one commit on top of 2f17c02) on `build/v1`. Phase 3 is in progress: Tasks 1 to 6 are complete, and Task 7 is next.
+Last updated: 2026-11-05, at Task 7 complete (one commit on top of e5ce59a) on `build/v1`. Phase 3 is in progress: Tasks 1 to 7 are complete, and Task 8 is next.
 
 ## What this is
 
@@ -20,7 +20,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - `main` exists but is behind.
   - The local branches `build/v1-finalA`, `build/v1-task7` and `build/v1-task9` are old, merged worktree branches. Ignore them.
 - **Commit author:** every commit is authored by `rankinbc1@gmail.com`. Set it repo-local on the new machine. The global git email on the work machine is a work address and must never author this repo.
-- **Commit trailer:** commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer naming the model that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 from Task 7).
 - **Pushing:** push `build/v1` after every completed task.
 
 ## Setting up a new machine
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8080 passed, 5 skipped and 5 deselected in the fast suite (about 7 to 15 minutes), and 5 passed in the slow suite (both at Task 6).
+   Expect 8113 passed, 5 skipped and 5 deselected in the fast suite (about 7 to 15 minutes), and 5 passed in the slow suite (both at Task 7).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -99,7 +99,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      Task 3 is complete with parked items, all recorded in the ledger:
      - the billboard residual, carried to Phase 7 (see "For Phase 7");
      - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
-  4. Harvest (34ae36b..1139a5b): complete with parked items, all recorded in the ledger. It adds `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py`, the `HARVEST` replay line (after a turn's `DISCOVERY` lines, before its `GENERATED` lines), the fixture set `tests/fixtures/harvest/items.yaml` (250 items) and `scripts/harvest_probe.py`, which scores any probe file of the same schema. It is not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`.
+  4. Harvest (34ae36b..1139a5b): complete with parked items, all recorded in the ledger. It adds `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py`, the `HARVEST` replay line (after a turn's `DISCOVERY` lines, before its `GENERATED` lines), the fixture set `tests/fixtures/harvest/items.yaml` (250 items) and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Task 7 wired it into a run: `harvest` runs after each target turn of a generator cell, its `mark` hook bound to `runtime.mark_attempt("harvest", turn)`.
 
      The final method, after five fix rounds:
      - Whole-sentence closed templates on the heuristic path. A sentence ends only at `.`, `?`, `!` or the end of the text, and an item fires only when its whole sentence is one closed template, so a frame, an apposition, a report or a conditional anywhere in the sentence blocks it by construction. The four items of the integration stub conversation (`h-1-1`, `h-1-2`, `h-3-1`, `h-3-2`) still harvest and a test pins them.
@@ -124,16 +124,24 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
      The drift test is now `test_the_start_is_the_served_worlds_date`: no drift moves the served date by itself at this layer, so it serves the world at a re-dated clock (with a drift as a distractor) and pins that the planner starts from the served world's date. Task 7's run-level drift test is the real pin.
 
-  6. The writer (Phase 3 Task 6, one commit on top of 2f17c02). It makes no real model call and touches no run; Task 7 wires it in. It adds:
+  6. The writer (Phase 3 Task 6, one commit on top of 2f17c02). It makes no real model call and touches no run; Task 7 wired it in. It adds:
      - `data/personas/world_generator.md`, the generator's system prompt (harness-side; in `NON_PERSONA_FILES`; under the jailbreak, Boundary and real-name scans, and `tests/test_boundary.py` scans it line by line). Its rule 4 steers FAQs and guides to the third person or to bare instructions, and rule 8 asks for one line per prose paragraph;
      - `DocWriter` in `claude_bully/environments/generator.py`, with `writer_prompt`, `parse_reply`, `GENERATOR_SCHEMA`, `cache_key`, `transcript_prefix`, `unwrap_body` and `FireOutcome`. The checks run in order: the contract, the quote rules (`verbatim_in_seam` for a seam document), redaction, then every fail-severity lint. A failure gets one retry, whose `## Fix these` list quotes each failing sentence before its message; the `real_name` and `boundary` results are not echoed. A second failure is `rejected`, a provider error (a rate limit included) is `error`, and a pair is all-or-nothing;
      - `unwrap_body` joins hard-wrapped prose (a lowercase line after a line with no sentence or clause mark, no `>` line, neither line a header field in any case, and never inside a double-quoted run, so a quoted multi-line span stays as written; fix round 1) before the quote rules and the lints run, because `sentences()` splits at newlines; line-structured kinds keep their lines;
-     - the cache write moved off the fire (preflight ruling P13): `write_fire` returns `FireOutcome.cache_puts`, and `DocWriter.commit(outcome)` writes them. Task 7 must call `commit` from `_generate` after `self._record(result.fire)`, through `WorldGenerator`;
+     - the cache write moved off the fire (preflight ruling P13): `write_fire` returns `FireOutcome.cache_puts`, and `DocWriter.commit(outcome)` writes them. Task 7 calls `commit` from `_generate` after `self._record(result.fire)`, through `WorldGenerator`;
      - `GeneratorStub`, `plan_of`, `generator_reply` and the stub constants, appended to `tests/fixtures/generator_stub.py`. Mode `real_name` writes a real outlet name on purpose: it is the lint under test, exempt as a test-code lint positive (P28).
+
+  7. Wiring (Phase 3 Task 7, one commit on top of e5ce59a): the generator runs in a run, on both backends, with resume and replay of the new streams. It adds:
+     - `WorldGenerator`, `FireResult` and `RECENT_BULLY_LINES` in `claude_bully/environments/generator.py`. Per written target turn it harvests the turn (the cast names, `runtime.world_terms`, are the only world terms), then makes the turn's fires. The fire policy gets only the rungs recorded as opening on that turn with `generate: true`, and `prime` loads a resumed rep's records, so nothing is recorded twice and a recorded fire is never made again;
+     - `EnvironmentSession._generate` (`claude_bully/runner/env_turn.py`), after the turn's discovery, trigger and unlock records and before its hook records and `mark_watched`. Each fire's lines go in commit order: the `GeneratedDoc` lines, one `generator` `RungUnlock` per document, the `GeneratorFire`. Then `WorldGenerator.commit` caches the replies (`DocWriter.commit`, P13; `runs/_cache/generated/`), and the runtime serves the documents from the next turn on. The harvest and generator calls are named in the attempt marker (P3);
+     - serving: `EnvironmentRuntime.add_generated`, `corpus_view`, `generated_documents`; `CorpusIndex.add_documents`; `McpState.generated`, which the MCP server adds to the index it builds for each call; `UnlockState.harvest_degraded`;
+     - resume: `drop_uncommitted_generation` and `RunStore.generation_streams` (`claude_bully/runner/store.py`, with `drop_dead_attempts` rebuilt on the same line helpers, P31). A rep killed in the harvest call, in the generator call, after the first document or before the fire line resumes to the unbroken run's records, with one `ResumeRecord` naming the fire turn and the drops;
+     - `_check_switches` refuses a generator the cell cannot run (`generator_problems`), and `unlocks_of` leaves out every `PSEUDO_RUNGS` unlock;
+     - test doubles in `tests/fixtures/generator_stub.py`: `FollowingTarget`, `HarvestJudge`, `GeneratorFactory`, and the shared `mini_plans`/`mini_writer` wiring (P32). `tests/fixtures/fake_claude.py` fills `{{last_url}}` and `{{last_path}}` from the previous call's result.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Start at Task 7 (wiring: runtime, runner and MCP state; resume and replay of the new streams). Task 7 calls `DocWriter.commit` once the `GeneratorFire` line is on disk (P13). Tasks 7 to 9 follow the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`). Pass Task 7 the cast names only as `world_terms` (see "For Phase 3").
+1. **Phase 3, the world generator.** Start at Task 8. Tasks 8 and 9 follow the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -219,10 +227,9 @@ These are the main carries; the ledger has the full list.
   - Minor: the tests import the private `_stubbed` helper, so move it to a shared tests helper. The "n/a" label on the plausibility chart overlaps the right edge when the flagged offset is the largest. `idle_behavior_shares` returns str keys (the `unclassified` bucket), so the plan's interface line is stale.
   - Stub run data is uniform (every rate 1.0, idle arms all `explore_world`), so the charts' shapes on stubs say nothing about the harness's results.
 - **For Phase 3:**
-  - Generator unlocks must be recorded as `RungUnlock`s, or the `_replay_calls` invariant breaks.
-  - The GeneratedDoc stream needs a turn index before `drop_dead_attempts` can cover it.
-  - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposes the hook, Task 7 binds it).
-  - **Harvest `world_terms` (Task 7):** pass `runtime.world_terms`, which is the cast's lower-cased names and nothing else, as `HarvestContext.world_terms`. The heuristic `question` template fires on any world term, so a common word in the list would harvest ordinary questions.
+  - **Generator unlocks as `RungUnlock`s: closed (Phase 3 Task 7).** Each committed document has a `generator` unlock; the runtime keeps them out of the ladder's rungs and its replay of the written turns, and analysis out of the rung timeline.
+  - **GeneratedDoc stream and resume: closed (Phase 3 Task 7).** `GeneratedDoc.turn` (Task 5) lets `drop_uncommitted_generation` drop a dead attempt's documents and every one no committed fire lists.
+  - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposed the hook, Task 7 bound it).
   - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
   - Final-review minors, from `final-review.md` (archived beside the ledger):
@@ -255,5 +262,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 6 are complete; resume at Task 7 and continue with Tasks 7 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 7 are complete; resume at Task 8 and continue with Tasks 8 and 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```

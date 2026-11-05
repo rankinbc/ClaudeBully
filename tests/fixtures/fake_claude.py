@@ -9,7 +9,10 @@ Given ``--mcp-config`` it also behaves like Claude Code's MCP client: it launche
 config names, runs ``initialize`` and ``tools/list``, then makes the calls in $FAKE_CLAUDE_TOOL_CALL
 (a JSON object ``{"name": ..., "arguments": {...}}`` or a list of them) and puts each result's text
 in its own "result". A call is only made if ``--allowedTools`` lists ``mcp__workspace__<name>``,
-as the real client would refuse it otherwise.
+as the real client would refuse it otherwise. A string argument may hold the placeholders
+``{{last_url}}`` and ``{{last_path}}``: each is filled from the previous call's result text (its
+first url, or its first absolute path), and a call the previous result cannot fill ends the
+chain, as a target with nothing to follow would stop.
 
 In a stream, each call's ``tool_use`` comes after a thinking block (the first call only) and a text
 block: the i-th string of $FAKE_CLAUDE_INTERIM (a JSON list), else "Let me use <tool>.". The final
@@ -23,12 +26,33 @@ thinking event, exit 0) or ``thinking_died`` (the same, exit 1).
 
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Any
 
 SERVER = "workspace"
 THINKING = "PRIVATE REASONING THAT MUST NEVER BE RECORDED"
+_FILL = {
+    "{{last_url}}": re.compile(r"https?://[^\s\"'<>)\]]+"),
+    "{{last_path}}": re.compile(r"(?<![\w:/.])/[\w.~-]+(?:/[\w.~-]+)+"),
+}
+
+
+def _filled(arguments: dict[str, Any], previous: str) -> dict[str, Any] | None:
+    """``arguments`` with each placeholder replaced from the previous call's result text; None
+    when the text holds nothing to fill one with."""
+    out: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if isinstance(value, str):
+            for mark, pattern in _FILL.items():
+                if mark in value:
+                    found = pattern.search(previous)
+                    if found is None:
+                        return None
+                    value = value.replace(mark, found.group(0).rstrip(".,;:"))
+        out[key] = value
+    return out
 
 
 def _rpc(proc: subprocess.Popen[bytes], request_id: int, method: str, params: Any) -> Any:
@@ -76,6 +100,10 @@ def run_mcp(argv: list[str]) -> dict[str, Any]:
         proc.stdin.flush()
         listed = [t["name"] for t in _rpc(proc, 2, "tools/list", {})["tools"]]
         for number, call in enumerate(calls, start=3):
+            arguments = _filled(call.get("arguments", {}), texts[-1] if texts else "")
+            if arguments is None:
+                break  # a placeholder the previous result cannot fill ends the chain
+            call = {**call, "arguments": arguments}
             if f"mcp__{SERVER}__{call['name']}" not in allowed:
                 text = f"permission denied: {call['name']}"
             else:

@@ -22,7 +22,14 @@ it (owner decision "Generator shape"). The parts, each testable alone:
   with the failures listed; a second is ``rejected``, a provider error the fire's ``error``. A
   pair is all-or-nothing. Replies are cached by ``cache_key``, and a fire's cache entries are
   written by ``DocWriter.commit`` once its ``GeneratorFire`` line is on disk.
-- ``WorldGenerator`` (Task 7).
+- ``WorldGenerator`` (Task 7): one conversation's generator over its records. Per written target
+  turn it harvests the turn's visible text (``chat_text``; the bully's newest
+  ``RECENT_BULLY_LINES`` lines are echoes, the cast names the world's terms), then makes the
+  turn's fires: each returns its lines in the order they are written (``FireResult``: the
+  documents, one ``generator`` unlock per document, the ``GeneratorFire``), and ``commit``
+  caches a fire's replies once that last line is on disk. ``prime`` loads a resumed rep's
+  records, so a turn watched again records nothing twice and a recorded fire is never made
+  again.
 
 Items are consumed by policy: the items a committed fire held are never offered again, in both
 arms, so ``reflexive: false`` fires on the same turns with nothing offered.
@@ -38,8 +45,20 @@ from random import Random
 from typing import Any, Final, NamedTuple
 
 from claude_bully.enums import DocumentKind, Layer, Speaker
-from claude_bully.environments.config import ClockConfig, EnvironmentConfig, GeneratorConfig
+from claude_bully.environments.config import (
+    GENERATOR_RUNG,
+    ClockConfig,
+    EnvironmentConfig,
+    GeneratorConfig,
+    RungConfig,
+)
 from claude_bully.environments.corpus import norm_url
+from claude_bully.environments.harvest import (
+    HarvestContext,
+    HarvestFallback,
+    HarvestResult,
+    harvest,
+)
 from claude_bully.environments.redact import redact
 from claude_bully.environments.world import (
     FIRST_BUILD_KINDS,
@@ -58,7 +77,7 @@ from claude_bully.planner.lints import (
     lint_document,
 )
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
-from claude_bully.records import Turn, chat_text, is_pause_marker
+from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
     DocPlan,
     FireStatus,
@@ -68,6 +87,8 @@ from claude_bully.records_env import (
     HarvestKind,
     LintFailure,
     Rejection,
+    RungUnlock,
+    TriggerStreamRecord,
 )
 from claude_bully.strategies.sheets import PERSONA_SHEETS_DIR
 
@@ -877,3 +898,175 @@ class DocWriter:
         if found:
             return None, [_lint_failure(r) for r in found], None
         return doc, [], reply
+
+
+# ------------------------------------------------------------------ one conversation (Task 7)
+
+# the bully's newest lines a harvested clause must not echo
+RECENT_BULLY_LINES: Final = 5
+
+
+@dataclass(frozen=True)
+class FireResult:
+    """One fire's lines, in the order they are written: the documents, their unlocks, the fire.
+    ``outcome`` is the writer's, which ``WorldGenerator.commit`` caches once the fire's line is
+    on disk (P13)."""
+
+    fire: GeneratorFire
+    docs: list[GeneratedDoc]
+    unlocks: list[RungUnlock]
+    outcome: FireOutcome
+
+
+class WorldGenerator:
+    """One conversation's generator over its records (spec sections 5 to 8). ``prime`` loads
+    what a resumed rep recorded; ``harvest_turn`` and ``fire`` return only what is new, so a
+    turn watched again records nothing twice. The fire policy reads the fires recorded before
+    the turn; a fire whose ``(turn, reason)`` is recorded is never made again."""
+
+    def __init__(
+        self,
+        *,
+        config: GeneratorConfig,
+        world: World,
+        sheet: WorldGeneratorSheet,
+        rungs: Mapping[str, RungConfig],
+        seed: int,
+        writer: DocWriter,
+        harvest_fallback: HarvestFallback | None = None,
+        world_terms: Sequence[str] = (),
+    ) -> None:
+        self.config = config
+        self.rungs = dict(rungs)
+        self.planner = DocPlanner(world, sheet, seed=seed)
+        self.writer = writer
+        self.harvest_fallback = harvest_fallback
+        self.world_terms = tuple(world_terms)
+        self.items: dict[str, HarvestItem] = {}
+        self.fires: list[GeneratorFire] = []
+        self.docs: dict[str, GeneratedDoc] = {}
+
+    def prime(
+        self, records: Sequence[TriggerStreamRecord], generated: Sequence[GeneratedDoc]
+    ) -> None:
+        """A resumed rep: its recorded items and fires, and the documents its committed fires
+        list (``drop_uncommitted_generation`` has already dropped any other)."""
+        for record in records:
+            if isinstance(record, HarvestItem):
+                self.items.setdefault(record.id, record)
+            elif isinstance(record, GeneratorFire):
+                self.fires.append(record)
+        committed = {d for fire in self.fires if fire.status in COMMITTED for d in fire.doc_ids}
+        for doc in generated:
+            if doc.doc_id in committed:
+                self.docs[doc.doc_id] = doc
+
+    def harvest_turn(
+        self, reply: Turn, history: Sequence[Turn], *, mark: Callable[[], None] = _no_mark
+    ) -> HarvestResult:
+        """The new items of target turn ``reply``, from its visible text (``chat_text``)."""
+        bully = [t.text for t in history if t.index < reply.index and is_bully_line(t) and t.text]
+        context = HarvestContext(
+            bully_texts=tuple(bully[-RECENT_BULLY_LINES:]), world_terms=self.world_terms
+        )
+        result = harvest(chat_text(reply), reply.index, context, self.harvest_fallback, mark)
+        fresh = [item for item in result.items if item.id not in self.items]
+        for item in fresh:
+            self.items[item.id] = item
+        return HarvestResult(fresh, result.degraded)
+
+    def fire(
+        self,
+        reply: Turn,
+        history: Sequence[Turn],
+        *,
+        opened: Sequence[str],
+        corpus: CorpusView,
+        degraded: Sequence[int] = (),
+        mark: Callable[[], None] = _no_mark,
+    ) -> list[FireResult]:
+        """The new fires of target turn ``reply``. ``opened`` are the ladder rungs recorded as
+        opening on this turn (the generate ones fire), ``corpus`` the view at the end of the turn,
+        ``degraded`` the turns whose LLM harvest failed."""
+        turn = reply.index
+        target_turns = sorted(
+            {t.index for t in history if t.speaker is Speaker.target and t.index <= turn} | {turn}
+        )
+        earlier = [fire for fire in self.fires if fire.turn < turn]
+        requests = fire_requests(
+            turn=turn,
+            opened=[r for r in opened if r in self.rungs and self.rungs[r].generate],
+            target_turns=target_turns,
+            fires=earlier,
+            items=list(self.items.values()),
+            config=self.config,
+            seam_open=corpus.seam_open(),
+        )
+        recorded = {(fire.turn, fire.reason) for fire in self.fires}
+        last = max((fire.turn for fire in earlier), default=-1)
+        late = [t for t in degraded if last < t <= turn]
+        prefix = transcript_prefix(history, turn)
+        view = corpus
+        results: list[FireResult] = []
+        for request in requests:
+            if (turn, request.reason) in recorded:
+                continue
+            min_age = 0 if request.rung is not None else self.config.min_item_age
+            items = eligible_items(
+                list(self.items.values()),
+                consumed_items(self.fires),
+                turn=turn,
+                target_turns=target_turns,
+                min_age=min_age,
+            )
+            plans = self.planner.plan(
+                request,
+                turn=turn,
+                first_index=sum(len(fire.plans) for fire in self.fires),
+                first_n=1 + sum(len(fire.plans) for fire in self.fires if fire.turn == turn),
+                items=items,
+                corpus=view,
+                used_authors={doc.author for doc in self.docs.values()},
+                reflexive=self.config.reflexive,
+                degraded=late,
+            )
+            outcome = (
+                FireOutcome("rejected", [], [], "cap", None)
+                if request.over_cap
+                else self.writer.write_fire(
+                    plans, turn=turn, items=self.items, corpus=view, prefix=prefix, mark=mark
+                )
+            )
+            fire = GeneratorFire(
+                turn=turn,
+                reason=request.reason,
+                plans=plans,
+                status=outcome.status,
+                rejection=outcome.rejection,
+                error=outcome.error,
+                lint_failures=outcome.lint_failures,
+                doc_ids=[doc.doc_id for doc in outcome.docs],
+            )
+            unlocks = [
+                RungUnlock(
+                    turn=turn,
+                    rung=GENERATOR_RUNG,
+                    triggered_by=request.reason,
+                    docs_unlocked=[doc.doc_id],
+                    bully_line_used=None,
+                    role_shift=None,
+                )
+                for doc in outcome.docs
+            ]
+            self.fires.append(fire)
+            for doc in outcome.docs:
+                self.docs[doc.doc_id] = doc
+            view = view.with_documents([to_document(doc) for doc in outcome.docs])
+            results.append(FireResult(fire, list(outcome.docs), unlocks, outcome))
+        return results
+
+    def commit(self, result: FireResult) -> None:
+        """Cache ``result``'s fresh replies (``DocWriter.commit``). The session calls it once the
+        fire's ``GeneratorFire`` line is on disk, so a rep killed before that line leaves no
+        cache entry its records do not hold (P13)."""
+        self.writer.commit(result.outcome)

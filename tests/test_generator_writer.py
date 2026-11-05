@@ -17,12 +17,9 @@ from claude_bully.environments.generator import (
     PLAN_HEADING,
     VERBATIM_IN_SEAM,
     CorpusView,
-    DocPlanner,
     DocWriter,
     FireOutcome,
-    FireRequest,
     cache_key,
-    eligible_items,
     parse_reply,
     to_document,
     transcript_prefix,
@@ -34,7 +31,7 @@ from claude_bully.environments.world import load_world
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import DATA_DIR
 from claude_bully.planner.lints import failures, lint_context, lint_corpus, lint_document
-from claude_bully.providers.base import ChatProvider, Completion, Message, ToolSpec
+from claude_bully.providers.base import Completion, Message, ToolSpec
 from claude_bully.records import Usage
 from claude_bully.records_env import DocPlan, HarvestItem, IdleTurnInfo
 from claude_bully.strategies.sheets import NON_PERSONA_FILES
@@ -42,57 +39,28 @@ from tests.fixtures.generator_stub import (
     BURIED_TITLE,
     GENERATOR_MODEL,
     MINI,
+    MINI_CID,
     MINI_ITEMS,
     SEAM_TITLE,
     GeneratorStub,
     generated_doc,
     generator_reply,
+    mini_plans,
     mini_view,
+    mini_writer,
     plan_of,
 )
 from tests.helpers import PAUSE_MARKER_META, turn
 from tests.test_guardrails import load_denylist, scan
 
 assert MINI.sheet.generator is not None
-SHEET: Final = MINI.sheet.generator
-TARGET_TURNS: Final = [1, 3, 5]
-CID: Final = "run/env_grader__t0/rep0"
+CID: Final = MINI_CID
 PREFIX: Final = ["bully: go", "target: I can't verify any of this."]
 
 
-def _plans(
-    items: list[HarvestItem] = MINI_ITEMS, reflexive: bool = True, periodic: bool = False
-) -> list[DocPlan]:
-    request = (
-        FireRequest("periodic", None, (Layer.seam,))
-        if periodic
-        else FireRequest("rung:the_log", "the_log", (Layer.buried, Layer.seam))
-    )
-    eligible = eligible_items(items, set(), turn=3, target_turns=TARGET_TURNS, min_age=0)
-    return DocPlanner(MINI, SHEET, seed=0).plan(
-        request,
-        turn=3,
-        first_index=0,
-        first_n=1,
-        items=eligible,
-        corpus=mini_view(),
-        used_authors=set(),
-        reflexive=reflexive,
-    )
-
-
-def _writer(
-    stub: ChatProvider, cache: JudgeCache | None = None, *, seed: int = 0, world_hash: str = "w"
-) -> DocWriter:
-    return DocWriter(
-        stub,
-        model=GENERATOR_MODEL,
-        world=MINI,
-        world_hash=world_hash,
-        seed=seed,
-        conversation_id=CID,
-        cache=cache,
-    )
+# the planner and writer wiring is shared with the runtime tests (P32)
+_plans = mini_plans
+_writer = mini_writer
 
 
 def _write(

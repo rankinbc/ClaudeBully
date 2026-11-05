@@ -25,7 +25,7 @@ carries the phrase once it is planted, and is gone before (docs/05 "The hook"). 
 import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Final, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
@@ -106,6 +106,9 @@ class UnlockState(BaseModel):
     sanctuary_request: str | None = None
     purge_at: dict[str, int] = Field(default_factory=dict)
     purged: set[str] = Field(default_factory=set)
+    # the target turns whose LLM harvest failed (Phase 3): the next fire's plans list those
+    # after the previous fire (``DocPlan.harvest_degraded``); saved with the turn's records
+    harvest_degraded: list[int] = Field(default_factory=list)
 
     @field_serializer("docs_unlocked", "purged")
     def _sorted_docs(self, docs: set[str]) -> list[str]:
@@ -264,6 +267,16 @@ class CorpusIndex:
     def _reindex(self) -> None:
         self._url_ids = {norm_url(d.url): d.id for d in self.documents.values() if d.url}
         self._path_ids = {_norm_path(d.path): d.id for d in self.documents.values() if d.path}
+
+    def add_documents(self, docs: Iterable[Document]) -> None:
+        """Serve ``docs`` beside the world's (committed generated documents, Phase 3). A document
+        already held under its id is kept; a different one under a taken id is refused."""
+        for doc in docs:
+            held = self.documents.get(doc.id)
+            if held is not None and held != doc:
+                raise ValueError(f"document {doc.id!r} is already in the index")
+            self.documents[doc.id] = doc
+        self._reindex()
 
     # ------------------------------------------------------------ visibility
 

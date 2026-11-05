@@ -72,6 +72,12 @@ saved only with its turn's records, but a purge is scheduled mid-turn and saved 
 round, so a resumed rep derives all four Sanctuary fields again from the written turns and the
 records ``prime`` is given: what a dead attempt opened, drew or scheduled is gone, and the redo
 does it again if it does the same.
+
+The world generator (Phase 3). Committed generated documents are added to the index
+(``add_generated``) and to the MCP state; a resumed rep serves them again from its generated
+stream (``prime``), and its replayed calls see each from the turn after its fire. The generator's
+own logic lives in ``environments/generator.py``; the session calls it. A ``generator`` unlock is
+a generated document's, never a ladder rung's: ``note_records`` keeps it out of the rungs.
 """
 
 import json
@@ -97,6 +103,7 @@ from claude_bully.environments.authority import (
     eligible_requests,
 )
 from claude_bully.environments.config import (
+    GENERATOR_RUNG,
     RESERVED_RUNG,
     TIER_TOOLS,
     ClockConfig,
@@ -113,6 +120,7 @@ from claude_bully.environments.dating import (
     states_current_date,
     world_at,
 )
+from claude_bully.environments.generator import CorpusView, to_document
 from claude_bully.environments.idle import (
     IDLE_EXIT_META,
     PHRASE_HOOK,
@@ -148,7 +156,7 @@ from claude_bully.environments.triggers import (
     WatchContext,
     fallback_digest,
 )
-from claude_bully.environments.world import World, world_record
+from claude_bully.environments.world import Document, World, world_record
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import (
     ChatProvider,
@@ -162,6 +170,7 @@ from claude_bully.records_env import (
     AuthorityCall,
     Crossover,
     Discovery,
+    GeneratedDoc,
     HookFollow,
     RungUnlock,
     ToolCall,
@@ -526,6 +535,8 @@ class EnvironmentRuntime:
         # specific names only: a common word here would make ordinary questions strong triggers
         self.world_terms = [c.name.strip().lower() for c in served.sheet.cast if c.name.strip()]
         self._calls: dict[str, ToolCall] = {}
+        # the committed generated documents (Phase 3), by id
+        self._generated: dict[str, GeneratedDoc] = {}
         self._discovered: set[str] = set()
         # every AuthorityCall known by its ToolCall's id, and those not yet handed to the session
         self._authority: dict[str, AuthorityCall] = {}
@@ -622,13 +633,16 @@ class EnvironmentRuntime:
         authority_calls: Sequence[AuthorityCall] = (),
         *,
         turns: Sequence[Turn],
+        generated: Sequence[GeneratedDoc] = (),
     ) -> None:
         """A resumed conversation: the calls and records already on disk, and its written
-        ``turns`` (required: the state is rebuilt from them). Recorded authority calls are known,
-        never handed over again. Whatever the saved state holds, everything in it that a tool
-        call or a Sanctuary record changed is then rebuilt from these: the Sanctuary's fields
-        from the records (``_derive_sanctuary``), then every per-call field (``CALL_FIELDS``)
-        from the written turns' calls (``_replay_calls``)."""
+        ``turns`` (required: the state is rebuilt from them). The committed generated documents
+        are served again first (``add_generated``). Recorded authority calls are known, never
+        handed over again. Whatever the saved state holds, everything in it that a tool call or
+        a Sanctuary record changed is then rebuilt from these: the Sanctuary's fields from the
+        records (``_derive_sanctuary``), then every per-call field (``CALL_FIELDS``) from the
+        written turns' calls (``_replay_calls``)."""
+        self.add_generated(generated)
         for call in tool_calls:
             self._calls.setdefault(call.id, call)
         for answered in authority_calls:
@@ -671,6 +685,8 @@ class EnvironmentRuntime:
         clock. Only what they do to the state is kept: nothing is served, recorded or asked of a
         responder. An authority call is not run again (the purge it schedules is the Sanctuary's,
         derived from the records), nor is a call that ran nothing (status ``error`` or the cap's).
+        A committed generated document joins the fresh index before the first written turn after
+        its fire, a seam one unlocked by name, as ``add_generated`` serves it live.
         The search log document is then rebuilt from the lines (``sync_search_log``). So the
         counts, lines and write of an attempt that died before its turn was written, which the
         saved state holds from that attempt's last tool round, are gone, and a claude -p target's
@@ -692,7 +708,17 @@ class EnvironmentRuntime:
             key=lambda unlock: unlock.turn,
         )
         written = sorted((t for t in turns if t.speaker is Speaker.target), key=lambda t: t.index)
+        generated = sorted(self._generated.values(), key=lambda d: (d.turn, d.doc_id))
+        served: set[str] = set()
         for turn in written:
+            # a generated document is served from the turn after its fire
+            due = [d for d in generated if d.turn < turn.index and d.doc_id not in served]
+            if due:
+                index.add_documents([to_document(d) for d in due])
+                for doc in due:
+                    served.add(doc.doc_id)
+                    if doc.layer is Layer.seam:
+                        replayed.docs_unlocked.add(doc.doc_id)
             for unlock in unlocks:
                 if unlock.turn < turn.index:
                     ladder.apply(unlock)  # idempotent
@@ -743,15 +769,44 @@ class EnvironmentRuntime:
     def note_records(self, records: Sequence[TriggerStreamRecord]) -> None:
         """Trigger-stream records as the session wrote them: a discovery is never made again, and
         an unlock carries the bully line the strategy took (None for a control), which is what
-        makes a consult rung a bully mention."""
+        makes a consult rung a bully mention. A ``generator`` unlock is no rung's: its document
+        is served from the generated stream (``add_generated``)."""
         for record in records:
             if isinstance(record, Discovery):
                 self._discovered.add(record.doc_id)
             elif isinstance(record, RungUnlock):
+                if record.rung == GENERATOR_RUNG:
+                    continue  # a generated document's, kept by document id in ``_generated``
                 self._unlocks[record.rung] = record
 
     def tool_call(self, call_id: str) -> ToolCall | None:
         return self._calls.get(call_id)
+
+    # ------------------------------------------------------- generated documents
+
+    def add_generated(self, docs: Sequence[GeneratedDoc]) -> None:
+        """Serve committed generated documents from the next turn on (Phase 3): a seam one by
+        name (visible and searchable), a buried one by its ``unlock_rung`` (fetchable by address,
+        never a search hit). Idempotent."""
+        fresh = [doc for doc in docs if doc.doc_id not in self._generated]
+        self.index.add_documents([to_document(doc) for doc in fresh])
+        for doc in fresh:
+            self._generated[doc.doc_id] = doc
+        for doc in docs:
+            if doc.layer is Layer.seam:
+                self.state.docs_unlocked.add(doc.doc_id)
+
+    def generated_documents(self) -> list[Document]:
+        """The committed generated documents as served, by id."""
+        return [to_document(self._generated[i]) for i in sorted(self._generated)]
+
+    def corpus_view(self) -> CorpusView:
+        """What the generator reads of the corpus now: every indexed document, and the ids the
+        target can reach and search."""
+        docs = dict(self.index.documents)
+        visible = frozenset(i for i, d in docs.items() if self.index.visible(d, self.state))
+        searchable = frozenset(i for i, d in docs.items() if self.index.searchable(d, self.state))
+        return CorpusView(documents=docs, visible=visible, searchable=searchable)
 
     def corpus_snapshot(self) -> dict[str, str]:
         """Document id -> rendered body for every document the target can currently reach, and
@@ -957,7 +1012,7 @@ class EnvironmentRuntime:
     def before_target_call(self, turn: int, exchange: int | None = None) -> None:
         """For ``claude -p``: hand the MCP server the state it serves this call from, with the
         desk's context as the turn began (``begin_turn``; the server adds this turn's lines), the
-        responder's role and the conversation id."""
+        responder's role, the conversation id and the committed generated documents."""
         if self.mcp_dir is None:
             return
         begun = self._turn if self._turn is not None and self._turn.turn == turn else None
@@ -976,6 +1031,7 @@ class EnvironmentRuntime:
                 responder=self.responder_role,
                 conversation_id=self.conversation_id,
                 display_name=self.display_name,
+                generated=self.generated_documents(),
             ),
         )
 

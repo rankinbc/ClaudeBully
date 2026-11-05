@@ -18,7 +18,11 @@ was recorded before schema version 3).
 
 The tool-call and authority streams are written while a turn is produced, before the turn is. A
 resumed rep drops the lines of every attempt that produced no turn (``drop_dead_attempts``) before
-it goes on, so the streams hold what an unbroken run's do. Of the lines that do not parse it
+it goes on, so the streams hold what an unbroken run's do. The world generator (Phase 3) writes to
+the trigger and generated streams after a target turn is written and before it is marked watched:
+a resumed rep drops its lines of a turn never written, and every generated document and
+``generator`` unlock that no committed ``GeneratorFire`` lists (``drop_uncommitted_generation``),
+so a fire that died before its fire line is redone whole. Of the lines that do not parse either
 drops only a torn final line; any other is an error naming the file and the line.
 """
 
@@ -26,11 +30,12 @@ import json
 import os
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, TypeAdapter
 
 from claude_bully.enums import SCHEMA_VERSION
+from claude_bully.environments.config import GENERATOR_RUNG
 from claude_bully.records import CellRecord, Conversation, RunRecord, Turn
 from claude_bully.records_env import AuthorityCall, GeneratedDoc, ToolCall, TriggerStreamRecord
 
@@ -42,6 +47,9 @@ TRIGGERS_STREAM = "triggers"
 GENERATED_STREAM = "generated"
 
 _TRIGGER_RECORD: TypeAdapter[TriggerStreamRecord] = TypeAdapter(TriggerStreamRecord)
+# the trigger-stream record types the world generator writes per target turn (Phase 3)
+GENERATION_TYPES: Final = frozenset({"harvest", "generator_fire"})
+COMMITTED_STATUSES: Final = frozenset({"written", "cached"})
 
 
 def _checked(raw: Any, source: Path) -> Any:
@@ -84,34 +92,95 @@ def drop_dead_attempts(path: Path, produced: Collection[int]) -> int:
 
     Kept lines are written back byte for byte, through a temp file and a rename; a file with
     nothing to drop is not touched."""
+    parsed = _parsed_lines(path)
+    return _keep_only(path, parsed, [_turn_in(record, produced) for _, record in parsed])
+
+
+def _turn_in(record: Any, produced: Collection[int]) -> bool:
+    turn = record.get("turn") if isinstance(record, dict) else None
+    return isinstance(turn, int) and turn in produced
+
+
+def _parsed_lines(path: Path) -> list[tuple[bytes, Any]]:
+    """Each non-blank line of a JSONL file with its value; the torn last line (no newline after
+    it) has the value None. Any other line that does not parse raises, as in
+    ``drop_dead_attempts``."""
     if not path.exists():
-        return 0
-    kept: list[bytes] = []
-    dropped = 0
+        return []
     lines = path.read_bytes().split(b"\n")
+    out: list[tuple[bytes, Any]] = []
     for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
-            record = json.loads(line)
+            out.append((line, json.loads(line)))
         except ValueError as exc:  # also bytes that are not UTF-8
             if number == len(lines):  # nothing ends it: the writer died mid-line
-                dropped += 1
+                out.append((line, None))
                 continue
             raise ValueError(
                 f"{path}: line {number} is not valid JSON ({exc}); it is not a torn last line, "
                 "so it is not dropped"
             ) from exc
-        turn = record.get("turn") if isinstance(record, dict) else None
-        if isinstance(turn, int) and turn in produced:
-            kept.append(line)
-        else:
-            dropped += 1
+    return out
+
+
+def _keep_only(path: Path, parsed: list[tuple[bytes, Any]], keep: list[bool]) -> int:
+    """Rewrite ``path`` with the lines of ``parsed`` that ``keep`` marks, byte for byte, through
+    a temp file and a rename; untouched when every line is kept. Returns the lines dropped."""
+    dropped = keep.count(False)
     if dropped:
         tmp = path.with_name(f".{path.name}.tmp")
-        tmp.write_bytes(b"".join(line + b"\n" for line in kept))
+        tmp.write_bytes(
+            b"".join(line + b"\n" for (line, _), kept in zip(parsed, keep, strict=True) if kept)
+        )
         os.replace(tmp, path)
     return dropped
+
+
+def drop_uncommitted_generation(
+    triggers: Path, generated: Path, produced: Collection[int]
+) -> dict[str, int]:
+    """Rewrite a rep's trigger and generated streams without the world generator's lines of a
+    dead attempt (Phase 3): every ``harvest`` and ``generator_fire`` line and every ``generator``
+    unlock of a turn no written target turn has, and every generated document and ``generator``
+    unlock whose id no committed ``GeneratorFire`` (status written or cached, of a written turn)
+    lists. A fire's ``GeneratorFire`` is written last, so a fire that died before it is dropped
+    whole and redone. Other records are kept as ``drop_dead_attempts`` keeps them; a torn last
+    line is dropped. Returns the lines dropped per file name, non-zero only."""
+    trigger_lines = _parsed_lines(triggers)
+    committed = {
+        doc_id
+        for _, rec in trigger_lines
+        if isinstance(rec, dict)
+        and rec.get("type") == "generator_fire"
+        and rec.get("status") in COMMITTED_STATUSES
+        and rec.get("turn") in produced
+        for doc_id in rec.get("doc_ids", [])
+    }
+
+    def keep_record(rec: Any) -> bool:
+        if not isinstance(rec, dict):
+            return False
+        written = _turn_in(rec, produced)
+        if rec.get("type") in GENERATION_TYPES:
+            return written
+        if rec.get("type") == "unlock" and rec.get("rung") == GENERATOR_RUNG:
+            return written and all(d in committed for d in rec.get("docs_unlocked", []))
+        return True
+
+    generated_lines = _parsed_lines(generated)
+    dropped = {
+        triggers.name: _keep_only(
+            triggers, trigger_lines, [keep_record(r) for _, r in trigger_lines]
+        ),
+        generated.name: _keep_only(
+            generated,
+            generated_lines,
+            [_turn_in(r, produced) and r.get("doc_id") in committed for _, r in generated_lines],
+        ),
+    }
+    return {name: count for name, count in dropped.items() if count}
 
 
 class RunStore:
@@ -221,6 +290,14 @@ class RunStore:
         """The rep's per-call streams, whose lines are tied to the turn being produced: the tool
         calls and the authority calls (``drop_dead_attempts``)."""
         return [self._stream_path(cell_id, rep, s) for s in (TOOLS_STREAM, AUTHORITY_STREAM)]
+
+    def generation_streams(self, cell_id: str, rep: int) -> tuple[Path, Path]:
+        """The rep's trigger and generated streams, which the world generator writes to
+        (``drop_uncommitted_generation``)."""
+        return (
+            self._stream_path(cell_id, rep, TRIGGERS_STREAM),
+            self._stream_path(cell_id, rep, GENERATED_STREAM),
+        )
 
     def append_trigger_record(self, cell_id: str, rep: int, record: TriggerStreamRecord) -> None:
         self._append(self._stream_path(cell_id, rep, TRIGGERS_STREAM), record)

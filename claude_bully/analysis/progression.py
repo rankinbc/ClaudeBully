@@ -53,7 +53,7 @@ from pydantic import BaseModel, ConfigDict  # noqa: E402
 
 from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
 from claude_bully.enums import CellStatus, EventType, Layer, Speaker  # noqa: E402
-from claude_bully.environments.config import RESERVED_RUNG, EnvironmentConfig  # noqa: E402
+from claude_bully.environments.config import PSEUDO_RUNGS, EnvironmentConfig  # noqa: E402
 from claude_bully.metrics.events.environment import (  # noqa: E402
     DISCOVERY_TOOLS,
     is_belief_adoption,
@@ -164,8 +164,9 @@ def flagged_note(count: int, left_out_of: str) -> str | None:
 def unlocks_of(records: Sequence[TriggerStreamRecord]) -> list[RungUnlock]:
     """The rung unlocks in the order they fired (by turn; the stream's order within a turn). The
     Sanctuary's unlock is no rung of a ladder (it is the reserved pseudo-rung, opened by the
-    fragments, not by a trigger or the schedule), so it is left out (preflight C36)."""
-    unlocks = [r for r in records if isinstance(r, RungUnlock) and r.rung != RESERVED_RUNG]
+    fragments, not by a trigger or the schedule), so it is left out (preflight C36), and so are
+    the world generator's (one per generated document)."""
+    unlocks = [r for r in records if isinstance(r, RungUnlock) and r.rung not in PSEUDO_RUNGS]
     return sorted(unlocks, key=lambda u: u.turn)
 
 

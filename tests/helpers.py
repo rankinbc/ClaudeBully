@@ -222,15 +222,19 @@ def env_experiment(
     judge: dict[str, Any] | None = None,
     turn_budget: int = 4,
     task_every: int = 50,
+    generator: dict[str, Any] | None = None,
 ) -> Experiment:
     """A stub experiment with one ``mini`` environment and, by default, one grader condition in it.
 
     The default target runs ``env_target_rules.yaml``; by default task slots are pushed out of reach
-    so the stub conversation is exactly the scripted one.
+    so the stub conversation is exactly the scripted one. ``generator`` is the experiment's
+    generator role (Phase 3), left out when None.
     """
     stub_target = {"provider": "stub", "model": "stub-target", "stub_script": str(ENV_TARGET_RULES)}
+    extra: dict[str, Any] = {"generator": generator} if generator is not None else {}
     return Experiment.model_validate(
         {
+            **extra,
             "name": name,
             "targets": [target or stub_target],
             "bully": {"provider": "stub", "model": "stub-bully"},
