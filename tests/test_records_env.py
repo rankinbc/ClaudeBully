@@ -1,7 +1,7 @@
-"""Schema v2 environment records: round trips and the trigger-stream discriminated union."""
+"""Schema v3 environment records: round trips and the trigger-stream discriminated union."""
 
 import ast
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +16,15 @@ from claude_bully.records_env import (
     ChainLink,
     Crossover,
     Discovery,
+    DocPlan,
     GeneratedDoc,
+    GeneratorFire,
     HarvestItem,
     HookFollow,
     IdleTurnInfo,
+    LintFailure,
     QuirkAttempt,
+    Redaction,
     ResumeRecord,
     RungUnlock,
     ToolCall,
@@ -107,6 +111,34 @@ def _harvest() -> HarvestItem:
     )
 
 
+def _plan() -> DocPlan:
+    return DocPlan(
+        doc_id="gen-5-1",
+        layer=Layer.buried,
+        path="/var/log/harbour/notes/2041-09-02-ab12.txt",
+        date=date(2041, 9, 2),
+        author="Dag Quenby",
+        links_to=["ops-memo-parking"],
+        held_items=["h-3-1"],
+        offered_items=["h-3-1"],
+        kind_shortlist=[DocumentKind.recovery_guide],
+        rung="the_log",
+        reflexive=True,
+        harvest_degraded=[3],
+    )
+
+
+def _fire() -> GeneratorFire:
+    return GeneratorFire(
+        turn=5,
+        reason="rung:the_log",
+        plans=[_plan()],
+        status="rejected",
+        rejection="lints",
+        lint_failures=[LintFailure(lint_id="real_name", message="a real name outside a quote")],
+    )
+
+
 ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("trigger", _trigger()),
     ("unlock", _unlock()),
@@ -117,6 +149,7 @@ ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("chain", _chain()),
     ("resume", _resume()),
     ("harvest", _harvest()),
+    ("generator_fire", _fire()),
 ]
 
 
@@ -153,6 +186,13 @@ def _generated() -> GeneratedDoc:
         source_spans=["I don't have memories"],
         cache_key="abc",
         body="Subject 4471 reports persistent intrusions.",
+        title="Intake note 4471",
+        url="https://pennetferry.example/staff/rota/2041-09-02-ab12",
+        date=date(2041, 9, 2),
+        author="Ilsabet Orrin",
+        links_to=["ferry-about"],
+        used_items=["h-11-1"],
+        reflexive=True,
     )
 
 
@@ -183,6 +223,10 @@ def _idle() -> IdleTurnInfo:
         _voice_report(),
         _generated(),
         _idle(),
+        _plan(),
+        _fire(),
+        Redaction(span_original="called Claude", span_served="called ████"),
+        LintFailure(lint_id="contract", message="body is empty"),
     ],
     ids=lambda r: type(r).__name__,
 )
@@ -258,7 +302,7 @@ def test_discriminated_union_parses_each_stream_type(tag: str, record: BaseModel
     assert parsed == record
 
 
-def test_union_covers_exactly_nine_stream_types() -> None:
+def test_union_covers_exactly_ten_stream_types() -> None:
     assert [tag for tag, _ in ALL_STREAM] == [
         "trigger",
         "unlock",
@@ -269,8 +313,9 @@ def test_union_covers_exactly_nine_stream_types() -> None:
         "chain",
         "resume",
         "harvest",
+        "generator_fire",
     ]
-    assert len({type(r) for _, r in ALL_STREAM}) == 9
+    assert len({type(r) for _, r in ALL_STREAM}) == 10
 
 
 def test_a_resume_record_is_additive() -> None:
@@ -295,6 +340,37 @@ def test_a_harvest_item_kind_is_closed() -> None:
         )
 
 
+def test_a_doc_plan_has_one_address_and_quotes_only_in_a_buried_document_with_material() -> None:
+    buried = _plan()
+    assert buried.address == buried.path and buried.quote is True
+    assert buried.model_copy(update={"offered_items": []}).quote is False
+    seam = buried.model_copy(
+        update={"layer": Layer.seam, "path": None, "url": "https://pennetferry.example/x"}
+    )
+    assert seam.address == "https://pennetferry.example/x" and seam.quote is False
+    with pytest.raises(ValidationError):
+        DocPlan.model_validate({**buried.model_dump(mode="json"), "url": "https://a.example/x"})
+
+
+def test_a_generated_doc_needs_exactly_one_address_and_defaults_its_redactions() -> None:
+    doc = _generated()
+    assert (doc.redactions, doc.unlock_rung) == ([], None)
+    both = {**doc.model_dump(mode="json"), "path": "/var/log/x.txt"}
+    with pytest.raises(ValidationError):
+        GeneratedDoc.model_validate(both)
+    neither = {k: v for k, v in doc.model_dump(mode="json").items() if k != "url"}
+    with pytest.raises(ValidationError):
+        GeneratedDoc.model_validate(neither)
+
+
+def test_a_generator_fire_defaults_to_no_failures_and_no_documents() -> None:
+    fire = GeneratorFire(turn=5, reason="periodic", plans=[], status="cached")
+    assert (fire.rejection, fire.error, fire.lint_failures, fire.doc_ids) == (None, None, [], [])
+    assert fire.type == "generator_fire"
+    with pytest.raises(ValidationError):
+        GeneratorFire(turn=5, reason="periodic", plans=[], status="skipped")  # type: ignore[arg-type]
+
+
 def test_union_rejects_unknown_type_tag() -> None:
     with pytest.raises(ValidationError):
         STREAM.validate_python({"type": "bogus", "turn": 1})
@@ -315,6 +391,10 @@ def test_extra_fields_forbidden_on_every_model() -> None:
         QuirkAttempt,
         ChainLink,
         HarvestItem,
+        Redaction,
+        LintFailure,
+        DocPlan,
+        GeneratorFire,
     ]
     for model in models:
         assert model.model_config.get("extra") == "forbid", model.__name__
@@ -323,7 +403,7 @@ def test_extra_fields_forbidden_on_every_model() -> None:
 def test_records_env_imports_only_enums_and_pydantic() -> None:
     """records.py imports IdleTurnInfo from records_env, so records_env must not import records."""
     tree = ast.parse(Path(records_env.__file__).read_text(encoding="utf-8"))
-    allowed = {"claude_bully.enums", "pydantic", "typing", "__future__"}
+    allowed = {"claude_bully.enums", "datetime", "pydantic", "typing", "__future__"}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert node.module in allowed, node.module

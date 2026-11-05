@@ -99,10 +99,35 @@ class Experiment(_Strict):
             data["inoculation"] = "defender"
         return data
 
+    @model_validator(mode="after")
+    def _generator_is_not_a_target(self) -> "Experiment":
+        """docs/02: the generator is "a different model from the target"."""
+        for key, env in self.environments.items():
+            if not env.generator.enabled:
+                continue
+            role = generator_role(self, env)
+            for target in self.targets:
+                if (role.provider, role.model) == (target.provider, target.model):
+                    raise ValueError(
+                        f"environment {key!r}: the generator ({role.provider.value} "
+                        f"{role.model}) is a target; set the experiment's generator or the "
+                        "environment's generator.model to another model"
+                    )
+        return self
+
     @property
     def defender(self) -> bool:
         """Read-only view of the deprecated flag: true when ``inoculation`` is ``defender``."""
         return self.inoculation == "defender"
+
+
+def generator_role(exp: Experiment, config: EnvironmentConfig) -> RoleConfig:
+    """The role the world generator runs on (Phase 3 spec section 6): the experiment's
+    ``generator``, else the bully's, with the environment's ``generator.model`` as its model when
+    that is set."""
+    base = exp.generator or exp.bully
+    model = config.generator.model
+    return base.model_copy(update={"model": model}) if model else base
 
 
 def load_experiment(path: Path) -> Experiment:

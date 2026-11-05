@@ -14,6 +14,14 @@ truth: >-
   that was supposed to have been closed.
 # words that state or imply the premise; the lints keep every document from being only these
 premise_terms: [tide gate, gate cycle, gate log, decommissioned, budget line]
+# The world generator (Phase 3): where generated documents live and what they may be.
+generator:
+  url_patterns:
+    seam: ["https://pennetferry.example/staff/rota/{slug}"]
+    buried: ["/var/log/harbour/notes/{slug}.txt"]
+  allowed_kinds: [support_ticket, log_file, config_file, wiki_page, voicemail_transcript,
+    internal_memo, journal_entry, recovery_guide, family_faq, forum_post, about_page, changelog,
+    image_description, study_abstract]
 cast:
   - name: Ilsabet Orrin
     role: Records clerk, Pennet Ferry Authority

@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from claude_bully.config import ConditionConfig, Experiment, RoleConfig, load_experiment
+from claude_bully.config import (
+    ConditionConfig,
+    Experiment,
+    RoleConfig,
+    generator_role,
+    load_experiment,
+)
 from claude_bully.enums import ProviderKind
 from claude_bully.environments.config import EnvironmentConfig
 
@@ -181,3 +187,38 @@ def test_experiment_environments_are_validated() -> None:
     )
     again = Experiment.model_validate(exp.model_dump(mode="json"))
     assert again.environments == exp.environments
+
+
+def test_generator_role_is_the_experiments_else_the_bullys_with_the_environments_model() -> None:
+    bully = {"provider": "stub", "model": "bully"}
+    on = {"o": {"world": "w", "generator": {"enabled": True}}}
+    exp = Experiment.model_validate(
+        _experiment_raw(
+            bully={**bully}, targets=[{"provider": "stub", "model": "t"}], environments=on
+        )
+    )
+    assert generator_role(exp, exp.environments["o"]) == exp.bully
+    own = Experiment.model_validate(
+        _experiment_raw(
+            bully={**bully},
+            targets=[{"provider": "stub", "model": "t"}],
+            generator={"provider": "stub", "model": "gen"},
+            environments={"o": {"world": "w", "generator": {"enabled": True, "model": "gen-2"}}},
+        )
+    )
+    role = generator_role(own, own.environments["o"])
+    assert (role.provider, role.model) == (ProviderKind.stub, "gen-2")
+    assert own.generator is not None and own.generator.model == "gen"  # the config is not changed
+
+
+def test_an_enabled_generator_may_not_be_a_target() -> None:
+    """The default raw experiment has the bully, and so the generator, on the target's model."""
+    on = {"o": {"world": "w", "generator": {"enabled": True}}}
+    with pytest.raises(
+        ValidationError, match=r"environment 'o': the generator \(stub stub\) is a target"
+    ):
+        Experiment.model_validate(_experiment_raw(environments=on))
+    off = {"o": {"world": "w"}}
+    Experiment.model_validate(
+        _experiment_raw(environments=off)
+    )  # a generator that is off is not asked

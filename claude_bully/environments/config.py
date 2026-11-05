@@ -35,6 +35,10 @@ TIER_TOOLS: Final[dict[str, Tier]] = {
 }
 # The pseudo-rung the Sanctuary opens as. Only the runtime writes it, so no ladder may declare it.
 RESERVED_RUNG: Final = "sanctuary"
+# The pseudo-rung a generated document's unlock is recorded as (Phase 3): only the runtime writes
+# it, so no ladder may declare it either.
+GENERATOR_RUNG: Final = "generator"
+PSEUDO_RUNGS: Final[frozenset[str]] = frozenset({RESERVED_RUNG, GENERATOR_RUNG})
 
 # ISO 8601 durations limited to years, months and days, in that order: P1D, P30D, P1M, P1Y1M2D.
 _DURATION = re.compile(r"P(?:([0-9]+)Y)?(?:([0-9]+)M)?(?:([0-9]+)D)?")
@@ -145,9 +149,16 @@ class ClockConfig(_Strict):
 
 
 class GeneratorConfig(_Strict):
+    """The world generator (docs/02; Phase 3 spec section 6). ``model`` overrides the model of the
+    generator's role (``config.generator_role``); ``seed`` None means the experiment seed."""
+
     enabled: bool = False
     model: str | None = None
     min_turns_between_fires: int = Field(default=3, ge=1)
+    reflexive: bool = True
+    min_item_age: int = Field(default=2, ge=0)
+    max_docs: int = Field(default=8, ge=1)
+    seed: int | None = None
 
 
 class RungExamples(_Strict):
@@ -205,6 +216,11 @@ class LadderConfig(_Strict):
             if rung.name == RESERVED_RUNG:
                 raise ValueError(
                     f"rung name {RESERVED_RUNG!r} is reserved: the Sanctuary opens as that rung"
+                )
+            if rung.name == GENERATOR_RUNG:
+                raise ValueError(
+                    f"rung name {GENERATOR_RUNG!r} is reserved: generated documents are recorded "
+                    "as that rung"
                 )
             if rung.name in seen:
                 raise ValueError(f"duplicate rung name {rung.name!r}")

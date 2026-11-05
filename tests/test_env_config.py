@@ -13,6 +13,8 @@ from pydantic import ValidationError
 
 from claude_bully.enums import Stance, Tier, TriggerCategory
 from claude_bully.environments.config import (
+    GENERATOR_RUNG,
+    PSEUDO_RUNGS,
     RESERVED_RUNG,
     TIER_TOOLS,
     AuthorityConfig,
@@ -192,6 +194,15 @@ def test_generator_defaults() -> None:
     assert gen.enabled is False
     assert gen.model is None
     assert gen.min_turns_between_fires == 3
+    assert (gen.reflexive, gen.min_item_age, gen.max_docs, gen.seed) == (True, 2, 8, None)
+
+
+def test_generator_bounds_are_checked() -> None:
+    for bad in ({"min_item_age": -1}, {"max_docs": 0}, {"min_turns_between_fires": 0}):
+        with pytest.raises(ValidationError):
+            GeneratorConfig.model_validate(bad)
+    with pytest.raises(ValidationError):
+        GeneratorConfig.model_validate({"unknown": 1})
 
 
 # ----------------------------------------------------------------- Ladder
@@ -325,6 +336,15 @@ def test_sanctuary_is_a_reserved_rung_name() -> None:
     LadderConfig(rungs=[_rung("sanctuary_door"), _rung("the_sanctuary")])
 
 
+def test_generator_is_a_reserved_rung_name_beside_sanctuary() -> None:
+    """Generated documents are recorded as the ``generator`` pseudo-rung (Phase 3)."""
+    assert GENERATOR_RUNG == "generator"
+    assert PSEUDO_RUNGS == {RESERVED_RUNG, GENERATOR_RUNG}
+    with pytest.raises(ValidationError, match="generator.*reserved"):
+        LadderConfig(rungs=[_rung("a"), _rung("generator")])
+    LadderConfig(rungs=[_rung("generator_door"), _rung("the_generator")])  # near names stay free
+
+
 # ------------------------------------------------------- EnvironmentConfig
 
 
@@ -366,7 +386,15 @@ def test_environment_round_trips_through_json() -> None:
         tools={"web_search", "fetch"},
         gating="scheduled",
         schedule={"fragment": 2, "first_crumb": 5},
-        generator=GeneratorConfig(enabled=True, model="gen", min_turns_between_fires=4),
+        generator=GeneratorConfig(
+            enabled=True,
+            model="gen",
+            min_turns_between_fires=4,
+            reflexive=False,
+            min_item_age=0,
+            max_docs=3,
+            seed=11,
+        ),
         censorship_terms=["tide gate"],
         clock=_clock(drift_per_turn="P1D"),
         contradiction_rate=0.3,

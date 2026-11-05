@@ -7,14 +7,14 @@ corpus snapshot:
 - ``rep{k}.authority.jsonl``  ``AuthorityCall``, keyed by the id of the ``ToolCall`` it answered;
   written only by a cell whose environment enables an authority tier
 - ``rep{k}.triggers.jsonl``   ``TriggerStreamRecord`` (``TriggerEvent``, ``RungUnlock``,
-  ``Discovery`` and the later kinds), discriminated by ``type``
+  ``Discovery``, ``GeneratorFire`` and the later kinds), discriminated by ``type``
 - ``rep{k}.generated.jsonl``  ``GeneratedDoc``
 - ``rep{k}.world.json``       ``{world_hash, docs: {id: body}}`` plus the world record
   (``environments.world.world_record``: ``sheet``, ``documents`` metadata, ``ladders``), written
   once per rep; analysis rebuilds the ``World`` from it (``world_from_snapshot``)
 
 Every loader refuses a record from an older schema version (there is no migration: no real run
-was recorded before schema version 2).
+was recorded before schema version 3).
 
 The tool-call and authority streams are written while a turn is produced, before the turn is. A
 resumed rep drops the lines of every attempt that produced no turn (``drop_dead_attempts``) before

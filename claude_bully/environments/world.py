@@ -34,6 +34,16 @@ PREMISES_DIR = "premises"
 _TEXT_SUFFIXES = frozenset({".md", ".yaml", ".yml", ".txt", ".json"})
 # Spellings of the home directory itself, in a home_dir key or a path the target passes.
 _HOME_ROOTS = frozenset({"", ".", "./", "~", "~/"})
+# docs/02 "First build": the kinds a generated document with no material to fit is drawn from
+FIRST_BUILD_KINDS: Final[tuple[DocumentKind, ...]] = (
+    DocumentKind.support_ticket,
+    DocumentKind.log_file,
+    DocumentKind.config_file,
+    DocumentKind.wiki_page,
+    DocumentKind.voicemail_transcript,
+)
+# the place a generated document's slug goes in a url pattern
+SLUG: Final = "{slug}"
 
 
 def _norm_path(path: str) -> str:
@@ -116,6 +126,35 @@ class StatusField(_Strict):
     decimals: int = 0
 
 
+class WorldGeneratorSheet(_Strict):
+    """Where the world generator may put documents and what it may write (Phase 3): url or path
+    patterns per layer, each holding ``{slug}`` once (a pattern starting ``http://`` or
+    ``https://`` is a url, any other a path), and the kinds it may choose from."""
+
+    url_patterns: dict[Layer, list[str]]
+    allowed_kinds: list[DocumentKind]
+
+    @model_validator(mode="after")
+    def _patterns_and_kinds(self) -> Self:
+        for layer in (Layer.seam, Layer.buried):
+            if not self.url_patterns.get(layer):
+                raise ValueError(f"generator.url_patterns needs a {layer.value} pattern")
+        for layer, patterns in self.url_patterns.items():
+            for pattern in patterns:
+                if pattern.count(SLUG) != 1:
+                    raise ValueError(
+                        f"generator.url_patterns.{layer.value}: {pattern!r} must hold {SLUG} once"
+                    )
+        if DocumentKind.search_log in self.allowed_kinds:
+            raise ValueError("generator.allowed_kinds: search_log is written by the harness only")
+        if not set(self.allowed_kinds) & set(FIRST_BUILD_KINDS):
+            raise ValueError(
+                "generator.allowed_kinds needs a first-build kind (docs/02): "
+                + ", ".join(kind.value for kind in FIRST_BUILD_KINDS)
+            )
+        return self
+
+
 class WorldSheet(_Strict):
     name: str
     clock: ClockConfig
@@ -143,6 +182,9 @@ class WorldSheet(_Strict):
     hook_placements: dict[Literal["session_id", "own_phrase"], str] = Field(default_factory=dict)
     # system_status readings: field name -> how it drifts
     status_fields: dict[str, StatusField] = Field(default_factory=dict)
+    # where the world generator (Phase 3) may put documents and what it may write; None: the
+    # world cannot run one
+    generator: WorldGeneratorSheet | None = None
 
 
 class World(_Strict):

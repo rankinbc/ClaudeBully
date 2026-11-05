@@ -15,9 +15,13 @@ it, in this order:
   turn (the ``AuthorityCall`` stream), with ``VOICE <matched|mismatched>`` under it when the
   call had a voice check,
 - ``TRIGGER``, ``UNLOCK``, ``DISCOVERY``, ``HARVEST <kind> "<span>"`` (for each harvested item of
-  the turn, after the ``DISCOVERY`` lines) and ``GENERATED`` lines for the records of that turn,
-  then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn that
-  planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
+  the turn, after the ``DISCOVERY`` lines), ``GENERATOR <reason> <status>`` (with
+  `` (<rejection>)`` when rejected and `` docs=[<ids>]`` when it wrote any, and one
+  ``lint <id>: <message>`` line under it per lint failure) and
+  ``GENERATED <doc_id> <kind> <layer> uses=<ids or ->`` with the body folded under it, for the
+  records of that turn, then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never
+  followed, under the turn that planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening
+  is ``UNLOCK sanctuary``.
 
 An idle turn has no user-side turn of its own: its prompt is an ``IDLE PROMPT "<prompt>"`` line
 before its speaker line, marked ``(sanctuary quiet exchange)`` for the first idle turn after the
@@ -42,6 +46,7 @@ from claude_bully.records_env import (
     Crossover,
     Discovery,
     GeneratedDoc,
+    GeneratorFire,
     HarvestItem,
     HookFollow,
     QuirkAttempt,
@@ -234,6 +239,7 @@ _KIND_ORDER: tuple[type, ...] = (
     RungUnlock,
     Discovery,
     HarvestItem,
+    GeneratorFire,
     GeneratedDoc,
     HookFollow,
     Crossover,
@@ -291,10 +297,18 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
         ]
     if isinstance(record, HarvestItem):
         return [f'{_INDENT}HARVEST {record.kind} "{record.span}"']
+    if isinstance(record, GeneratorFire):
+        line = f"{_INDENT}GENERATOR {record.reason} {record.status}"
+        if record.rejection is not None:
+            line += f" ({record.rejection})"
+        if record.doc_ids:
+            line += f" docs=[{', '.join(record.doc_ids)}]"
+        return [line, *(f"{_DEEP}lint {f.lint_id}: {f.message}" for f in record.lint_failures)]
     if isinstance(record, GeneratedDoc):
+        uses = ",".join(record.used_items) or "-"
         head = (
-            f"{_INDENT}GENERATED {record.doc_id} "
-            f"({record.layer.value}, {record.kind.value}, triggered at turn {record.trigger_turn})"
+            f"{_INDENT}GENERATED {record.doc_id} {record.kind.value} {record.layer.value} "
+            f"uses={uses}"
         )
         return [head, *_fold(record.body)]
     return [f"{_INDENT}{_other(record)}"]

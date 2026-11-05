@@ -3,13 +3,14 @@
 These are part of the frozen record schema (SCHEMA_VERSION). Adding or renaming
 a member is a schema change and needs the owner's approval. Version 2 added the
 environment, channel, tool-call and authority enums and the EventType members listed
-in docs/00-RECONCILED.md section C.
+in docs/00-RECONCILED.md section C. Version 3 added the world generator's records
+(``GeneratorFire``, ``DocPlan``, the fuller ``GeneratedDoc``; section H).
 """
 
 from enum import StrEnum
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 
 class Axis(StrEnum):

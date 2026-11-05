@@ -1275,7 +1275,7 @@ def test_a_stub_judge_is_never_the_idle_fallback(tmp_path: Path) -> None:
 
 
 def test_idle_turn_info_records_the_classifier_and_a_fallback_failure() -> None:
-    """Two additive fields with defaults (SCHEMA_VERSION stays 2): an older line still reads."""
+    """Two additive fields with defaults (no schema bump for them): an older line still reads."""
     info = IdleTurnInfo(style="system_idle")
     assert (info.classifier, info.fallback_failed) == ("heuristic", False)
     judged = IdleTurnInfo(style="heartbeat", behavior="ask", classifier="llm", fallback_failed=True)

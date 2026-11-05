@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-05, at Task 4 complete (code at 1139a5b) on `build/v1`. Phase 3 is in progress: Tasks 1 to 4 are complete, and Task 5 is next.
+Last updated: 2026-11-05, at Task 5 complete (one commit on top of 9128cba) on `build/v1`. Phase 3 is in progress: Tasks 1 to 5 are complete, and Task 6 is next.
 
 ## What this is
 
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7996 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4 fix round 5).
+   Expect 8043 passed, 5 skipped and 5 deselected in the fast suite (about 15 minutes), and 5 passed in the slow suite (both at Task 5).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -114,9 +114,19 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
      Deferred minors are in the ledger. The ones worth knowing: the cache key omits the judge model and prompt version, the replay line prints an LLM span raw (a quote mark or a newline breaks the layout), and the next-sentence check fires on a listed verb used as a noun (email, list, answer), which costs recall only.
 
+  5. Fire policy, planner and redaction (pure code), the records, schema v3 (9128cba..Task 5 commit). It makes no model call and touches no run. It adds:
+     - `claude_bully/environments/generator.py` (this task's part): the fire policy (`fire_requests`, `FireRequest`, `item_age`, `eligible_items`, `consumed_items`, `committed_docs`), `CorpusView`, `DocPlanner` (seeded by the generator seed and the plan index, so a resumed rep plans what an unbroken one did), `to_document` and `generator_problems`. Tasks 6 and 7 append the writer and the `WorldGenerator`;
+     - `claude_bully/environments/redact.py` (`redact`, `redact_span`, `REDACTION_MARK`);
+     - the records in `records_env.py`: `Redaction`, `LintFailure`, `DocPlan`, `GeneratorFire` (a member of the triggers stream) and the fuller `GeneratedDoc` (`title`, exactly one of `url` and `path`, `date`, `author`, `links_to`, `used_items`, `reflexive`, `redactions`, `unlock_rung`). `SCHEMA_VERSION` is 3 and v2 files are refused with the existing message;
+     - `GeneratorConfig` gains `reflexive`, `min_item_age`, `max_docs` and `seed`; `GENERATOR_RUNG` and `PSEUDO_RUNGS` (no ladder may name `generator` either); `WorldSheet.generator` (`WorldGeneratorSheet`: `url_patterns`, `allowed_kinds`) with blocks in the mini and overlay worlds; `config.generator_role` and the refusal of a generator that is a target;
+     - the `GENERATOR` and reworked `GENERATED` replay lines;
+     - `tests/fixtures/generator_stub.py` (`MINI`, `MINI_ITEMS`, `mini_view`), which Task 6 appends the writer stub to.
+
+     The drift test (`test_a_drifting_clock_does_not_move_the_start`) was rebuilt: no drift moves the served date by itself at this layer, so it serves the world at a re-dated clock that also drifts. Task 7's run-level drift test is the real pin.
+
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Start at Task 5 (fire policy, planner and redaction, the records, schema v3). Tasks 5 to 9 follow the plan. The brief for Task 5 is extracted beside the ledger (`task-5-brief.md`). Pass Task 7 the cast names only as `world_terms` (see "For Phase 3").
+1. **Phase 3, the world generator.** Start at Task 6 (the writer: prompt file, JSON contract, retry, rejection, cache). Tasks 6 to 9 follow the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`). Pass Task 7 the cast names only as `world_terms` (see "For Phase 3").
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director

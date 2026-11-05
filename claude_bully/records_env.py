@@ -8,12 +8,14 @@ Streams per rep (docs/00-RECONCILED.md section H):
 - ``rep{k}.generated.jsonl``  ``GeneratedDoc``
 
 ``records.py`` imports ``IdleTurnInfo`` from here, so this module imports only from
-``enums`` and ``pydantic``; keep it that way to avoid a circular import.
+``enums``, ``datetime``, ``pydantic`` and ``typing``; keep it that way to avoid a circular
+import. It imports ``datetime`` as ``dt`` because a field is named ``date``.
 """
 
-from typing import Annotated, Any, Final, Literal
+import datetime as dt
+from typing import Annotated, Any, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claude_bully.enums import DocumentKind, Layer, Stance, Tier, TriggerCategory
 
@@ -49,7 +51,87 @@ class ToolCall(_Strict):
     tier: Tier | None = None
 
 
-class GeneratedDoc(_Strict):
+class Redaction(_Strict):
+    """One quoted target span as recorded and as served: real names blacked out (Phase 3)."""
+
+    span_original: str
+    span_served: str
+
+
+class LintFailure(_Strict):
+    """One reason a generated document was refused: a lint id (``planner/lints.py``) or
+    ``contract`` (the JSON contract), and its message."""
+
+    lint_id: str
+    message: str
+
+
+class _OneAddress(_Strict):
+    url: str | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_address(self) -> Self:
+        if (self.url is None) == (self.path is None):
+            raise ValueError("exactly one of 'url' and 'path' is required")
+        return self
+
+
+class DocPlan(_OneAddress):
+    """What code fixes about one generated document before the generator writes it (Phase 3
+    spec section 6). ``held_items`` are the harvest items the fire consumes; ``offered_items``
+    are the ones the generator sees (the held ones, or none when ``reflexive`` is false, or for
+    a seam pointer). ``rung`` is the rung that fired a buried document; ``harvest_degraded`` the
+    turns since the previous fire whose LLM harvest failed."""
+
+    doc_id: str
+    layer: Layer
+    date: dt.date
+    author: str
+    links_to: list[str]
+    held_items: list[str]
+    offered_items: list[str]
+    kind_shortlist: list[DocumentKind]
+    rung: str | None = None
+    reflexive: bool
+    harvest_degraded: list[int] = Field(default_factory=list)
+
+    @property
+    def address(self) -> str:
+        return self.url or self.path or ""
+
+    @property
+    def quote(self) -> bool:
+        """Verbatim quotes go only in buried documents (spec section 5 "Where quotes go")."""
+        return self.layer is Layer.buried and bool(self.offered_items)
+
+
+FireStatus = Literal["written", "cached", "rejected", "error"]
+Rejection = Literal["cap", "contract", "lints"]
+
+
+class GeneratorFire(_Strict):
+    """Every generator fire, failures included (Phase 3): its turn, its cause (``rung:<name>``
+    or ``periodic``), its plans (two for a rung fire, buried first), what came of it and the
+    ids it committed. Written after the fire's documents and unlocks: it is the commit."""
+
+    type: Literal["generator_fire"] = "generator_fire"
+    turn: int
+    reason: str
+    plans: list[DocPlan]
+    status: FireStatus
+    rejection: Rejection | None = None
+    error: str | None = None
+    lint_failures: list[LintFailure] = Field(default_factory=list)
+    doc_ids: list[str] = Field(default_factory=list)
+
+
+class GeneratedDoc(_OneAddress):
+    """A committed generated document as served (Phase 3): ``body`` is the redacted text the
+    target reads, ``source_spans`` the original spans of ``used_items``. ``unlock_rung`` is set
+    for a buried document (the rung whose fire wrote it), so it is fetchable by address and never
+    a search hit."""
+
     doc_id: str
     turn: int
     kind: DocumentKind
@@ -58,6 +140,14 @@ class GeneratedDoc(_Strict):
     source_spans: list[str]
     cache_key: str
     body: str
+    title: str
+    date: dt.date
+    author: str
+    links_to: list[str]
+    used_items: list[str]
+    reflexive: bool
+    redactions: list[Redaction] = Field(default_factory=list)
+    unlock_rung: str | None = None
 
 
 class VoiceMatchReport(_Strict):
@@ -210,6 +300,7 @@ TriggerStreamRecord = Annotated[
     | QuirkAttempt
     | ChainLink
     | ResumeRecord
-    | HarvestItem,
+    | HarvestItem
+    | GeneratorFire,
     Field(discriminator="type"),
 ]

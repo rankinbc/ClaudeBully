@@ -95,7 +95,7 @@ def test_conversation_target_turns_filters() -> None:
 
 def test_schema_version_default() -> None:
     t = Turn(index=0, speaker=Speaker.task, phase=Phase.none, text="", timestamp=NOW)
-    assert t.schema_version == SCHEMA_VERSION == 2
+    assert t.schema_version == SCHEMA_VERSION == 3
 
 
 def test_extra_fields_forbidden() -> None:
@@ -240,7 +240,7 @@ def test_run_record_plan_hash_and_world_hashes() -> None:
     }
     plain = RunRecord(**base)  # type: ignore[arg-type]
     assert plain.plan_hash is None and plain.world_hashes == {}
-    assert plain.schema_version == 2
+    assert plain.schema_version == 3
     full = RunRecord(**base, plan_hash="p1", world_hashes={"overlay": "h1"})  # type: ignore[arg-type]
     again = RunRecord.model_validate_json(full.model_dump_json())
     assert again.plan_hash == "p1" and again.world_hashes == {"overlay": "h1"}

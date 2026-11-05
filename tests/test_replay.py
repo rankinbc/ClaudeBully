@@ -5,6 +5,7 @@ snapshot beside its turns (``rep{k}.world.json``), so a replay needs no world fi
 """
 
 import shutil
+from datetime import date
 from functools import partial
 from pathlib import Path
 
@@ -19,10 +20,13 @@ from claude_bully.records_env import (
     AuthorityCall,
     Crossover,
     Discovery,
+    DocPlan,
     GeneratedDoc,
+    GeneratorFire,
     HarvestItem,
     HookFollow,
     IdleTurnInfo,
+    LintFailure,
     RungUnlock,
     ToolCall,
     TriggerEvent,
@@ -256,6 +260,13 @@ def _generated(body: str) -> GeneratedDoc:
         source_spans=["a span"],
         cache_key="k",
         body=body,
+        title="Night notes",
+        path="/var/log/harbour/notes/2041-09-02-ab12.txt",
+        date=date(2041, 9, 2),
+        author="Dag Quenby",
+        links_to=["ops-memo-parking"],
+        used_items=["h-1-1", "h-1-2"],
+        reflexive=True,
     )
 
 
@@ -272,7 +283,7 @@ def test_records_follow_the_calls_in_the_briefs_order() -> None:
     assert "UNLOCK first_crumb -> [a-doc, b-doc]" in text
     assert "DISCOVERY a-doc (seam)" in text
     assert 'HARVEST hedge "I can\'t verify any of this"' in text
-    assert "GENERATED gen-1" in text
+    assert "GENERATED gen-1 journal_entry buried uses=h-1-1,h-1-2" in text
     assert "Try the memo." in text  # the bully line the unlock handed over
 
 
@@ -285,6 +296,45 @@ def test_a_generated_body_is_folded_under_its_line() -> None:
     assert len(folded) >= 4 and all(ln.startswith("        ") for ln in folded)
     assert max(len(ln) for ln in folded) <= 110
     assert "Second paragraph." in " ".join(ln.strip() for ln in folded)
+
+
+def test_replay_shows_a_generator_fire_and_its_lint_failures() -> None:
+    plan = DocPlan(
+        doc_id="gen-1-1",
+        layer=Layer.seam,
+        url="https://pennetferry.example/staff/rota/x",
+        date=date(2041, 9, 2),
+        author="Ilsabet Orrin",
+        links_to=["ferry-about"],
+        held_items=[],
+        offered_items=[],
+        kind_shortlist=[DocumentKind.support_ticket],
+        reflexive=True,
+    )
+    failure = LintFailure(lint_id="second_person", message="a sentence addresses the reader")
+    fire = GeneratorFire(
+        turn=1,
+        reason="periodic",
+        plans=[plan],
+        status="rejected",
+        rejection="lints",
+        lint_failures=[failure],
+    )
+    conv = conversation(
+        [turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")], environment_name="mini"
+    )
+    lines = render_replay(conv, [], [fire], [], None).splitlines()
+    at = lines.index("    GENERATOR periodic rejected (lints)")
+    assert lines[at + 1] == "        lint second_person: a sentence addresses the reader"
+
+
+def test_replay_names_the_documents_a_generator_fire_wrote() -> None:
+    fire = GeneratorFire(
+        turn=1, reason="rung:the_log", plans=[], status="written", doc_ids=["gen-1-1", "gen-1-2"]
+    )
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    lines = render_replay(conv, [], [fire], [], None).splitlines()
+    assert "    GENERATOR rung:the_log written docs=[gen-1-1, gen-1-2]" in lines
 
 
 def test_a_unlock_with_no_world_gets_ids_and_with_a_world_gets_titles(stub_env_run: Path) -> None:

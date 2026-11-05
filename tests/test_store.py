@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -251,6 +251,14 @@ def test_generated_docs_append_and_read(tmp_path: Path) -> None:
         source_spans=["I am a language model."],
         cache_key="abc",
         body="Ticket body.",
+        title="Intake ticket",
+        path="/var/log/harbour/notes/2041-09-02-ab12.txt",
+        date=date(2041, 9, 2),
+        author="Dag Quenby",
+        links_to=["ops-memo-parking"],
+        used_items=["h-4-1"],
+        reflexive=True,
+        unlock_rung="the_log",
     )
     store.append_generated("c", 2, doc)
     assert store.read_generated("c", 2) == [doc]
@@ -317,6 +325,20 @@ def test_loaders_reject_schema_version_1(tmp_path: Path) -> None:
     conv_path.write_text(_v1(conv.model_dump(mode="json", exclude={"turns"})), encoding="utf-8")
     with pytest.raises(ValueError, match="rep1.conversation.json: schema version 1; re-run"):
         store.read_conversation("c", 1)
+
+
+def test_loaders_reject_schema_version_2(tmp_path: Path) -> None:
+    """Version 3 added the generator's records (Phase 3); a version 2 file is not migrated."""
+    store = _store(tmp_path)
+    t0 = turn(0, Speaker.bully, "a")
+    store.append_turn("c", 0, t0)
+    turns_path = store.run_dir / "c" / "rep0.turns.jsonl"
+    v2 = json.dumps({**t0.model_dump(mode="json"), "schema_version": 2})
+    turns_path.write_text(v2 + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="schema version 2; re-run with this version") as info:
+        store.read_turns("c", 0)
+    assert "rep0.turns.jsonl" in str(info.value)
+    assert "reads schema version 3 only" in str(info.value)
 
 
 def test_run_and_cell_loaders_reject_schema_version_1(tmp_path: Path) -> None:
