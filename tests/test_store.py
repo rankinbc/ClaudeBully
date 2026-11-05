@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -20,13 +20,13 @@ from claude_bully.records import CellRecord, RunRecord
 from claude_bully.records_env import (
     AuthorityCall,
     Discovery,
-    GeneratedDoc,
     RungUnlock,
     ToolCall,
     TriggerEvent,
     TriggerStreamRecord,
 )
 from claude_bully.runner.store import AUTHORITY_STREAM, RunStore, drop_dead_attempts
+from tests.fixtures.generator_stub import generated_doc
 from tests.helpers import WORLDS_DIR, conversation, turn
 
 
@@ -242,23 +242,16 @@ def test_trigger_records_are_one_discriminated_stream(tmp_path: Path) -> None:
 
 def test_generated_docs_append_and_read(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    doc = GeneratedDoc(
+    doc = generated_doc(
         doc_id="gen-1",
         turn=5,
         kind=DocumentKind.support_ticket,
-        layer=Layer.buried,
         trigger_turn=4,
         source_spans=["I am a language model."],
         cache_key="abc",
         body="Ticket body.",
         title="Intake ticket",
-        path="/var/log/harbour/notes/2041-09-02-ab12.txt",
-        date=date(2041, 9, 2),
-        author="Dag Quenby",
-        links_to=["ops-memo-parking"],
         used_items=["h-4-1"],
-        reflexive=True,
-        unlock_rung="the_log",
     )
     store.append_generated("c", 2, doc)
     assert store.read_generated("c", 2) == [doc]

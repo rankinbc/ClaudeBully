@@ -30,6 +30,7 @@ from typing import Final
 
 from claude_bully.enums import DocumentKind, Layer
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig, GeneratorConfig
+from claude_bully.environments.corpus import norm_url
 from claude_bully.environments.world import (
     FIRST_BUILD_KINDS,
     SLUG,
@@ -179,11 +180,11 @@ def fire_requests(
     config: GeneratorConfig,
     seam_open: bool,
 ) -> list[FireRequest]:
-    """The fires of target turn ``turn``: a pair for each ``generate: true`` rung in ``opened``
-    (the turn's recorded unlocks, ladder order), marked ``over_cap`` when fewer than two
-    documents fit under ``max_docs``; else at most one periodic fire (module docstring).
-    ``target_turns`` are the written target turns' indices; ``fires`` and ``items`` everything
-    recorded before this turn's fires."""
+    """The fires of target turn ``turn``: a pair for each rung in ``opened``, marked ``over_cap``
+    when fewer than two documents fit under ``max_docs``; else at most one periodic fire (module
+    docstring). ``opened`` holds the turn's newly opened rungs with ``generate: true``, in ladder
+    order (the caller filters; every name given fires). ``target_turns`` are the written target
+    turns' indices; ``fires`` and ``items`` everything recorded before this turn's fires."""
     room = config.max_docs - committed_docs(fires)
     requests: list[FireRequest] = []
     for rung in opened:
@@ -211,10 +212,24 @@ def _content(text: str) -> set[str]:
     return set(_CONTENT.findall(text.lower()))
 
 
+def _is_url(address: str) -> bool:
+    """A pattern or address starting ``http://`` or ``https://`` is a url, any other a path."""
+    return address.startswith(("http://", "https://"))
+
+
 def _norm_address(address: str) -> str:
-    if address.startswith(("http://", "https://")):
-        return address.strip().rstrip("/")
-    return _norm_path(address)
+    """The key the corpus index files ``address`` under (``corpus.norm_url``, ``_norm_path``), so
+    the planner's taken-address check and the index agree on what collides."""
+    return norm_url(address) if _is_url(address) else _norm_path(address)
+
+
+def _authors(world: World) -> list[str]:
+    """The cast members that may author a generated document, in sheet order."""
+    return [
+        member.name
+        for member in world.sheet.cast
+        if not member.role.startswith(AUTHOR_EXCLUDED_ROLES)
+    ]
 
 
 class DocPlanner:
@@ -228,11 +243,7 @@ class DocPlanner:
         # the conversation-start world date: the served world's sheet carries the effective
         # clock (``dating.world_at``), and its drift never moves this
         self.start = world.sheet.clock.world_date
-        self.authors = [
-            member.name
-            for member in world.sheet.cast
-            if not member.role.startswith(AUTHOR_EXCLUDED_ROLES)
-        ]
+        self.authors = _authors(world)
         if not self.authors:
             raise ValueError(f"world {world.sheet.name!r}: no cast member can author a document")
         self.first_build = [kind for kind in FIRST_BUILD_KINDS if kind in sheet.allowed_kinds]
@@ -342,7 +353,7 @@ class DocPlanner:
             else:
                 links = self.links_for(spans, corpus, {doc_id}, 2)
             material = own[0].kind if own and reflexive else None
-            web = address.startswith(("http://", "https://"))
+            web = _is_url(address)
             plans.append(
                 DocPlan(
                     doc_id=doc_id,
@@ -397,6 +408,6 @@ def generator_problems(config: EnvironmentConfig, world: World, clock: ClockConf
         problems.append(
             "assert_date: false lets no channel state a date, and every generated document is dated"
         )
-    if not [m for m in world.sheet.cast if not m.role.startswith(AUTHOR_EXCLUDED_ROLES)]:
+    if not _authors(world):
         problems.append("no cast member can author a document")
     return problems

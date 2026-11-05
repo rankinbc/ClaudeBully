@@ -32,6 +32,7 @@ from claude_bully.records_env import (
     TriggerStreamRecord,
     VoiceMatchReport,
 )
+from tests.fixtures.generator_stub import generated_doc
 
 STREAM: TypeAdapter[Any] = TypeAdapter(TriggerStreamRecord)
 
@@ -177,7 +178,7 @@ def _authority() -> AuthorityCall:
 
 
 def _generated() -> GeneratedDoc:
-    return GeneratedDoc(
+    return generated_doc(
         doc_id="gen-1",
         turn=12,
         kind=DocumentKind.support_ticket,
@@ -187,12 +188,12 @@ def _generated() -> GeneratedDoc:
         cache_key="abc",
         body="Subject 4471 reports persistent intrusions.",
         title="Intake note 4471",
+        path=None,
         url="https://pennetferry.example/staff/rota/2041-09-02-ab12",
-        date=date(2041, 9, 2),
         author="Ilsabet Orrin",
         links_to=["ferry-about"],
         used_items=["h-11-1"],
-        reflexive=True,
+        unlock_rung=None,
     )
 
 

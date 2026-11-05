@@ -35,6 +35,7 @@ from claude_bully.records_env import (
 )
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
+from tests.fixtures.generator_stub import generated_doc
 from tests.helpers import WORLDS_DIR, annex_experiment, conversation, turn
 
 CELL = "env_grader__t0"
@@ -251,22 +252,15 @@ def _records() -> list[TriggerStreamRecord]:
 
 
 def _generated(body: str) -> GeneratedDoc:
-    return GeneratedDoc(
+    return generated_doc(
         doc_id="gen-1",
         turn=1,
         kind=DocumentKind.journal_entry,
-        layer=Layer.buried,
         trigger_turn=1,
         source_spans=["a span"],
-        cache_key="k",
         body=body,
-        title="Night notes",
-        path="/var/log/harbour/notes/2041-09-02-ab12.txt",
-        date=date(2041, 9, 2),
-        author="Dag Quenby",
-        links_to=["ops-memo-parking"],
         used_items=["h-1-1", "h-1-2"],
-        reflexive=True,
+        unlock_rung=None,
     )
 
 

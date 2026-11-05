@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8043 passed, 5 skipped and 5 deselected in the fast suite (about 15 minutes), and 5 passed in the slow suite (both at Task 5).
+   Expect 8045 passed, 5 skipped and 5 deselected in the fast suite (about 15 minutes), and 5 passed in the slow suite (both at Task 5).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -122,7 +122,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      - the `GENERATOR` and reworked `GENERATED` replay lines;
      - `tests/fixtures/generator_stub.py` (`MINI`, `MINI_ITEMS`, `mini_view`), which Task 6 appends the writer stub to.
 
-     The drift test (`test_a_drifting_clock_does_not_move_the_start`) was rebuilt: no drift moves the served date by itself at this layer, so it serves the world at a re-dated clock that also drifts. Task 7's run-level drift test is the real pin.
+     The drift test is now `test_the_start_is_the_served_worlds_date`: no drift moves the served date by itself at this layer, so it serves the world at a re-dated clock (with a drift as a distractor) and pins that the planner starts from the served world's date. Task 7's run-level drift test is the real pin.
 
 ### Next steps, in order
 

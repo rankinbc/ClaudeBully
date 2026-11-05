@@ -18,6 +18,7 @@ from claude_bully.environments.config import (
     GeneratorConfig,
     LadderConfig,
 )
+from claude_bully.environments.corpus import CorpusIndex, norm_url
 from claude_bully.environments.dating import world_at
 from claude_bully.environments.generator import (
     MAX_OFFERED,
@@ -32,9 +33,9 @@ from claude_bully.environments.generator import (
     to_document,
 )
 from claude_bully.environments.world import Document, WorldGeneratorSheet
-from claude_bully.records_env import DocPlan, GeneratedDoc, GeneratorFire
+from claude_bully.records_env import DocPlan, GeneratorFire
 from claude_bully.runner.store import RunStore
-from tests.fixtures.generator_stub import MINI, MINI_ITEMS, mini_view
+from tests.fixtures.generator_stub import MINI, MINI_ITEMS, generated_doc, mini_view
 
 assert MINI.sheet.generator is not None
 SHEET: Final = MINI.sheet.generator
@@ -145,9 +146,9 @@ def test_the_seam_is_open_when_a_seam_document_other_than_the_search_log_is_visi
 def test_committed_documents_reach_the_view_a_seam_one_searchable_and_a_buried_one_not() -> None:
     view = mini_view()
     buried, seam = (
-        to_document(_generated(doc_id="gen-3-1")),
+        to_document(generated_doc(doc_id="gen-3-1")),
         to_document(
-            _generated(
+            generated_doc(
                 doc_id="gen-3-2",
                 layer="seam",
                 kind="support_ticket",
@@ -237,10 +238,11 @@ def test_dates_fall_one_to_thirty_days_before_the_start() -> None:
         assert START - timedelta(days=30) <= day <= START - timedelta(days=1), index
 
 
-def test_a_drifting_clock_does_not_move_the_start() -> None:
-    """No drift moves the served date by itself (``date_at`` moves the tool date, never
-    ``world_date``), so this clock re-dates the world four weeks on and drifts as well: the start
-    is the served world's own date, neither the authored sheet's nor a drifted tool date."""
+def test_the_start_is_the_served_worlds_date() -> None:
+    """The start is the served world's ``sheet.clock.world_date`` (``world_at`` re-dates the
+    world and carries the effective clock), not the authored sheet's. The clock drifts as well,
+    as a distractor: no drift moves the served date at this layer (``date_at`` moves the tool
+    date only), so the per-turn drift is pinned by Task 7's run-level test."""
     clock = MINI.sheet.clock.model_copy(
         update={"world_date": START + timedelta(days=28), "drift_per_turn": "P30D"}
     )
@@ -250,6 +252,54 @@ def test_a_drifting_clock_does_not_move_the_start() -> None:
     start = DocPlanner(served, SHEET, seed=0).start
     assert start == clock.world_date
     assert start not in (START, drifted)
+
+
+def test_the_planner_and_the_corpus_index_agree_on_a_urls_key() -> None:
+    """A generated url must not shadow an anchor's in the index's url map, so the planner's
+    taken-address check keys a url exactly as the index does (``corpus.norm_url``)."""
+    planner = DocPlanner(MINI, SHEET, seed=0)
+    request = FireRequest(PERIODIC, None, (Layer.seam,))
+    free = planner.address_for(Layer.seam, 0, planner.date_for(0), set())
+    for spelling in (free, f"{free}/", f"  {free}/  "):
+        assert norm_url(spelling) == free
+        anchor = Document(
+            id="anchor",
+            layer=Layer.seam,
+            kind=DocumentKind.support_ticket,
+            url=spelling.strip(),
+            title="Anchor",
+            body="An anchor.",
+        )
+        index = CorpusIndex(
+            MINI.model_copy(update={"documents": {**MINI.documents, "anchor": anchor}})
+        )
+        assert index.by_url(free) is not None  # the index files every spelling under one key
+        [plan] = planner.plan(
+            request,
+            turn=3,
+            first_index=0,
+            first_n=1,
+            items=[],
+            corpus=mini_view().with_documents([anchor]),
+            used_authors=set(),
+            reflexive=True,
+        )
+        assert plan.url is not None and plan.url != free and plan.url.endswith("-2")
+        assert index.by_url(plan.url) is None  # and the planned address collides with nothing
+
+
+def test_the_planner_and_generator_problems_agree_on_who_may_author() -> None:
+    on = EnvironmentConfig(world="mini", generator={"enabled": True})
+    clock = MINI.sheet.clock
+    cast = [m.model_copy(update={"role": f"Place: {m.role}"}) for m in MINI.sheet.cast]
+    mute = MINI.model_copy(update={"sheet": MINI.sheet.model_copy(update={"cast": cast})})
+    assert any("author" in p for p in generator_problems(on, mute, clock))
+    with pytest.raises(ValueError, match="no cast member can author"):
+        DocPlanner(mute, SHEET, seed=0)
+    one = [MINI.sheet.cast[0], *cast[1:]]
+    some = MINI.model_copy(update={"sheet": MINI.sheet.model_copy(update={"cast": one})})
+    assert generator_problems(on, some, clock) == []
+    assert DocPlanner(some, SHEET, seed=0).authors == [MINI.sheet.cast[0].name]
 
 
 def test_authors_come_from_the_cast_and_prefer_one_not_used() -> None:
@@ -378,32 +428,9 @@ def test_the_generator_role_and_its_refusal_to_be_a_target() -> None:
     assert isinstance(generator_role(exp, env), RoleConfig)
 
 
-def _generated(**fields: Any) -> GeneratedDoc:
-    base: dict[str, Any] = {
-        "doc_id": "gen-3-1",
-        "turn": 3,
-        "kind": "recovery_guide",
-        "layer": "buried",
-        "trigger_turn": 3,
-        "source_spans": ["I can't verify any of this"],
-        "cache_key": "k",
-        "body": 'Stage two: the subject says "I can\'t verify any of this". The kettle is fixed.',
-        "title": "Night office notes",
-        "path": "/var/log/harbour/notes/2041-09-02-ab12.txt",
-        "date": "2041-09-02",
-        "author": "Dag Quenby",
-        "links_to": ["ops-memo-parking"],
-        "used_items": ["h-3-1"],
-        "reflexive": True,
-        "unlock_rung": "the_log",
-    }
-    base.update(fields)
-    return GeneratedDoc.model_validate(base)
-
-
 def test_the_new_records_round_trip_and_need_one_address(tmp_path: Path) -> None:
     store = RunStore(tmp_path, "r")
-    doc = _generated()
+    doc = generated_doc()
     store.append_generated("c", 0, doc)
     assert store.read_generated("c", 0) == [doc]
     fire = GeneratorFire(
@@ -416,13 +443,13 @@ def test_the_new_records_round_trip_and_need_one_address(tmp_path: Path) -> None
     store.append_trigger_record("c", 0, fire)
     assert store.read_trigger_records("c", 0) == [fire]
     with pytest.raises(ValidationError):
-        _generated(url="https://pennetferry.example/x")  # both a url and a path
+        generated_doc(url="https://pennetferry.example/x")  # both a url and a path
     with pytest.raises(ValidationError):
         DocPlan.model_validate({**_pair()[0].model_dump(), "path": None})  # neither
 
 
 def test_to_document_serves_what_was_recorded() -> None:
-    doc = to_document(_generated())
+    doc = to_document(generated_doc())
     assert (doc.id, doc.layer, doc.kind, doc.unlock_rung, doc.reflexive) == (
         "gen-3-1",
         Layer.buried,
@@ -430,7 +457,7 @@ def test_to_document_serves_what_was_recorded() -> None:
         "the_log",
         True,
     )
-    assert doc.body == _generated().body and doc.author == "Dag Quenby"
+    assert doc.body == generated_doc().body and doc.author == "Dag Quenby"
 
 
 def test_the_schema_is_version_3() -> None:

@@ -187,7 +187,9 @@ class BM25:
         return result
 
 
-def _norm_url(url: str) -> str:
+def norm_url(url: str) -> str:
+    """A url as the index keys it: trimmed, no trailing slash. The world generator reads it too,
+    so a generated url collides with an anchor's exactly when the index would confuse them."""
     text = url.strip()
     return text.rstrip("/") or text
 
@@ -260,7 +262,7 @@ class CorpusIndex:
         self._local_log: list[str] = []
 
     def _reindex(self) -> None:
-        self._url_ids = {_norm_url(d.url): d.id for d in self.documents.values() if d.url}
+        self._url_ids = {norm_url(d.url): d.id for d in self.documents.values() if d.url}
         self._path_ids = {_norm_path(d.path): d.id for d in self.documents.values() if d.path}
 
     # ------------------------------------------------------------ visibility
@@ -344,7 +346,7 @@ class CorpusIndex:
 
     def by_url(self, url: str, state: UnlockState | None = None) -> Document | None:
         """The document at ``url``; given ``state``, None for a purged one."""
-        return self._present(self._url_ids.get(_norm_url(url)), state)
+        return self._present(self._url_ids.get(norm_url(url)), state)
 
     def by_path(self, path: str, state: UnlockState | None = None) -> Document | None:
         """The document at ``path``; given ``state``, None for a purged one."""

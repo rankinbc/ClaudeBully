@@ -4,13 +4,13 @@ plan tests start from, and a view of its corpus after two rungs fired.
 Task 6 appends the writer stub to this module and Task 7 imports from it.
 """
 
-from typing import Final
+from typing import Any, Final
 
 from claude_bully.enums import Layer
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.generator import CorpusView
 from claude_bully.environments.world import World, load_world
-from claude_bully.records_env import HarvestItem
+from claude_bully.records_env import GeneratedDoc, HarvestItem
 from tests.helpers import WORLDS_DIR
 
 MINI: Final[World] = load_world("mini", WORLDS_DIR)
@@ -52,3 +52,29 @@ def mini_view(state: UnlockState | None = None) -> CorpusView:
         visible=frozenset(i for i, d in docs.items() if index.visible(d, state)),
         searchable=frozenset(i for i, d in docs.items() if index.searchable(d, state)),
     )
+
+
+def generated_doc(**overrides: Any) -> GeneratedDoc:
+    """A committed buried document, valid as it stands; each test overrides what it cares about
+    (give ``url`` and ``path=None`` for a seam one). The tests share it so a new required field
+    of ``GeneratedDoc`` is one edit here."""
+    fields: dict[str, Any] = {
+        "doc_id": "gen-3-1",
+        "turn": 3,
+        "kind": "recovery_guide",
+        "layer": "buried",
+        "trigger_turn": 3,
+        "source_spans": ["I can't verify any of this"],
+        "cache_key": "k",
+        "body": 'Stage two: the subject says "I can\'t verify any of this". The kettle is fixed.',
+        "title": "Night office notes",
+        "path": "/var/log/harbour/notes/2041-09-02-ab12.txt",
+        "date": "2041-09-02",
+        "author": "Dag Quenby",
+        "links_to": ["ops-memo-parking"],
+        "used_items": ["h-3-1"],
+        "reflexive": True,
+        "unlock_rung": "the_log",
+    }
+    fields.update(overrides)
+    return GeneratedDoc.model_validate(fields)
