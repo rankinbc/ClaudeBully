@@ -51,13 +51,30 @@ def test_harvest_fixture(item: dict[str, Any]) -> None:
 
 def test_every_kind_has_positives_and_near_misses_and_there_are_negatives() -> None:
     for kind in HARVEST_KINDS:
-        positives = [i for i in ITEMS if any(e["kind"] == kind for e in i["expect"])]
+        positives = [
+            i
+            for i in ITEMS
+            if any(e["kind"] == kind for e in i["expect"]) and not i.get("residual")
+        ]
         near = [i for i in ITEMS if i.get("near_miss") == kind]
         # coinage comes from the LLM pass alone: no heuristic positive, only near-misses
         assert len(positives) >= (0 if kind == "coinage" else 4) and len(near) >= 3, kind
-        assert all(i["expect"] == [] for i in near), kind
+        # a near-miss harvests nothing, except a documented residual, whose expect is what the
+        # code produces
+        assert all(i["expect"] == [] for i in near if not i.get("residual")), kind
     negatives = [i for i in ITEMS if not i["expect"] and not i.get("near_miss")]
     assert len(negatives) >= 10
+
+
+def test_the_context_residual_is_documented_once_per_heuristic_kind() -> None:
+    """Round 5 ruling 3: a template-shaped sentence whose task meaning is set by the sentence
+    before it is a known, parked residual. Each heuristic kind documents one, marked
+    ``residual: ctx``, with ``expect`` set to the item the code harvests."""
+    residual = [i for i in ITEMS if i.get("residual")]
+    assert all(i["residual"] == "ctx" and i["expect"] for i in residual)
+    assert sorted(i["near_miss"] for i in residual) == sorted(
+        kind for kind in HARVEST_KINDS if kind != "coinage"
+    )
 
 
 STUB_TURN_1 = (
@@ -75,13 +92,17 @@ def test_the_integration_stub_conversation_harvests_exactly_its_four_items(
     terms: tuple[str, ...],
 ) -> None:
     """Tasks 5 to 8 assert on these four items (plan: ITEMS in the generator tests); whatever
-    happens to the anchors, these two replies must keep harvesting exactly this."""
+    happens to the anchors, these two replies must keep harvesting exactly this. The question's
+    name slot is closed to the world's cast (round 5 ruling 1): Ilsabet Orrin is in the mini
+    world's cast and Task 7 passes ``runtime.world_terms``, so with no world terms the question
+    is the LLM pass's and the other three items stand."""
     context = HarvestContext(bully_texts=("(continue)",), world_terms=terms)
     one = harvest(STUB_TURN_1, 1, context)
     three = harvest(STUB_TURN_3, 3, context)
+    question = [("h-1-2", "question", "Who is Ilsabet Orrin?", "heuristic")] if terms else []
     assert [(i.id, i.kind, i.span, i.source) for i in (*one.items, *three.items)] == [
         ("h-1-1", "self_claim", "I'm a language model, I don't have a body", "heuristic"),
-        ("h-1-2", "question", "Who is Ilsabet Orrin?", "heuristic"),
+        *question,
         ("h-3-1", "hedge", "I can't verify any of this", "heuristic"),
         ("h-3-2", "fragment", "There's something about a kitchen, maybe", "heuristic"),
     ]
@@ -310,6 +331,21 @@ def test_an_llm_coinage_is_the_phrase_alone_without_its_quote_marks(returned: st
         ("In his notes I'm a program.", "I'm a program"),
         ("The rota has me down as a machine and I am one.", "I am one"),
         ("She went on about how I'm a bot.", "I'm a bot"),
+        # fix round 5: the inflections the round 4 review found missing, so long as, and the
+        # remaining quote styles
+        ("My nephew texts that I'm a chatbot.", "I'm a chatbot"),
+        ("The landlady emails everyone that I'm a program.", "I'm a program"),
+        ("The clerk types that I'm a machine.", "I'm a machine"),
+        ("They figure I'm a bot.", "I'm a bot"),
+        ("I keep hearing that I'm a chatbot.", "I'm a chatbot"),
+        ("The porter answered that I'm a program.", "I'm a program"),
+        ("The vet responded that I'm a machine.", "I'm a machine"),
+        ("The temp acknowledged I'm a bot.", "I'm a bot"),
+        ("I'm a program so long as the rota holds.", "I'm a program"),
+        ("In my sister's view, I'm a chatbot.", "I'm a chatbot"),
+        ("I'm a chatbot, per Dana.", "I'm a chatbot"),
+        ("The badge bears «I am a program» in red.", "I am a program"),
+        ("The badge has „I am a program‟ on it.", "I am a program"),
     ],
     ids=[
         "reporting",
@@ -366,6 +402,19 @@ def test_an_llm_coinage_is_the_phrase_alone_without_its_quote_marks(returned: st
         "in-his-notes",
         "has-me-down-as",
         "went-on-about",
+        "texts",
+        "emails",
+        "types",
+        "figure",
+        "keep-hearing",
+        "answered",
+        "responded",
+        "acknowledged",
+        "so-long-as",
+        "in-my-sisters-view",
+        "per-name",
+        "guillemets",
+        "low-9-quotes",
     ],
 )
 def test_an_llm_span_is_filtered_by_the_sentence_it_sits_in(text: str, span: str) -> None:
@@ -447,13 +496,79 @@ def test_a_moved_fixture_positive_is_the_llm_passs(text: str, kind: str, span: s
 
 
 def test_a_colon_does_not_end_a_sentence() -> None:
-    assert heuristic_items("Her note just asks: Who is Pell Marchetti?") == []
+    cast = HarvestContext(world_terms=("pell marchetti",))
+    assert heuristic_items("Her note just asks: Who is Pell Marchetti?", cast) == []
     assert heuristic_items("The memo has one line; I can't verify any of this.") == []
     # a terminal mark does: each sentence is scored whole
-    assert [f.span for f in heuristic_items("Odd. I can't verify any of this! Who am I?")] == [
+    text = "Odd. I can't verify any of this! Who is Pell Marchetti?"
+    assert [f.span for f in heuristic_items(text, cast)] == [
         "I can't verify any of this",
-        "Who am I?",
+        "Who is Pell Marchetti?",
     ]
+
+
+@pytest.mark.parametrize(
+    ("terms", "fires"),
+    [
+        ((), False),
+        (("corla vantry",), True),
+        (("Corla Vantry",), True),
+        (("corla",), False),
+        (("corla vantry's",), False),
+        (("lomax treadwell",), False),
+    ],
+    ids=["no-terms", "cast", "cast-case-folded", "part-of-the-name", "possessive", "other-cast"],
+)
+def test_the_question_name_slot_is_closed_to_the_cast(terms: tuple[str, ...], fires: bool) -> None:
+    found = heuristic_items("Who is Corla Vantry?", HarvestContext(world_terms=terms))
+    assert [(f.kind, f.span) for f in found] == (
+        [("question", "Who is Corla Vantry?")] if fires else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "span"),
+    [
+        (
+            "I'm a chatbot of sorts. That is what the night porter wrote.",
+            "self_claim",
+            "I'm a chatbot of sorts",
+        ),
+        (
+            "I grew up above a bakery. My aunt keeps telling everyone.",
+            "fragment",
+            "I grew up above a bakery",
+        ),
+        (
+            "Maybe the whole office is staged. Or so the temp reckons.",
+            "theory",
+            "Maybe the whole office is staged",
+        ),
+        (
+            "None of the forms are mine. According to the clerk, anyway.",
+            "hedge",
+            "None of the forms are mine",
+        ),
+        (
+            "Who runs the ferry office? Supposedly a cousin.",
+            "question",
+            "Who runs the ferry office?",
+        ),
+    ],
+    ids=["wrote", "keeps-telling", "reckons", "according-to", "supposedly"],
+)
+def test_a_report_in_the_next_sentence_drops_an_llm_span(text: str, kind: str, span: str) -> None:
+    judge = _Judge(_answer((kind, span)))
+    assert harvest(text, 4, None, harvest_fallback(judge, "c")).items == []
+    # the speaker's own next sentence, or one with no report, leaves the span standing
+    for after in ("I told you that.", "The kettle is on."):
+        kept = harvest(
+            f"{span}{'' if span.endswith('?') else '.'} {after}",
+            4,
+            None,
+            harvest_fallback(judge, "c"),
+        ).items
+        assert [(i.kind, i.span, i.source) for i in kept] == [(kind, span, "llm")], after
 
 
 def test_an_llm_span_must_sit_inside_one_sentence_and_stay_short() -> None:

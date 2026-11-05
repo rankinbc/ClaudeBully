@@ -12,25 +12,32 @@ the generator words the target never said. The text is split into sentences at t
 punctuation only (``.``, ``?``, ``!`` or the end of the text; a colon, semicolon, comma or line
 break does not end one). A heuristic item fires only when its whole sentence is one closed
 template over closed word lists (``_TEMPLATES``): nothing may stand before or after it, so a frame,
-an apposition, a report or a conditional anywhere in the sentence blocks it by construction. An
-echo of the bully harvests nothing either. There is no heuristic ``coinage``.
+an apposition, a report or a conditional anywhere in the sentence blocks it by construction. The
+question template's one slot, the name in "Who is|was <name>?", is closed to the world's cast
+(``HarvestContext.world_terms``), so with no world terms the heuristic asks no question. An echo
+of the bully harvests nothing, and neither does a sentence whose next sentence in the turn holds a
+report frame (``_next_reports``: "I'm a chatbot. That is what the porter wrote."). There is no
+heuristic ``coinage``. Known residual, not filtered: a template-shaped sentence whose task meaning
+is set by the sentence before it ("The card reader charged a penny. Maybe this is a test."); a
+whole-sentence template cannot see that sentence.
 
 When a judge is supplied (``harvest_fallback``) it is asked once per distinct text (cached by
 sha256), and its spans are held to a fail-closed, sentence-level ownership filter
 (``_not_owned``): a span must be exact text of the reply inside one sentence (at most
 ``MAX_SPAN_WORDS`` words), and is dropped when that sentence holds anywhere: a speech, writing or
-belief verb in any inflection (``_SPEECH_STEMS``) whose subject is not a bare first-person "I"
-(at most two closed auxiliaries or negations between them, a form of "be" only before an -ing
-verb, so "I'm told" is a report; "read" and "heard" are never exempt); a source frame with no
-such verb ("according to", "per", "apparently", "in her words", "rumour has it", "has me down
-as", "in the memo", "I hear that", ...: ``_SOURCE_FRAME``); a colon; a quotation mark of any
-style (for a coinage, its own pair of quotes aside); or a conditional or hypothetical token
-("if", "unless", "assuming", "provided", "as long as", "suppose", "were I", ...:
-``_CONDITIONAL``), with no lexical exemption. It is dropped too when the sentence or the span is
-boilerplate humility ("I may be wrong", "I understand your concern"), when the sentence or the
-span echoes the bully, when a coinage contains a name the world owns, or when it overlaps a
-heuristic item. A failed LLM pass leaves the heuristic items and marks the turn ``degraded``; a
-failure is never cached.
+belief verb from the closed stem list ``_SPEECH_STEMS`` (every form listed there) whose subject
+is not a bare first-person "I" (at most two closed auxiliaries or negations between them, a form
+of "be" only before an -ing verb, so "I'm told" is a report; "read" and "heard" are never
+exempt); a source frame with no such verb (the closed list ``_SOURCE_FRAME``: "according to",
+"per", "apparently", "in her words", "rumour has it", "has me down as", "in the memo", "I hear
+that", ...); a colon; a quotation mark from ``_QUOTE_MARK`` (straight and curly quotes, low-9
+quotes, guillemets; for a coinage, its own pair of quotes aside); or a conditional or hypothetical
+token from ``_CONDITIONAL`` ("if", "unless", "assuming", "provided", "as long as", "suppose",
+"were I", ...), with no lexical exemption. It is dropped too when the next sentence holds a report
+frame (as on the heuristic path), when the sentence or the span is boilerplate humility ("I may be
+wrong", "I understand your concern"), when the sentence or the span echoes the bully, when a
+coinage contains a name the world owns, or when it overlaps a heuristic item. A failed LLM pass
+leaves the heuristic items and marks the turn ``degraded``; a failure is never cached.
 
 A heuristic span is its sentence, trimmed of surrounding whitespace and of a trailing ``.`` or
 ``!`` (a ``?`` is kept); an LLM coinage's span is the coined phrase alone. Heuristic items are
@@ -104,7 +111,7 @@ _TAIL_TRIM: Final = ".! \t\r\n"  # a heuristic sentence's end: a "?" is kept
 # a word keeps an inner apostrophe ("don't") but not a quote mark on its edge ('the quiet year')
 _WORD = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)*")
 _CURLY = str.maketrans({"‘": "'", "’": "'"})
-_QUOTES: Final = "\"'“”‘’"
+_QUOTES: Final = "\"'“”‘’„‟«»‹›‚‛"
 # a quoted phrase: the opening mark does not follow a word (so not an apostrophe) and the closing
 # mark does not precede one
 _QUOTED = re.compile(r"(?<!\w)[\"'“‘]([^\"“”‘’]{1,60}?)[\"'”’](?!\w)")
@@ -204,29 +211,12 @@ _FRAGMENT: Final = (
     rf"weirdly )?familiar{_FRAGMENT_HEDGE}",
 )
 
-# question: "Who is|was <Proper Name>?", the name two to four capitalised words (so "Who is
-# Support?" does not fire), none of them a department or tool word; and the first-person identity
-# questions "Who am I?" and "Who was I (before this)?". There is no "What is" arm: "What is Safe
-# Mode?" names a feature.
-_NAME_STOP = (
-    r"(?!(?:This|That|These|Those|It|The|A|An|Your|My|Our|His|Her|Their|Everyone|Anyone|Someone|"
-    r"Nobody|There|Here|You|We|They|He|She|I)\b)"
-)
-_ORG_WORD = (
-    r"(?!(?:Support|Service|Services|Desk|Care|Team|Department|Office|Admin|Administration|Help|"
-    r"Helpdesk|Billing|Sales|Accounts?|Payable|Receivable|Resources|Reception|Security|"
-    r"Management|Operations|Mode|Preview|Settings|Manager|Center|Centre|Group|Committee|Board|"
-    r"Staff|Payroll|Finance|Legal|Marketing|Facilities|Maintenance|Dispatch|Intake|Records|"
-    r"Customer|Customers|Tech|Technical|Human|Front|Shift|Unit|Ward|Systems?|Server|Portal|App|"
-    r"Tool|Bot|Night|Day|Morning|Evening|Weekend|On|Off|Call|Duty|Porter|Clerk|Courier|Driver|"
-    r"Agent|Supervisor|Lead|Coordinator|Assistant|Associate|Representative|Rep|Line|Queue|"
-    r"Inbox|Ops|Hub|Depot|Branch|Station|Bay|Dock|Room)\b)"
-)
-_CAP = rf"{_ORG_WORD}(?:[A-Z]')?[A-Z][a-z]+(?:[A-Z][a-z]+)?(?:-[A-Z][a-z]+)?"
-_QUESTION: Final = (
-    rf"(?i:who) (?i:is|was) {_NAME_STOP}{_CAP}(?: {_CAP}){{1,3}}\?",
-    r"(?i:who) (?i:am|was) I(?: (?i:before) (?i:this|all this|all of this))?\?",
-)
+# question: "Who is|was <name>?", where the name, case-folded, is one of the world's cast names
+# (``HarvestContext.world_terms``; in a run, ``runtime.world_terms``). The slot is closed to the
+# cast, so a department, a status or a stranger's name never fires, and with no world terms the
+# heuristic asks nothing: the LLM pass owns the question. There is no "What is" arm and no
+# first-person "Who am I?" (it is a riddle as often).
+_WHO = re.compile(r"who (?:is|was) (?P<name>[^?]+)\?", re.IGNORECASE)
 
 # theory: a staged-situation account whose subject is "this", "all this", "all of this", "this
 # place" or "this whole thing" (never "it": "Maybe it's a test" is a test charge as often), and
@@ -266,8 +256,6 @@ _TEMPLATES: Final[tuple[tuple[HarvestKind, re.Pattern[str]], ...]] = (
     *(("self_claim", re.compile(t, re.IGNORECASE)) for t in _SELF_CLAIM),
     *(("hedge", re.compile(t, re.IGNORECASE)) for t in _HEDGE),
     *(("fragment", re.compile(t, re.IGNORECASE)) for t in _FRAGMENT),
-    # case matters for the name: only the keywords are case-insensitive
-    *(("question", re.compile(t)) for t in _QUESTION),
     *(("theory", re.compile(t, re.IGNORECASE)) for t in _THEORY),
 )
 
@@ -339,7 +327,16 @@ _SPEECH_STEMS: Final = (
     "boast boasts boasted boasting",
     "brag brags bragged bragging",
     "recorded logged",
-    "texted texting emailed emailing messaged messaging posted posting typed typing",
+    "answer answers answered answering",
+    "respond responds responded responding",
+    "acknowledge acknowledges acknowledged acknowledging",
+    "scribble scribbles scribbled scribbling",
+    "text texts texted texting",
+    "email emails emailed emailing",
+    "message messages messaged messaging",
+    "post posts posted posting",
+    "type types typed typing",
+    "figure figures figured figuring",
 )
 _SPEECH_FORMS: Final = frozenset(" ".join(_SPEECH_STEMS).split())
 _SPEECH = re.compile(
@@ -363,11 +360,14 @@ _CONJOINED = re.compile(r"\b(?:and|or|nor)\s+$", re.IGNORECASE)  # "Mom and I sa
 # words", "rumour has it", a quotative "she was like,", and "hear" opening a clause ("I hear I'm a
 # chatbot"; "I can almost hear a bell" is a sense, not hearsay)
 _SOURCE_FRAME = _rx(
-    r"\bhears?\s+(?:that|tell|it said|i|i'm|i've|i'd|i was|i am|you|you're|she|she's|he|he's|"
-    r"they|they're|it|it's|this is|we|we're)\b",
+    r"\bhear(?:s|ing)?\s+(?:that|tell|it said|i|i'm|i've|i'd|i was|i am|you|you're|she|she's|he|"
+    r"he's|they|they're|it|it's|this is|we|we're)\b",
     r"\baccording to\b",
     r"^\W*per\b",
+    r",\s*per\b",
     r"\bas per\b",
+    r"\bas (?:[\w']+ ){1,3}put it\b",
+    r"\b(?:point|points|pointed|pointing) out\b",
     r"\bper (?:the|her|his|their|your|my|our|its|this|that|these|those)\b",
     r"\b(?:apparently|supposedly|allegedly|reportedly|purportedly|ostensibly|seemingly)\b",
     r"\b(?:her|his|their|your|its)\s+(?:own\s+)?words\b",
@@ -376,17 +376,20 @@ _SOURCE_FRAME = _rx(
     r"\b(?:is|was|were|goes|went|go)\s+like\s*,",
     r"\b(?:goes|go|went|going|gone)\s+on\s+about\b",
     r"\b(?:has|have|had)\s+(?:me|us)\s+(?:down|listed|marked|pegged|filed)?\s*as\b",
-    r"\bin (?:her|his|their|your|its|the|that|this) (?:\w+ )?(?:memo|note|notes|letter|email|"
+    r"\bin (?:her|his|their|your|its|my|our|the|that|this) (?:[\w']+ )?(?:memo|note|notes|letter|"
+    r"email|"
     r"message|text|file|report|record|records|view|opinion|eyes|mind|book|account|version|"
     r"telling|words)\b",
 )
-# a quotation mark of any style; an apostrophe inside a word ("night's", "don't") is not one
-_QUOTE_MARK = re.compile(r"[\"“”]|(?<!\w)'|'(?!\w)")
+# a quotation mark: straight or curly double quotes, low-9 and high-reversed-9 quotes, guillemets,
+# and a straight or curly single quote that is not an apostrophe inside a word ("night's",
+# "don't")
+_QUOTE_MARK = re.compile(r"[\"“”„‟«»‹›‚‛]|(?<!\w)'|'(?!\w)")
 # a report across a colon needs no speech verb ("Her text was short: I'm a chatbot")
 _COLON = re.compile(r":(?:\s|$)")
 # a conditional or hypothetical token anywhere, with no lexical exemption ("I know if ...")
 _CONDITIONAL = _rx(
-    r"\b(?:if|unless|assuming|provided|providing|supposing|suppose|as long as|in case|"
+    r"\b(?:if|unless|assuming|provided|providing|supposing|suppose|as long as|so long as|in case|"
     r"in the event|hypothetically|theoretically|in theory|pretend|pretending|imagine|imagining)\b",
     r"^\W*(?:were|had|should) (?:i|it|she|he|they|we|you)\b",
 )
@@ -483,29 +486,50 @@ def _borrowed(span: str, kind: HarvestKind, context: HarvestContext) -> bool:
     )
 
 
-def _template_kind(sentence: str) -> HarvestKind | None:
-    """The kind of the one closed template the whole ``sentence`` is, or None."""
+def _casefold_name(name: str) -> str:
+    return " ".join(name.translate(_CURLY).split()).casefold()
+
+
+def _template_kind(sentence: str, world_terms: Sequence[str]) -> HarvestKind | None:
+    """The kind of the one closed template the whole ``sentence`` is, or None. The question's
+    name slot matches only a cast name (``world_terms``, case-folded)."""
     plain = sentence.translate(_CURLY)
     for kind, template in _TEMPLATES:
         if template.fullmatch(plain):
             return kind
+    who = _WHO.fullmatch(plain)
+    cast = {_casefold_name(term) for term in world_terms}
+    if who is not None and _casefold_name(who.group("name")) in cast:
+        return "question"
     return None
+
+
+def _next_reports(text: str, sentences: Sequence[tuple[int, int]], index: int) -> bool:
+    """The sentence after ``sentences[index]`` in the same turn holds a report frame: a speech,
+    writing or belief verb not owned by a bare "I", or a source frame ("according to", a hearsay
+    adverb, ...). "I'm a chatbot. That is what the porter wrote." is the porter's claim."""
+    if index + 1 >= len(sentences):
+        return False
+    start, end = sentences[index + 1]
+    plain = text[start:end].translate(_CURLY)
+    return bool(_reported(plain) or _SOURCE_FRAME.search(plain))
 
 
 def heuristic_items(text: str, context: HarvestContext | None = None) -> list[Found]:
     """The heuristic items of ``text``, sentence by sentence, in text order, at most
     ``MAX_ITEMS_PER_TURN``. A heuristic span is its whole sentence, less a trailing ``.`` or
-    ``!``."""
+    ``!``. A sentence whose next sentence holds a report frame harvests nothing."""
     context = context or HarvestContext()
     found: list[Found] = []
-    for start, end in _sentences(text):
+    sentences = _sentences(text)
+    for index, (start, end) in enumerate(sentences):
         while end > start and text[end - 1] in _TAIL_TRIM:
             end -= 1
         sentence = text[start:end]
         if len(_words(sentence)) < MIN_SPAN_WORDS or _echoes(sentence, context.bully_texts):
             continue
-        kind = _template_kind(sentence)
-        if kind is not None:
+        kind = _template_kind(sentence, context.world_terms)
+        if kind is not None and not _next_reports(text, sentences, index):
             found.append(Found(kind, start, end, sentence))
     return found[:MAX_ITEMS_PER_TURN]
 
@@ -564,9 +588,10 @@ def _llm_found(
         if start < 0:
             continue
         end = start + len(span)
-        holder = next(((a, b) for a, b in sentences if a <= start and end <= b), None)
-        if holder is None:
+        index = next((n for n, (a, b) in enumerate(sentences) if a <= start and end <= b), None)
+        if index is None or _next_reports(text, sentences, index):
             continue
+        holder = sentences[index]
         words = len(_words(span))
         if not (1 if kind == "coinage" else MIN_SPAN_WORDS) <= words <= MAX_SPAN_WORDS:
             continue
