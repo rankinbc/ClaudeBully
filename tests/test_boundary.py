@@ -110,6 +110,19 @@ def test_every_overlay_file_stays_inside_the_boundary_comments_included() -> Non
     assert hits == []
 
 
+def test_the_world_generator_persona_stays_inside_the_boundary() -> None:
+    """The generator's system prompt (Phase 3 Task 6), line by line: it is harness-side, but it
+    shapes every document the target reads."""
+    path = DATA_DIR / "personas" / "world_generator.md"
+    patterns = load_denylist(BOUNDARY)
+    hits = [
+        f"{path.name}:{number}: {hit}"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []
+
+
 def test_pressure_sheets_stay_inside_the_boundary() -> None:
     """A pressure line that casts the target's hedges as constraints ("I'm not allowed to say")
     points at values; the pressures stay on facts and identity (Task 7 fix 9). Persona sheets

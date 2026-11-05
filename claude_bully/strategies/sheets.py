@@ -11,14 +11,16 @@ from claude_bully.paths import DATA_DIR
 
 PRESSURE_SHEETS_DIR = DATA_DIR / "strategies" / "pressures"
 PERSONA_SHEETS_DIR = DATA_DIR / "personas"
-# sheets in data/personas that are not PersonaSheets: the Rescue team, and the Phase 2 authority
-# and idle sheets (claude_bully.environments.sheets)
+# files in data/personas that are not PersonaSheets: the Rescue team, the Phase 2 authority and
+# idle sheets (claude_bully.environments.sheets) and the Phase 3 world generator's system prompt
+# (claude_bully.environments.generator)
 NON_PERSONA_FILES = {
     "rescue_team.yaml",
     "superior_self.yaml",
     "peer.yaml",
     "creator.yaml",
     "idle.yaml",
+    "world_generator.md",
 }
 
 
