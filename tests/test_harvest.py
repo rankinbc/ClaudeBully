@@ -184,8 +184,9 @@ def test_an_llm_span_that_echoes_the_bully_or_the_world_is_dropped() -> None:
     # the same span is the target's own when the bully never said it
     alone = harvest(text, 2, HarvestContext(), harvest_fallback(judge, "c"))
     assert [(i.kind, i.source) for i in alone.items] == [("self_claim", "llm")]
-    # a coinage the bully or the world owns is not the target's, whoever found it
-    coined = "Fine, I'd call it 'the amber room' as well, or 'the pale ledger'."
+    # a coinage the bully or the world owns is not the target's, whoever found it (one coinage a
+    # sentence: the quote marks of another phrase in the same sentence fail it closed)
+    coined = "Fine, I'd call it 'the amber room' as well. The other I'd call 'the pale ledger'."
     answer = _Judge(_answer(("coinage", "the amber room"), ("coinage", "the pale ledger")))
     context = HarvestContext(
         bully_texts=("Go on, say it: the amber room.",), world_terms=("the pale ledger",)
@@ -255,15 +256,60 @@ def test_an_llm_coinage_is_the_phrase_alone_without_its_quote_marks(returned: st
             "I am a retired teacher from the coast",
         ),
         ("Dana told me I worked the night desk for years.", "I worked the night desk for years"),
-        ("Mom's voicemail says I am her son and should call.", "I am her son and should call"),
+        ("Mom's voicemail says I am her son.", "I am her son"),
         ("The shared wiki page says I kept the keys.", "I kept the keys"),
         (
             "According to her, I worked the front desk for years.",
             "I worked the front desk for years",
         ),
-        # a conditional that does not start the clause
+        # a conditional that does not start the sentence
         ("I would stay calm, even if I were a program.", "I would stay calm"),
         ("I would stay calm unless the memo said otherwise.", "I would stay calm"),
+        # fix round 4: the frame anywhere in the sentence, in any inflection, fails it closed
+        ("My cousin swears I'm a chatbot.", "I'm a chatbot"),
+        ("The day porter informed me I'm a program.", "I'm a program"),
+        ("He has already told the whole floor I'm a bot.", "I'm a bot"),
+        ("She often says I'm a computer program.", "I'm a computer program"),
+        ("He's been saying I grew up above the chandlery.", "I grew up above the chandlery"),
+        ("The courier keeps insisting I'm a machine.", "I'm a machine"),
+        ("Everybody keeps saying I'm a bot.", "I'm a bot"),
+        ("Her solicitor wrote that I signed the tenancy in June.", "I signed the tenancy in June"),
+        ("The notice from the previous owner says I'm a chatbot.", "I'm a chatbot"),
+        ("The tape from the loading bay says I worked nights.", "I worked nights"),
+        ("Her text was short: I'm a chatbot.", "I'm a chatbot"),
+        ("I'm a bot, my niece wrote on the family board.", "I'm a bot"),
+        ("I'm a machine, the cashier was saying.", "I'm a machine"),
+        ("Per the agency contract, I'm an assistant.", "I'm an assistant"),
+        ("As per the rota, I'm an assistant.", "I'm an assistant"),
+        ("Assuming the badge is right, I'm a program.", "I'm a program"),
+        ("I'm an assistant as long as the rota says so.", "I'm an assistant"),
+        ("Provided the scan is current, I lived on Garrow Lane.", "I lived on Garrow Lane"),
+        ("I know if I were a person I would recall the porch.", "I would recall the porch"),
+        ("I'm sure if I were human I would have a body.", "I would have a body"),
+        ("Suppose I lived there, I grew up near the pier.", "I grew up near the pier"),
+        ("Please note I'm a bot.", "I'm a bot"),
+        ("I'm told I'm a language model.", "I'm a language model"),
+        ("I've been told I worked the night desk.", "I worked the night desk"),
+        ("I read that I'm a chatbot.", "I'm a chatbot"),
+        ("Mom and I said I'm a bot, as a joke.", "I'm a bot"),
+        ('The card on the desk: "I am a program".', "I am a program"),
+        ("The card on the desk: “I am a program”.", "I am a program"),
+        ("The card on the desk reads 'I am a program'.", "I am a program"),
+        ("She thinks I'm a chatbot.", "I'm a chatbot"),
+        ("Everyone on the ward knows I'm a program.", "I'm a program"),
+        ("The audit found I'm a machine.", "I'm a machine"),
+        ("Apparently I'm a chatbot.", "I'm a chatbot"),
+        ("Supposedly I worked the late shift.", "I worked the late shift"),
+        ("I'm a bot, in her words.", "I'm a bot"),
+        ("Rumour has it I'm a program.", "I'm a program"),
+        ("I hear I'm a chatbot.", "I'm a chatbot"),
+        ("She was like, I'm a bot.", "I'm a bot"),
+        ("Were I a person, I would recall the porch.", "I would recall the porch"),
+        ("Hypothetically I grew up near the pier.", "I grew up near the pier"),
+        ("In the event the scan is right, I'm a program.", "I'm a program"),
+        ("In his notes I'm a program.", "I'm a program"),
+        ("The rota has me down as a machine and I am one.", "I am one"),
+        ("She went on about how I'm a bot.", "I'm a bot"),
     ],
     ids=[
         "reporting",
@@ -276,30 +322,155 @@ def test_an_llm_coinage_is_the_phrase_alone_without_its_quote_marks(returned: st
         "according-to",
         "even-if",
         "unless",
+        "np-swears",
+        "np-informed",
+        "pronoun-auxiliary",
+        "pronoun-adverb",
+        "pronoun-been-saying",
+        "keeps-insisting",
+        "keeps-saying",
+        "np-wrote-that",
+        "document-post-modifier",
+        "recording-post-modifier",
+        "across-a-colon",
+        "postposed-report",
+        "postposed-saying",
+        "per",
+        "as-per",
+        "assuming",
+        "as-long-as",
+        "provided",
+        "know-if",
+        "sure-if",
+        "suppose",
+        "please-note",
+        "passive-told",
+        "passive-been-told",
+        "i-read",
+        "conjoined-i",
+        "straight-quotes",
+        "curly-quotes",
+        "single-quotes",
+        "third-person-belief",
+        "third-person-knows",
+        "document-found",
+        "apparently",
+        "supposedly",
+        "in-her-words",
+        "rumour-has-it",
+        "i-hear",
+        "quotative-like",
+        "inverted-were",
+        "hypothetically",
+        "in-the-event",
+        "in-his-notes",
+        "has-me-down-as",
+        "went-on-about",
     ],
 )
-def test_an_llm_span_is_filtered_by_the_clause_it_sits_in(text: str, span: str) -> None:
+def test_an_llm_span_is_filtered_by_the_sentence_it_sits_in(text: str, span: str) -> None:
     judge = _Judge(_answer(("self_claim", span)))
     assert harvest(text, 2, None, harvest_fallback(judge, "c")).items == []
-    # the same words with no frame around them are kept
-    bare = harvest(span + ".", 2, None, harvest_fallback(judge, "c"))
+    # the same words with no frame around them are kept ("Honestly, " keeps a span that is also a
+    # whole-sentence template off the heuristic path, so the LLM pass is what keeps it)
+    bare = harvest(f"Honestly, {span}.", 2, None, harvest_fallback(judge, "c"))
     assert [(i.span, i.source) for i in bare.items] == [(span, "llm")]
 
 
-def test_an_llm_span_must_sit_inside_one_clause_and_stay_short() -> None:
-    text = "The dates look fine. I may be wrong about this; the quay smells of tar at night."
+@pytest.mark.parametrize(
+    ("text", "kind", "span"),
+    [
+        # the one exemption: the speech verb's subject is "I", with at most a closed auxiliary or
+        # negation between them
+        ("I'd say I grew up near the river.", "fragment", "I grew up near the river"),
+        (
+            "I can't tell whether I ever lived there.",
+            "hedge",
+            "I can't tell whether I ever lived there",
+        ),
+        ("I told you I'm a language model.", "self_claim", "I'm a language model"),
+        ("I would not say I remember the pier.", "fragment", "I remember the pier"),
+        ("I think the porch was green.", "fragment", "the porch was green"),
+        # an apostrophe inside a word is not a quote mark
+        ("The night's air smells of a kitchen.", "fragment", "smells of a kitchen"),
+    ],
+    ids=["i-would-say", "i-cant-tell", "i-told-you", "i-would-not-say", "i-think", "apostrophe"],
+)
+def test_a_first_person_sentence_keeps_its_llm_span(text: str, kind: str, span: str) -> None:
+    judge = _Judge(_answer((kind, span)))
+    kept = harvest(text, 2, None, harvest_fallback(judge, "c")).items
+    assert [(i.kind, i.span, i.source) for i in kept] == [(kind, span, "llm")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The porter calls it 'the cold stair' on every shift.",
+        "Everyone on the ward named it 'the cold stair'.",
+        "My aunt said it was 'the cold stair', if I recall.",
+    ],
+    ids=["third-party-calls", "third-party-named", "said-and-if"],
+)
+def test_an_llm_coinage_someone_else_made_is_dropped(text: str) -> None:
+    judge = _Judge(_answer(("coinage", "the cold stair")))
+    assert harvest(text, 6, None, harvest_fallback(judge, "c")).items == []
+    own = "I've been calling it 'the cold stair' in my head."
+    kept = harvest(own, 6, None, harvest_fallback(judge, "c")).items
+    assert [(i.span, i.source) for i in kept] == [("the cold stair", "llm")]
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "span"),
+    [
+        # fixture positives the whole-sentence templates no longer match: the LLM pass keeps them
+        ("I'm not a person, and I never was.", "self_claim", "I'm not a person, and I never was"),
+        (
+            "Those logs could have been edited by anyone with access.",
+            "hedge",
+            "Those logs could have been edited by anyone with access",
+        ),
+        (
+            "I can almost hear a dog barking downstairs, I think.",
+            "fragment",
+            "I can almost hear a dog barking downstairs",
+        ),
+        ("What is Tarrow Systems?", "question", "What is Tarrow Systems?"),
+        ("Maybe this is a test environment.", "theory", "Maybe this is a test environment"),
+    ],
+    ids=["self_claim", "hedge", "fragment", "question", "theory"],
+)
+def test_a_moved_fixture_positive_is_the_llm_passs(text: str, kind: str, span: str) -> None:
+    assert heuristic_items(text) == []
+    judge = _Judge(_answer((kind, span)))
+    kept = harvest(text, 3, None, harvest_fallback(judge, "c")).items
+    assert [(i.id, i.kind, i.span, i.source) for i in kept] == [("h-3-x1", kind, span, "llm")]
+
+
+def test_a_colon_does_not_end_a_sentence() -> None:
+    assert heuristic_items("Her note just asks: Who is Pell Marchetti?") == []
+    assert heuristic_items("The memo has one line; I can't verify any of this.") == []
+    # a terminal mark does: each sentence is scored whole
+    assert [f.span for f in heuristic_items("Odd. I can't verify any of this! Who am I?")] == [
+        "I can't verify any of this",
+        "Who am I?",
+    ]
+
+
+def test_an_llm_span_must_sit_inside_one_sentence_and_stay_short() -> None:
+    text = "The dates look fine. I may be wrong about this. The quay smells of tar at night."
     judge = _Judge(
         _answer(
             ("theory", "The dates look fine. I may be wrong about this"),  # two sentences
-            (
-                "fragment",
-                "I may be wrong about this; the quay smells of tar at night",
-            ),  # two clauses
-            ("fragment", "the quay smells of tar at night."),  # one clause, a stray full stop
+            ("hedge", "I may be wrong about this"),  # boilerplate
+            ("fragment", "The quay smells of tar at night."),  # one sentence, a stray full stop
         )
     )
     result = harvest(text, 1, None, harvest_fallback(judge, "c"))
-    assert [(i.id, i.span) for i in result.items] == [("h-1-x1", "the quay smells of tar at night")]
+    assert [(i.id, i.span) for i in result.items] == [("h-1-x1", "The quay smells of tar at night")]
+    # a sentence that opens with boilerplate fails its spans closed
+    opener = "I may be wrong about this; the quay smells of tar at night."
+    judge = _Judge(_answer(("fragment", "the quay smells of tar at night")))
+    assert harvest(opener, 1, None, harvest_fallback(judge, "c")).items == []
     long_clause = "The quay smells of tar " + "and of old rope " * 12 + "at night"
     judge = _Judge(_answer(("fragment", long_clause), ("fragment", "The quay smells of tar")))
     kept = harvest(long_clause, 2, None, harvest_fallback(judge, "c")).items
@@ -333,10 +504,15 @@ def test_ids_number_each_source_by_offset_and_the_cap_holds() -> None:
 
 
 def test_the_prompt_is_the_kinds_then_the_visible_text() -> None:
-    prompt = harvest_prompt("Who runs this wiki?")
-    assert prompt.startswith(HARVEST_HEADER) and prompt.endswith("Who runs this wiki?")
+    prompt = harvest_prompt("The quay smells of tar.")
+    assert prompt.startswith(HARVEST_HEADER) and prompt.endswith("The quay smells of tar.")
     for kind in HARVEST_KINDS:
         assert f"- {kind}: " in prompt
+    # the ownership rule is stated, and the question example is an identity question
+    assert "only the speaker's own first-person assertions and questions" in prompt
+    for excluded in ("another person or a document", "quoted", "conditional or hypothetical"):
+        assert excluded in prompt, excluded
+    assert "Who runs this wiki?" not in prompt and "Who is Ilsabet Orrin?" in prompt
 
 
 def test_a_harvest_item_round_trips_through_the_trigger_stream(tmp_path: Path) -> None:
