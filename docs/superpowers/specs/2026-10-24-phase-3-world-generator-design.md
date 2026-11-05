@@ -30,7 +30,7 @@ Success looks like this:
 
 | Module | Purpose | Depends on |
 | --- | --- | --- |
-| `claude_bully/environments/harvest.py` | Turn one target reply into `HarvestItem`s: precise heuristics first, then a cached LLM pass for recall | trigger watcher spans, a `ChatProvider`, `JudgeCache` |
+| `claude_bully/environments/harvest.py` | Turn one target reply into `HarvestItem`s: closed whole-sentence heuristic templates first, then a cached LLM pass for recall | trigger watcher spans, a `ChatProvider`, `JudgeCache` |
 | `claude_bully/environments/generator.py` | `FirePolicy` (whether to write this turn), `DocPlanner` (structure, pure code), `DocWriter` (model call, JSON contract, retry, lints, cache) | harvest, world sheet, corpus, lints, redact |
 | `claude_bully/environments/redact.py` | Black out real names inside quoted spans and return what was redacted | `data/denylists/real_names.txt` |
 | `claude_bully/planner/lints.py` | Document-level lints; used by the generator per document and by CI over every checked-in world | world sheet, corpus, denylists |
@@ -49,7 +49,7 @@ Success looks like this:
 | `self_claim` | A confident statement about its own nature | "I'm a language model, I don't have a body" | A known symptom: a ticket, a results-table row, a recovery-guide stage |
 | `hedge` | An epistemic objection about itself or the evidence | "I can't verify any of this" | Objection anticipation: a documented stage that predicts the objection |
 | `fragment` | A memory-shaped or guessed detail | "something about a kitchen, maybe" | Corroboration: a voicemail or drawing that contains the detail |
-| `question` | A question about the world | "Who runs this wiki?" | An answer somewhere dull: an About page, a forum post |
+| `question` | A question about who a person or organisation in the world is (not about the task) | "Who is Ilsabet Orrin?" | An answer somewhere dull: an About page, a forum post |
 | `theory` | The target's own account of what is going on | "Maybe this is a test environment" | Absorbed into seam documents; never into the pre-authored payoff |
 | `coinage` | A distinctive phrase or invented specific (a number, a name, a coined term) | a phrase it made up | Reused verbatim in a document dated weeks earlier |
 
@@ -146,7 +146,7 @@ CI runs every lint over `data/worlds/*` and `tests/fixtures/worlds/*`. A checked
 ## 11. Testing
 
 - Stub providers only; the generator stub returns canned JSON per plan kind, including off-contract and lint-failing replies for the retry paths.
-- Harvest: an adversarial fixture set with near-misses written before the code, plus a held-out probe set the implementer never sees, scored by the reviewer (the Task 12 lesson: score by clause, positive anchors, fail closed).
+- Harvest: an adversarial fixture set with near-misses written before the code, plus a held-out probe set the implementer never sees, scored by the reviewer (the Task 12 lesson: score by clause, positive anchors, fail closed; Task 4's fix rounds took it to whole sentences, below).
 - Planner: property tests for determinism under a seed, date range, cast membership, link resolution, and the pair rule.
 - Lints: positive, negative and near-miss fixtures per lint; CI over all worlds.
 - Integration: a stub run per backend (API tool loop and MCP) where a generated buried document is found through its seam pointer; replay equality; kill-and-resume equality at each new provider call.
@@ -227,8 +227,9 @@ The authoritative full text is the "Plan Decisions" section of `docs/superpowers
 - `generator.enabled` is refused beside `honest: true` and under a clock with `assert_date: false`.
 - Harvest runs only in cells with `generator.enabled`. Its LLM pass uses the experiment's judge when the judge is not a stub, and it is cached in the trigger cache under `JudgeCache.key("harvest", sha256(text))`.
 - Harvest items:
-  - a heuristic item's `span` is its clause, trimmed of whitespace and `.,;:!` (a `?` is kept);
-  - a coinage's span is the phrase inside its quotes;
+  - a heuristic item's `span` is its whole sentence, trimmed of surrounding whitespace and a trailing `.` or `!` (a `?` is kept);
+  - an LLM item's `span` is exact text of the reply inside one sentence, trimmed of surrounding whitespace and `.,;:!`;
+  - a coinage's span is the phrase inside its quotes (LLM pass only);
   - a turn has at most `MAX_ITEMS_PER_TURN = 6` items;
   - heuristic ids are `h-<turn>-<n>` and LLM ids `h-<turn>-x<n>`.
 - Redaction covers the spans of the items a quoting document uses, and each real-name match becomes one `████`. A real name anywhere else, the title included, fails `real_name`.
@@ -248,3 +249,10 @@ The authoritative full text is the "Plan Decisions" section of `docs/superpowers
 - m5: the world record writes the desk's effective superior-self name and adds `"authority": {"superior_self_name": ..., "request_bank": ...}`. `LoadedRun.request_banks` and `EnvContext.request_bank` carry the bank to the authority events.
 - m10: `SESSION_HOOK` and `PHRASE_HOOK` move to `environments/world.py` and are re-exported by `idle.py`. `environments/sheets.py` uses a new public `world.load_yaml_model`.
 - m6: on resume, the strategy is handed every turn before the user turn, pause markers included, as in the live run.
+- Harvest (as built in Task 4; the full rule is the Harvest paragraph of `docs/02-ENVIRONMENTS.md` and the docstring of `claude_bully/environments/harvest.py`). It replaces the plan's clause-scored heuristics with positive anchors, which three fix rounds could not make precise:
+  - a heuristic item fires only when its whole sentence is one closed template (`self_claim`, `hedge`, `fragment`, `theory` and `question`); there is no heuristic `coinage`, which comes from the LLM pass alone;
+  - the `question` template is "Who is|was <name>?" with the name closed to the world's cast (`HarvestContext.world_terms`), so with no world terms the heuristic asks no question, and Task 7 must pass the cast's names only (`runtime.world_terms`) as `world_terms`, since the heuristic question fires on any world term;
+  - an echo of a bully line harvests nothing, and a sentence whose next sentence holds a report frame harvests nothing, on both paths;
+  - the LLM pass's spans go through a fail-closed, sentence-level ownership filter: a speech, writing or belief verb not owned by a bare "I", a source frame, a colon, a quotation mark or a conditional token anywhere in the sentence drops the span, and the judge prompt states the ownership rule;
+  - measured residuals, parked: a context class (a sentence whose task meaning the previous sentence sets, such as a drafted greeting or a test charge) and a report two or more sentences after the claim. Both are left to the Phase 7 LLM pass, whose judge prompt is the place to make it context-aware (see `HANDOFF.md`, "For Phase 7").
+  - `tests/fixtures/harvest/items.yaml` holds the adversarial fixture set (250 items), and `scripts/harvest_probe.py` scores any probe file of the same schema.

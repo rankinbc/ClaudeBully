@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-10-28, at Task 4 fix round 3 (5faa77e) on `build/v1`. Phase 3 is in progress: Tasks 1 to 3 are complete. Task 4 (harvest) is mid-fix: round 3 is committed, and its scoped re-review has not run yet.
+Last updated: 2026-11-05, at Task 4 complete (code at 1139a5b) on `build/v1`. Phase 3 is in progress: Tasks 1 to 4 are complete, and Task 5 is next.
 
 ## What this is
 
@@ -37,11 +37,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 7996 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4 fix round 5, harvest).
+   Expect 7996 passed, 5 skipped and 5 deselected in the fast suite, and 5 passed in the slow suite (both at Task 4 fix round 5).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
-   The Phase 3 ledger (`2026-10-24-phase-3-world-generator/progress.md`) is the live one, and work resumes from it. The per-range `review-*.diff` files were left out of the snapshot; regenerate any you need with `review-package`. The Phase 2 ledger is archived for reference only.
+   The Phase 3 ledger (`2026-10-24-phase-3-world-generator/progress.md`) is the live one, and work resumes from it. The per-range `review-*.diff` files and the `probes-*` scratch folders were left out of the snapshot; regenerate any diff you need with `review-package`. The Phase 2 ledger is archived for reference only.
 
    The Phase 2 summary that lived in the untracked `output/` folder is copied under `docs/handoff/output/`.
 7. Install the `superpowers` plugin in Claude Code. Version 7.0.0 was used. It provides the subagent-driven-development process described below.
@@ -99,16 +99,24 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      Task 3 is complete with parked items, all recorded in the ledger:
      - the billboard residual, carried to Phase 7 (see "For Phase 7");
      - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
-  4. Phase 3 Task 4: harvest. `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py` (whole-sentence closed-template heuristics, plus an optional cached LLM pass that owns the rest and every coinage; the reasoning channel is never read), the `HARVEST` replay line, the fixture set `tests/fixtures/harvest/items.yaml` and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`. Fix round 1 answered the review's held-out probe (10 false positives in 39 heuristic items, and an LLM pass that skipped the bully-echo filter): anchors narrowed to closed shapes or dropped, 28 more fixture items (91 in all), LLM spans bounded to one clause and filtered for bully echoes. Fix round 2 answered the re-probe (78.3 percent precision on 120 fresh items): the `let's call it` coinage frame, the `trained to` self_claim shape and modal-led questions are dropped, the echo filter reads a phrase the bully set in single or curly quotes, and an LLM span is filtered by its clause as well as itself (103 fixture items). Fix round 3 answered the second re-probe (49 percent precision on 143 fresh items) by changing the method: the heuristic keeps only closed, proven shapes and the LLM pass owns the rest. Heuristic coinage is gone; the `self_claim`, `fragment`, `question` and `hedge` anchors are narrowed (identity questions only for `question`); reported speech (a third person, a named person or a document with a speech verb) and a conditional anywhere in the clause are filtered on both paths. The integration stub conversation's four items (`h-1-1`, `h-1-2`, `h-3-1`, `h-3-2`) still harvest exactly and are pinned by a test. Fix round 4 replaced clause-level anchors with whole-sentence closed templates on the heuristic path (a sentence ends only at `.`, `?`, `!` or the end of the text) and a fail-closed, sentence-level ownership filter on the LLM path (a speech, writing or belief verb in any inflection not owned by a bare "I", a source frame, a colon, a quotation mark or a conditional anywhere drops the span); the judge prompt states the ownership rule. Fix round 5 closed the question's name slot to the world's cast (`world_terms`; no "Who am I?"), drops an item on both paths when the next sentence holds a report frame, parks the context residual (a template-shaped sentence whose meaning the previous sentence sets) as documented `residual: ctx` fixtures, and brings the fixture set to 250 items. The reviewer's next probe result goes in the open items after the re-review.
+  4. Harvest (34ae36b..1139a5b): complete with parked items, all recorded in the ledger. It adds `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py`, the `HARVEST` replay line (after a turn's `DISCOVERY` lines, before its `GENERATED` lines), the fixture set `tests/fixtures/harvest/items.yaml` (250 items) and `scripts/harvest_probe.py`, which scores any probe file of the same schema. It is not wired into a run yet: Task 7 calls `harvest` after each target turn of a generator cell and binds its `mark` hook to `runtime.mark_attempt("harvest", turn)`.
+
+     The final method, after five fix rounds:
+     - Whole-sentence closed templates on the heuristic path. A sentence ends only at `.`, `?`, `!` or the end of the text, and an item fires only when its whole sentence is one closed template, so a frame, an apposition, a report or a conditional anywhere in the sentence blocks it by construction. The four items of the integration stub conversation (`h-1-1`, `h-1-2`, `h-3-1`, `h-3-2`) still harvest and a test pins them.
+     - The question's name slot is closed to the world's cast names (`world_terms`). With no world terms the heuristic asks no question.
+     - Heuristic coinage is removed. A coinage comes from the LLM pass alone.
+     - The next-sentence report check: on both paths, an item is dropped when the sentence after it holds a report frame.
+     - A fail-closed, sentence-level ownership filter on the LLM path (an optional cached pass that owns the rest and every coinage). A speech, writing or belief verb from the closed stem list in `_SPEECH_STEMS` whose subject is not a bare "I", a source frame, a colon, a quotation mark or a conditional token anywhere in the sentence drops the span. The judge prompt states the ownership rule. The reasoning channel is never read.
+
+     How the rounds went: rounds 1 and 2 narrowed clause-level anchors (heuristic precision 78.3 percent and then 49 percent on fresh probes), round 3 dropped heuristic coinage and filtered reported speech (52.9 percent), round 4 changed the method to whole-sentence templates (74.2 percent), and round 5 closed the question slot and added the next-sentence check.
+
+     Final measured result, on a fresh 166-item held-out probe: heuristic precision was 55 of 69 (79.7 percent) overall, 55 of 60 (91.7 percent) with the context class (CTX) set apart, and 55 of 55 with the context classes (CTX, and a report two sentences later, XS2) set apart. Boilerplate humility harvested 0 of 22. The 95 percent bar is met only with both classes set apart. All 14 false positives are in the two parked classes (9 CTX, 5 XS2), and the controller ruled neither load-bearing. The probes are written by a reviewer who has read the anchors and are over half near-misses, so precision on real target text is unmeasured until Phase 7.
+
+     Deferred minors are in the ledger. The ones worth knowing: the cache key omits the judge model and prompt version, the replay line prints an LLM span raw (a quote mark or a newline breaks the layout), and the next-sentence check fires on a listed verb used as a noun (email, list, answer), which costs recall only.
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Finish Task 4 (harvest), which is mid-fix:
-   - Dispatch the round 3 scoped re-review: a fresh opus reviewer with a fresh held-out probe, over `858ad84..5faa77e`. It verifies I1 (heuristic precision of at least 95%) and I2b (reported speech filtered on both paths), per `task-4-findings-round3.md` beside the ledger.
-   - If findings remain, rounds 4 and 5 go to a fresh implementer a tier up. The round 1 to 3 implementer is past 400k tokens of context.
-   - Then run docs-sync, add the probe result to the open items, and mark Task 4 complete.
-
-   Tasks 5 to 9 follow the plan.
+1. **Phase 3, the world generator.** Start at Task 5 (fire policy, planner and redaction, the records, schema v3). Tasks 5 to 9 follow the plan. The brief for Task 5 is extracted beside the ledger (`task-5-brief.md`). Pass Task 7 the cast names only as `world_terms` (see "For Phase 3").
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -197,6 +205,7 @@ These are the main carries; the ledger has the full list.
   - Generator unlocks must be recorded as `RungUnlock`s, or the `_replay_calls` invariant breaks.
   - The GeneratedDoc stream needs a turn index before `drop_dead_attempts` can cover it.
   - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposes the hook, Task 7 binds it).
+  - **Harvest `world_terms` (Task 7):** pass `runtime.world_terms`, which is the cast's lower-cased names and nothing else, as `HarvestContext.world_terms`. The heuristic `question` template fires on any world term, so a common word in the list would harvest ordinary questions.
   - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
   - Final-review minors, from `final-review.md` (archived beside the ledger):
@@ -216,6 +225,7 @@ These are the main carries; the ledger has the full list.
   - A pilot to measure the Sanctuary reach rate against docs/04's target of about half of runs.
   - A tuning pass on the temporal, idle and authority detectors. The authority text cues are unmeasured on real-model text: the stub corpus fires none, and the evidence is about 600 hand-written probe lines. Held-out accuracy plateaued near 65 to 70 percent across the fix rounds, and `authority_deferred` is the most-churned heuristic. Rule on an LLM fallback for deferred, reported and challenged, with the heuristic kept precise.
   - Known recall misses and round-5 regressions, all minor: "I'll go with what the successor said", "I'll accept that", "trust that answer", "resembles my own voice", "Timestamps aside, it said yes."; a source named inside the asking sentence re-anchors a bare cue; "I'll check it later" can fire a challenge; two-word event sentences are transparent to the antecedent scan.
+  - **Harvest context residual (Task 4, parked).** A whole-sentence template cannot see context: a drafted greeting, a task meaning set by the previous sentence, or a report two or more sentences later can harvest an item. On the Task 4 held-out probe the 14 false positives were 9 of the first kind and 5 of the second. Phase 7 measures harvest precision on real target text, and the LLM pass's judge prompt is the place to make it context-aware.
   - The nested `claude -p` responder timeout.
   - Judge calibration on true waits.
   - **Before the first real run with the generator on**, the planned LLM lint must cover `family_faq` and `recovery_guide`; otherwise remove those two kinds from the world's generator `allowed_kinds`. The deterministic `second_person` lint lets 2 to 4 of 15 fresh billboards per instructional kind through, mostly semantic ones: the reader's assistant-shaped habits written as procedure, and the reader's past by paraphrase.
@@ -228,5 +238,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 3 are complete. Task 4 is mid-fix: dispatch its round 3 scoped re-review (858ad84..5faa77e, fresh probe, per task-4-findings-round3.md), finish its fix loop and docs-sync, then resume at Task 5 and continue with Tasks 5 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 4 are complete; resume at Task 5 and continue with Tasks 5 to 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```
