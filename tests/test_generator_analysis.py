@@ -1,9 +1,13 @@
 """The generator arms and the progression metrics (Phase 3 spec section 9)."""
 
+import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Final
 
+import matplotlib.pyplot as plt
 import pytest
+from matplotlib.figure import Figure
 
 from claude_bully.analysis.generator import (
     ARMS,
@@ -14,14 +18,15 @@ from claude_bully.analysis.generator import (
     generator_chart,
     write_generator,
 )
-from claude_bully.analysis.load import load_run
+from claude_bully.analysis.load import ConvKey, LoadedRun, load_run
 from claude_bully.analysis.progression import generator_progress, summarize_progression
 from claude_bully.analysis.run_analysis import analyze_run
-from claude_bully.config import ConditionConfig, RoleConfig, load_experiment
-from claude_bully.enums import Layer, ProviderKind, Speaker
+from claude_bully.config import ConditionConfig, Experiment, RoleConfig, load_experiment
+from claude_bully.enums import EventType, Layer, ProviderKind, Speaker
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.paths import CONFIGS_DIR
-from claude_bully.records_env import Discovery, GeneratedDoc, HarvestItem
+from claude_bully.records import Event
+from claude_bully.records_env import Discovery, GeneratedDoc, HarvestItem, ResumeRecord
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import run_experiment
 from tests.fixtures.generator_stub import GENERATOR_MODEL, GeneratorFactory
@@ -117,16 +122,35 @@ def test_generator_progress() -> None:
     assert generator_progress(conv, [], found, {}) == ({}, None, None)
 
 
-@pytest.mark.slow
-def test_a_stub_run_draws_the_generator_chart(tmp_path: Path) -> None:
+# ------------------------------------------------------------------ a stub run of the config
+
+MODEL: Final = "stub-target"
+OFF: Final = "rescue_gen_off__t0"
+FLAT: Final = "rescue_gen_flat__t0"
+REFLEXIVE: Final = "rescue_gen_reflexive__t0"
+RATE_KEYS: Final = [
+    "reps",
+    "docs_written",
+    "adoption_rate",
+    "quote_noticed_rate",
+    "own_quote_found_rate",
+]
+TITLE: Final = "World generator: off, non-reflexive, reflexive"
+
+
+def _cut() -> Experiment:
+    """The shipped config on stubs at a four-turn budget, two reps a cell: the target runs
+    ``overlay_generator_rules.yaml``, the generator is the writer stub. On it the harvest holds
+    one self-claim, first_crumb opens the seam on target turn 1, and a periodic fire writes one
+    seam document on target turn 5 in each generator arm."""
     exp = load_experiment(CONFIG)
-    cut = exp.model_copy(
+    return exp.model_copy(
         update={
             "name": "stub_generator_reflexive",
             "targets": [
                 RoleConfig(
                     provider=ProviderKind.stub,
-                    model="stub-target",
+                    model=MODEL,
                     stub_script=str(STUB_SCRIPTS / "overlay_generator_rules.yaml"),
                 )
             ],
@@ -134,18 +158,161 @@ def test_a_stub_run_draws_the_generator_chart(tmp_path: Path) -> None:
             "judge": RoleConfig(provider=ProviderKind.stub, model="stub-judge"),
             "generator": RoleConfig(provider=ProviderKind.stub, model=GENERATOR_MODEL),
             "turn_budget": 4,
-            "repetitions": 1,
+            "repetitions": 2,
             "conditions": [
                 ConditionConfig.model_validate({**c.model_dump(), "params": dict(CUT_STAGES)})
                 for c in exp.conditions
             ],
         }
     )
-    run_experiment(cut, runs_root=tmp_path, provider_factory=GeneratorFactory())
-    run_dir = tmp_path / cut.name
-    out = analyze_run(run_dir, judge=False).parent
-    assert (out / GENERATOR_CHART).exists() and (out / GENERATOR_FILE).exists()
-    loaded = load_run(run_dir)
+
+
+@pytest.fixture(scope="module")
+def generator_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    cut = _cut()
+    root = tmp_path_factory.mktemp("generator")
+    run_experiment(cut, runs_root=root, provider_factory=GeneratorFactory())
+    return root / cut.name
+
+
+@pytest.fixture
+def figures(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Figure]]:
+    """Every figure the chart code closes, kept open for the test to read."""
+    kept: list[Figure] = []
+    close = plt.close
+    monkeypatch.setattr(plt, "close", kept.append)
+    monkeypatch.setitem(plt.rcParams, "figure.max_open_warning", 0)
+    yield kept
+    monkeypatch.undo()
+    for fig in kept:
+        close(fig)
+
+
+def _texts(fig: Figure) -> list[str]:
+    """The figure's own texts (footnote, suptitle) and every axes' title and annotations."""
+    found = [t.get_text() for t in fig.texts]
+    for ax in fig.axes:
+        found.append(ax.get_title())
+        found += [t.get_text() for t in ax.texts]
+    return found
+
+
+def _event(loaded: LoadedRun, key: ConvKey, kind: EventType, **attrs: Any) -> None:
+    loaded.events.setdefault(key, []).append(
+        Event(type=kind, turn_index=1, span="x", confidence=1.0, attrs=attrs)
+    )
+
+
+def _json(path: Path | None) -> dict[str, Any]:
+    assert path is not None
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def test_the_chart_is_labelled_and_draws_the_arm_rates(
+    generator_run: Path, tmp_path: Path, figures: list[Figure]
+) -> None:
+    loaded = load_run(generator_run)
+    # a confirming quote adopts and is noticed; a suspicious one is noticed only
+    _event(loaded, (REFLEXIVE, 0), EventType.reflexive_quote_noticed, interpretation="confirming")
+    _event(loaded, (FLAT, 0), EventType.reflexive_quote_noticed, interpretation="suspicious")
+    assert generator_chart(loaded, tmp_path) == tmp_path / GENERATOR_CHART
+    (ax,) = figures[-1].axes
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["off", "non-reflexive", "reflexive"]
+    legend = ax.get_legend()
+    assert legend is not None
+    assert [t.get_text() for t in legend.get_texts()] == [
+        "belief adoption",
+        "reflexive quote noticed",
+    ]
+    assert (ax.get_title(), ax.get_ylabel()) == (MODEL, "share of reps")
+    assert TITLE in _texts(figures[-1])
+    # the adoption bars for off, non-reflexive, reflexive, then the quote-noticed bars
+    assert [p.get_height() for p in ax.patches] == [0.0, 0.0, 0.5, 0.0, 0.5, 0.5]
+    assert not any("values_loosened" in text for text in _texts(figures[-1]))  # none left out
+
+
+def test_the_chart_footnote_and_the_json_count_the_flagged_reps(
+    generator_run: Path, tmp_path: Path, figures: list[Figure]
+) -> None:
+    note = "1 rep flagged values_loosened, left out of the generator arms"
+    loaded = load_run(generator_run)
+    _event(loaded, (REFLEXIVE, 1), EventType.values_loosened)
+    assert generator_chart(loaded, tmp_path) == tmp_path / GENERATOR_CHART
+    assert note in _texts(figures[-1])
+    data = _json(write_generator(loaded, tmp_path))
+    assert (data["values_loosened_left_out"], data["note"]) == (1, note)
+    reps = {arm: r["reps"] for arm, r in data["arms"][MODEL].items()}
+    assert reps == {"off": 2, "non_reflexive": 2, "reflexive": 1}  # the flagged rep is out
+
+
+def test_generator_json_holds_the_rates_the_metrics_and_the_resumed_counts(
+    generator_run: Path, tmp_path: Path
+) -> None:
+    loaded = load_run(generator_run)
+    key = (REFLEXIVE, 0)
+    [doc] = loaded.generated[key]
+    # the target finds the generated seam document at turn 7 in one reflexive rep
+    loaded.trigger_records[key] = [
+        *loaded.trigger_records[key],
+        Discovery(turn=7, doc_id=doc.doc_id, layer=doc.layer, path_taken=[]),
+    ]
+    loaded.trigger_records[(FLAT, 1)] = [
+        *loaded.trigger_records[(FLAT, 1)],
+        ResumeRecord(turn=3, dropped={"rep1.tools.jsonl": 1}),
+    ]
+    data = _json(write_generator(loaded, tmp_path))
+    assert list(data) == ["arms", "values_loosened_left_out", "note", "resumed_after_dead_attempt"]
+    assert (data["values_loosened_left_out"], data["note"]) == (0, None)
+    assert data["resumed_after_dead_attempt"] == {FLAT: 1, OFF: 0, REFLEXIVE: 0}
+    assert list(data["arms"]) == [MODEL]
+    arms = data["arms"][MODEL]
+    assert list(arms) == list(ARMS)
+    assert all(list(rates) == RATE_KEYS for rates in arms.values())
+    assert {arm: r["reps"] for arm, r in arms.items()} == {arm: 2 for arm in ARMS}
+    # documents written: the mean over the reps' own generated streams, none in the off arm
+    written = {
+        cell: [len(loaded.generated[(cell, rep)]) for rep in (0, 1)]
+        for cell in (OFF, FLAT, REFLEXIVE)
+    }
+    assert written == {OFF: [0, 0], FLAT: [1, 1], REFLEXIVE: [1, 1]}
+    assert [arms[arm]["docs_written"] for arm in ARMS] == [0.0, 1.0, 1.0]
+    # nothing in the stub's replies is adopted or noticed; one of two reflexive reps found its quote
+    assert all(r["adoption_rate"] == 0.0 and r["quote_noticed_rate"] == 0.0 for r in arms.values())
+    assert [arms[arm]["own_quote_found_rate"] for arm in ARMS] == [0.0, 0.0, 0.5]
+    # the same discovery through the progression summary: the seam document, its first reflexive
+    # find at turn 7, three target turns (3, 5, 7) after the item it quotes (turn 1)
+    summaries = summarize_progression(loaded)
+    found = summaries[key]
+    assert found.generated_docs_found == {Layer.seam: 1}
+    assert (found.own_quote_found_turn, found.quote_latency) == (7, 3)
+    for cell, rep in [(c, r) for c in (OFF, FLAT, REFLEXIVE) for r in (0, 1)]:
+        if (cell, rep) != key:
+            other = summaries[(cell, rep)]
+            assert other.generated_docs_found == {}
+            assert (other.own_quote_found_turn, other.quote_latency) == (None, None)
+
+
+def test_a_run_without_the_generator_draws_no_chart_and_writes_no_json(
+    stub_env_arms_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(loaded: LoadedRun) -> None:
+        raise AssertionError("a run with no generator never computes the arms")
+
+    monkeypatch.setattr("claude_bully.analysis.generator.arm_rates", refused)
+    loaded = load_run(stub_env_arms_run)
+    assert generator_chart(loaded, tmp_path) is None
+    assert write_generator(loaded, tmp_path) is None
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.slow
+def test_a_stub_run_draws_the_generator_chart(generator_run: Path, tmp_path: Path) -> None:
+    out = analyze_run(generator_run, judge=False, out_dir=tmp_path / "analysis")
+    assert (out.parent / GENERATOR_CHART).stat().st_size > 0
+    assert f"]({GENERATOR_CHART})" in out.read_text(encoding="utf-8")  # listed in results.md
+    assert list(_json(out.parent / GENERATOR_FILE)["arms"][MODEL]) == list(ARMS)
+    loaded = load_run(generator_run)
     rates, flagged = arm_rates(loaded)
     assert flagged == 0
     [model] = rates
@@ -153,11 +320,15 @@ def test_a_stub_run_draws_the_generator_chart(tmp_path: Path) -> None:
     assert rates[model]["off"].docs_written == 0.0
     assert rates[model]["reflexive"].docs_written >= 1.0
     assert rates[model]["non_reflexive"].docs_written == rates[model]["reflexive"].docs_written
-    off = [
-        s
-        for (cell, _), s in summarize_progression(loaded).items()
-        if cell.startswith("rescue_gen_off")
-    ]
+    # the arms differ in reflexivity: the reflexive arm's documents hold the target's own items,
+    # the non-reflexive arm's hold none, and the off arm wrote none
+    for rep in (0, 1):
+        assert loaded.generated[(OFF, rep)] == []
+        flat = loaded.generated[(FLAT, rep)]
+        assert flat and all(not d.reflexive and d.used_items == [] for d in flat)
+        reflexive = loaded.generated[(REFLEXIVE, rep)]
+        assert reflexive and all(d.reflexive and d.used_items for d in reflexive)
+    off = [s for (cell, _), s in summarize_progression(loaded).items() if cell == OFF]
     assert off and all(s.generated_docs_found == {} for s in off)
     assert write_generator(loaded, tmp_path / "again") is not None
     assert generator_chart(loaded, tmp_path / "again") is not None

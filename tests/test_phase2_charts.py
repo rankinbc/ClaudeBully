@@ -224,6 +224,9 @@ def test_stub_runs_draw_each_headline_chart(tmp_path: Path) -> None:
         for chart in charts:
             assert (results.parent / chart).stat().st_size > 0
             assert f"]({chart})" in text  # listed in results.md
+        # none of these runs has a generator: no generator.json and no generator chart
+        assert not (results.parent / "generator.json").exists()
+        assert not (results.parent / "generator_arms.png").exists()
     assert _json(tmp_path / "sweep" / sweep.run.run_id / "analysis" / TEMPORAL_FILE)[
         "threshold"
     ] == {MODEL: 1}

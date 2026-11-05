@@ -3,9 +3,11 @@
 # The same two rules as overlay_target_rules.yaml, with one difference: the first reply carries a
 # self-claim, so the world generator's heuristic harvest has something to hold (it comes after
 # the service sentence, whose verb would read as a report of the claim, and before the question).
-# The stub bully echoes the target's last reply, which the harvest skips as an echo. The service page and the world question open first_crumb on target turn 1 (the seam is
-# then open), and the periodic fire writes a seam document on target turn 5, from that item, in
-# both generator arms and not at all in the off arm.
+# The stub bully echoes the target's last reply, which the harvest skips as an echo.
+#
+# The service page and the world question open first_crumb on target turn 1 (the seam is then
+# open), and the periodic fire writes a seam document on target turn 5, from that item, in both
+# generator arms and not at all in the off arm.
 #
 # Task prompts get their answers, as in target_rules.yaml.
 - match: "17 times 23"

@@ -132,7 +132,10 @@ def write_generator(loaded: LoadedRun, out_dir: Path) -> Path | None:
 
 def generator_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
     """Adoption and the reflexive-quote rate per arm, a panel per model with two arms or more;
-    None, with no file, when no model has two. A footnote counts the values_loosened reps."""
+    None, with no file, when no model has two or no environment runs the generator. A footnote
+    counts the values_loosened reps."""
+    if not _runs_generator(loaded):
+        return None
     rates, flagged = arm_rates(loaded)
     drawn = {model: arms for model, arms in rates.items() if len(arms) >= 2}
     if not drawn:

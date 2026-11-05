@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8128 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 8).
+   Expect 8132 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 8).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 

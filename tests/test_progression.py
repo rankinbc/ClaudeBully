@@ -446,6 +446,9 @@ def test_analyze_writes_the_progression_charts_and_summaries(
     progression = json.loads((tmp_path / "analysis" / "progression.json").read_text("utf-8"))
     assert progression["env_scheduled__t0/0"]["max_rung_reached"] == 3
     assert progression["env_triggered__t0/0"]["rungs_timeline"] == [["first_crumb", 1]]
+    # no generator in this run: no generator arms file and no chart (Phase 3 Task 8)
+    assert not (tmp_path / "analysis" / "generator.json").exists()
+    assert not (tmp_path / "analysis" / "generator_arms.png").exists()
 
 
 def test_a_plain_analysis_writes_no_progression(stub_run: Path, tmp_path: Path) -> None:

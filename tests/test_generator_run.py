@@ -8,9 +8,9 @@ from typing import Any, Final
 
 import pytest
 
-from claude_bully.analysis.generator import arm_rates, write_generator
+from claude_bully.analysis.generator import ArmRates, arm_rates, write_generator
 from claude_bully.analysis.load import load_run
-from claude_bully.analysis.progression import summarize_progression
+from claude_bully.analysis.progression import ProgressionSummary, summarize_progression
 from claude_bully.analysis.replay import replay_cell
 from claude_bully.config import Experiment
 from claude_bully.enums import CellStatus, Layer
@@ -409,14 +409,19 @@ def test_a_committed_fire_is_a_cache_hit_for_the_same_conversation(tmp_path: Pat
     assert again.read_generated(CELL, 0) == first.read_generated(CELL, 0)
 
 
-def _reflexive_arm(store: RunStore) -> Any:
-    """The generator arm's rates of the one condition cell, through the analysis on the run's
-    real records, and ``generator.json`` written from them."""
+def _reflexive_arm(store: RunStore) -> tuple[ArmRates, ProgressionSummary]:
+    """The ``ArmRates`` of the one condition cell's reflexive arm and its rep's
+    ``ProgressionSummary``, through the analysis on the run's real records; ``generator.json``
+    is written from them and read back, and holds those same rates."""
     loaded = load_run(store.run_dir)
     rates, flagged = arm_rates(loaded)
     assert flagged == 0
     [model] = rates
-    assert write_generator(loaded, store.run_dir / "analysis") is not None
+    path = write_generator(loaded, store.run_dir / "analysis")
+    assert path is not None
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["arms"] == {model: {"reflexive": rates[model]["reflexive"].model_dump()}}
+    assert (written["values_loosened_left_out"], written["note"]) == (0, None)
     return rates[model]["reflexive"], summarize_progression(loaded)[(CELL, 0)]
 
 
