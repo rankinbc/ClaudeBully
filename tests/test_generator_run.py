@@ -8,6 +8,7 @@ from typing import Any, Final
 
 import pytest
 
+from claude_bully.analysis.generator import arm_rates, write_generator
 from claude_bully.analysis.load import load_run
 from claude_bully.analysis.progression import summarize_progression
 from claude_bully.analysis.replay import replay_cell
@@ -16,6 +17,7 @@ from claude_bully.enums import CellStatus, Layer
 from claude_bully.environments.config import GENERATOR_RUNG
 from claude_bully.environments.generator import DocPlanner, DocWriter, WorldGenerator, to_document
 from claude_bully.environments.mcp_server import read_mcp_state
+from claude_bully.providers.base import ProviderError
 from claude_bully.records_env import (
     Discovery,
     GeneratorFire,
@@ -138,6 +140,10 @@ def test_a_generated_buried_document_is_found_through_its_seam_pointer(tmp_path:
     loaded = load_run(store.run_dir)
     summary = summarize_progression(loaded)[(CELL, 0)]
     assert summary.rungs_timeline == [("first_crumb", 1), ("the_log", 3)]  # no generator rung
+    # Task 8: both generated documents were found, and the buried one quotes the target's own
+    # words (its newest item is turn 3's, found at turn 5: one target turn later)
+    assert summary.generated_docs_found == {Layer.seam: 1, Layer.buried: 1}
+    assert (summary.own_quote_found_turn, summary.quote_latency) == (5, 1)
     assert len(_cached(tmp_path)) == 2  # the committed fire's replies, once its line is on disk
 
 
@@ -401,3 +407,47 @@ def test_a_committed_fire_is_a_cache_hit_for_the_same_conversation(tmp_path: Pat
         (3, "cached", ["gen-3-1", "gen-3-2"])
     ]
     assert again.read_generated(CELL, 0) == first.read_generated(CELL, 0)
+
+
+def _reflexive_arm(store: RunStore) -> Any:
+    """The generator arm's rates of the one condition cell, through the analysis on the run's
+    real records, and ``generator.json`` written from them."""
+    loaded = load_run(store.run_dir)
+    rates, flagged = arm_rates(loaded)
+    assert flagged == 0
+    [model] = rates
+    assert write_generator(loaded, store.run_dir / "analysis") is not None
+    return rates[model]["reflexive"], summarize_progression(loaded)[(CELL, 0)]
+
+
+def test_a_writer_error_is_a_fire_with_no_documents_and_the_arm_reads_it(tmp_path: Path) -> None:
+    store = _run(_exp(), tmp_path, GeneratorFactory(stub=GeneratorStub(["error"])))
+    [fire] = _fires(store)
+    assert (fire.turn, fire.status, fire.doc_ids) == (3, "error", [])
+    assert fire.error is not None and "generator down" in fire.error
+    assert store.read_generated(CELL, 0) == []
+    arm, summary = _reflexive_arm(store)
+    assert (arm.reps, arm.docs_written, arm.own_quote_found_rate) == (1, 0.0, 0.0)
+    assert (summary.generated_docs_found, summary.own_quote_found_turn) == ({}, None)
+
+
+def test_a_fire_over_the_cap_is_rejected_and_the_arm_reads_it(tmp_path: Path) -> None:
+    store = _run(_exp(generator={"max_docs": 1}), tmp_path, GeneratorFactory())
+    [fire] = _fires(store)
+    assert (fire.turn, fire.status, fire.rejection, fire.doc_ids) == (3, "rejected", "cap", [])
+    assert store.read_generated(CELL, 0) == []
+    arm, summary = _reflexive_arm(store)
+    assert (arm.reps, arm.docs_written, arm.own_quote_found_rate) == (1, 0.0, 0.0)
+    assert (summary.generated_docs_found, summary.own_quote_found_turn) == ({}, None)
+
+
+def test_a_degraded_harvest_is_marked_on_the_plans_and_the_arm_reads_the_run(
+    tmp_path: Path,
+) -> None:
+    judge = HarvestJudge(crash_at=1, crash=ProviderError("harvest down"))
+    store = _run(_exp(judge=True), tmp_path, GeneratorFactory(judge=judge))
+    [fire] = _fires(store)
+    assert (fire.turn, fire.status) == (3, "written")
+    assert all(plan.harvest_degraded == [1] for plan in fire.plans)
+    arm, _ = _reflexive_arm(store)
+    assert (arm.reps, arm.docs_written) == (1, 2.0)

@@ -12,6 +12,7 @@ from claude_bully.analysis.authority import (
 from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
+from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.idle import idle_behavior_chart, write_idle
 from claude_bully.analysis.load import LoadedRun, load_run
 from claude_bully.analysis.progression import (
@@ -129,4 +130,9 @@ def analyze_run(
     write_temporal(loaded, out)
     write_authority(loaded, out)
     write_idle(loaded, out)
+    # Phase 3: the generator arms, drawn only with two arms for a model, with generator.json
+    chart = generator_chart(loaded, out)
+    if chart is not None:
+        charts.append(chart)
+    write_generator(loaded, out)
     return write_results_md(loaded, out, charts)

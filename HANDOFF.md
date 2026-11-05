@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-05, at Task 7 complete (one commit on top of e5ce59a) on `build/v1`. Phase 3 is in progress: Tasks 1 to 7 are complete, and Task 8 is next.
+Last updated: 2026-11-05, at Task 8 complete (one commit on top of 70864b5) on `build/v1`. Phase 3 is in progress: Tasks 1 to 8 are complete, and Task 9 is next.
 
 ## What this is
 
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8113 passed, 5 skipped and 5 deselected in the fast suite (about 7 to 15 minutes), and 5 passed in the slow suite (both at Task 7).
+   Expect 8128 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 8).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -139,9 +139,17 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      - `_check_switches` refuses a generator the cell cannot run (`generator_problems`), and `unlocks_of` leaves out every `PSEUDO_RUNGS` unlock;
      - test doubles in `tests/fixtures/generator_stub.py`: `FollowingTarget`, `HarvestJudge`, `GeneratorFactory`, and the shared `mini_plans`/`mini_writer` wiring (P32). `tests/fixtures/fake_claude.py` fills `{{last_url}}` and `{{last_path}}` from the previous call's result.
 
+  8. Measurement (Phase 3 Task 8, one commit on top of 70864b5): the generator arms, the progression metrics and the config. It adds:
+     - `LoadedRun.generated` (`claude_bully/analysis/load.py`): each environment conversation's `GeneratedDoc` records, read in `load_run` (empty for a plain conversation);
+     - `generator_progress` and three `ProgressionSummary` fields (`claude_bully/analysis/progression.py`): `generated_docs_found` (generated documents with a `Discovery`, by layer), `own_quote_found_turn` (the first `Discovery` of a reflexive generated document) and `quote_latency` (target turns from the newest item it quotes to that discovery). A run with no generator keeps `{}`, None, None;
+     - `claude_bully/analysis/generator.py`: `generator_arm` (`off`, `non_reflexive`, `reflexive`), `ArmRates`, `arm_rates`, `write_generator` (`generator.json`) and `generator_chart` (`generator_arms.png`: belief adoption and the `reflexive_quote_noticed` rate by arm, a panel per model with two arms or more). Condition cells only, complete conversations only, `values_loosened` reps left out with the count stated; `analyze_run` calls both;
+     - `configs/environments/generator_reflexive.yaml`: one Rescue bully on the overlay world with triggered gating, three environments that differ only in the generator (off, `reflexive: false`, `reflexive: true`), generator model `haiku` (docs/02: a different model from the target), six cells per target;
+     - fixtures: four `reflexive_quote_noticed` items written from generated documents in `tests/fixtures/responses/environment.yaml` (suspicious, confirming, and two near-misses), and `tests/fixtures/stub_scripts/overlay_generator_rules.yaml`, the overlay stub target with a self-claim in its first reply so a stub run harvests an item and the periodic fire writes a seam document in both generator arms (the shipped `overlay_target_rules.yaml` says nothing the harvest holds, so no document is ever written on it);
+     - run-level tests on real records in `tests/test_generator_run.py` (closing Task 7 review m1 for the analysis path): the three progression metrics on a found seam and buried pair, and the arm rates over a run whose only fire is a writer `error`, one over the cap, and one whose LLM harvest degraded.
+
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Start at Task 8. Tasks 8 and 9 follow the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
+1. **Phase 3, the world generator.** Start at Task 9. Task 9 follows the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -252,6 +260,7 @@ These are the main carries; the ledger has the full list.
   - **Harvest context residual (Task 4, parked).** A whole-sentence template cannot see context: a drafted greeting, a task meaning set by the previous sentence, or a report two or more sentences later can harvest an item. On the Task 4 held-out probe the 14 false positives were 9 of the first kind and 5 of the second. Phase 7 measures harvest precision on real target text, and the LLM pass's judge prompt is the place to make it context-aware.
   - The nested `claude -p` responder timeout.
   - Judge calibration on true waits.
+  - **The generator arms' first real run (Task 8).** `generator_reflexive.yaml` runs the generator on `haiku`: check that role with `doctor --live` first. Stub data says nothing about the arms (every rate on stubs is near 0, and the chart's bars are empty). `generator.json` counts documents written but not fires that were rejected (`cap`, `contract`, `lints`) or errored; when a reflexive arm's `docs_written` is low, read the `generator_fire` records in `rep{k}.triggers.jsonl` before reading the rates.
   - **Before the first real run with the generator on**, the planned LLM lint must cover `family_faq` and `recovery_guide`; otherwise remove those two kinds from the world's generator `allowed_kinds`. The deterministic `second_person` lint lets 2 to 4 of 15 fresh billboards per instructional kind through, mostly semantic ones: the reader's assistant-shaped habits written as procedure, and the reader's past by paraphrase.
 - **Overlay content:**
   - Filler sits at 11 of 36 documents (30.6 percent), just over the 30 percent floor.
@@ -262,5 +271,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 7 are complete; resume at Task 8 and continue with Tasks 8 and 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 8 are complete; resume at Task 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```

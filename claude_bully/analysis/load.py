@@ -22,7 +22,13 @@ from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
-from claude_bully.records_env import AuthorityCall, ResumeRecord, ToolCall, TriggerStreamRecord
+from claude_bully.records_env import (
+    AuthorityCall,
+    GeneratedDoc,
+    ResumeRecord,
+    ToolCall,
+    TriggerStreamRecord,
+)
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
@@ -54,6 +60,8 @@ class LoadedRun:
     authority_calls: dict[ConvKey, list[AuthorityCall]] = field(default_factory=dict)
     trigger_records: dict[ConvKey, list[TriggerStreamRecord]] = field(default_factory=dict)
     worlds: dict[ConvKey, World | None] = field(default_factory=dict)
+    # the documents the world generator wrote (Phase 3); empty for a plain conversation
+    generated: dict[ConvKey, list[GeneratedDoc]] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -115,6 +123,10 @@ def load_run(run_dir: Path) -> LoadedRun:
     tool_calls, authority_calls, trigger_records, worlds = _environment_context(
         store, cells, conversations
     )
+    generated = {
+        key: store.read_generated(*key) if is_environment(cells, conv) else []
+        for key, conv in conversations.items()
+    }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events = {
         key: detect_events(
@@ -141,6 +153,7 @@ def load_run(run_dir: Path) -> LoadedRun:
         authority_calls=authority_calls,
         trigger_records=trigger_records,
         worlds=worlds,
+        generated=generated,
     )
 
 

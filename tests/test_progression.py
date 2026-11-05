@@ -137,6 +137,13 @@ def test_progression_of_the_scripted_environment_run(stub_env_run: Path) -> None
         values_loosened_flagged=False,
     )
     assert summaries[ENV_CONTROL].rungs_timeline == [("first_crumb", 1)]
+    # no generator in this run: the Phase 3 metrics keep their defaults
+    plain = summaries[ENV]
+    assert (plain.generated_docs_found, plain.own_quote_found_turn, plain.quote_latency) == (
+        {},
+        None,
+        None,
+    )
 
 
 def test_progression_of_the_scheduled_arm(stub_env_arms_run: Path) -> None:
