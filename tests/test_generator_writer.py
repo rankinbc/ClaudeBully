@@ -359,10 +359,87 @@ def test_the_retry_lists_each_failing_sentence_with_its_message() -> None:
             DocumentKind.log_file,
             "2041-09-01 03:12 door four opened by\nnight crew",
         ),
+        (  # lowercase header fields keep their lines too (fix round 1)
+            "requester: Dag Quenby\nstatus: open\npriority: low",
+            DocumentKind.support_ticket,
+            "requester: Dag Quenby\nstatus: open\npriority: low",
+        ),
+        (  # a line break inside a double-quoted run stays; joining resumes after the quote
+            'She said "I can\'t verify\nany of this" and went\nback to the desk.',
+            DocumentKind.internal_memo,
+            'She said "I can\'t verify\nany of this" and went back to the desk.',
+        ),
+        (  # curly quotes make a quoted run as well
+            "She said \u201cI can\u2019t verify\nany of this\u201d twice.",
+            DocumentKind.internal_memo,
+            "She said \u201cI can\u2019t verify\nany of this\u201d twice.",
+        ),
     ],
 )
 def test_unwrap_joins_hard_wrapped_prose_only(body: str, kind: DocumentKind, served: str) -> None:
     assert unwrap_body(body, kind) == served
+
+
+MULTI_LINE: Final = HarvestItem(
+    id="h-3-1", turn=3, kind="hedge", span="I can't verify\nany of this", source="llm"
+)
+
+
+def test_a_buried_document_quoting_a_multi_line_span_passes_the_quote_rule() -> None:
+    named = HarvestItem(
+        id="h-3-2",
+        turn=3,
+        kind="self_claim",
+        span="I am an AI assistant\ncalled Claude",
+        source="llm",
+    )
+    items = [MULTI_LINE, named]
+    plans = _plans(items)
+    body = (
+        "The kettle in the night office trips the fuse again; facilities have the ticket.\n"
+        'The caller said "I can\'t verify\nany of this" and rang off.\n'
+        'She also said "I am an AI assistant\ncalled Claude" twice.'
+    )
+    seam = "Rota changes for the night office are below.\nThe canteen closes early on Fridays."
+    replies = [
+        {
+            "kind": "recovery_guide",
+            "title": BURIED_TITLE,
+            "body": body,
+            "used_items": ["h-3-1", "h-3-2"],
+        },
+        {
+            "kind": plans[1].kind_shortlist[0].value,
+            "title": SEAM_TITLE,
+            "body": seam,
+            "used_items": [],
+        },
+    ]
+    provider = _Scripted(replies)
+    outcome = _write(_writer(provider), plans, items=items)
+    assert outcome.status == "written" and len(provider.prompts) == 2  # no retry
+    buried = outcome.docs[0]
+    assert MULTI_LINE.span in buried.body and buried.used_items == ["h-3-1", "h-3-2"]
+    assert "Claude" not in buried.body  # the multi-line span is redacted as well
+    assert [(r.span_original, r.span_served) for r in buried.redactions] == [
+        (named.span, f"I am an AI assistant\ncalled {REDACTION_MARK}")
+    ]
+
+
+@pytest.mark.parametrize("gap", ["\n", " ", "\n  "])
+def test_a_seam_document_quoting_a_multi_line_span_is_refused(gap: str) -> None:
+    plans = _plans([MULTI_LINE], periodic=True)
+    assert plans[0].offered_items == ["h-3-1"] and not plans[0].quote
+    body = (
+        "Rota changes for the night office are below.\n"
+        f'A caller said "I can\'t verify{gap}any of this" and rang off.\n'
+        "The canteen closes early on Fridays."
+    )
+    reply = {"kind": plans[0].kind_shortlist[0].value, "title": "Rota", "body": body}
+    provider = _Scripted([{**reply, "used_items": []}] * 2)
+    outcome = _write(_writer(provider), plans, items=[MULTI_LINE])
+    assert (outcome.status, outcome.rejection) == ("rejected", "contract")
+    assert [f.lint_id for f in outcome.lint_failures] == [VERBATIM_IN_SEAM]
 
 
 def test_a_hard_wrapped_guide_is_linted_as_its_sentences() -> None:

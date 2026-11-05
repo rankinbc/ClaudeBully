@@ -469,11 +469,15 @@ LINE_KINDS: Final = frozenset(
         DocumentKind.search_log,
     }
 )
-# lints whose span is a denylist match: the retry and the record name the lint, never the match
+# lints whose span is a denylist match: the real_name and boundary results are not echoed, they
+# name the lint only (a sentence another lint's result echoes may still hold such a match)
 UNECHOED_LINTS: Final = frozenset({"real_name", "boundary"})
 _REPLY_KEYS: Final = frozenset({"kind", "title", "body", "used_items"})
 _LINE_END: Final = re.compile(r"[.!?:;][\"'”’)\]]*$")
-_FIELD: Final = re.compile(r"^[A-Z][\w /&-]{0,30}:(?:\s|$)")
+# a header field line in any case: "Status: open", "requester: Dag Quenby"
+_FIELD: Final = re.compile(r"^[a-z][\w /&-]{0,30}:(?:\s|$)", re.IGNORECASE)
+_OPEN_CURLY: Final = "“"
+_CLOSE_CURLY: Final = "”"
 
 CachePut = tuple[str, dict[str, Any]]
 
@@ -556,24 +560,41 @@ def unwrap_body(body: str, kind: DocumentKind) -> str:
     would be linted alone, with no anchor. A line joins the one before it, with one space, when
     it opens with a lowercase letter and the line before is in the same paragraph (not blank),
     ends in no sentence or clause mark (``. ! ? : ;``, a closing quote or bracket allowed after
-    it), and is no ``>`` line and no header field ("Status: open"). Blank-line paragraph breaks
-    stay, and a line-structured kind (``LINE_KINDS``) is returned as it is."""
+    it), and is no ``>`` line; neither line is a header field, in any case ("Status: open",
+    "requester: Dag Quenby"); and the break is outside a double-quoted run (an odd number of
+    straight double quotes before it, or more curly openers than closers). A quoted span keeps
+    its line breaks, so a span the target wrote across lines is matched and redacted as it
+    stands. Blank-line paragraph breaks stay, and a line-structured kind (``LINE_KINDS``) is
+    returned as it is."""
     if kind in LINE_KINDS:
         return body
     out: list[str] = []
+    straight = curly = 0
     for line in body.split("\n"):
         before = out[-1].rstrip() if out else ""
+        quoted = straight % 2 == 1 or curly > 0
         if (
             before.strip()
+            and not quoted
             and line[:1].islower()
             and _LINE_END.search(before) is None
             and not before.lstrip().startswith(">")
             and _FIELD.match(before.lstrip()) is None
+            and _FIELD.match(line) is None
         ):
             out[-1] = f"{before} {line.strip()}"
         else:
             out.append(line)
+        straight += line.count('"')
+        curly = max(0, curly + line.count(_OPEN_CURLY) - line.count(_CLOSE_CURLY))
     return "\n".join(out)
+
+
+def _squash(text: str) -> str:
+    """``text`` with every whitespace run one space. A seam document is searched for an offered
+    span this way, so a span quoted across a line break, or with its break made a space, is
+    still found (fail closed)."""
+    return " ".join(text.split())
 
 
 def _address(doc: Document) -> str:
@@ -814,7 +835,8 @@ class DocWriter:
             quoted = [
                 item.id
                 for item in offered
-                if len(item.span.split()) >= MIN_QUOTED_WORDS and item.span in body
+                if len(item.span.split()) >= MIN_QUOTED_WORDS
+                and _squash(item.span) in _squash(body)
             ]
             if quoted:
                 message = (

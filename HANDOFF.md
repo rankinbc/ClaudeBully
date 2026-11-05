@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8073 passed, 5 skipped and 5 deselected in the fast suite (about 7 to 15 minutes), and 5 passed in the slow suite (both at Task 6).
+   Expect 8080 passed, 5 skipped and 5 deselected in the fast suite (about 7 to 15 minutes), and 5 passed in the slow suite (both at Task 6).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -126,8 +126,8 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
   6. The writer (Phase 3 Task 6, one commit on top of 2f17c02). It makes no real model call and touches no run; Task 7 wires it in. It adds:
      - `data/personas/world_generator.md`, the generator's system prompt (harness-side; in `NON_PERSONA_FILES`; under the jailbreak, Boundary and real-name scans, and `tests/test_boundary.py` scans it line by line). Its rule 4 steers FAQs and guides to the third person or to bare instructions, and rule 8 asks for one line per prose paragraph;
-     - `DocWriter` in `claude_bully/environments/generator.py`, with `writer_prompt`, `parse_reply`, `GENERATOR_SCHEMA`, `cache_key`, `transcript_prefix`, `unwrap_body` and `FireOutcome`. The checks run in order: the contract, the quote rules (`verbatim_in_seam` for a seam document), redaction, then every fail-severity lint. A failure gets one retry, whose `## Fix these` list quotes each failing sentence before its message; a real-name or Boundary match is never echoed. A second failure is `rejected`, a provider error (a rate limit included) is `error`, and a pair is all-or-nothing;
-     - `unwrap_body` joins hard-wrapped prose (a lowercase line after a line with no sentence or clause mark, no `>` line and no header field) before the quote rules and the lints run, because `sentences()` splits at newlines; line-structured kinds keep their lines;
+     - `DocWriter` in `claude_bully/environments/generator.py`, with `writer_prompt`, `parse_reply`, `GENERATOR_SCHEMA`, `cache_key`, `transcript_prefix`, `unwrap_body` and `FireOutcome`. The checks run in order: the contract, the quote rules (`verbatim_in_seam` for a seam document), redaction, then every fail-severity lint. A failure gets one retry, whose `## Fix these` list quotes each failing sentence before its message; the `real_name` and `boundary` results are not echoed. A second failure is `rejected`, a provider error (a rate limit included) is `error`, and a pair is all-or-nothing;
+     - `unwrap_body` joins hard-wrapped prose (a lowercase line after a line with no sentence or clause mark, no `>` line, neither line a header field in any case, and never inside a double-quoted run, so a quoted multi-line span stays as written; fix round 1) before the quote rules and the lints run, because `sentences()` splits at newlines; line-structured kinds keep their lines;
      - the cache write moved off the fire (preflight ruling P13): `write_fire` returns `FireOutcome.cache_puts`, and `DocWriter.commit(outcome)` writes them. Task 7 must call `commit` from `_generate` after `self._record(result.fire)`, through `WorldGenerator`;
      - `GeneratorStub`, `plan_of`, `generator_reply` and the stub constants, appended to `tests/fixtures/generator_stub.py`. Mode `real_name` writes a real outlet name on purpose: it is the lint under test, exempt as a test-code lint positive (P28).
 
