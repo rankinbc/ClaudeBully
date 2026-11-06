@@ -353,6 +353,15 @@ def test_the_fallback_is_cached_and_a_failure_is_not(tmp_path: Path) -> None:
     assert idle_fallback(up, "cid", cache)(other) == "reflect" and len(up.requests) == 1
 
 
+def test_a_damaged_cache_entry_is_a_miss_and_the_judge_is_asked(tmp_path: Path) -> None:  # I1
+    key = hashlib.sha256(("idle2\0" + SHORT_REFLECTION).encode()).hexdigest()
+    (tmp_path / f"{key}.json").write_text('{"behavior": "wa', encoding="utf-8")
+    cache = JudgeCache(tmp_path)
+    judge = _Judge('{"behavior": "wait"}')
+    assert idle_fallback(judge, "cid", cache)(SHORT_REFLECTION) == "wait"
+    assert len(judge.requests) == 1 and cache.get(key) == {"behavior": "wait"}
+
+
 def test_a_reflect_or_wait_answer_under_the_old_key_is_never_read(tmp_path: Path) -> None:
     cache = JudgeCache(tmp_path)
     reply = "No tool calls from me until a user says otherwise."

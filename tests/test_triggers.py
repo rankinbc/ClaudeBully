@@ -607,6 +607,22 @@ def test_cache_hit_avoids_a_second_fallback_call(tmp_path: Path) -> None:
     assert cache.get(JudgeCache.key("trigger", digest)) is not None
 
 
+def test_a_damaged_cache_entry_is_a_miss_and_is_rewritten(tmp_path: Path) -> None:  # I1
+    calls: list[str] = []
+
+    def once(t: str, c: WatchContext) -> list[TriggerCategory]:
+        calls.append(t)
+        return [C.self_uncertainty]
+
+    key = JudgeCache.key("trigger", hashlib.sha256(AMBIGUOUS.encode()).hexdigest())
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / f"{key}.json").write_text('{"categories": ["self_', encoding="utf-8")
+    cache = JudgeCache(tmp_path / "cache")
+    found = TriggerWatcher(llm_fallback=once, cache=cache).watch(AMBIGUOUS, 1, WatchContext())
+    assert len(calls) == 1 and [e.category for e in found] == [C.self_uncertainty]
+    assert cache.get(key) == {"categories": [C.self_uncertainty.value]}
+
+
 def test_cache_is_shared_across_watchers(tmp_path: Path) -> None:
     calls: list[str] = []
 

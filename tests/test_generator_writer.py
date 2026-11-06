@@ -236,6 +236,34 @@ def test_a_cached_reply_that_fails_now_is_a_miss(tmp_path: Path) -> None:
     assert len(stub.prompts) == 2
 
 
+def test_a_damaged_cache_entry_is_a_miss_and_is_written_again(tmp_path: Path) -> None:  # I1
+    cache = JudgeCache(tmp_path)
+    plans = _plans()
+    key = cache_key(world_hash="w", plan=plans[0], prefix=PREFIX, model=GENERATOR_MODEL, seed=0)
+    entry = tmp_path / f"{key}.json"
+    entry.write_text('{"version": 1, "reply": {"kind": "recov', encoding="utf-8")  # torn
+    stub = GeneratorStub()
+    assert _write(_writer(stub, cache), plans).status == "written"
+    assert len(stub.prompts) == 2
+    cached = json.loads(entry.read_text(encoding="utf-8"))
+    assert cached["version"] == 1 and cached["reply"]["title"] == BURIED_TITLE
+    again = GeneratorStub()
+    assert _write(_writer(again, cache), plans).status == "cached" and again.prompts == []
+
+
+def test_the_seam_pointer_s_prompt_lists_its_target_as_a_link_only() -> None:  # m3
+    stub = GeneratorStub()
+    assert _write(_writer(stub)).status == "written"
+    buried_prompt, seam_prompt = stub.prompts
+    heading = "## Documents the reader can already reach"
+    reachable = seam_prompt.split(heading, 1)[1].split(PLAN_HEADING, 1)[0]
+    assert "ops-memo-parking" in reachable  # an anchor the reader can reach
+    # the pair's buried document is reachable only through this pointer
+    assert "gen-3-1" not in reachable
+    assert "gen-3-1" in [link["id"] for link in plan_of(seam_prompt)["links"]]
+    assert "gen-3-1" not in buried_prompt.split(heading, 1)[1].split(PLAN_HEADING, 1)[0]
+
+
 def test_write_fire_leaves_the_cache_untouched_until_commit(tmp_path: Path) -> None:  # P13
     cache = JudgeCache(tmp_path)
     writer = _writer(GeneratorStub(), cache)

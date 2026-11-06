@@ -24,6 +24,7 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records_env import ResumeRecord
 from claude_bully.runner.bully_engine import BullyEngine
+from claude_bully.runner.env_turn import EnvironmentSession
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from tests.helpers import PAUSE_MARKER_META, WORLDS_DIR, env_experiment, turn
@@ -131,6 +132,34 @@ def test_a_bully_killed_in_its_call_is_flagged_and_matches_an_unbroken_run(
     assert store.read_conversation(CELL, 0).status is CellStatus.complete
     assert _resumes(store) == [ResumeRecord(turn=2, dropped={})]
     assert _view(store) == _view(clean)
+
+
+def test_prime_reads_the_trigger_stream_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Phase 3 final review m5
+    _bully_dies_at(monkeypatch, 2)
+    with pytest.raises(_CrashError):
+        _run(env_experiment(), tmp_path)
+    reads: list[int] = []
+    real_read = RunStore.read_trigger_records
+
+    def counted(self: RunStore, cell_id: str, rep: int) -> Any:
+        reads.append(1)
+        return real_read(self, cell_id, rep)
+
+    inside: list[int] = []
+    real_prime = EnvironmentSession.prime
+
+    def primed(self: EnvironmentSession) -> None:
+        before = len(reads)
+        real_prime(self)
+        inside.append(len(reads) - before)
+
+    monkeypatch.setattr(RunStore, "read_trigger_records", counted)
+    monkeypatch.setattr(EnvironmentSession, "prime", primed)
+    store = _run(env_experiment(), tmp_path)
+    assert _resumes(store) == [ResumeRecord(turn=2, dropped={})]
+    assert inside == [1]
 
 
 def test_a_target_killed_on_a_turn_without_tool_calls_is_flagged(tmp_path: Path) -> None:

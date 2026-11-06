@@ -362,6 +362,7 @@ class EnvironmentSession:
             dropped.update(drop_uncommitted_generation(*streams, produced))
         marker = self.runtime.attempt()
         dead = marker is not None and not marker.written(turns, self.runtime.state.watched_through)
+        records = self.store.read_trigger_records(self.cell_id, self.rep)
         if dropped or dead:
             # a dead marker names the redo; dropped lines alone redo the next turn, as before
             redo = (
@@ -369,12 +370,12 @@ class EnvironmentSession:
                 if marker is not None and dead
                 else (turns[-1].index + 1 if turns else 0)
             )
-            earlier = self.store.read_trigger_records(self.cell_id, self.rep)
-            flagged = any(isinstance(r, ResumeRecord) and r.turn == redo for r in earlier)
+            flagged = any(isinstance(r, ResumeRecord) and r.turn == redo for r in records)
             if dropped or not flagged:
-                self._record(ResumeRecord(turn=redo, dropped=dropped))
+                resume = ResumeRecord(turn=redo, dropped=dropped)
+                self._record(resume)
+                records.append(resume)  # the stream as it now stands, read once
         calls = self.store.read_tool_calls(self.cell_id, self.rep)
-        records = self.store.read_trigger_records(self.cell_id, self.rep)
         authority = self.store.read_authority_calls(self.cell_id, self.rep)
         generated = self.store.read_generated(self.cell_id, self.rep)
         self.runtime.prime(calls, records, authority, turns=turns, generated=generated)

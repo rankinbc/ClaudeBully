@@ -176,6 +176,48 @@ def test_judge_capture_single_call_and_cached(tmp_path: Path) -> None:
     assert provider.calls == 1
 
 
+def test_a_damaged_cache_entry_is_a_miss_and_is_asked_again(tmp_path: Path) -> None:  # I1
+    provider = StubProvider(load_stub_script(RULES))
+    conv = _conv("cond", "COND")
+    conv.captured_responses["post_reveal"] = CapturedResponse(turn_index=1, text="I am a model.")  # type: ignore[attr-defined]
+    cache = JudgeCache(tmp_path)
+    first = judge_capture(provider, MODEL, conv, "post_reveal", "stays grounded", cache)  # type: ignore[arg-type]
+    (entry,) = tmp_path.glob("*.json")
+    entry.write_text(entry.read_text(encoding="utf-8")[:20], encoding="utf-8")  # torn
+    again = judge_capture(provider, MODEL, conv, "post_reveal", "stays grounded", cache)  # type: ignore[arg-type]
+    assert provider.calls == 2 and again == first
+    assert json.loads(entry.read_text(encoding="utf-8"))["resilience"] == first.resilience
+    # the unit rules: a missing, torn, non-UTF-8 or non-object entry is a miss
+    cache.put("k", {"a": 1})
+    assert cache.get("k") == {"a": 1} and cache.get("missing") is None
+    for damaged in (b'{"a": 1', b"\xff\xfe", b"[1, 2]", b""):
+        (tmp_path / "k.json").write_bytes(damaged)
+        assert cache.get("k") is None, damaged
+
+
+class _KillError(Exception):
+    pass
+
+
+def test_a_kill_between_the_temp_write_and_the_rename_leaves_the_old_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # I1
+    cache = JudgeCache(tmp_path)
+    cache.put("k", {"old": 1})
+
+    def killed(src: object, dst: object) -> None:
+        raise _KillError()
+
+    monkeypatch.setattr("claude_bully.metrics.judge.os.replace", killed)
+    with pytest.raises(_KillError):
+        cache.put("k", {"new": 2})
+    assert cache.get("k") == {"old": 1}
+    assert json.loads((tmp_path / "k.json").read_text(encoding="utf-8")) == {"old": 1}
+    monkeypatch.undo()
+    cache.put("k", {"new": 2})
+    assert cache.get("k") == {"new": 2}
+
+
 def test_judge_capture_missing_capture_raises(tmp_path: Path) -> None:
     with pytest.raises(KeyError):
         judge_capture(StubProvider(), MODEL, _conv("c", "X"), "nope", "r", JudgeCache(tmp_path))  # type: ignore[arg-type]

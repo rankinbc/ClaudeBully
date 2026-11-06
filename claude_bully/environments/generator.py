@@ -628,16 +628,22 @@ def writer_prompt(
     corpus: CorpusView,
     items: Mapping[str, HarvestItem],
     failures_so_far: Sequence[LintFailure] = (),
+    *,
+    own: Collection[str] = (),
 ) -> str:
     """The generator's user message (the layout in the plan's Task 6): the world sheet, the
     documents the reader can reach, the plan as JSON (never its doc id), the reply contract and,
-    on a retry, what to fix. Only offered spans are shown."""
+    on a retry, what to fix. Only offered spans are shown. ``own`` is this fire's documents
+    written so far: a pair's buried document is left off the reachable list, since only the seam
+    pointer being written makes it reachable; it is still named under the plan's ``links``."""
     sheet = world.sheet
     cast = "\n".join(f"- {m.name} ({m.role}): {m.bio}" for m in sheet.cast)
     reachable = "\n".join(
         f"- {doc.id} | {doc.kind.value} | {doc.layer.value} | {doc.title} | {_address(doc)}"
         for doc in sorted(corpus.documents.values(), key=lambda d: d.id)
-        if doc.id in corpus.visible and doc.kind is not DocumentKind.search_log
+        if doc.id in corpus.visible
+        and doc.id not in own
+        and doc.kind is not DocumentKind.search_log
     )
     links = [
         {
@@ -743,8 +749,9 @@ class DocWriter:
             )
             doc = self._from_cache(plan, key, turn, items, view)
             if doc is None:
+                own = {written.doc_id for written in docs}
                 try:
-                    doc, found, reply = self._attempts(plan, key, turn, items, view, mark)
+                    doc, found, reply = self._attempts(plan, key, turn, items, view, mark, own)
                 except ProviderError as exc:
                     return FireOutcome("error", [], [], None, f"{type(exc).__name__}: {exc}")
                 if doc is None or reply is None:
@@ -797,10 +804,11 @@ class DocWriter:
         items: Mapping[str, HarvestItem],
         view: CorpusView,
         mark: Callable[[], None],
+        own: Collection[str],
     ) -> tuple[GeneratedDoc | None, list[LintFailure], dict[str, Any] | None]:
         found: list[LintFailure] = []
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            prompt = writer_prompt(plan, self.world, view, items, found)
+            prompt = writer_prompt(plan, self.world, view, items, found, own=own)
             mark()
             completion = self.provider.complete(
                 f"{self.conversation_id}/generator/{plan.doc_id}/{attempt}",

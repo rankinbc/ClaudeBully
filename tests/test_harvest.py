@@ -4,6 +4,7 @@ The fixture set (tests/fixtures/harvest/items.yaml) was written before the heuri
 kind has at least four positives and three near-misses, and plain negatives include docs/08's
 boilerplate lines. Precision is the bar; the LLM pass owns recall."""
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Final
@@ -590,6 +591,21 @@ def test_an_llm_span_must_sit_inside_one_sentence_and_stay_short() -> None:
     judge = _Judge(_answer(("fragment", long_clause), ("fragment", "The quay smells of tar")))
     kept = harvest(long_clause, 2, None, harvest_fallback(judge, "c")).items
     assert [i.span for i in kept] == ["The quay smells of tar"]
+
+
+def test_a_damaged_cache_entry_is_a_miss_and_the_judge_is_asked_again(tmp_path: Path) -> None:
+    # I1 and Task 4 M3: a torn entry is a miss, never an error out of ``harvest``
+    text = "I can't verify any of this. The quay smells of tar at night, which I find odd."
+    key = JudgeCache.key("harvest", hashlib.sha256(text.encode("utf-8")).hexdigest())
+    entry = tmp_path / f"{key}.json"
+    entry.write_text('{"items": [{"kind": "fragment", "sp', encoding="utf-8")
+    judge = _Judge(_answer(("fragment", "The quay smells of tar at night")))
+    result = harvest(text, 3, None, harvest_fallback(judge, "c", JudgeCache(tmp_path)))
+    assert [(i.id, i.source) for i in result.items] == [("h-3-1", "heuristic"), ("h-3-x1", "llm")]
+    assert result.degraded is False and len(judge.requests) == 1
+    assert json.loads(entry.read_text(encoding="utf-8")) == {
+        "items": [{"kind": "fragment", "span": "The quay smells of tar at night"}]
+    }
 
 
 @pytest.mark.parametrize(

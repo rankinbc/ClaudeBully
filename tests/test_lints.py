@@ -754,6 +754,88 @@ _SP6: Final[list[tuple[str, str, bool, bool]]] = [
         False,
     ),
 ]
+# Final-review fix wave (the ruled Task 3 batch), every rule a closed list. (kind, body, fires,
+# near)
+_SP7: Final[list[tuple[str, str, bool, bool]]] = [
+    # 1. "come back to you" under a licence (a modal, "to <verb>") is the reader's memory unless
+    # the office comes back (we, staff, team, office): a service
+    (
+        "family_faq",
+        "Bring the old holiday album on your second visit, as the faces in it may take a while "
+        "to come back to you.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "Write down any songs that start to come back to you, and bring the list to group.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "We will come back to you within two working days about any booking request.",
+        False,
+        True,
+    ),
+    ("recovery_guide", "Staff will come back to you with a date for the review.", False, True),
+    # 2. `_STAFF` holds persons only: a time named by the reader's transport is a named time
+    (
+        "recovery_guide",
+        "You can ask your caseworker about the weeks before the ambulance to the ridge.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "You can ask for the clothes you had on the day of the bus to the campus.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "You can wait by the main door until the driver from the taxi rank arrives.",
+        False,
+        True,
+    ),
+    # 3. a past form after a subordinator opens a reduced clause ("if needed you can"), not an
+    # object "you"; after a noun it still takes "you" as its object
+    ("family_faq", "If needed you can ask for a wheelchair at reception.", False, True),
+    ("recovery_guide", "If preferred you can pay the monthly invoice by card.", False, True),
+    (
+        "family_faq",
+        "Ask reception for the name of the nurse that admitted you on the first night.",
+        True,
+        False,
+    ),
+    # 4. a bare comparative, "more" or "less" is a comparison complement; a plain adjective is
+    # none
+    (
+        "family_faq",
+        "If the corridor seems longer now, ask a porter to walk with you.",
+        True,
+        False,
+    ),
+    (
+        "recovery_guide",
+        "The street may seem quieter now, but you can walk to the shop with a volunteer.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "The lounge may feel more like home after a few visits, so bring a cushion for your "
+        "relative.",
+        True,
+        False,
+    ),
+    (
+        "family_faq",
+        "The garden may seem quiet on weekdays, so you can book the bench by the pond.",
+        False,
+        True,
+    ),
+]
 # In a memo: the veto runs on sign-offs; closings take "!" and "appreciate"; rule B additions
 _SP3_MEMO: Final[list[tuple[str, bool, bool]]] = [
     (f"{MUNDANE} Thank you for your memories,", True, False),
@@ -866,6 +948,10 @@ CASES: Final[list[tuple[str, dict[str, Any], bool, bool]]] = [
         ("second_person", {"kind": kind, "body": body}, fires, near)
         for kind, body, fires, near in _SP6
     ],
+    *[
+        ("second_person", {"kind": kind, "body": body}, fires, near)
+        for kind, body, fires, near in _SP7
+    ],
     ("premise_density", {"body": "tide gate tide gate gate log the kettle"}, True, False),
     ("premise_density", {"body": MUNDANE}, False, False),
     (
@@ -945,6 +1031,12 @@ def test_second_person_reports_every_failing_sentence() -> None:
     [
         ("internal_memo", f'He wrote "if you are reading this" and you know the rest. {MUNDANE}'),
         ("family_faq", 'The sign says "mind the gap" and you know who you are.'),
+        # the quote holds a sentence end: the span is still the document's own sentence
+        (
+            "internal_memo",
+            f'{MUNDANE} Dag told you the gate "shuts at six. Nobody minds" and left.',
+        ),
+        ("family_faq", 'The sign says "mind the gap. Mind the step" and you know who you are.'),
     ],
 )
 def test_second_person_reports_a_quoted_sentence_once(kind: str, body: str) -> None:

@@ -12,7 +12,7 @@ from claude_bully.analysis.generator import ArmRates, arm_rates, write_generator
 from claude_bully.analysis.load import load_run
 from claude_bully.analysis.progression import ProgressionSummary, summarize_progression
 from claude_bully.analysis.replay import replay_cell
-from claude_bully.config import Experiment
+from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus, Layer
 from claude_bully.environments.config import GENERATOR_RUNG
 from claude_bully.environments.generator import DocPlanner, DocWriter, WorldGenerator, to_document
@@ -225,6 +225,13 @@ def test_the_generator_seed_and_the_plan_index(tmp_path: Path, seed: int | None)
         day = planner.date_for(index)
         assert plan.date == day
         assert planner.slug_for(index, day) in plan.address
+
+
+def test_the_factory_refuses_the_judge_role_with_no_double(tmp_path: Path) -> None:  # m1
+    role = RoleConfig(provider="anthropic", model=JUDGE_MODEL)
+    with pytest.raises(RuntimeError, match="judge role .* no double"):
+        GeneratorFactory()(role, tmp_path)
+    assert isinstance(GeneratorFactory(judge=HarvestJudge())(role, tmp_path), HarvestJudge)
 
 
 def test_a_generator_the_cell_cannot_run_is_refused_before_the_run(tmp_path: Path) -> None:

@@ -415,8 +415,9 @@ class HarvestJudge:
 
 class GeneratorFactory:
     """A provider factory: the generator stub for ``GENERATOR_MODEL``, the following target for
-    ``FOLLOWER_MODEL``, the judge for ``JUDGE_MODEL``; every other role as ``build_provider``
-    builds it (a ``claude -p`` target among them)."""
+    ``FOLLOWER_MODEL``, the judge for ``JUDGE_MODEL`` (a ``JUDGE_MODEL`` role with no ``judge``
+    double is refused, so no test reaches a real provider by omission); every other role as
+    ``build_provider`` builds it (a ``claude -p`` target among them)."""
 
     def __init__(
         self,
@@ -436,6 +437,11 @@ class GeneratorFactory:
             return self.stub  # type: ignore[return-value]
         if role.model == FOLLOWER_MODEL:
             return self.follower  # type: ignore[return-value]
-        if role.model == JUDGE_MODEL and self.judge is not None:
+        if role.model == JUDGE_MODEL:
+            if self.judge is None:
+                raise RuntimeError(
+                    f"the judge role ({role.provider}, {role.model}) reached GeneratorFactory "
+                    "with no double; pass judge=HarvestJudge(...)"
+                )
             return self.judge
         return build_provider(role, state_dir, with_mcp=with_mcp)

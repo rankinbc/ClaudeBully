@@ -74,7 +74,7 @@ LINT_IDS: Final = (
     "buried_not_indexed",
 )
 
-_WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+_WORD: Final = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
 _KINDS: Final = frozenset(kind.value for kind in DocumentKind)
 
 

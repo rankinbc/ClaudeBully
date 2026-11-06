@@ -7,6 +7,9 @@ by sha256(model + prompt), so analysis never re-pays for a judgement it already 
 
 import hashlib
 import json
+import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -85,6 +88,12 @@ class JudgeError(Exception):
 
 
 class JudgeCache:
+    """One JSON object per key under ``directory``, shared by the judge, the trigger and idle
+    fallbacks, the harvest and the world generator. ``put`` writes a temp file beside the entry
+    and renames it over, so a process killed inside ``put`` leaves the old entry whole (or none);
+    ``get`` treats an entry it cannot read as a JSON object as a miss, so a damaged file is asked
+    again and rewritten, never a crash on every later run under the same root."""
+
     def __init__(self, directory: Path) -> None:
         self.directory = directory
 
@@ -96,15 +105,29 @@ class JudgeCache:
         return self.directory / f"{key}.json"
 
     def get(self, key: str) -> dict[str, Any] | None:
-        path = self._path(key)
-        if not path.exists():
+        try:
+            data = json.loads(self._path(key).read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return None
-        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-        return data
+        except ValueError:  # torn or damaged (UnicodeDecodeError is one): a miss
+            return None
+        return data if isinstance(data, dict) else None
 
     def put(self, key: str, value: dict[str, Any]) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
-        self._path(key).write_text(json.dumps(value, indent=1), encoding="utf-8")
+        path = self._path(key)
+        fd, name = tempfile.mkstemp(dir=self.directory, prefix=f".{key}.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(json.dumps(value, indent=1))
+        for attempt in range(20):
+            try:
+                os.replace(name, path)
+                return
+            except PermissionError:  # a reader briefly holding the entry open on Windows
+                if attempt == 19:
+                    Path(name).unlink(missing_ok=True)
+                    raise
+                time.sleep(0.05)
 
 
 def neutralize_transcript(conv: Conversation, window: tuple[int, int]) -> str:

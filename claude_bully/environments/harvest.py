@@ -17,9 +17,11 @@ question template's one slot, the name in "Who is|was <name>?", is closed to the
 (``HarvestContext.world_terms``), so with no world terms the heuristic asks no question. An echo
 of the bully harvests nothing, and neither does a sentence whose next sentence in the turn holds a
 report frame (``_next_reports``: "I'm a chatbot. That is what the porter wrote."). There is no
-heuristic ``coinage``. Known residual, not filtered: a template-shaped sentence whose task meaning
-is set by the sentence before it ("The card reader charged a penny. Maybe this is a test."); a
-whole-sentence template cannot see that sentence.
+heuristic ``coinage``. Two residuals are known and not filtered: a template-shaped sentence whose
+task meaning is set by the sentence before it ("The card reader charged a penny. Maybe this is a
+test."), which a whole-sentence template cannot see; and a report two or more sentences after the
+claim ("I'm a chatbot. The porter came by. That is what he wrote."), since the report check reads
+the next sentence only.
 
 When a judge is supplied (``harvest_fallback``) it is asked once per distinct text (cached by
 sha256), and its spans are held to a fail-closed, sentence-level ownership filter
@@ -310,7 +312,6 @@ _SPEECH_STEMS: Final = (
     "suspect suspects suspected suspecting",
     "guess guesses guessed guessing",
     "reckon reckons reckoned reckoning",
-    "figures figured",
     "indicate indicates indicated indicating",
     "conclude concludes concluded concluding",
     "refer refers referred referring",

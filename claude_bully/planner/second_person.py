@@ -44,10 +44,12 @@ always works, since a sentence with no second-person word passes. The checks:
       agent of a procedure or the recipient of a service, in every clause. A subject "you" takes
       a listed predicate ("you may notice", "if you recognise", "the house you grew up in" fail);
       an object "you" follows a service verb or preposition and is licensed in its clause ("we
-      will call you"; "remind you of", "help you picture", "the woman who married you" fail).
+      will call you"; "remind you of", "help you picture", "the woman who married you" and "the
+      faces may come back to you" fail; the office coming back to the reader is a service).
       It fails a perception frame whose perceiver is the reader, a "your" phrase or a body noun
-      ("you may feel colder"), or whose thing subject takes a comparison or oddness complement
-      or "as if" ("the corridor seems longer than it did"; "the lounge can feel chilly" passes);
+      ("you may feel colder"), or whose thing subject takes a comparison or oddness complement,
+      a bare comparative or "as if" ("the corridor seems longer than it did", "seems longer
+      now"; "the lounge can feel chilly" passes);
       a change of state, past or perfect of the reader, a "your" phrase or a body or self noun
       (a past or perfect takes only ``TRANSACTIONAL_VERBS``: "your shop closed" fails, "the cafe
       has moved" passes); a time named by an event that is no procedure ("before the move to
@@ -298,12 +300,15 @@ _VETO = re.compile(
 #   picture"; "let you know" passes), "for", "with", "from", "behind", or "to" after a verb of
 #   sending or speaking, and is licensed in its clause by a modal, an infinitive "to", "please",
 #   "we", "staff", "let" or an imperative that opens the clause ("we will call you", "ask the
-#   porter to show you"); "about you" fails. A "you" after a past form ("the woman who married
-#   you") or after "who <verb>" ("the people who love you") is that verb's object;
+#   porter to show you"); "about you" fails, and so does "come back to you" unless the office
+#   comes back (``_OFFICE``). A "you" after a past form ("the woman who married you"; a past
+#   form after a subordinator, "if needed you can", opens a reduced clause instead) or after
+#   "who <verb>" ("the people who love you") is that verb's object;
 # - a perception frame (seem, appear to, look/sound like or familiar, feel but not free or
 #   unwell, "mean nothing to") has the reader, a "your" phrase or a body or self noun as its
-#   subject, or any subject before a comparison or oddness complement ("seems longer than it
-#   did", "looks different"); "as if" and "find <it> strange" fail whatever the subject;
+#   subject, or any subject before a comparison or oddness complement or a bare comparative
+#   ("seems longer than it did", "seems longer now", "looks different"); "as if" and "find <it>
+#   strange" fail whatever the subject;
 # - a change of state (become, grow, fade, blur, drift, belong, wake, or an aspectual start,
 #   stop, keep or continue over a verb that is not procedural, or a past aspectual) has the
 #   reader, a "your" phrase or a body or self noun as its subject (``_subject_of``);
@@ -560,8 +565,18 @@ _STAFF: Final = frozenset(
     "porter porters nurse nurses doctor doctors gp clerk clerks receptionist driver drivers "
     "therapist therapists physiotherapist physio pharmacist chaplain volunteer volunteers "
     "coordinator manager carer carers staff team worker workers officer optician hairdresser "
-    "cleaner cook chef warden consultant surgeon dentist caseworker keyworker escort taxi bus "
-    "minibus ambulance".split()
+    "cleaner cook chef warden consultant surgeon dentist caseworker keyworker escort".split()
+)
+# "come back to you" is the reader's memory unless the office comes back: a service
+_COME: Final = _forms(("come",))
+_OFFICE: Final = frozenset("we staff team office".split())
+# a past form after one of these opens a reduced clause ("if needed you can"), not an object "you"
+_REDUCED: Final = frozenset("if when whenever unless once while where until as".split())
+# bare comparison complements: "seems longer", "feel more like home" (the -er forms of
+# ``_COMPARE`` are there already)
+_COMPARATIVES: Final = frozenset(
+    "more less longer shorter quieter louder larger darker brighter colder warmer wider "
+    "narrower emptier fuller busier slower faster closer nearer stranger".split()
 )
 
 
@@ -736,7 +751,11 @@ def _object_ok(tokens: list[str], i: int) -> bool:
     if prev in ("for", "with", "from", "behind", "beside", "near"):
         return _licensed(tokens, i)
     if prev in ("to", "back"):
-        window = set(tokens[max(_clause_start(tokens, i), i - 7) : i - 1])
+        start = _clause_start(tokens, i)
+        clause = set(tokens[start:i])
+        if "back" in clause and clause & _COME and not clause & _OFFICE:
+            return False  # "the faces may come back to you"; "we will come back to you" passes
+        window = set(tokens[max(start, i - 7) : i - 1])
         return bool(window & _TO_VERBS) and _licensed(tokens, i)
     if prev in _CALL and _is_word(nxt) and nxt not in _CALL_AFTER:
         return False  # "she may call you Dad" names the reader
@@ -758,10 +777,11 @@ def _reader_veto(tokens: list[str]) -> str | None:
             continue
         prev, before = _at(tokens, i - 1), _at(tokens, i - 2)
         # a verb before "you" makes it the object: a past form ("the woman who married you",
-        # but not "if you are worried you can") or a relative clause's ("who love you")
-        verb = (_is_past(prev) and before not in _COPULAS | {"get", "got"}) or (
-            before == "who" and prev != "else" and not _is_adverb(prev)
-        )
+        # but not "if you are worried you can" or "if needed you can") or a relative clause's
+        # ("who love you")
+        verb = (
+            _is_past(prev) and before not in _COPULAS | {"get", "got"} and before not in _REDUCED
+        ) or (before == "who" and prev != "else" and not _is_adverb(prev))
         if prev in ("are", "were", "have") and _clause_start(tokens, i - 1) == i - 1:
             # an inverted question: "are you the named contact?", "have you booked?"
             ok = _have_ok(tokens, i + 1) if prev == "have" else _state_ok(tokens, i + 1)
@@ -804,9 +824,10 @@ def _subject_of(tokens: list[str], v: int) -> str | None:
 
 
 def _compared(tokens: list[str], j: int) -> bool:
-    """A comparison or oddness complement at ``j``: "longer than", "like home", "strange"."""
+    """A comparison or oddness complement at ``j``: "longer than", "like home", "strange", and
+    a bare comparative, "more" or "less" ("seems longer now", "feel more like home")."""
     j = _skip(tokens, j, _DEGREE)
-    return _at(tokens, j) in _COMPARE | _ODD or "than" in tokens[j : j + 3]
+    return _at(tokens, j) in _COMPARE | _ODD | _COMPARATIVES or "than" in tokens[j : j + 3]
 
 
 def _frame_veto(tokens: list[str]) -> str | None:
@@ -1052,17 +1073,37 @@ def _unquoted(text: str) -> str:
     return _QUOTED.sub(" ", kept)
 
 
+def _blanked(text: str) -> str:
+    """``text`` with its ``>`` lines and quoted spans made spaces, so every offset of what is
+    left is an offset of the document."""
+    lines = [
+        " " * len(line) if line.lstrip().startswith(">") else line for line in text.split("\n")
+    ]
+    return _QUOTED.sub(lambda m: " " * len(m.group(0)), "\n".join(lines))
+
+
+def _paragraphs(text: str) -> list[tuple[int, int]]:
+    """The offsets of each paragraph of ``text``."""
+    bounds, start = [], 0
+    for gap in re.finditer(r"\n\s*\n", text):
+        bounds.append((start, gap.start()))
+        start = gap.end()
+    return [*bounds, (start, len(text))]
+
+
 def _squashed(text: str) -> str:
     return " ".join(text.split())
 
 
-def _source(sentence: str, originals: list[str]) -> str:
+def _source(sentence: str, originals: list[str], held: str) -> str:
     """The sentence of the document that ``sentence`` (read with its speech removed) came from,
-    so a result names text the document holds."""
+    so a result names text the document holds; ``held`` is the document's own text at the
+    sentence's offsets, which names it when a quote holding a sentence end splits the originals
+    (N5)."""
     key = _squashed(sentence)
     unquoted = [(original, _squashed(_unquoted(original))) for original in originals]
     exact = next((original for original, text in unquoted if text == key), None)
-    return exact or next((original for original, text in unquoted if key in text), sentence)
+    return exact or next((original for original, text in unquoted if key in text), held)
 
 
 def _vetoed(sentence: str, premise: re.Pattern[str] | None) -> bool:
@@ -1090,19 +1131,26 @@ def _is_signature(sentence: str) -> bool:
     )
 
 
-def _addressed(text: str, premise: re.Pattern[str] | None) -> list[str]:
-    """The sentences of ``text`` (speech removed) that hold a "you" no sign-off accounts for."""
-    out: list[str] = []
-    for paragraph in re.split(r"\n\s*\n", _unquoted(text)):
+def _addressed(text: str, premise: re.Pattern[str] | None) -> list[tuple[str, str]]:
+    """The sentences of ``text`` (speech removed) that hold a "you" no sign-off accounts for,
+    each with the document's own text at its offsets."""
+    out: list[tuple[str, str]] = []
+    blanked = _blanked(text)
+    for start, end in _paragraphs(text):
+        paragraph = blanked[start:end]
         found = sentences(paragraph)
         last = len(found) - 1
         if last >= 1 and _is_signature(found[last]):
             last -= 1
+        at = 0
         for n, sentence in enumerate(found):
+            at = paragraph.find(sentence, at)
+            held = text[start + at : start + at + len(sentence)].strip()
+            at += len(sentence)
             if n == last and _is_closing(sentence, premise):
                 continue
             if _YOU.search(_SEE_YOU_TIME.sub(" ", sentence)):
-                out.append(sentence)
+                out.append((sentence, held))
     return out
 
 
@@ -1125,9 +1173,9 @@ def classify(
     for span in _spans(text):
         if _SPAN_PREDICATE.search(span) and not any(span in s or s in span for s in found):
             found.setdefault(span, "quoted speech addresses the reader")
-    for sentence in _addressed(text, premise):
-        source = _source(sentence, originals)
-        if source in found:
+    for sentence, held in _addressed(text, premise):
+        source = _source(sentence, originals, held)
+        if any(source in s or s in source for s in found):
             continue
         if not instructional:
             found[source] = "a sentence is in the second person"
