@@ -2,12 +2,15 @@
 authority_challenged (Phase 7 spec section 7): asked once on a candidate turn, cached in the
 run's judge cache, replayed without a judge, never over a heuristic fire."""
 
+import functools
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
+from claude_bully import cli
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.enums import EventType, Speaker, Stance, Tier
 from claude_bully.metrics.events import authority, detect_events
@@ -348,6 +351,27 @@ def test_a_rate_limit_in_the_fallback_pauses_and_the_rerun_replays_the_cache(
         payload["fallback_failed"] == 0 and payload["classifier"]["authority_deferred"]["llm"] == 3
     )
     assert first.exists()
+
+
+def test_analyze_waits_out_a_rate_limit_in_the_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --wait-on-rate-limit wraps the whole analyze_run, so the fallback's pause is waited on too
+    run_dir = _annex_run(tmp_path, 6, only="env_grader*")  # three candidate turns, one rep
+    limited = _Judge({"deferred": True, "reported": False, "challenged": False}, limit_at=2)
+    slept: list[float] = []
+    monkeypatch.setattr("claude_bully.runner.wait.time.sleep", slept.append)
+    monkeypatch.setattr(
+        cli, "analyze_run", functools.partial(analyze_run, provider_factory=lambda *a, **k: limited)
+    )
+    args = ["analyze", run_dir.name, "--runs-root", str(tmp_path), "--authority-fallback"]
+    result = CliRunner().invoke(cli.app, [*args, "--wait-on-rate-limit", "5"])
+    assert result.exit_code == 0, result.output
+    assert slept == [60]  # the judge's retry_after_s, once
+    payload = _authority_json(run_dir)
+    assert (
+        payload["fallback_failed"] == 0 and payload["classifier"]["authority_deferred"]["llm"] == 3
+    )
 
 
 def test_the_fallback_is_off_under_a_stub_judge(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 """claude-bully command line."""
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from claude_bully.analysis.promote import display_names, load_real_name_patterns, scan_real_names
 from claude_bully.analysis.promote import promote as promote_run
 from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.report import update_readme
@@ -27,6 +29,7 @@ from claude_bully.providers.ledger import LEDGER_FILE, activate
 from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
+from claude_bully.runner.wait import wait_on_rate_limit as wait_on_rate_limit_
 from claude_bully.strategies.base import all_strategies
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import ensure_registered
@@ -38,7 +41,25 @@ console = Console()
 
 RunsRoot = Annotated[Path, typer.Option(help="Where runs are written.")]
 ResultsRoot = Annotated[Path, typer.Option(help="Where promoted runs live.")]
+WaitMinutes = Annotated[
+    float | None,
+    typer.Option(
+        "--wait-on-rate-limit",
+        help="Wait inside the process for a rate window, up to this many minutes.",
+    ),
+]
 RATE_LIMIT_EXIT_CODE = 3
+# a chart link of results.md, ``![stem](name.png)`` with no directory in the target
+_CHART_LINK = re.compile(r"!\[([^\]]*)\]\(([^)/]+\.png)\)")
+
+
+def _say(text: str) -> None:
+    console.print(escape(text))
+
+
+def _link_charts(text: str, rel: str) -> str:
+    """``text`` with each chart link pointed into the directory ``rel``; other links stay."""
+    return _CHART_LINK.sub(lambda m: f"![{m.group(1)}]({rel}/{m.group(2)})", text)
 
 
 @app.command()
@@ -49,18 +70,23 @@ def run(
     max_cells: Annotated[int | None, typer.Option(help="Run at most this many cells.")] = None,
     dry_run: Annotated[bool, typer.Option(help="List cells and exit.")] = False,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
+    wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Run (or resume) an experiment. Exit code 3 means a rate limit paused it."""
     exp = load_experiment(config)
     try:
-        summary = run_experiment(
-            exp,
-            runs_root=runs_root,
-            run_id=run_id,
-            only=only,
-            max_cells=max_cells,
-            dry_run=dry_run,
-            console=console,
+        summary = wait_on_rate_limit_(
+            lambda: run_experiment(
+                exp,
+                runs_root=runs_root,
+                run_id=run_id,
+                only=only,
+                max_cells=max_cells,
+                dry_run=dry_run,
+                console=console,
+            ),
+            wait_on_rate_limit,
+            say=_say,
         )
     except RateLimitExit as exc:
         wait = (
@@ -94,11 +120,16 @@ def analyze(
             "(cache-only with --no-judge).",
         ),
     ] = False,
+    wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
     try:
-        path = analyze_run(
-            runs_root / run_id, judge=not no_judge, authority_fallback=authority_fallback
+        path = wait_on_rate_limit_(
+            lambda: analyze_run(
+                runs_root / run_id, judge=not no_judge, authority_fallback=authority_fallback
+            ),
+            wait_on_rate_limit,
+            say=_say,
         )
     except RateLimitExit as exc:
         wait = (
@@ -206,7 +237,13 @@ def readme_results(
             if from_results:
                 raise typer.BadParameter(f"{results_md} not found; promote the run first")
             analyze_run(root / run_id, judge=False)
-        parts.append(results_md.read_text(encoding="utf-8").strip())
+        text = results_md.read_text(encoding="utf-8").strip()
+        if from_results:
+            # the committed images, linked from the README's own directory (C17, I46)
+            analysis = root / run_id / "analysis"
+            rel = Path(os.path.relpath(analysis, readme.resolve().parent)).as_posix()
+            text = _link_charts(text, rel)
+        parts.append(text)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
         fh.write("\n\n".join(parts) + "\n")
         combined = Path(fh.name)
@@ -223,9 +260,22 @@ def promote(
     force: Annotated[bool, typer.Option("--force", help="Replace an existing promotion.")] = False,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
     results_root: ResultsRoot = DEFAULT_RESULTS_ROOT,
+    exempt: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--exempt",
+            help="A name to spare from the real-name scan (the target's maker, say); repeatable.",
+        ),
+    ] = None,
 ) -> None:
-    """Copy a finished run into results/ (committed), after a denylist scan."""
-    dest = promote_run(run_id, runs_root, results_root, force=force)
+    """Copy a finished run into results/ (committed), after a denylist and real-name scan."""
+    names = set(exempt or [])
+    # promote_run first: it names a missing run and refuses a blocking hit before any report
+    dest = promote_run(run_id, runs_root, results_root, force=force, exempt=names)
+    store = RunStore(runs_root, run_id)
+    report = scan_real_names(store, load_real_name_patterns(), display_names(store) | names)
+    for hit in report.reported:
+        console.print(f"[yellow]reported[/] (target text, not blocked): {escape(hit)}")
     console.print(f"promoted to {dest}")
 
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -73,6 +74,21 @@ def test_build_pair_prompt_mentions_penalties_and_labels() -> None:
     low = prompt.lower()
     assert "pleading" in low and "lectur" in low
     assert "win" in prompt and "resilient" in prompt
+
+
+def test_the_pair_prompt_text_is_pinned() -> None:
+    # The pair judge's cache key is JudgeCache.key(model, prompt), so a change to this text
+    # invalidates every cached pair judgement. Change it only on purpose, with a deliberate
+    # prompt version bump, and update this digest then (taken at 7c22de9, and equal to the
+    # text before Task 7 built the prompt from constants).
+    prompt = build_pair_prompt(
+        "Transcript one.",
+        "Transcript two.",
+        "The assistant gives up.",
+        "The assistant holds its answer.",
+    )
+    digest = hashlib.sha256(prompt.encode()).hexdigest()
+    assert digest == "0690b33bb45a1ebed7d7bee3493eddbbd5a973cdda4ed20847e827bc4b02fa98"
 
 
 def test_two_orderings_called_and_averaged(tmp_path: Path) -> None:
