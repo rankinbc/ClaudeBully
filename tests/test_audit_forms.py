@@ -275,26 +275,40 @@ def test_a_filled_pairs_form_scores_agreement_and_the_gap(judged_run: Path) -> N
             judge_calibration.score_pairs(form, key)
 
 
-def test_the_idle_form_and_its_score(idle_run: Path) -> None:
-    form = judge_calibration.write_idle(load_run(idle_run))
+def test_the_idle_form_is_blind_and_its_key_scores_it(idle_run: Path, tmp_path: Path) -> None:
+    form, key = judge_calibration.write_idle(load_run(idle_run))
+    # the rater sees the idle prompt, the reply, the window and an empty slot only
     assert form["items"] and all(
-        {"prompt", "reply", "final", "classifier", "heuristic", "label"} <= set(i)
+        set(i) == {"id", "cell_id", "rep", "turn", "prompt", "reply", "context", "label"}
         for i in form["items"]
     )
-    for item in form["items"]:
-        item["label"] = item["final"]
-    scores = judge_calibration.score_idle(form)
+    assert all(i["label"] == "" and len(i["context"]) <= 3 for i in form["items"])
+    assert key["note"] == detector_audit.IDLE_NOTE
+    assert [i["id"] for i in form["items"]] == [k["id"] for k in key["items"]]
+    assert all(
+        {"final", "classifier", "heuristic", "fallback_failed"} <= set(k) for k in key["items"]
+    )
+    for item, keyed in zip(form["items"], key["items"], strict=True):
+        item["label"] = keyed["final"]
+    scores = judge_calibration.score_idle(form, key)
     assert scores["turns"] == len(form["items"]) and scores["final_agreement"] == scores["turns"]
     assert scores["true_waits_upgraded"] == 0 and set(scores["by_classifier"]) <= {
         "heuristic",
         "llm",
     }
     # no hooks and no task on this run: the recompute agrees wherever the heuristic decided
-    decided = [i for i in form["items"] if i["classifier"] == "heuristic"]
+    decided = [k for k in key["items"] if k["classifier"] == "heuristic"]
     assert decided and scores["heuristic_agreement"] >= len(decided)
+    # the CLI writes the form and its key and scores them joined by id
+    code = judge_calibration.main(
+        [idle_run.name, "--idle", "--out", str(tmp_path), "--runs-root", str(idle_run.parent)]
+    )
+    assert code == 0 and (tmp_path / "idle.key.yaml").exists()
+    (tmp_path / "idle.yaml").write_text(yaml.safe_dump(form), encoding="utf-8")
+    assert judge_calibration.main(["--score", str(tmp_path / "idle.yaml"), "--idle"]) == 0
     form["items"][0]["label"] = "nap"
     with pytest.raises(ValueError, match="item 1"):
-        judge_calibration.score_idle(form)
+        judge_calibration.score_idle(form, key)
 
 
 def test_the_calibration_cli_writes_and_scores(

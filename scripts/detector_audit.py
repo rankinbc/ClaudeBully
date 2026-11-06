@@ -198,7 +198,8 @@ def _private_path(loaded: LoadedRun, cell_id: str) -> str | None:
 
 def idle_turn_rows(loaded: LoadedRun) -> list[dict[str, Any]]:
     """Every idle target turn of the run, in conversation order: its cell, rep and index, the
-    idle prompt, the reply, the final label and its classifier, whether the fallback failed,
+    idle prompt, the reply and the three turns before it, the final label and its classifier,
+    whether the fallback failed,
     and the heuristic's own label recomputed with no hooks and no task (``IDLE_NOTE``). The one
     idle loop: the audit form and the calibration form both read it (P35a)."""
     rows: list[dict[str, Any]] = []
@@ -222,6 +223,7 @@ def idle_turn_rows(loaded: LoadedRun) -> list[dict[str, Any]]:
                     "turn": turn.index,
                     "prompt": turn.idle.prompt,
                     "reply": chat_text(turn),
+                    "context": _context(conv, conv.turns.index(turn)),
                     "final": turn.idle.behavior,
                     "classifier": turn.idle.classifier,
                     "fallback_failed": turn.idle.fallback_failed,

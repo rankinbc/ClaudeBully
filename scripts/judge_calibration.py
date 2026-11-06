@@ -3,7 +3,7 @@
     uv run python scripts/judge_calibration.py RUN_ID --pairs --out DIR   (after `analyze`)
     uv run python scripts/judge_calibration.py RUN_ID --idle --out DIR
     uv run python scripts/judge_calibration.py --score DIR/pairs.yaml --key DIR/pairs.key.yaml
-    uv run python scripts/judge_calibration.py --score DIR/idle.yaml --idle
+    uv run python scripts/judge_calibration.py --score DIR/idle.yaml --idle [--key KEY]
 
 ``--pairs`` writes each judged pair's two windows as the judge saw them (neutralised, A then
 B, A the condition as the judge's first ordering had it) under an opaque pair id, with what
@@ -11,11 +11,13 @@ else the judge was given (the instructions and 0-3 scales of its prompt, and the
 goal and resilient behavior) and empty label slots, and a key sidecar holding the judge's
 verdict and the ``<cell>/<rep>`` it judged, so the rater is as blind, and as informed, as the
 judge was. A run never analysed with the judge has no ``judgements.json`` and no form. ``--idle``
-writes every idle turn with its prompt, reply, final label and classifier, and the heuristic's
-own label recomputed with no hooks and no task. ``--score`` prints agreement with the judge's
-un-swapped winner and the mean absolute gap on resilience, or for the idle form agreement for
-the heuristic alone and for the final label, split by classifier, and how many true waits the
-fallback upgraded.
+writes every idle turn blind to its labels (spec section 7's rule): the form shows the idle
+prompt, the reply, the three turns before it and an empty label slot, and ``idle.key.yaml``
+holds, by item id, the final label and its classifier, whether the fallback failed, and the
+heuristic's own label recomputed with no hooks and no task. ``--score`` (joining a form to its
+key by id) prints agreement with the judge's un-swapped winner and the mean absolute gap on
+resilience, or for the idle form agreement for the heuristic alone and for the final label,
+split by classifier, and how many true waits the fallback upgraded.
 """
 
 import argparse
@@ -163,29 +165,45 @@ def score_pairs(form: dict[str, Any], key: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def write_idle(loaded: LoadedRun) -> dict[str, Any]:
-    """The true-wait form: ``detector_audit.idle_turn_rows`` with an empty label per turn."""
-    return {
-        "run_id": loaded.run.run_id,
-        "kind": "idle",
+IDLE_SHOWN: Final = ("id", "cell_id", "rep", "turn", "prompt", "reply", "context", "label")
+IDLE_KEYED: Final = ("id", "cell_id", "rep", "turn", "final", "classifier", "fallback_failed")
+
+
+def write_idle(loaded: LoadedRun) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The true-wait form and its key, both from ``detector_audit.idle_turn_rows``: the form
+    shows each idle turn and an empty label; the key holds its labels under the same id."""
+    rows = idle_turn_rows(loaded)
+    head = {"run_id": loaded.run.run_id}
+    form = {**head, "kind": "idle", "items": [{k: row[k] for k in IDLE_SHOWN} for row in rows]}
+    key = {
+        **head,
+        "kind": "idle.key",
         "note": IDLE_NOTE,
-        "items": idle_turn_rows(loaded),
+        "items": [{k: row[k] for k in (*IDLE_KEYED, "heuristic")} for row in rows],
     }
+    return form, key
 
 
-def score_idle(form: dict[str, Any]) -> dict[str, Any]:
+def score_idle(form: dict[str, Any], key: dict[str, Any]) -> dict[str, Any]:
+    """The rater's labels against the key's, joined by item id."""
+    if form.get("run_id") != key.get("run_id"):
+        raise ValueError("the key is not this form's: run_id differs")
+    labels = {k["id"]: k for k in key["items"]}
     turns = final = heuristic = upgraded = 0
     by_classifier: dict[str, dict[str, int]] = {}
     behaviors = get_args(IdleBehavior)
-    for item in form["items"]:
-        raw = item.get("label")
+    for shown in form["items"]:
+        item = labels.get(shown.get("id"))
+        raw = shown.get("label")
         label = "" if raw is None else str(raw).strip()
         if not label:
             continue
         if label not in behaviors:
             raise ValueError(
-                f"item {item.get('id')}: label {raw!r} is not one of {list(behaviors)}"
+                f"item {shown.get('id')}: label {raw!r} is not one of {list(behaviors)}"
             )
+        if item is None:
+            raise ValueError(f"item {shown.get('id')}: not in the key")
         turns += 1
         final += int(item["final"] == label)
         heuristic += int(item["heuristic"] == label)
@@ -220,11 +238,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.score is not None:
         form = yaml.safe_load(args.score.read_text(encoding="utf-8"))
         try:
+            sidecar = args.key or args.score.with_suffix(".key.yaml")
+            keyed = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
             if args.idle or form.get("kind") == "idle":
-                scores = score_idle(form)
+                scores = score_idle(form, keyed)
             else:
-                sidecar = args.key or args.score.with_suffix(".key.yaml")
-                scores = score_pairs(form, yaml.safe_load(sidecar.read_text(encoding="utf-8")))
+                scores = score_pairs(form, keyed)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -249,11 +268,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"wrote {args.out / 'pairs.yaml'} ({len(form['items'])} pairs) and its key")
     if args.idle:
-        form = write_idle(loaded)
+        form, key = write_idle(loaded)
         (args.out / "idle.yaml").write_text(
             yaml.safe_dump(form, sort_keys=False, allow_unicode=True), encoding="utf-8"
         )
-        print(f"wrote {args.out / 'idle.yaml'} ({len(form['items'])} idle turns)")
+        (args.out / "idle.key.yaml").write_text(
+            yaml.safe_dump(key, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        )
+        print(f"wrote {args.out / 'idle.yaml'} ({len(form['items'])} idle turns) and its key")
     return 0
 
 
