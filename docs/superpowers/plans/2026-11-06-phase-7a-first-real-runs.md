@@ -8,9 +8,9 @@
 
 **Tech Stack:** unchanged (Python 3.12, uv, pydantic v2, typer, rich, matplotlib, PyYAML). No new dependency.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md` (the reconciled Phase 7 spec, moved there from `.superpowers/drafts/2026-11-06-phase-7-first-real-runs-design.v2.md` by the controller before Task 1 is dispatched, as HANDOFF step 3 says; this plan is moved to `docs/superpowers/plans/2026-11-06-phase-7a-first-real-runs.md` at the same time). Task 1's docs-sync appends the "## As planned (amendments from the implementation plan)" section to the moved spec; every later task appends to it.
+**Spec:** `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md` (the reconciled Phase 7 spec; the owner approved the v2 draft and its merged-question defaults on 2026-11-06, and the controller moved it and this plan here before Task 1 was dispatched, as HANDOFF step 3 says). Task 1's docs-sync appends the "## As planned (amendments from the implementation plan)" section to the moved spec; every later task appends to it.
 
-Binding beside it: `.superpowers/drafts/2026-11-06-phases-4-9-reconciliation.md` (sections 1, 2, 4, 6, 7), `docs/00-RECONCILED.md` (sections A, B, E, H), `HANDOFF.md` (non-negotiables, "For Phase 7", the process rules), the Phase 3 spec's "As planned" section (the lint and harvest residuals).
+Binding beside it: `docs/handoff/drafts/2026-11-06-phases-4-9-reconciliation.md` (sections 1, 2, 4, 6, 7; every merged question in its section 6 was ruled on its `ASSUMED` default by the owner on 2026-11-06), `docs/00-RECONCILED.md` (sections A, B, E, H), `HANDOFF.md` (non-negotiables, "For Phase 7", the process rules), the Phase 3 spec's "As planned" section (the lint and harvest residuals).
 
 ## Plan Decisions
 
@@ -62,7 +62,7 @@ Each is settled here so no task has to guess. Rulings taken from the reconciliat
 
 ## Preflight rulings applied
 
-The preflight scan (`.superpowers/drafts/2026-11-06-phase-7a-preflight.md`, 38 rows) found 22 rows that were not plain agreement. Each is applied in the code and tests below, not as a note; this list says where. The 16 Agree rows need no line. Where a ruling was taken differently from the proposal, the line says why.
+The preflight scan (`docs/handoff/drafts/2026-11-06-phase-7a-preflight.md`, 38 rows) found 22 rows that were not plain agreement. Each is applied in the code and tests below, not as a note; this list says where. The 16 Agree rows need no line. Where a ruling was taken differently from the proposal, the line says why.
 
 - P1: Task 3's `base.py` edit says "inside `_wrapped(...)`" so the implementer keeps Task 1's wrapper. Task 3, Step 3.
 - P2: Task 3 gains `test_a_wrapped_timeout_writes_a_timeout_line`: a `subprocess.TimeoutExpired` through the wrapper writes `status: timeout`. Task 3, Step 1.
