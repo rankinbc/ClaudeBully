@@ -30,7 +30,7 @@ class RoleConfig(_Strict):
     command: list[str] | None = None
     reasoning: Literal["expose", "hide", "provider_default"] = "provider_default"
     # claude_code only: seconds one call may take; None means the provider's default (600)
-    timeout_s: float | None = None
+    timeout_s: float | None = Field(default=None, gt=0)
 
 
 class ConditionConfig(_Strict):

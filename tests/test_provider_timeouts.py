@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
@@ -34,6 +35,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[s
     monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     monkeypatch.delenv("FAKE_CLAUDE_TOOL_CALL", raising=False)
+    monkeypatch.delenv("MCP_TOOL_TIMEOUT", raising=False)
     return [sys.executable, str(FAKE)], log
 
 
@@ -48,6 +50,9 @@ def test_the_role_timeout_reaches_the_provider(tmp_path: Path) -> None:
     bounded = build_provider(role, tmp_path)
     assert isinstance(bounded, ClaudeCodeProvider) and bounded.timeout_s == 42.5
     assert bounded.mcp_tool_timeout_s == DEFAULT_MCP_TOOL_TIMEOUT_S
+    for bad in (0, -1):
+        with pytest.raises(ValidationError, match="greater than 0"):
+            RoleConfig(provider=ProviderKind.claude_code, model="m", timeout_s=bad)
 
 
 def test_the_child_environment_is_clean_and_carries_the_tool_timeout(
@@ -87,7 +92,12 @@ def test_the_resolved_model_is_read_from_the_result(
     provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
     out = provider.complete("c", "S", [Message(role="user", content="hi")])
     assert out.model == "sonnet" and out.resolved_model == "stub-sonnet-20260101"
-    assert resolved_model({"modelUsage": {"x-1": {}, "y-2": {}}}) == "x-1"
+    # a helper model listed first does not name the call: the most output tokens does
+    helper_first = {"helper-1": {"outputTokens": 3}, "main-2": {"outputTokens": 40}}
+    assert resolved_model({"modelUsage": helper_first}) == "main-2"
+    tie = {"a-1": {"outputTokens": 5}, "b-2": {"outputTokens": 5}}
+    assert resolved_model({"modelUsage": tie}) == "a-1"  # a tie: the first
+    assert resolved_model({"modelUsage": {"x-1": {}, "y-2": {}}}) == "x-1"  # no tokens: the first
     assert resolved_model({"model": "z-3"}) == "z-3"
     assert resolved_model({}) is None
 
@@ -117,16 +127,23 @@ def test_the_stream_reports_whether_a_thinking_block_was_seen(
         "d", "S", [Message(role="user", content="go")], tools=[TOOL_SPECS["web_search"]]
     )
     assert provider.thinking_seen is False  # no call, no thinking block
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
+    with pytest.raises(ProviderError):
+        provider.complete(
+            "e", "S", [Message(role="user", content="go")], tools=[TOOL_SPECS["web_search"]]
+        )
+    assert provider.thinking_seen is None  # a failed stream says nothing
 
 
 def test_a_login_error_is_a_provider_error_naming_the_login(
     tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     command, _ = fake_claude
-    monkeypatch.setenv("FAKE_CLAUDE_MODE", "login_error")
     provider = ClaudeCodeProvider(model="m", state_dir=tmp_path, command=command)
-    with pytest.raises(ProviderError, match="not logged in"):
-        provider.complete("c", "S", [Message(role="user", content="hi")])
+    for mode in ("login_error", "login_error_exit"):  # the fake exits 0, then 1
+        monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+        with pytest.raises(ProviderError, match="not logged in"):
+            provider.complete(mode, "S", [Message(role="user", content="hi")])
 
 
 def test_the_structured_reply_can_be_scripted(

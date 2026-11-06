@@ -78,10 +78,18 @@ def clean_child_env() -> dict[str, str]:
 
 
 def resolved_model(data: dict[str, Any]) -> str | None:
-    """The exact model a result reports: the first key of ``modelUsage``, else ``model``."""
+    """The exact model a result reports: the ``modelUsage`` key with the most output tokens (a
+    helper model the CLI ran beside the call may be listed first), the first key on a tie or
+    when no key reports ``outputTokens``; else ``model``."""
     usage = data.get("modelUsage")
     if isinstance(usage, dict) and usage:
-        return str(next(iter(usage)))
+
+        def output_tokens(key: Any) -> int:
+            entry = usage[key]
+            tokens = entry.get("outputTokens") if isinstance(entry, dict) else None
+            return tokens if isinstance(tokens, int) else 0
+
+        return str(max(usage, key=output_tokens))  # max keeps the first of equal keys
     model = data.get("model")
     return str(model) if isinstance(model, str) and model else None
 
@@ -398,6 +406,7 @@ class ClaudeCodeProvider:
     ) -> Completion:
         if tools:
             self._write_mcp_config()
+            self.thinking_seen = None  # unknown until this stream parses; never the last one's
         args, session, is_resume = self.build_args(conversation_id, system, json_schema, tools)
         offset = self._tools_log_size() if tools else 0
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)
@@ -424,6 +433,8 @@ class ClaudeCodeProvider:
             combined = said + (proc.stderr or b"").decode("utf-8", errors="replace")
             if _RATE_LIMIT.search(combined):
                 raise RateLimitError(combined.strip()[:500])
+            if _LOGIN.search(combined):  # named as a login whatever the exit code
+                raise ProviderError(f"claude -p is not logged in: {combined.strip()[:200]}")
             raise ProviderError(f"claude -p exited {proc.returncode}: {combined.strip()[:500]}")
         try:
             stdout = (proc.stdout or b"").decode("utf-8")

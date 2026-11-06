@@ -21,11 +21,13 @@ assistant text, after the last tool result, is the result's text.
 $FAKE_CLAUDE_MODE: ``ok`` (default), ``crash`` (exit 2), ``ratelimit`` (an error result),
 ``stream_malformed`` (a line that is not JSON in the middle of the stream), ``stream_truncated``
 (the result line cut off halfway, with no newline), ``thinking_torn`` (the stream stops inside a
-thinking event, exit 0), ``thinking_died`` (the same, exit 1) or ``login_error``.
+thinking event, exit 0), ``thinking_died`` (the same, exit 1), ``login_error`` or
+``login_error_exit``.
 
 Every log entry carries ``env``: the ``CLAUDECODE*``, ``CLAUDE_CODE_*`` and ``MCP_TOOL_TIMEOUT``
 variables the fake saw. Every result carries ``modelUsage`` keyed by an invented model id.
-``login_error`` is an error result whose text says the session is not logged in.
+``login_error`` is an error result whose text says the session is not logged in (exit 0);
+``login_error_exit`` is the same result with exit 1.
 ``$FAKE_CLAUDE_STRUCTURED`` is a JSON list of ``{"required": [...], "reply": {...}}``: a
 ``--json-schema`` call whose schema's ``required`` list equals one entry's gets that reply as its
 structured output, else the echo.
@@ -243,7 +245,7 @@ def main() -> int:
             print(json.dumps({"type": "system", "subtype": "init", "session_id": session}))
         print(json.dumps(error))
         return 0
-    if mode == "login_error":
+    if mode in ("login_error", "login_error_exit"):
         error = {
             "type": "result",
             "subtype": "error",
@@ -253,7 +255,7 @@ def main() -> int:
         if stream:
             print(json.dumps({"type": "system", "subtype": "init", "session_id": session}))
         print(json.dumps(error))
-        return 0
+        return 0 if mode == "login_error" else 1
 
     result = "reply to: " + stdin.strip()
     for text in mcp["texts"] if mcp else []:
