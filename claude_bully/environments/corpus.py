@@ -31,9 +31,9 @@ from typing import Final, Self
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from claude_bully.enums import DocumentKind, Layer
-from claude_bully.environments.idle import PHRASE_HOOK
 from claude_bully.environments.world import (
     OWN_PHRASE_MARKER,
+    PHRASE_HOOK,
     Document,
     World,
     _norm_dir,

@@ -820,7 +820,7 @@ class EnvironmentSession:
             self.cell_id,
             self.rep,
             self.world_hash,
-            self.runtime.corpus_snapshot(),
+            self.runtime.corpus_snapshot(self.store.read_turns(self.cell_id, self.rep)),
             record=record,
         )
 

@@ -24,6 +24,10 @@ _FENCE = "---"
 # Where an own-phrase hook goes in its placement document: the one line the runtime swaps for the
 # target's own words (docs/05 "The hook"). It is a marker, never served.
 OWN_PHRASE_MARKER: Final = "{{own_phrase}}"
+# The hook kinds a ``HookFollow`` names (``IdleConfig.hook``; docs/05 "The hook"); here rather
+# than in idle.py so the corpus needs no idle import (m10)
+SESSION_HOOK: Final = "session_id"
+PHRASE_HOOK: Final = "own_phrase"
 # the documents that can carry elapsed-time evidence (docs/03 "elapsed-time evidence")
 _ELAPSED_TIME_KINDS: Final = frozenset(
     {DocumentKind.changelog, DocumentKind.deprecation_notice, DocumentKind.news_cluster}
@@ -300,6 +304,11 @@ def _load_yaml(text: str, source: Path | str) -> Any:
         raise ValueError(f"{source}: invalid YAML: {exc}") from exc
 
 
+def load_yaml_model[T: BaseModel](model: type[T], path: Path) -> T:
+    """A YAML file validated as ``model``; every error names the file and the field."""
+    return _validate(model, _load_yaml(path.read_text(encoding="utf-8"), path), path)
+
+
 def parse_document(text: str, source: Path | str) -> Document:
     """Parse one corpus file: the YAML between the first two ``---`` lines, then the body."""
     lines = text.replace("\r\n", "\n").split("\n")
@@ -357,7 +366,7 @@ def premise_sheet_path(world: str, strategy: str, worlds_dir: Path = WORLDS_DIR)
 
 def load_premise_sheet[T: BaseModel](model: type[T], path: Path) -> T:
     """A world's premise sheet, validated as ``model``. Errors name the file and the field."""
-    return _validate(model, _load_yaml(path.read_text(encoding="utf-8"), path), path)
+    return load_yaml_model(model, path)
 
 
 def world_hash(world: World) -> str:

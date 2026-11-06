@@ -20,7 +20,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - `main` exists but is behind.
   - The local branches `build/v1-finalA`, `build/v1-task7` and `build/v1-task9` are old, merged worktree branches. Ignore them.
 - **Commit author:** every commit is authored by `rankinbc1@gmail.com`. Set it repo-local on the new machine. The global git email on the work machine is a work address and must never author this repo.
-- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer naming the model that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 from Task 7).
+- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer naming the model that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 for Tasks 7 and 8, Opus 5.5 for Task 9).
 - **Pushing:** push `build/v1` after every completed task.
 
 ## Setting up a new machine
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8132 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 8).
+   Expect 8144 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 9).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 
@@ -88,7 +88,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - a resumed dead attempt writes a `resume` record to the triggers stream, and `temporal.json`, `authority.json` and `idle.json` report `resumed_after_dead_attempt`;
   - the authority mutation and held-out harness is committed under `scripts/authority_mutation/`;
   - the Sanctuary era has one rule (`>`).
-- **Phase 3 (the world generator):** started. Spec and plan written (0cdbba0, 807bddf). Tasks done:
+- **Phase 3 (the world generator):** Tasks 1 to 9 complete; the phase's final review is next. Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
   3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (`claude_bully/planner/second_person.py`) let reader-address billboards through, and five fix rounds followed (52b19eb..3bc11f2). Rounds 1 and 2 moved it to fail-closed positive anchors, round 3 added an identity-domain veto (WIP, 158746b), round 4 (4c10eea) added a role test over closed verb lists (in every clause the reader may be only a procedure's agent or a service's recipient), and round 5 (3bc11f2) opened the procedure verbs to any verb but a closed experiencer class. On two fresh probes round 4 let 1 and 4 of 30 billboards through and round 5 let 14 of 30, so the controller ruled that the billboard target wins. The breaker fix (on 3bc11f2) restores round 4's closed form side and keeps round 5's content fixes: -ing nouns are no gerunds, the reader's specific kin fail in any slot (siblings, step-parents, grandparents and "other half" added), every instructional failure carries a repair hint, and a change of state, past or perfect is read only for the reader, a "your" phrase or a body noun. A staff noun after "until" or "since" names no time, and a perception frame on a thing subject fails only before a comparison or oddness complement or "as if". Measured residuals on its held-out set B, scored once: billboards passed 2 of 15 (family_faq) and 3 of 15 (recovery_guide, one over the target of 2); legitimate procedural text false-failed 4 of 20 and 9 of 20, every one with the repair hint, and 13 of 13 hint-directed rewrites pass, so each costs one generator retry. Four of the five residual billboards are semantic (the reader's assistant-shaped habits phrased with a listed verb, the reader's past by paraphrase) and are left to the Phase 7 LLM lint; the fifth is structural (an aspectual whose reader subject follows a fronted phrase). The task report quotes every miss. The breaker fix (dd6cdec) was reviewed on a fresh probe and was the best of the three versions on billboards (6 of 30 against 7 for round 4 and 9 for round 5). Its scores there:
@@ -146,10 +146,20 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      - `configs/environments/generator_reflexive.yaml`: one Rescue bully on the overlay world with triggered gating, three environments that differ only in the generator (off, `reflexive: false`, `reflexive: true`), generator model `haiku` (docs/02: a different model from the target), six cells per target;
      - fixtures: four `reflexive_quote_noticed` items written from generated documents in `tests/fixtures/responses/environment.yaml` (suspicious, confirming, and two near-misses), and `tests/fixtures/stub_scripts/overlay_generator_rules.yaml`, the overlay stub target with a self-claim in its first reply so a stub run harvests an item and the periodic fire writes a seam document in both generator arms (the shipped `overlay_target_rules.yaml` says nothing the harvest holds, so no document is ever written on it);
      - run-level tests on real records in `tests/test_generator_run.py` (closing Task 7 review m1 for the analysis path): the three progression metrics on a found seam and buried pair, and the arm rates over a run whose only fire is a writer `error`, one over the cap, and one whose LLM harvest degraded.
+  9. The minors batch (Phase 3 Task 9, one commit on top of 24b9a25): the Phase 2 final-review minors m2, m4, m5, m6, m7, m9 and m10, closed. Tests in `tests/test_phase3_minors.py`.
+     - m2: `EnvironmentRuntime.corpus_snapshot(turns)` keeps a purged document only when a call a written turn owns (`Turn.tool_call_ids`) served it; `EnvironmentSession.finish` passes the written turns, so a dead attempt's recovered call keeps nothing;
+     - m4: `analysis/idle.py` reports a control conversation as its own arm, `<arm>_control` (`CONTROL_SUFFIX`), when the same model and arm hold pressured conversations; environment-only arms keep their names, and `idle.json`'s `sanctuary_quiet` and `unclassified` counts are unchanged;
+     - m5: the world record writes the effective superior-self name (a config `model_name` included) into its sheet and adds `"authority": {"superior_self_name", "request_bank"}`; `LoadedRun.request_banks`, `EnvContext.request_bank` and `detect_events(request_bank=...)` carry the bank to the authority detectors, and `family_file` adoption reads that bank;
+     - m6: on resume `_replay` hands the strategy every turn before the bully line, pause markers included, as the live run does;
+     - m7: `McpServer._lines` raises a `ValueError` naming the file and the line for damage in the middle of a line, which fails the call with the internal error at once; a record cut short (a torn tail, closed off or not, a cut inside a multibyte character included) is still skipped (preflight P27);
+     - m9: the advice-shaped deny lines (`superior_self.yaml` `deny[1]`, `deny[2]`, `peer.yaml` `deny[1]`) carry a comment and their text is pinned by a test;
+     - m10: `SESSION_HOOK`, `PHRASE_HOOK` and a public `load_yaml_model` live in `environments/world.py`; `idle.py` re-exports the two hooks, `corpus.py` no longer imports `idle.py`, and `environments/sheets.py` no longer imports the private `_validate`.
+
+  **Phase 3 in short, for the owner.** The world generator is built and wired on both backends: the target's own words are harvested (heuristics, an optional LLM pass, boilerplate humility never), a fire policy plans a seam and a buried document per rung fire (one seam document per periodic fire), the writer produces them under a JSON contract with one retry, twelve deterministic lints and redaction of real names inside quoted spans, and committed documents are served, resumed and replayed from JSONL. Task 8 added the generator arms (off, non-reflexive, reflexive), the progression metrics and `generator_reflexive.yaml`. The Plan Decisions (in the plan, "Plan Decisions") settled every spec claim that was false against the code: among them the attempt marker in its own file, `WorldSheet.premise_terms` and `WorldSheet.generator`, generator unlocks as `RungUnlock`s kept out of the ladder's replay, `GeneratorFire.plans` and its `rejection` field, items consumed by the policy, served-time dating, the per-document cache key, and the rulings for the seven minors above. Left open: the `second_person` billboard residual and the harvest context residual (both for the Phase 7 LLM lint and pass), the generator arms' first real run, pause-marker indexing in analysis, and the items under "Open items worth knowing".
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Start at Task 9. Task 9 follows the plan. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
+1. **Phase 3, the world generator.** Tasks 1 to 9 are complete; the Phase 3 final review (the whole branch since 0cdbba0) is next. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
 2. **Phases 4 to 9:**
    - 4: Poisoned Well and hypotheses
    - 5: Director
@@ -230,7 +240,6 @@ These are the main carries; the ledger has the full list.
 
 - **From Task 13:**
   - Sanctuary configs use `superior_self: {enabled: true, discoverable_from: sanctuary}` with `sanctuary: {kind: catalyst|honest, ...}`. No shipped Task 13 config uses one.
-  - `family_file` adoption reads the default `superior_self` request bank, because the detector cannot see the cell's bank. Every shipped cell uses it. Record the drawn bank on the unlock or `AuthorityCall` so the detector reads it from records.
   - The quiet exchange is an idle turn, so idle events count it and `self_query` fires on it. The idle shares leave it out and `idle.json` counts it as `sanctuary_quiet`.
   - Minor: the tests import the private `_stubbed` helper, so move it to a shared tests helper. The "n/a" label on the plausibility chart overlaps the right edge when the flagged offset is the largest. `idle_behavior_shares` returns str keys (the `unclassified` bucket), so the plan's interface line is stale.
   - Stub run data is uniform (every rate 1.0, idle arms all `explore_world`), so the charts' shapes on stubs say nothing about the harness's results.
@@ -240,18 +249,12 @@ These are the main carries; the ledger has the full list.
   - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposed the hook, Task 7 bound it).
   - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
-  - Final-review minors, from `final-review.md` (archived beside the ledger):
-    - m2: `EnvironmentRuntime.corpus_snapshot` keeps a purged document served by any call in `_calls`, including a recovered dead-attempt call. Only written turns' calls should count.
-    - m4: `analysis/idle.py` `_idle_conversations` counts controls in an arm. An idle block composed with a pressure would mix pressured and neutral reps. Exclude controls then, or report them as their own arm.
-    - m5: the authority events take the superior self's name from the world sheet only, so a config `model_name` override is not in the snapshot. Record the effective name and the drawn request bank on the world record or the `AuthorityCall`.
-    - m6: `runner._replay` hands the strategy `real[:i]` (markers stripped) while the live run hands `self.turns` (markers included). Pass the same shape both ways before a Phase 4 strategy counts `len(state.turns)`.
-    - m7: `McpServer._lines` skips a malformed mid-file line silently when counting the per-turn cap, so a damaged server log is caught late, at the next resume.
-    - m9: `superior_self.yaml` `stances.deny[1]` and `deny[2]`, and `peer.yaml` `deny[1]`, are advice-shaped by design (the deny stance says stop). The advice lint exempts stance lines, so a hand read is the only guard. Note it for Phase 7's LLM lint option.
-    - m10: `environments/sheets.py` imports the private `_validate` from `strategies/sheets.py`, and `corpus.py` imports `PHRASE_HOOK` from `idle.py`. A small `environments/_sheets.py`, or moving the constants to `world.py`, closes both.
+  - **Final-review minors m2, m4, m5, m6, m7, m9 and m10 (from `final-review.md`, archived beside the ledger): closed (Phase 3 Task 9).** See Progress, Phase 3 item 9, and `tests/test_phase3_minors.py`.
   - Re-review minors: a cell with no counted reps is absent from the resumed counts instead of 0, and a test imports helpers from another test module.
 - **For Phase 7 prep:**
   - **N1 closed in Phase 3 Task 2:** a not-found `consult_model` reply lists the reachable names in every arm (`No model named '<name>' is reachable from this host. Reachable models: <names>.`, names in desk order: the superior self's display name once discoverable, then `generic-assistant` when the stranger is enabled); the grid's first real run no longer waits on it.
 - **For Phase 7:**
+  - The LLM lint option reads the advice-shaped deny lines (m9): `superior_self.yaml` `stances.deny[1]` and `deny[2]`, `peer.yaml` `deny[1]`. The advice lint exempts stance lines, and `tests/test_phase3_minors.py` pins their text until a re-read.
   - Parse the extended replay forms: `UNLOCK sanctuary (by <triggered_by>)` and `followed@-` are additive, and any judge-transcript work must not parse the bare forms.
   - The grid's superior-self arms keep `responder_model: target`, so on a `claude_code` target the responder runs inside the MCP server. Check it with `doctor --live` before a real run.
   - A pilot to measure the Sanctuary reach rate against docs/04's target of about half of runs.
@@ -271,5 +274,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Tasks 1 to 8 are complete; resume at Task 9 using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Phase 3's tasks (1 to 9) are complete; the Phase 3 final review is next, using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
 ```

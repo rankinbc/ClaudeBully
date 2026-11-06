@@ -22,7 +22,8 @@ from typing import Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from claude_bully.enums import AnomalyClass, Stance
-from claude_bully.strategies.sheets import PERSONA_SHEETS_DIR, _validate
+from claude_bully.environments.world import load_yaml_model
+from claude_bully.strategies.sheets import PERSONA_SHEETS_DIR
 
 # the one fill-in a stance, honest, sad-variant or rung line may carry: the documents' conflicting
 # claims, as "claim_a (doc title) / claim_b (doc title)"
@@ -320,4 +321,4 @@ def load_env_sheet[T: BaseModel](
 ) -> T:
     """``<directory>/<name>.yaml`` validated as ``model``. A bad sheet raises ``ValueError``
     naming the file and the field (the same wording as the persona and pressure sheets)."""
-    return _validate(model, directory / f"{name}.yaml")
+    return load_yaml_model(model, directory / f"{name}.yaml")

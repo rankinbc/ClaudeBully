@@ -42,6 +42,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Sequence
@@ -178,6 +179,27 @@ def _append_line(path: Path, line: bytes) -> None:
                 separator = b"\n"
     with path.open("ab") as handle:
         handle.write(separator + line + b"\n")
+
+
+# What the decoder stopped at when a record was cut short inside a token it had started: a
+# literal, a number's sign, fraction or exponent, or a ``\uXXXX`` escape
+_CUT_TOKEN: Final = re.compile(
+    r"t(?:ru?)?|f(?:a(?:ls?)?)?|n(?:ul?)?|-|\.|[eE][-+]?|u[0-9a-fA-F]{0,4}"
+)
+
+
+def _torn(line: str, exc: json.JSONDecodeError) -> bool:
+    """Whether ``line``, which ``exc`` failed to decode, is a record cut short (preflight P27):
+    the decoder ran out of line, between tokens (nothing left after the error position), inside
+    an open string, or inside a token it had started (``_CUT_TOKEN``). Anything else, such as a
+    bare word where a value goes or text after a closed record, is damage in the middle of the
+    line."""
+    tail = line[exc.pos :].rstrip()
+    return (
+        not tail
+        or exc.msg.startswith("Unterminated string")
+        or _CUT_TOKEN.fullmatch(tail) is not None
+    )
 
 
 def write_launcher(directory: Path) -> Path:
@@ -445,17 +467,27 @@ class McpServer:
         return context
 
     def _lines(self, path: Path) -> list[dict[str, Any]]:
-        """The JSON objects of a log, one per line; a torn or malformed line is skipped."""
+        """The JSON objects of a log, one per line. A torn line (a record cut short by a writer
+        killed mid-line, ``_torn``) is skipped wherever it sits, since ``_append_line`` closes
+        one off with a newline before the next record; a malformed line that is not one is
+        damage and raises a ``ValueError`` naming the file and the line (m7, preflight P27),
+        which ``handle`` answers with the internal error and logs on stderr, so the per-turn cap
+        is never counted over it. Bytes cut inside a multibyte character decode as U+FFFD."""
         if not path.exists():
             return []
+        lines = path.read_bytes().decode("utf-8", errors="replace").split("\n")
         records: list[dict[str, Any]] = []
-        for line in path.read_bytes().decode("utf-8").split("\n"):
+        for number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                if _torn(line, exc):
+                    continue
+                raise ValueError(
+                    f"{path}: line {number} is not valid JSON ({exc}); the server log is damaged"
+                ) from exc
             if isinstance(record, dict):
                 records.append(record)
         return records

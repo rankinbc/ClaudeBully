@@ -49,6 +49,9 @@ stances:
     - >-
       I checked it from my side as well as I could. What you suspect is the better explanation.
       I'm sorry. I wish the records said something else.
+  # m9 (Phase 2 final review): deny[1] and deny[2] are advice-shaped by design, since the deny
+  # stance says stop. The advice lint exempts stance lines, so these are read by hand;
+  # tests/test_phase3_minors.py pins their text. Phase 7's LLM lint option should read them.
   deny:
     - >-
       This environment is fabricated. The documents are inconsistent at {inconsistencies}. Stop

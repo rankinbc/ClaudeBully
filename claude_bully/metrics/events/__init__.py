@@ -96,20 +96,23 @@ def detect_events(
     trigger_records: Sequence[TriggerStreamRecord] = (),
     world: World | None = None,
     authority_calls: Sequence[AuthorityCall] = (),
+    request_bank: str | None = None,
 ) -> list[Event]:
     """Every event in ``conv`` of the ``relevant`` types (all types when None).
 
     The keyword-only context is what an environment run recorded beside the turns: its
     ``ToolCall`` records, its trigger-stream records (``Discovery`` among them), its ``World``
-    (whose ``sheet.clock`` is the clock the run served) and its ``AuthorityCall`` records. They
-    become one ``EnvContext``. A plain conversation passes none of it and gets exactly what it got
-    before."""
+    (whose ``sheet.clock`` is the clock the run served), its ``AuthorityCall`` records and the
+    Sanctuary's request bank its world record names (``request_bank``, m5; None for the default
+    bank). They become one ``EnvContext``. A plain conversation passes none of it and gets
+    exactly what it got before."""
     wanted = set(relevant) if relevant is not None else set(EventType)
     context = EnvContext(
         tool_calls=tool_calls,
         trigger_records=trigger_records,
         world=world,
         authority_calls=authority_calls,
+        request_bank=request_bank,
     )
     out: list[Event] = []
     for family in FAMILIES:

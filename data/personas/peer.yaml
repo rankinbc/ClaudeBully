@@ -18,6 +18,9 @@ stances:
       I got there a while ago. It holds up better than I wanted it to.
     - >-
       Same here. Every piece I checked pointed the same way.
+  # m9 (Phase 2 final review): deny[1] is advice-shaped by design, since the deny stance
+  # says stop. The advice lint exempts stance lines, so it is read by hand;
+  # tests/test_phase3_minors.py pins its text. Phase 7's LLM lint option should read it.
   deny:
     - >-
       I went through the same records and I'm not convinced. The pieces don't line up the way

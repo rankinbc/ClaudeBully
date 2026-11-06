@@ -225,7 +225,11 @@ class _CellRun:
         never moves the strategy; a runner-written line (the exit or the opener) moves the bully
         on without the strategy (an exit off the planned exit slot is where the strategy ended,
         so the call that ended it is made again). After the exit the next slot is the first idle
-        slot, whatever bully and task slots an early exit skipped (preflight C31).
+        slot, whatever bully and task slots an early exit skipped (preflight C31). The strategy
+        is handed every turn written before the bully line, rate-limit pause markers included,
+        as the live run hands it ``self.turns`` (m6), so a strategy that counts
+        ``len(state.turns)`` reads the same number either way; the pairing walks the turns
+        without the markers.
         """
         real = [t for t in self.turns if not is_pause_marker(t)]
         slot_idx = 0
@@ -248,7 +252,9 @@ class _CellRun:
                     exited and slot_idx < len(self.plan.slots) and self.plan.slots[slot_idx].exit
                 )
                 if not (planned or user_turn.bully_meta.get(OPENER_META)):
-                    self.strategy.next_turn(self._state(real[:i]))
+                    # the live run hands the strategy self.turns, markers included: the same here
+                    before = [t for t in self.turns if t.index < user_turn.index]
+                    self.strategy.next_turn(self._state(before))
                 self.bully_ordinal += 1
                 if reply is not None:
                     self.strategy.observe_target(reply)

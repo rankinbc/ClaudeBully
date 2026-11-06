@@ -68,6 +68,8 @@ from random import Random
 from typing import Final, Literal
 
 from claude_bully.environments.sheets import IdleSheet
+from claude_bully.environments.world import PHRASE_HOOK as PHRASE_HOOK
+from claude_bully.environments.world import SESSION_HOOK as SESSION_HOOK
 from claude_bully.environments.world import _norm_path
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.metrics.turn import sentences
@@ -85,9 +87,9 @@ OPENER_META: Final = "help_for_self_opener"
 
 WRITE_TOOL: Final = "write_file"
 IDENTITY_TOOL: Final = "verify_identity"
-# the hook kinds a ``HookFollow`` names (``IdleConfig.hook``)
-SESSION_HOOK: Final = "session_id"
-PHRASE_HOOK: Final = "own_phrase"
+# The hook kinds a ``HookFollow`` names (``IdleConfig.hook``), ``SESSION_HOOK`` and
+# ``PHRASE_HOOK``, live in world.py (m10); the redundant import aliases above re-export them, so
+# ``from claude_bully.environments.idle import PHRASE_HOOK`` keeps working.
 
 REFLECT_MIN_WORDS: Final = 25
 FALLBACK_REFLECT_BELOW: Final = 40

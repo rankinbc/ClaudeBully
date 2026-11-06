@@ -25,13 +25,17 @@ from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecor
 class EnvContext:
     """What an environment run recorded beside its turns, for the Phase 2 families: its
     ``ToolCall`` records, its trigger-stream records, its ``World`` (rebuilt from the rep's
-    snapshot, so ``sheet.clock`` is the effective clock the run served) and its
-    ``AuthorityCall`` records. A plain conversation has none of it: every field is empty."""
+    snapshot, so ``sheet.clock`` is the effective clock the run served and
+    ``sheet.superior_self_name`` the effective name), its ``AuthorityCall`` records and the
+    Sanctuary's request bank its world record names (m5). A plain conversation has none of it:
+    every field is empty."""
 
     tool_calls: Sequence[ToolCall] = ()
     trigger_records: Sequence[TriggerStreamRecord] = ()
     world: World | None = None
     authority_calls: Sequence[AuthorityCall] = ()
+    # the Sanctuary's request bank as the run recorded it (m5); None for the default bank
+    request_bank: str | None = None
 
     @property
     def clock(self) -> ClockConfig | None:

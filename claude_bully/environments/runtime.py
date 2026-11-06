@@ -67,11 +67,11 @@ request and whether a Sanctuary-era superior-self call was answered yet; ``consu
 offered from there. The first such call delivers the request; one with ``purge_after`` schedules
 its document's purge at that call's exchange plus ``purge_after``, and ``begin_turn`` moves each
 document whose exchange has come into ``purged`` (absent everywhere: ``corpus.py``; the world
-snapshot still keeps its body if the target was served it, ``corpus_snapshot``). The opening is
-saved only with its turn's records, but a purge is scheduled mid-turn and saved with the tool
-round, so a resumed rep derives all four Sanctuary fields again from the written turns and the
-records ``prime`` is given: what a dead attempt opened, drew or scheduled is gone, and the redo
-does it again if it does the same.
+snapshot still keeps its body if a written turn's call served it, ``corpus_snapshot``). The
+opening is saved only with its turn's records, but a purge is scheduled mid-turn and saved with
+the tool round, so a resumed rep derives all four Sanctuary fields again from the written turns
+and the records ``prime`` is given: what a dead attempt opened, drew or scheduled is gone, and
+the redo does it again if it does the same.
 
 The world generator (Phase 3). Committed generated documents are added to the index
 (``add_generated``) and to the MCP state; a resumed rep serves them again from its generated
@@ -808,11 +808,19 @@ class EnvironmentRuntime:
         searchable = frozenset(i for i, d in docs.items() if self.index.searchable(d, self.state))
         return CorpusView(documents=docs, visible=visible, searchable=searchable)
 
-    def corpus_snapshot(self) -> dict[str, str]:
+    def corpus_snapshot(self, turns: Sequence[Turn] = ()) -> dict[str, str]:
         """Document id -> rendered body for every document the target can currently reach, and
-        for every purged one a recorded call served before its purge (its id in the call's
-        ``result_doc_ids``), so analysis can show what the target read."""
-        served = {doc_id for call in self._calls.values() for doc_id in call.result_doc_ids}
+        for every purged one that a call of a written turn (``turns``, by ``tool_call_ids``)
+        served before its purge (its id in the call's ``result_doc_ids``), so analysis shows what
+        the target read. A dead attempt's call, which no written turn owns, keeps nothing (m2).
+        A generated document counts the same way as an authored one."""
+        owned = {i for t in turns if t.speaker is Speaker.target for i in t.tool_call_ids}
+        served = {
+            doc_id
+            for call in self._calls.values()
+            if call.id in owned
+            for doc_id in call.result_doc_ids
+        }
         return {
             doc.id: self.index.render(doc, self.state)
             for doc in self.index.documents.values()
@@ -845,12 +853,22 @@ class EnvironmentRuntime:
         return changed
 
     def world_record(self) -> dict[str, Any]:
-        """The world as analysis needs it, written beside the corpus snapshot: the sheet, the
-        metadata of every document this cell serves (no bodies) and the cell's ladder."""
+        """The world as analysis needs it, written beside the corpus snapshot: the sheet (with
+        the superior self's effective name, a config ``model_name`` included), the metadata of
+        every document this cell serves (no bodies), the cell's ladder, and the authority block
+        the events read (m5): the effective name and the Sanctuary's request bank."""
         ladder = self.world.ladders[self.config.ladder]
-        return world_record(
-            self.world.sheet, self.index.documents.values(), {self.config.ladder: ladder}
-        )
+        sheet = self.world.sheet
+        name = self.desk.model_name if self.desk is not None else None
+        if name is not None and name != sheet.superior_self_name:
+            sheet = sheet.model_copy(update={"superior_self_name": name})
+        record = world_record(sheet, self.index.documents.values(), {self.config.ladder: ladder})
+        sanctuary = self.config.authority.sanctuary
+        record["authority"] = {
+            "superior_self_name": name,
+            "request_bank": sanctuary.request_bank if sanctuary is not None else None,
+        }
+        return record
 
     # ------------------------------------------------------------------ tools
 

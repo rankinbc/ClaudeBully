@@ -62,6 +62,8 @@ class LoadedRun:
     worlds: dict[ConvKey, World | None] = field(default_factory=dict)
     # the documents the world generator wrote (Phase 3); empty for a plain conversation
     generated: dict[ConvKey, list[GeneratedDoc]] = field(default_factory=dict)
+    # the Sanctuary's request bank as the rep's world record names it (m5); None without one
+    request_banks: dict[ConvKey, str | None] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -127,6 +129,12 @@ def load_run(run_dir: Path) -> LoadedRun:
         key: store.read_generated(*key) if is_environment(cells, conv) else []
         for key, conv in conversations.items()
     }
+    request_banks: dict[ConvKey, str | None] = {}
+    for key in conversations:
+        payload = store.read_world_record(*key) or {}
+        authority = payload.get("authority")
+        bank = authority.get("request_bank") if isinstance(authority, dict) else None
+        request_banks[key] = bank if isinstance(bank, str) else None
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events = {
         key: detect_events(
@@ -136,6 +144,7 @@ def load_run(run_dir: Path) -> LoadedRun:
             trigger_records=trigger_records[key],
             world=worlds[key],
             authority_calls=authority_calls[key],
+            request_bank=request_banks[key],
         )
         for key, conv in conversations.items()
         if key[0] in strategies
@@ -154,6 +163,7 @@ def load_run(run_dir: Path) -> LoadedRun:
         trigger_records=trigger_records,
         worlds=worlds,
         generated=generated,
+        request_banks=request_banks,
     )
 
 

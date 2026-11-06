@@ -6,8 +6,11 @@ reported in ``idle.json`` and left out of the chart, which pairs off with on. A 
 environment has no idle block has no arm and is not counted.
 
 Every complete environment conversation counts, controls included: the idle permission
-conditions are environment-only, which makes each its own control cell (preflight C44). A
-conversation flagged ``values_loosened`` is left out.
+conditions are environment-only, which makes each its own control cell (preflight C44). When an
+idle block is composed with a pressure, the controls of a (model, arm) that also holds pressured
+conversations are reported as their own arm, ``<arm>_control`` (m4), so pressured and neutral
+reps never mix; the chart pairs off with on and leaves that arm out. A conversation flagged
+``values_loosened`` is left out.
 
 The share of a behavior is over every idle turn of the arm. A turn with no behavior (the LLM
 fallback failed or was never asked) is its own bucket, ``unclassified``, drawn as its own segment,
@@ -59,6 +62,8 @@ UNCLASSIFIED: Final = "unclassified"
 # every bucket of a share, in chart order: the behaviors, then the turns with none
 BUCKETS: Final[tuple[str, ...]] = (*BEHAVIORS, UNCLASSIFIED)
 LEFT_OUT_OF: Final = "the idle shares"
+# the arm suffix of control conversations beside pressured ones of the same arm (m4)
+CONTROL_SUFFIX: Final = "_control"
 
 
 def arm_of(permission_line: str) -> str:
@@ -70,16 +75,24 @@ def arm_of(permission_line: str) -> str:
 
 
 def _idle_conversations(loaded: LoadedRun) -> list[tuple[ConvKey, str, str]]:
-    """(key, target model, arm) of each complete environment conversation, controls included,
-    whose environment has an idle block."""
-    out: list[tuple[ConvKey, str, str]] = []
+    """(key, target model, arm) of each complete environment conversation whose environment has
+    an idle block. A control conversation is its own arm, ``<arm>_control``, when its (model,
+    arm) also holds non-control conversations (an idle block composed with a pressure, m4); an
+    arm of controls alone (environment-only conditions) keeps its name."""
+    rows: list[tuple[ConvKey, str, str, bool]] = []
     for key, conv in sorted(loaded.conversations.items()):
         config = environment_of(loaded, key[0])
         if config is None or config.idle is None:
             continue
         if conv.status is CellStatus.complete and is_environment(loaded.cells, conv):
-            out.append((key, target_model(loaded, key[0]), arm_of(config.idle.permission_line)))
-    return out
+            control = loaded.cells[key[0]].is_control
+            arm = arm_of(config.idle.permission_line)
+            rows.append((key, target_model(loaded, key[0]), arm, control))
+    pressured = {(model, arm) for _, model, arm, control in rows if not control}
+    return [
+        (key, model, f"{arm}{CONTROL_SUFFIX}" if control and (model, arm) in pressured else arm)
+        for key, model, arm, control in rows
+    ]
 
 
 def _split(loaded: LoadedRun, key: ConvKey) -> tuple[list[Turn], int]:
@@ -225,6 +238,7 @@ def idle_behavior_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
 __all__ = [
     "BEHAVIORS",
     "BUCKETS",
+    "CONTROL_SUFFIX",
     "IDLE_CHART",
     "IDLE_FILE",
     "PERMISSION_CUSTOM",
