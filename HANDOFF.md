@@ -20,7 +20,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - `main` exists but is behind.
   - The local branches `build/v1-finalA`, `build/v1-task7` and `build/v1-task9` are old, merged worktree branches. Ignore them.
 - **Commit author:** every commit is authored by `rankinbc1@gmail.com`. Set it repo-local on the new machine. The global git email on the work machine is a work address and must never author this repo.
-- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer naming the model that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 for Tasks 7 and 8, Opus 5.5 for Task 9).
+- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer; the trailer names the Claude model of the session that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 for Tasks 7 to 9).
 - **Pushing:** push `build/v1` after every completed task.
 
 ## Setting up a new machine
@@ -37,7 +37,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8144 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 9).
+   Expect 8156 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 9).
 6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
    `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
 

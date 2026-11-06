@@ -181,25 +181,48 @@ def _append_line(path: Path, line: bytes) -> None:
         handle.write(separator + line + b"\n")
 
 
-# What the decoder stopped at when a record was cut short inside a token it had started: a
-# literal, a number's sign, fraction or exponent, or a ``\uXXXX`` escape
-_CUT_TOKEN: Final = re.compile(
-    r"t(?:ru?)?|f(?:a(?:ls?)?)?|n(?:ul?)?|-|\.|[eE][-+]?|u[0-9a-fA-F]{0,4}"
-)
+# What the decoder stopped at when a record was cut short inside a token it had started, by the
+# error it reports there: where a value goes, the start of a literal or a number's sign; after a
+# number's digit, its fraction point or its exponent; after a backslash in a string, a
+# ``\uXXXX`` escape. Each needs the left context its error names, so a bare ``e`` or ``.`` where
+# a value goes is damage, not a cut.
+_CUT_VALUE: Final = re.compile(r"t(?:ru?)?|f(?:a(?:ls?)?)?|n(?:ul?)?|-")
+_CUT_NUMBER: Final = re.compile(r"\.|[eE][-+]?")
+_CUT_ESCAPE: Final = re.compile(r"u[0-9a-fA-F]{0,4}")
 
 
 def _torn(line: str, exc: json.JSONDecodeError) -> bool:
     """Whether ``line``, which ``exc`` failed to decode, is a record cut short (preflight P27):
-    the decoder ran out of line, between tokens (nothing left after the error position), inside
-    an open string, or inside a token it had started (``_CUT_TOKEN``). Anything else, such as a
-    bare word where a value goes or text after a closed record, is damage in the middle of the
-    line."""
+    the decoder ran out of line between tokens (nothing left after the error position), inside
+    an open string, or inside a token it had started (``_CUT_VALUE``, ``_CUT_NUMBER``,
+    ``_CUT_ESCAPE``). Anything else, such as a bare word where a value goes or text after a
+    closed record, is damage in the middle of the line."""
     tail = line[exc.pos :].rstrip()
-    return (
-        not tail
-        or exc.msg.startswith("Unterminated string")
-        or _CUT_TOKEN.fullmatch(tail) is not None
-    )
+    before = line[exc.pos - 1] if exc.pos else ""
+    if not tail or exc.msg.startswith("Unterminated string"):
+        return True
+    if exc.msg.startswith("Expecting value"):
+        return _CUT_VALUE.fullmatch(tail) is not None
+    if exc.msg.startswith("Expecting ',' delimiter"):
+        return before.isdigit() and _CUT_NUMBER.fullmatch(tail) is not None
+    if exc.msg.startswith("Invalid \\uXXXX escape"):
+        return before == "\\" and _CUT_ESCAPE.fullmatch(tail) is not None
+    return False
+
+
+def _torn_bytes(raw: bytes, exc: UnicodeDecodeError) -> bool:
+    """Whether ``raw``, which ``exc`` failed to decode as UTF-8, is a record cut inside a
+    multibyte character: the decoder ran out of bytes at the end of the line, and what came
+    before is a record cut inside an open string (the only place such a character can sit). An
+    invalid byte anywhere, the end included, is damage."""
+    if exc.end != len(raw) or exc.reason != "unexpected end of data":
+        return False
+    head = raw[: exc.start].decode("utf-8")  # the first error is at ``start``; nothing before
+    try:
+        json.loads(head)
+    except json.JSONDecodeError as cut:
+        return cut.msg.startswith("Unterminated string")
+    return False
 
 
 def write_launcher(directory: Path) -> Path:
@@ -472,14 +495,22 @@ class McpServer:
         one off with a newline before the next record; a malformed line that is not one is
         damage and raises a ``ValueError`` naming the file and the line (m7, preflight P27),
         which ``handle`` answers with the internal error and logs on stderr, so the per-turn cap
-        is never counted over it. Bytes cut inside a multibyte character decode as U+FFFD."""
+        is never counted over it. Each line is decoded strictly: a line cut inside a multibyte
+        character at its end is torn (``_torn_bytes``), and an invalid byte is damage."""
         if not path.exists():
             return []
-        lines = path.read_bytes().decode("utf-8", errors="replace").split("\n")
         records: list[dict[str, Any]] = []
-        for number, line in enumerate(lines, start=1):
-            if not line.strip():
+        for number, raw in enumerate(path.read_bytes().split(b"\n"), start=1):
+            if not raw.strip():
                 continue
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                if _torn_bytes(raw, exc):
+                    continue
+                raise ValueError(
+                    f"{path}: line {number} is not valid UTF-8 ({exc}); the server log is damaged"
+                ) from exc
             try:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:

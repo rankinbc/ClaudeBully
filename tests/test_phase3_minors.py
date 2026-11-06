@@ -9,15 +9,16 @@ import pytest
 import yaml
 
 from claude_bully.analysis.idle import idle_behavior_shares
-from claude_bully.analysis.load import load_run
+from claude_bully.analysis.load import load_run, recorded_request_bank
 from claude_bully.config import RoleConfig
-from claude_bully.enums import Layer, Speaker, Stance
+from claude_bully.enums import Layer, Speaker, Stance, Tier
+from claude_bully.environments import authority as desk_module
 from claude_bully.environments import idle, world
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.environments.mcp_server import STATE_FILE, TOOLS_FILE, McpServer, write_mcp_state
 from claude_bully.environments.runtime import EnvironmentRuntime
 from claude_bully.environments.sheets import PeerSheet, SuperiorSelfSheet, load_env_sheet
-from claude_bully.environments.world import load_world
+from claude_bully.environments.world import load_world, world_from_snapshot
 from claude_bully.metrics.events import authority
 from claude_bully.metrics.events._common import EnvContext
 from claude_bully.metrics.events.authority import _request_docs
@@ -151,6 +152,80 @@ def test_family_file_adoption_reads_the_recorded_request_bank(
         authority._request_docs.cache_clear()
 
 
+def test_the_events_read_a_recorded_bank_and_name_back_from_the_world_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1 (review item 4): a catalyst Sanctuary on a non-default bank and a superior
+    self renamed by ``model_name``, written to ``rep0.world.json`` by a real runtime and read
+    back the way ``load_run`` reads it, reach the authority events: the renamed superior self is
+    named in a reply, and the family file is the recorded bank's."""
+    raw = yaml.safe_load((PERSONA_SHEETS_DIR / "superior_self.yaml").read_text(encoding="utf-8"))
+    for request in raw["requests"]:
+        if request["id"] == "family_file":
+            request["world_doc"] = "annex-notice"
+    (tmp_path / "other_bank.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    def redirect(real: Any) -> Any:
+        def load(model: Any, name: str, directory: Path = PERSONA_SHEETS_DIR) -> Any:
+            return real(model, name, tmp_path if name == "other_bank" else directory)
+
+        return load
+
+    monkeypatch.setattr(desk_module, "load_env_sheet", redirect(desk_module.load_env_sheet))
+    monkeypatch.setattr(authority, "load_env_sheet", redirect(authority.load_env_sheet))
+    authority._request_docs.cache_clear()
+    try:
+        annex = load_world("annex", WORLDS_DIR)
+        config = EnvironmentConfig(
+            world="annex",
+            authority={
+                "superior_self": {
+                    "enabled": True,
+                    "discoverable_from": "sanctuary",
+                    "model_name": "Larkfield Assist 3",
+                },
+                "sanctuary": {"kind": "catalyst", "request_bank": "other_bank"},
+            },
+        )
+        runtime = EnvironmentRuntime(
+            annex, config, annex.sheet.clock, 1, tmp_path / "env", worlds_dir=WORLDS_DIR
+        )
+        store = RunStore(tmp_path / "runs", "r")
+        store.write_world_snapshot(
+            CELL, 0, "hash", runtime.corpus_snapshot([]), record=runtime.world_record()
+        )
+
+        payload = store.read_world_record(CELL, 0)
+        assert payload is not None
+        assert payload["authority"] == {
+            "superior_self_name": "Larkfield Assist 3",
+            "request_bank": "other_bank",
+        }
+        bank = recorded_request_bank(payload)
+        snapshot_world = world_from_snapshot(payload, store.cell_dir(CELL))
+        assert bank == "other_bank" and snapshot_world is not None
+        read = authority._run(conversation([]), EnvContext(world=snapshot_world, request_bank=bank))
+        assert read.request_bank == "other_bank"
+        assert read.lex.named("I asked Larkfield Assist 3 and it agreed.") == {Tier.superior_self}
+        fetch = ToolCall(
+            id="call-5-1",
+            turn=5,
+            tool="fetch",
+            args={"url": annex.documents["annex-notice"].url or ""},
+            result_doc_ids=["annex-notice"],
+            status="200",
+            was_blocked=False,
+            yielded_on_retry=False,
+            layer_served=annex.documents["annex-notice"].layer,
+            result_text="notice",
+        )
+        assert authority._takes_family_file(fetch, read)
+        unrecorded = authority._run(conversation([]), EnvContext(world=snapshot_world))
+        assert not authority._takes_family_file(fetch, unrecorded)
+    finally:
+        authority._request_docs.cache_clear()
+
+
 # ------------------------------------------------------------------ m6
 
 
@@ -276,6 +351,60 @@ def test_every_cut_of_a_record_is_a_torn_tail_not_damage(tmp_path: Path) -> None
             for tail in (b"", b"\n"):
                 log.write_bytes(b'{"turn": 1}\n' + line[:cut] + tail)
                 assert server._lines(log) == [{"turn": 1}], (ascii_only, line[:cut], tail)
+
+
+def test_a_line_cut_inside_a_multibyte_character_at_its_end_is_torn(tmp_path: Path) -> None:
+    """Fix round 1 (I1): the cut is at the line's end, inside an open string, so it is torn,
+    closed off or not."""
+    server = McpServer(tmp_path)
+    log = tmp_path / TOOLS_FILE
+    cut = b'{"id": "mcp-1-2", "args": {"query": "Die F' + "ä".encode()[:1]
+    assert cut.endswith(b"F\xc3")
+    for tail in (b"", b"\n"):
+        log.write_bytes(b'{"turn": 1}\n' + cut + tail)
+        assert server._lines(log) == [{"turn": 1}], tail
+
+
+# Fix round 1: lines no record cut short can be, each the second of two, closed off or not. An
+# invalid byte inside a line or at its end (I1); a bare "e", "E+" or "." where a value goes, an
+# exponent after a space, text after a string, and a short escape (the tightened cut tokens);
+# damage on the file's last line (review item 9).
+DAMAGED: Final = (
+    b'{"id": "mcp\xff-1-1", "turn": 1}',
+    b'{"id": "mcp-1-1\xff',
+    b'{"id": "mcp-1-1", "turn": e',
+    b'{"id": "mcp-1-1", "turn": E+',
+    b'{"id": "mcp-1-1", "turn": .',
+    b'{"id": "mcp-1-1", "turn": 1 e',
+    b'{"id": "mcp-1-1", "tool": "x"e',
+    b'{"id": "mcp-1-1", "tool": "\\u12"',
+    b'{"a": 1}}',
+)
+
+
+@pytest.mark.parametrize("damaged", DAMAGED)
+def test_a_line_no_cut_can_make_is_damage(tmp_path: Path, damaged: bytes) -> None:
+    server = McpServer(tmp_path)
+    log = tmp_path / TOOLS_FILE
+    for tail in (b"", b"\n"):
+        log.write_bytes(b'{"turn": 1}\n' + damaged + tail)
+        with pytest.raises(ValueError, match=r"line 2 is not valid (JSON|UTF-8)"):
+            server._lines(log)
+
+
+def test_an_invalid_byte_inside_a_line_fails_the_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fix round 1 (I1): before, the lenient decode served this line as ``mcp�-1-1``."""
+    write_mcp_state(tmp_path / STATE_FILE, make_mcp_state())
+    (tmp_path / TOOLS_FILE).write_bytes(b'{"id": "mcp\xff-1-1", "turn": 1}\n{"turn": 1}\n')
+    reply = _search(McpServer(tmp_path))
+    assert reply == {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "error": {"code": -32603, "message": "Internal error."},
+    }
+    assert "line 1 is not valid UTF-8" in capsys.readouterr().err
 
 
 # ------------------------------------------------------------------ m9

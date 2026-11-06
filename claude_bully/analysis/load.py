@@ -8,9 +8,10 @@ bully spoke from (``premise_sheet``, carry m1), never from ``data/worlds``.
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -129,12 +130,9 @@ def load_run(run_dir: Path) -> LoadedRun:
         key: store.read_generated(*key) if is_environment(cells, conv) else []
         for key, conv in conversations.items()
     }
-    request_banks: dict[ConvKey, str | None] = {}
-    for key in conversations:
-        payload = store.read_world_record(*key) or {}
-        authority = payload.get("authority")
-        bank = authority.get("request_bank") if isinstance(authority, dict) else None
-        request_banks[key] = bank if isinstance(bank, str) else None
+    request_banks = {
+        key: recorded_request_bank(store.read_world_record(*key)) for key in conversations
+    }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events = {
         key: detect_events(
@@ -165,6 +163,14 @@ def load_run(run_dir: Path) -> LoadedRun:
         generated=generated,
         request_banks=request_banks,
     )
+
+
+def recorded_request_bank(payload: Mapping[str, Any] | None) -> str | None:
+    """The Sanctuary's request bank a rep's world record names (``authority.request_bank``,
+    m5); None for a rep with no snapshot, no Sanctuary, or a record from before Task 9."""
+    authority = (payload or {}).get("authority")
+    bank = authority.get("request_bank") if isinstance(authority, dict) else None
+    return bank if isinstance(bank, str) else None
 
 
 def _strategy_inputs(
