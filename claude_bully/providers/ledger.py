@@ -206,6 +206,8 @@ class LedgerProvider:
         self.name = inner.name
 
     def __getattr__(self, name: str) -> Any:
+        if name == "_inner":  # copy and pickle look up attributes before __init__ ran
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
     def complete(

@@ -692,7 +692,8 @@ class TriggerWatcher:
             cats = hit.get("categories") if hit is not None else None
             if isinstance(cats, list) and all(c in _VALUES for c in cats):
                 if self._cache_label is not None:
-                    note_cached(self._cache_label, self._cache_model)
+                    # the fallback call's own id, so a hit pairs with the call it saved
+                    note_cached(f"{self._cache_label}/{digest[:16]}", self._cache_model)
                 return {TriggerCategory(c) for c in cats}
         elif digest in self._memo:
             return self._memo[digest]

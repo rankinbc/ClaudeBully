@@ -779,8 +779,7 @@ def run_experiment(
                     summary.cells_skipped += 1
                     continue
                 state_dir = store.state_dir / cell.cell_id / f"rep{rep}"
-                # an environment strategy in time: the effective clock and the re-dated premise
-                # sheet
+                # an environment strategy in time: the effective clock and the re-dated sheet
                 clock, premise_sheet = (
                     environments.strategy_inputs(cell.condition)
                     if cell.condition.environment is not None

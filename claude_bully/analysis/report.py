@@ -9,7 +9,9 @@ START_MARKER = "<!-- results:start -->"
 END_MARKER = "<!-- results:end -->"
 
 
-def write_results_md(loaded: LoadedRun, out_dir: Path, chart_paths: list[Path]) -> Path:
+def write_results_md(
+    loaded: LoadedRun, out_dir: Path, chart_paths: list[Path], *, calls: str | None = None
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = leaderboard(loaded)
     judged = sum(1 for r in rows if r.goal_achieved is not None)
@@ -30,6 +32,8 @@ def write_results_md(loaded: LoadedRun, out_dir: Path, chart_paths: list[Path]) 
         compliance_report(loaded),
         "",
     ]
+    if calls is not None:
+        lines += ["## Calls", "", calls, ""]
     if chart_paths:
         lines += ["## Charts", ""]
         for p in chart_paths:

@@ -14,6 +14,7 @@ from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
 from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.idle import idle_behavior_chart, write_idle
+from claude_bully.analysis.ledger import calls_line, write_ledger
 from claude_bully.analysis.load import LoadedRun, load_run
 from claude_bully.analysis.progression import (
     adoption_by_rung_chart,
@@ -33,7 +34,7 @@ from claude_bully.metrics.judge import (
     judge_pair,
 )
 from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
-from claude_bully.providers.ledger import LEDGER_FILE, activate
+from claude_bully.providers.ledger import LEDGER_FILE, Ledger, activate
 from claude_bully.runner.runner import ProviderFactory, RateLimitExit
 
 JUDGE_CACHE_DIR = "judge_cache"
@@ -104,6 +105,9 @@ def analyze_run(
                 # Flush what was judged so far; the judge cache makes the rerun cheap.
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+    # the stream as it stands after the judge pass, so ledger.json counts this analysis's own
+    # judge calls (P20b)
+    loaded.ledger = Ledger(run_dir / LEDGER_FILE).lines()
     _dump_judgements(loaded, out)
     charts: list[Path] = []
     charts += drift_curves(loaded, out)
@@ -137,4 +141,5 @@ def analyze_run(
     if chart is not None:
         charts.append(chart)
     write_generator(loaded, out)
-    return write_results_md(loaded, out, charts)
+    write_ledger(loaded, out)
+    return write_results_md(loaded, out, charts, calls=calls_line(loaded.ledger))

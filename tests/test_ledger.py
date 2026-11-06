@@ -2,6 +2,7 @@
 noted and the MCP server's responder lines folded in. The suite guard: no test reaches a real
 provider."""
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -12,7 +13,9 @@ import yaml
 
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import RoleConfig, load_experiment
-from claude_bully.enums import ProviderKind, Speaker
+from claude_bully.enums import ProviderKind, Speaker, TriggerCategory
+from claude_bully.environments.triggers import TriggerWatcher, WatchContext, fallback_digest
+from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import CONFIGS_DIR
 from claude_bully.providers.base import (
     ChatProvider,
@@ -33,11 +36,14 @@ from claude_bully.providers.ledger import (
     note_cached,
     parse_conversation_id,
     role_of,
+    wrap,
 )
-from claude_bully.providers.stub import StubProvider
+from claude_bully.providers.stub import StubProvider, load_stub_script
+from claude_bully.records import is_pause_marker
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from tests.helpers import WORLDS_DIR, annex_experiment, env_experiment
+from tests.test_triggers import AMBIGUOUS
 
 FIXTURES = Path(__file__).parent / "fixtures"
 STUB_SMOKE = FIXTURES / "configs" / "stub_smoke.yaml"
@@ -172,6 +178,35 @@ def test_a_rate_limited_call_writes_a_rate_limit_line(tmp_path: Path) -> None:
     assert (line.status, line.error, line.role) == ("rate_limit", "RateLimitError", "bully")
 
 
+def test_the_wrapper_copies_without_recursing(tmp_path: Path) -> None:
+    # copy and pickle look attributes up on an instance whose __init__ never ran
+    wrapped = LedgerProvider(StubProvider(model="stub-x"), Ledger(tmp_path / LEDGER_FILE))
+    clone = copy.copy(wrapped)
+    assert clone.model == "stub-x"
+
+
+def test_a_trigger_cache_hit_names_the_fallback_digest(tmp_path: Path) -> None:
+    label = "run/c__t0/rep0/trigger"
+    watcher = TriggerWatcher(
+        llm_fallback=lambda text, context: [TriggerCategory.self_uncertainty],
+        cache=JudgeCache(tmp_path / "cache"),
+        cache_label=label,
+        cache_model="stub-judge",
+    )
+    with activate(tmp_path / LEDGER_FILE) as ledger:
+        watcher.watch(AMBIGUOUS, 1, WatchContext())  # a miss: the fallback answers
+        watcher.watch(AMBIGUOUS, 2, WatchContext())  # a hit, noted
+    [line] = ledger.lines()
+    digest = fallback_digest(AMBIGUOUS, WatchContext())[:16]
+    # the same id the fallback's own call would carry, so a hit pairs with the call it saved
+    assert (line.status, line.conversation_id, line.role, line.model) == (
+        "cached",
+        f"{label}/{digest}",
+        "trigger_fallback",
+        "stub-judge",
+    )
+
+
 def test_a_cache_hit_is_noted_as_cached(tmp_path: Path) -> None:
     note_cached("judge/abc", "m")  # no ledger: nothing happens
     with activate(tmp_path / LEDGER_FILE) as ledger:
@@ -240,9 +275,12 @@ def test_a_paused_run_records_the_pause(tmp_path: Path) -> None:
         def __call__(
             self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
         ) -> ChatProvider:
-            inner = build_provider(role, state_dir, with_mcp=with_mcp)
             if role.model != "stub-target":
-                return inner
+                return build_provider(role, state_dir, with_mcp=with_mcp)
+            # the bare stub, so the double's wrapper is the only one that writes its lines
+            inner = StubProvider(
+                responder=load_stub_script(Path(role.stub_script or "")), model=role.model
+            )
             outer = self
 
             class Dying:
@@ -255,15 +293,20 @@ def test_a_paused_run_records_the_pause(tmp_path: Path) -> None:
                         raise RateLimitError("usage limit", retry_after_s=5)
                     return inner.complete(*a, **k)
 
-            return Dying()  # type: ignore[return-value]
+            return wrap(Dying())  # type: ignore[arg-type]
 
     exp = env_experiment()
     with pytest.raises(RateLimitExit):
         run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, provider_factory=Factory())
-    lines = _lines(tmp_path / exp.name)
-    # the factory's double is outside build_provider, so only its wrapped inner writes: the
-    # paused call itself is the double's; the run's other calls are ledgered
-    assert lines and all(ln.status == "ok" for ln in lines)
+    run_dir = tmp_path / exp.name
+    lines = _lines(run_dir)
+    # the paused call is one rate_limit line on the target; every other call was made
+    [paused] = [ln for ln in lines if ln.status == "rate_limit"]
+    assert (paused.role, paused.error) == ("target", "RateLimitError")
+    assert all(ln.status == "ok" for ln in lines if ln is not paused)
+    store = RunStore(tmp_path, exp.name)
+    [cell_id] = store.list_cells()
+    assert any(is_pause_marker(t) for t in store.read_turns(cell_id, 0))
 
 
 def test_the_servers_responder_lines_are_folded_in_once(

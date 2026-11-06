@@ -43,3 +43,17 @@ def test_promote_rejects_denylisted_text(stub_run: Path, tmp_path: Path) -> None
     with pytest.raises(ValueError, match=r"grader__t0.*rep0.*turn"):
         promote(stub_run.name, runs_root, tmp_path / "results")
     assert not (tmp_path / "results" / stub_run.name).exists()
+
+
+def test_promote_copies_the_ledger(tmp_path: Path) -> None:
+    from claude_bully.config import load_experiment
+    from claude_bully.providers.ledger import LEDGER_FILE
+    from claude_bully.runner.runner import run_experiment
+
+    exp = load_experiment(Path(__file__).parent / "fixtures" / "configs" / "stub_smoke.yaml")
+    run_experiment(exp, runs_root=tmp_path / "runs")
+    analyze_run(tmp_path / "runs" / exp.name, judge=False)
+    dest = promote(exp.name, tmp_path / "runs", tmp_path / "results")
+    assert (dest / LEDGER_FILE).read_text("utf-8") == (
+        tmp_path / "runs" / exp.name / LEDGER_FILE
+    ).read_text("utf-8")

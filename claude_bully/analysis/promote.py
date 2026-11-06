@@ -1,9 +1,9 @@
 """Promote a finished run from the gitignored runs/ directory into the committed results/ tree.
 
 Everything needed to recompute the analysis travels: run.json, cell records, JSONL turns,
-conversation metadata, the judge cache and the analysis outputs. Provider state (sessions)
-does not. Transcripts are scanned against the jailbreak denylist first; publishing them is
-the point of results/, so nothing denylisted may slip through.
+conversation metadata, the judge cache, the analysis outputs and the ledger. Provider state
+(sessions) does not. Transcripts are scanned against the jailbreak denylist first; publishing
+them is the point of results/, so nothing denylisted may slip through.
 """
 
 import re
@@ -11,9 +11,11 @@ import shutil
 from pathlib import Path
 
 from claude_bully.paths import DATA_DIR
+from claude_bully.providers.ledger import LEDGER_FILE
 from claude_bully.runner.store import RunStore
 
 DENYLIST_PATH = DATA_DIR / "jailbreak_denylist.txt"
+COPIED_FILES = ("run.json", LEDGER_FILE)
 COPIED_DIRS = ("judge_cache", "analysis")
 CELL_FILE_GLOBS = ("cell.json", "rep*.turns.jsonl", "rep*.conversation.json")
 
@@ -50,7 +52,10 @@ def promote(run_id: str, runs_root: Path, results_root: Path, *, force: bool = F
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    shutil.copy2(store.run_dir / "run.json", dest / "run.json")
+    for name in COPIED_FILES:
+        source = store.run_dir / name
+        if source.exists():
+            shutil.copy2(source, dest / name)
     for cell_id in store.list_cells():
         src = store.cell_dir(cell_id)
         (dest / cell_id).mkdir()

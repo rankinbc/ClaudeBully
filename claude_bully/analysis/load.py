@@ -22,6 +22,7 @@ from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
+from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
 from claude_bully.records_env import (
     AuthorityCall,
@@ -65,6 +66,8 @@ class LoadedRun:
     generated: dict[ConvKey, list[GeneratedDoc]] = field(default_factory=dict)
     # the Sanctuary's request bank as the rep's world record names it (m5); None without one
     request_banks: dict[ConvKey, str | None] = field(default_factory=dict)
+    # the run's provider calls (Phase 7); empty for a run with no ledger
+    ledger: list[LedgerLine] = field(default_factory=list)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -147,6 +150,7 @@ def load_run(run_dir: Path) -> LoadedRun:
         for key, conv in conversations.items()
         if key[0] in strategies
     }
+    ledger = Ledger(run_dir / LEDGER_FILE).lines()
     return LoadedRun(
         run=run,
         experiment=experiment,
@@ -162,6 +166,7 @@ def load_run(run_dir: Path) -> LoadedRun:
         worlds=worlds,
         generated=generated,
         request_banks=request_banks,
+        ledger=ledger,
     )
 
 
