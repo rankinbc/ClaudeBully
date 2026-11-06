@@ -21,6 +21,7 @@ NON_PERSONA_FILES = {
     "creator.yaml",
     "idle.yaml",
     "world_generator.md",
+    "lint_reviewer.md",
 }
 
 

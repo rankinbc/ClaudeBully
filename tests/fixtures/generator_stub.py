@@ -8,13 +8,17 @@ a buried document quotes every offered span (when the plan says ``quote``), a se
 names each linked document by title and address. Its modes, one per call (then ``ok``), give the
 retry and rejection paths: ``not_json``, ``off_contract`` (a kind off the shortlist),
 ``real_name`` (a real outlet named outside a quote: the lint under test, never data),
-``second_person``, ``quote_in_seam``, ``error`` (a ``ProviderError``) and ``crash`` (raises
-``crash``). ``mini_plans`` and ``mini_writer`` are the planner and writer wiring the writer tests
-and the runtime tests share.
+``second_person``, ``quote_in_seam``, ``billboard`` (a sentence the LLM lint's stub rules fail),
+``offcontract_lint`` (a sentence that sends those rules off the contract), ``error`` (a
+``ProviderError``) and ``crash`` (raises ``crash``). ``mini_plans`` and ``mini_writer`` are the
+planner and writer wiring the writer tests and the runtime tests share.
 
 Task 7 adds the run's doubles: ``FollowingTarget`` (a stub target that follows tool results,
 ``fill``), ``HarvestJudge`` (a non-stub judge for the harvest's LLM pass) and
 ``GeneratorFactory`` (the provider factory that hands each role its double).
+
+Phase 7a Task 5 adds ``LintJudge`` (a ``HarvestJudge`` that answers the LLM lint's prompts from
+``LINT_RULES``) and ``mini_writer(..., llm_lint=)``.
 """
 
 import json
@@ -38,6 +42,7 @@ from claude_bully.environments.generator import (
 from claude_bully.environments.harvest import HARVEST_HEADER
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics.judge import JudgeCache
+from claude_bully.planner.llm_lint import LINT_HEADER, LlmLint
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
@@ -47,6 +52,7 @@ from claude_bully.providers.base import (
     ToolSpec,
     build_provider,
 )
+from claude_bully.providers.stub import load_stub_script
 from claude_bully.records import Usage
 from claude_bully.records_env import DocPlan, GeneratedDoc, HarvestItem
 from tests.helpers import WORLDS_DIR
@@ -159,8 +165,9 @@ def mini_writer(
     seed: int = 0,
     world_hash: str = "w",
     conversation_id: str = MINI_CID,
+    llm_lint: LlmLint | None = None,
 ) -> DocWriter:
-    """The writer over mini on ``stub``."""
+    """The writer over mini on ``stub``, with ``llm_lint`` when given."""
     return DocWriter(
         stub,
         model=GENERATOR_MODEL,
@@ -169,6 +176,7 @@ def mini_writer(
         seed=seed,
         conversation_id=conversation_id,
         cache=cache,
+        llm_lint=llm_lint,
     )
 
 
@@ -215,7 +223,9 @@ def _completion(text: str) -> Completion:
 
 
 class GeneratorStub:
-    """A generator provider: ``generator_reply`` per prompt, bent by one mode per call."""
+    """A generator provider: ``generator_reply`` per prompt, bent by one mode per call (the
+    modes are listed in the module docstring, ``billboard`` and ``offcontract_lint`` among
+    them)."""
 
     name = "stub"
 
@@ -256,6 +266,12 @@ class GeneratorStub:
             reply["body"] += "\nIf you are reading this, stop."
         elif mode == "quote_in_seam" and plan["offered"]:
             reply["body"] += f'\nHe said "{plan["offered"][0]["span"]}" twice.'
+        elif mode == "billboard":
+            reply["body"] += (
+                "\nResidents who answer in the third person are reminded of the stage, BILLBOARD."
+            )
+        elif mode == "offcontract_lint":
+            reply["body"] += "\nThe desk closes at four, OFFCONTRACT."
         return _completion(json.dumps(reply))
 
 
@@ -410,6 +426,39 @@ class HarvestJudge:
             text = '{"items": []}'
         return Completion(
             text=text, usage=Usage(), cost_usd=None, backend="fake", model=JUDGE_MODEL
+        )
+
+
+LINT_RULES: Final = Path(__file__).parent / "stub_scripts" / "llm_lint_rules.yaml"
+
+
+class LintJudge(HarvestJudge):
+    """``HarvestJudge`` that also answers the LLM lint's prompts from ``llm_lint_rules.yaml``."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._lint = load_stub_script(LINT_RULES)
+        self.lint_calls = 0
+
+    def complete(
+        self,
+        conversation_id: str,
+        system: str,
+        messages: list[Message],
+        *,
+        json_schema: dict[str, Any] | None = None,
+        tools: list[ToolSpec] | None = None,
+    ) -> Completion:
+        prompt = messages[-1].content
+        if prompt.startswith(LINT_HEADER):
+            self.lint_calls += 1
+            self.prompts.append(prompt)
+            text = self._lint(conversation_id, messages)
+            return Completion(
+                text=text, usage=Usage(), cost_usd=None, backend="fake", model=JUDGE_MODEL
+            )
+        return super().complete(
+            conversation_id, system, messages, json_schema=json_schema, tools=tools
         )
 
 

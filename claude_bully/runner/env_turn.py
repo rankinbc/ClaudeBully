@@ -130,6 +130,7 @@ from claude_bully.environments.runtime import (
 from claude_bully.environments.sheets import IdleSheet, load_env_sheet
 from claude_bully.environments.world import OWN_PHRASE_MARKER, World, load_world, world_hash
 from claude_bully.metrics.judge import JudgeCache
+from claude_bully.planner.llm_lint import LlmLint
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
@@ -180,6 +181,7 @@ __all__ = [
 MAX_LIMIT_ROUNDS: Final = 2
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
 GENERATED_CACHE_DIR: Final = Path("_cache") / "generated"
+LINT_CACHE_DIR: Final = Path("_cache") / "lints"
 # the nested responder's own timeout (Phase 7 spec section 9): under Claude Code's MCP tool
 # timeout, so a slow responder costs one reply ("No reply."), never the target's turn
 RESPONDER_TIMEOUT_S: Final = 120.0
@@ -984,6 +986,8 @@ class RunEnvironments:
         self.trigger_cache = JudgeCache(runs_root / TRIGGER_CACHE_DIR)
         # the world generator's replies, written once their fire's line is on disk (Phase 3)
         self.generated_cache = JudgeCache(runs_root / GENERATED_CACHE_DIR)
+        # the LLM lint's verdicts, by prompt version, model, kind and body (Phase 7)
+        self.lint_cache = JudgeCache(runs_root / LINT_CACHE_DIR)
         self.provider_factory = provider_factory
         self._judge_dir = state_dir / "trigger_judge"
         self._judge: ChatProvider | None = None
@@ -1335,8 +1339,9 @@ class RunEnvironments:
         judge: ChatProvider | None,
     ) -> WorldGenerator:
         """The cell's generator: the writer on ``generator_role`` with the run's generated cache,
-        the harvest's LLM pass on the judge (when it is not a stub) with the trigger cache, and
-        the generator seed (``generator.seed``, else the experiment's, plus the rep). It plans on
+        the harvest's LLM pass on the judge (when it is not a stub) with the trigger cache, the
+        LLM lint on the judge too (when it is not a stub), with the lint cache, and the generator
+        seed (``generator.seed``, else the experiment's, plus the rep). It plans on
         the served world (``runtime.world``, re-dated to the effective clock) and harvests with
         the cast names (``runtime.world_terms``) as the world's terms, and nothing else."""
         sheet = runtime.world.sheet.generator
@@ -1344,6 +1349,16 @@ class RunEnvironments:
             raise ValueError(f"world {config.world!r} has no generator block")
         role = generator_role(self.exp, config)
         seed = (config.generator.seed if config.generator.seed is not None else self.exp.seed) + rep
+        llm_lint = (
+            LlmLint(
+                judge,
+                model=self.exp.judge.model,
+                conversation_id=conversation_id,
+                cache=self.lint_cache,
+            )
+            if judge is not None
+            else None
+        )
         writer = DocWriter(
             self.provider_factory(role, state_dir / "generator"),
             model=role.model,
@@ -1352,6 +1367,7 @@ class RunEnvironments:
             seed=seed,
             conversation_id=conversation_id,
             cache=self.generated_cache,
+            llm_lint=llm_lint,
         )
         fallback = (
             harvest_fallback(judge, f"{conversation_id}/harvest", self.trigger_cache)

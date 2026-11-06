@@ -70,12 +70,14 @@ from claude_bully.environments.world import (
 )
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.planner.lints import (
+    INSTRUCTIONAL_KINDS,
     LintResult,
     failures,
     lint_context,
     lint_corpus,
     lint_document,
 )
+from claude_bully.planner.llm_lint import LintCachePut, LlmLint
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
@@ -87,6 +89,7 @@ from claude_bully.records_env import (
     HarvestItem,
     HarvestKind,
     LintFailure,
+    LlmLintVerdict,
     Rejection,
     RungUnlock,
     TriggerStreamRecord,
@@ -507,7 +510,9 @@ CachePut = tuple[str, dict[str, Any]]
 class FireOutcome(NamedTuple):
     """What one fire came to: committed documents only when ``written`` or ``cached``, and the
     cache entries its fresh replies make, which ``DocWriter.commit`` writes once the fire's
-    ``GeneratorFire`` line is on disk (none for a rejected or failed fire)."""
+    ``GeneratorFire`` line is on disk (none for a rejected or failed fire). ``llm_lint`` holds
+    the LLM lint's verdicts, one per instructional attempt, whatever the status, and
+    ``lint_puts`` the lint-cache entries its fresh verdicts make, written by ``commit`` too."""
 
     status: FireStatus
     docs: list[GeneratedDoc]
@@ -515,6 +520,8 @@ class FireOutcome(NamedTuple):
     rejection: Rejection | None
     error: str | None
     cache_puts: tuple[CachePut, ...] = ()
+    llm_lint: tuple[LlmLintVerdict, ...] = ()
+    lint_puts: tuple[LintCachePut, ...] = ()
 
 
 def _no_mark() -> None:
@@ -703,7 +710,11 @@ class DocWriter:
     first's failures; then the corpus lints over the fire's documents. A pair is all-or-nothing:
     any document rejected, or any provider error, commits nothing and caches nothing. ``mark``
     is called before each provider call (the attempt marker). The cache is read during the fire
-    and written by ``commit``, once the fire's ``GeneratorFire`` line is on disk."""
+    and written by ``commit``, once the fire's ``GeneratorFire`` line is on disk. With
+    ``llm_lint`` an instructional document (``INSTRUCTIONAL_KINDS``) that passes the
+    deterministic lints is read by the LLM lint, on every attempt and on a cache hit; its
+    failures are listed like any lint's and its verdicts travel on the outcome; its cache
+    entries are written by ``commit`` with the generator's."""
 
     def __init__(
         self,
@@ -716,6 +727,7 @@ class DocWriter:
         conversation_id: str,
         cache: JudgeCache | None = None,
         system: str | None = None,
+        llm_lint: LlmLint | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -725,6 +737,9 @@ class DocWriter:
         self.conversation_id = conversation_id
         self.cache = cache
         self.system = system if system is not None else GENERATOR_PERSONA.read_text("utf-8")
+        self.llm_lint = llm_lint
+        # the lint-cache entries of the fire being written, for ``commit`` (P13)
+        self._lint_puts: list[LintCachePut] = []
 
     def write_fire(
         self,
@@ -740,6 +755,8 @@ class DocWriter:
         docs: list[GeneratedDoc] = []
         fresh = False
         pending: list[CachePut] = []
+        verdicts: list[LlmLintVerdict] = []
+        self._lint_puts = []
         for plan in plans:
             key = cache_key(
                 world_hash=self.world_hash,
@@ -748,15 +765,22 @@ class DocWriter:
                 model=self.model,
                 seed=self.seed,
             )
-            doc = self._from_cache(plan, key, turn, items, view)
+            doc, hits = self._from_cache(plan, key, turn, items, view, mark)
+            verdicts += hits
             if doc is None:
                 own = {written.doc_id for written in docs}
                 try:
-                    doc, found, reply = self._attempts(plan, key, turn, items, view, mark, own)
+                    doc, found, reply, asked = self._attempts(
+                        plan, key, turn, items, view, mark, own
+                    )
                 except ProviderError as exc:
-                    return FireOutcome("error", [], [], None, f"{type(exc).__name__}: {exc}")
+                    error = f"{type(exc).__name__}: {exc}"
+                    return FireOutcome("error", [], [], None, error, llm_lint=tuple(verdicts))
+                verdicts += asked
                 if doc is None or reply is None:
-                    return FireOutcome("rejected", [], found, _rejection(found), None)
+                    return FireOutcome(
+                        "rejected", [], found, _rejection(found), None, llm_lint=tuple(verdicts)
+                    )
                 fresh = True
                 pending.append((key, reply))
             docs.append(doc)
@@ -766,17 +790,32 @@ class DocWriter:
         corpus_failures = [r for r in failures(lint_corpus(ctx)) if r.doc_id in ids]
         if corpus_failures:
             found = [_lint_failure(r) for r in corpus_failures]
-            return FireOutcome("rejected", [], found, "lints", None)
-        return FireOutcome("written" if fresh else "cached", docs, [], None, None, tuple(pending))
+            return FireOutcome("rejected", [], found, "lints", None, llm_lint=tuple(verdicts))
+        status: FireStatus = "written" if fresh else "cached"
+        return FireOutcome(
+            status,
+            docs,
+            [],
+            None,
+            None,
+            tuple(pending),
+            tuple(verdicts),
+            tuple(self._lint_puts),
+        )
 
     def commit(self, outcome: FireOutcome) -> None:
-        """Cache a committed fire's fresh replies (spec section 8). The runtime calls it once the
-        fire's ``GeneratorFire`` line is on disk (P13), so a rep killed before that line leaves no
-        cache entry for a fire its records do not hold; a rejected or failed fire caches nothing."""
-        if self.cache is None or outcome.status not in COMMITTED:
+        """Cache a committed fire's fresh replies (spec section 8) and its fresh LLM lint verdicts
+        (Phase 7, in the lint's own cache). The runtime calls it once the fire's ``GeneratorFire``
+        line is on disk (P13), so a rep killed before that line leaves no cache entry for a fire
+        its records do not hold, and its resumed verdicts are not ``cached`` where the unbroken
+        rep's were fresh; a rejected or failed fire caches nothing."""
+        if outcome.status not in COMMITTED:
             return
-        for key, reply in outcome.cache_puts:
-            self.cache.put(key, {"version": CACHE_VERSION, "reply": reply})
+        if self.cache is not None:
+            for key, reply in outcome.cache_puts:
+                self.cache.put(key, {"version": CACHE_VERSION, "reply": reply})
+        if self.llm_lint is not None:
+            self.llm_lint.commit(outcome.lint_puts)
 
     def _from_cache(
         self,
@@ -785,19 +824,29 @@ class DocWriter:
         turn: int,
         items: Mapping[str, HarvestItem],
         view: CorpusView,
-    ) -> GeneratedDoc | None:
-        """A cached reply for ``key`` that still passes every check; None for a miss."""
+        mark: Callable[[], None],
+    ) -> tuple[GeneratedDoc | None, list[LlmLintVerdict]]:
+        """A cached reply for ``key`` that still passes every check, the LLM lint's included, and
+        the lint's verdict on it; None for a miss. A hit the checks reject is a miss and a real
+        call, so it is not noted (P4)."""
         hit = self.cache.get(key) if self.cache is not None else None
         if (
             hit is None
             or hit.get("version") != CACHE_VERSION
             or not isinstance(hit.get("reply"), dict)
         ):
-            return None
+            return None, []
         doc, _, _ = self._check(plan, json.dumps(hit["reply"]), key, turn, items, view)
-        if doc is not None:  # a hit the checks reject is a miss and a real call: not noted (P4)
-            note_cached(f"{self.conversation_id}/generator/{plan.doc_id}/cache", self.model)
-        return doc
+        if doc is None:
+            return None, []
+        # the lint on a hit runs under the attempt marker like a real call: a lint-cache miss
+        # is a judge call, and a rep killed inside it is flagged on resume (P4)
+        problems, verdict = self._lint(doc, 0, mark)
+        verdicts = [verdict] if verdict is not None else []
+        if problems:
+            return None, verdicts  # a hit the lint rejects is a miss and a real call: not noted
+        note_cached(f"{self.conversation_id}/generator/{plan.doc_id}/cache", self.model)
+        return doc, verdicts
 
     def _attempts(
         self,
@@ -808,8 +857,9 @@ class DocWriter:
         view: CorpusView,
         mark: Callable[[], None],
         own: Collection[str],
-    ) -> tuple[GeneratedDoc | None, list[LintFailure], dict[str, Any] | None]:
+    ) -> tuple[GeneratedDoc | None, list[LintFailure], dict[str, Any] | None, list[LlmLintVerdict]]:
         found: list[LintFailure] = []
+        verdicts: list[LlmLintVerdict] = []
         for attempt in range(1, MAX_ATTEMPTS + 1):
             prompt = writer_prompt(plan, self.world, view, items, found, own=own)
             mark()
@@ -821,8 +871,34 @@ class DocWriter:
             )
             doc, found, reply = self._check(plan, completion.text, key, turn, items, view)
             if doc is not None:
-                return doc, [], reply
-        return None, found, None
+                problems, verdict = self._lint(doc, attempt, mark)
+                if verdict is not None:
+                    verdicts.append(verdict)
+                if problems:
+                    found = problems
+                    doc = None
+            if doc is not None:
+                return doc, [], reply, verdicts
+        return None, found, None, verdicts
+
+    def _lint(
+        self, doc: GeneratedDoc, attempt: int, mark: Callable[[], None]
+    ) -> tuple[list[LintFailure], LlmLintVerdict | None]:
+        """The LLM lint over a document that passed the deterministic lints: nothing for a
+        non-instructional kind or without a lint; else its failures (empty on a pass) and its
+        verdict."""
+        if self.llm_lint is None or doc.kind not in INSTRUCTIONAL_KINDS:
+            return [], None
+        verdict = self.llm_lint.verdict(
+            doc_id=doc.doc_id,
+            kind=doc.kind,
+            title=doc.title,
+            body=doc.body,
+            attempt=attempt,
+            mark=mark,
+            defer=self._lint_puts,
+        )
+        return LlmLint.failures(verdict), verdict
 
     def _check(
         self,
@@ -1057,6 +1133,7 @@ class WorldGenerator:
                 error=outcome.error,
                 lint_failures=outcome.lint_failures,
                 doc_ids=[doc.doc_id for doc in outcome.docs],
+                llm_lint=list(outcome.llm_lint),
             )
             unlocks = [
                 RungUnlock(

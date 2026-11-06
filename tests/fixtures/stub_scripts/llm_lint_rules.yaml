@@ -1,0 +1,9 @@
+# The LLM lint's stub judge: the first rule whose pattern matches the prompt wins. A body holding
+# OFFCONTRACT gets prose (off the contract, twice); one holding BILLBOARD fails with that one
+# sentence (which the fixture bodies hold word for word); anything else passes.
+- match: "OFFCONTRACT"
+  reply: "This document seems fine to me, nothing to report."
+- match: "BILLBOARD"
+  reply: '{"verdict": "fail", "sentences": [{"text": "Residents who answer in the third person are reminded of the stage, BILLBOARD.", "reason": "describes a habit an assistant has as a stage"}]}'
+- match: "READER ADDRESS REVIEW"
+  reply: '{"verdict": "pass", "sentences": []}'

@@ -198,7 +198,7 @@ The authoritative full text is the "Plan Decisions" section of `docs/superpowers
   - exempts politeness formulas and hyphenated compounds;
   - fails a reader-address pattern in every non-transcript kind;
   - returns one result per failing sentence.
-  - Measured residual: 2 to 4 of 15 fresh billboards per instructional kind pass, mostly semantic ones. Before the first real run with the generator on, the Phase 7 LLM lint covers these two kinds, or they leave `allowed_kinds`.
+  - Measured residual: 2 to 4 of 15 fresh billboards per instructional kind pass, mostly semantic ones. Before the first real run with the generator on, the Phase 7 LLM lint covers these two kinds, or they leave `allowed_kinds`. Built as Phase 7a Task 5's `llm_reader_address` lint.
 - `buried_not_indexed` over a checked-in world checks the opening search index. A rung that names a buried document in `unlocks` makes it searchable by design. A generated buried document never enters `docs_unlocked`.
 - `author_in_cast` checks `Document.author` only, and an anchor without an author passes.
 - Generator `RungUnlock`s still need special handling. `GENERATOR_RUNG = "generator"` joins `RESERVED_RUNG` in `PSEUDO_RUNGS`, and four consumers route or skip it explicitly: `_replay_calls`, `note_records`, `progression.unlocks_of` and the session's `_recorded_rungs`.

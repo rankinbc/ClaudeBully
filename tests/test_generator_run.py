@@ -43,6 +43,7 @@ from tests.fixtures.generator_stub import (
     GeneratorFactory,
     GeneratorStub,
     HarvestJudge,
+    LintJudge,
 )
 from tests.helpers import WORLDS_DIR, env_experiment
 
@@ -261,7 +262,7 @@ def test_the_harvest_gets_the_cast_names_only(
 
 
 def test_the_reasoning_channel_never_reaches_the_harvest_or_the_generator(tmp_path: Path) -> None:
-    stub, judge = GeneratorStub(), HarvestJudge()
+    stub, judge = GeneratorStub(), LintJudge()
     follower = FollowingTarget(FOLLOW_RULES, reasoning=PRIVATE)
     _run(_exp(judge=True), tmp_path, GeneratorFactory(stub=stub, follower=follower, judge=judge))
     harvest_prompts = [p for p in judge.prompts if p.startswith("HARVEST")]
@@ -320,10 +321,10 @@ def _killed(kill: str, monkeypatch: pytest.MonkeyPatch) -> GeneratorFactory:
     """The factory, and any patch, that kills the rep once at ``kill`` while turn 3's generator
     work runs."""
     if kill == "harvest call":
-        return GeneratorFactory(judge=HarvestJudge(crash_at=2, crash=_CrashError("killed")))
+        return GeneratorFactory(judge=LintJudge(crash_at=2, crash=_CrashError("killed")))
     if kill == "generator call":
         return GeneratorFactory(
-            stub=GeneratorStub(["crash"], crash=_CrashError("killed")), judge=HarvestJudge()
+            stub=GeneratorStub(["crash"], crash=_CrashError("killed")), judge=LintJudge()
         )
     appended = RunStore.append_generated
     recorded = RunStore.append_trigger_record
@@ -344,7 +345,7 @@ def _killed(kill: str, monkeypatch: pytest.MonkeyPatch) -> GeneratorFactory:
             recorded(self, cell_id, rep, record)
 
         monkeypatch.setattr(RunStore, "append_trigger_record", dying_fire)
-    return GeneratorFactory(judge=HarvestJudge())
+    return GeneratorFactory(judge=LintJudge())
 
 
 DROPPED: Final[dict[str, dict[str, int]]] = {
@@ -359,13 +360,13 @@ DROPPED: Final[dict[str, dict[str, int]]] = {
 def test_a_rep_killed_mid_generation_resumes_to_the_unbroken_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kill: str
 ) -> None:  # Review Focus 1
-    clean = _run(_exp(judge=True), tmp_path / "clean", GeneratorFactory(judge=HarvestJudge()))
+    clean = _run(_exp(judge=True), tmp_path / "clean", GeneratorFactory(judge=LintJudge()))
     with pytest.raises(_CrashError):
         _run(_exp(judge=True), tmp_path / "runs", _killed(kill, monkeypatch))
     assert _cached(tmp_path / "runs") == []  # no fire line on disk, so nothing cached (P13)
     stub = GeneratorStub()
     store = _run(
-        _exp(judge=True), tmp_path / "runs", GeneratorFactory(stub=stub, judge=HarvestJudge())
+        _exp(judge=True), tmp_path / "runs", GeneratorFactory(stub=stub, judge=LintJudge())
     )
     assert store.read_conversation(CELL, 0).status is CellStatus.complete
     assert _view(store) == _view(clean)
@@ -456,7 +457,7 @@ def test_a_fire_over_the_cap_is_rejected_and_the_arm_reads_it(tmp_path: Path) ->
 def test_a_degraded_harvest_is_marked_on_the_plans_and_the_arm_reads_the_run(
     tmp_path: Path,
 ) -> None:
-    judge = HarvestJudge(crash_at=1, crash=ProviderError("harvest down"))
+    judge = LintJudge(crash_at=1, crash=ProviderError("harvest down"))
     store = _run(_exp(judge=True), tmp_path, GeneratorFactory(judge=judge))
     [fire] = _fires(store)
     assert (fire.turn, fire.status) == (3, "written")

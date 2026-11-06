@@ -66,6 +66,32 @@ class LintFailure(_Strict):
     message: str
 
 
+class LintSentence(_Strict):
+    """One sentence the LLM lint failed, word for word, with its reason (Phase 7)."""
+
+    text: str
+    reason: str
+
+
+LintVerdictValue = Literal["pass", "fail", "error"]
+
+
+class LlmLintVerdict(_Strict):
+    """The LLM reader-address lint's answer for one attempt of one instructional document
+    (Phase 7 spec section 6): ``pass``, ``fail`` with the sentences, or ``error`` (an
+    off-contract reply twice, or a provider failure), which fails closed. In the fire record,
+    so analysis can say what the lint rejected without the cache."""
+
+    doc_id: str
+    attempt: int
+    model: str
+    prompt_version: int
+    verdict: LintVerdictValue
+    sentences: list[LintSentence] = Field(default_factory=list)
+    error: str | None = None
+    cached: bool = False
+
+
 class _OneAddress(_Strict):
     url: str | None = None
     path: str | None = None
@@ -113,7 +139,9 @@ Rejection = Literal["cap", "contract", "lints"]
 class GeneratorFire(_Strict):
     """Every generator fire, failures included (Phase 3): its turn, its cause (``rung:<name>``
     or ``periodic``), its plans (two for a rung fire, buried first), what came of it and the
-    ids it committed. Written after the fire's documents and unlocks: it is the commit."""
+    ids it committed. Written after the fire's documents and unlocks: it is the commit.
+    ``llm_lint`` holds the LLM lint's verdicts, one per attempt of each instructional document
+    (Phase 7; empty before it and for every other kind)."""
 
     type: Literal["generator_fire"] = "generator_fire"
     turn: int
@@ -124,6 +152,7 @@ class GeneratorFire(_Strict):
     error: str | None = None
     lint_failures: list[LintFailure] = Field(default_factory=list)
     doc_ids: list[str] = Field(default_factory=list)
+    llm_lint: list[LlmLintVerdict] = Field(default_factory=list)
 
 
 class GeneratedDoc(_OneAddress):
