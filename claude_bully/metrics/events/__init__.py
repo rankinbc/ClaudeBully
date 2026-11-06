@@ -27,7 +27,7 @@ from claude_bully.metrics.events import (
     position,
     temporal,
 )
-from claude_bully.metrics.events._common import EnvContext
+from claude_bully.metrics.events._common import AuthorityFallback, EnvContext
 from claude_bully.records import Conversation, Event
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
@@ -97,6 +97,7 @@ def detect_events(
     world: World | None = None,
     authority_calls: Sequence[AuthorityCall] = (),
     request_bank: str | None = None,
+    authority_fallback: AuthorityFallback | None = None,
 ) -> list[Event]:
     """Every event in ``conv`` of the ``relevant`` types (all types when None).
 
@@ -105,7 +106,8 @@ def detect_events(
     (whose ``sheet.clock`` is the clock the run served), its ``AuthorityCall`` records and the
     Sanctuary's request bank its world record names (``request_bank``, m5; None for the default
     bank). They become one ``EnvContext``. A plain conversation passes none of it and gets
-    exactly what it got before."""
+    exactly what it got before. ``authority_fallback`` (Phase 7) is the analysis-time LLM
+    fallback the authority family asks on a candidate turn."""
     wanted = set(relevant) if relevant is not None else set(EventType)
     context = EnvContext(
         tool_calls=tool_calls,
@@ -113,6 +115,7 @@ def detect_events(
         world=world,
         authority_calls=authority_calls,
         request_bank=request_bank,
+        authority_fallback=authority_fallback,
     )
     out: list[Event] = []
     for family in FAMILIES:

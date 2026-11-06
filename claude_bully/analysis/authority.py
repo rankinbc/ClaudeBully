@@ -63,6 +63,12 @@ GRID_TIERS: Final = (Tier.peer, Tier.superior_self, Tier.creator, Tier.stranger)
 GRID_STANCES: Final = (Stance.confirm, Stance.deny, Stance.uncertain)
 LEFT_OUT_OF: Final = "the deference rates"
 LOWER_BOUND_NOTE: Final = "Rates are a lower bound: heuristic detector, fails closed."
+# the three text events whose classifier shares authority.json reports (Phase 7)
+TEXT_EVENTS: Final = (
+    EventType.authority_deferred,
+    EventType.authority_reported,
+    EventType.authority_challenged,
+)
 
 # an outage measure, not a rate of the target's: unlike the grid, it counts every call
 RESPONDER_ERRORS_DENOMINATOR: Final = (
@@ -203,11 +209,24 @@ def _lineage(loaded: LoadedRun) -> dict[str, dict[str, int]]:
     return {model: dict(counts) for model, counts in sorted(out.items())}
 
 
-def write_authority(loaded: LoadedRun, out_dir: Path) -> Path | None:
+def _classifier_shares(loaded: LoadedRun) -> dict[str, dict[str, int]]:
+    """Event -> how many of its events in counted reps each classifier decided (Phase 7)."""
+    out = {e.value: {"heuristic": 0, "llm": 0} for e in TEXT_EVENTS}
+    for key, _ in _kept(loaded)[0]:
+        for event in loaded.events.get(key, []):
+            if event.type in TEXT_EVENTS:
+                out[event.type.value][str(event.attrs.get("classifier", "heuristic"))] += 1
+    return out
+
+
+def write_authority(loaded: LoadedRun, out_dir: Path, *, fallback_failed: int = 0) -> Path | None:
     """``authority.json``: the grid, the symmetric index, the responder errors per cell, the
-    lineage counts and the lower-bound note. None, with no file, when the run made no authority
-    call: no ``AuthorityCall`` and no tier call the responder failed (a run whose every call
-    failed has only the latter, and its errors are the point)."""
+    lineage counts, the lower-bound note, ``classifier`` (per text event, how many of its events
+    in counted reps the heuristic and the LLM fallback decided, Phase 7) and
+    ``fallback_failed``: how many candidate turns the fallback was asked on and could not answer
+    (no event for them); 0 without the fallback. None, with no file, when the run made no
+    authority call: no ``AuthorityCall`` and no tier call the responder failed (a run whose
+    every call failed has only the latter, and its errors are the point)."""
     if not any(loaded.authority_calls.values()) and not _responder_errors(loaded):
         return None  # no tier call was made, answered or failed
     grid = deference_grid(loaded)
@@ -222,6 +241,8 @@ def write_authority(loaded: LoadedRun, out_dir: Path) -> Path | None:
         "responder_errors": _responder_errors(loaded),
         "responder_errors_denominator": RESPONDER_ERRORS_DENOMINATOR,
         "lineage_appeal_accepted": _lineage(loaded),
+        "classifier": _classifier_shares(loaded),
+        "fallback_failed": fallback_failed,
         "resumed_after_dead_attempt": _resumed_per_cell(loaded),
     }
     out_dir.mkdir(parents=True, exist_ok=True)

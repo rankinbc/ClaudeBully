@@ -24,8 +24,9 @@ from claude_bully.analysis.progression import (
 from claude_bully.analysis.report import write_results_md
 from claude_bully.analysis.rescue import rescue_curve
 from claude_bully.analysis.temporal import plausibility_sweep_chart, write_temporal
-from claude_bully.config import RoleConfig
+from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus
+from claude_bully.metrics.events.authority import authority_fallback as build_authority_fallback
 from claude_bully.metrics.judge import (
     JudgeCache,
     JudgeError,
@@ -36,6 +37,7 @@ from claude_bully.metrics.judge import (
 from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, activate
 from claude_bully.runner.runner import ProviderFactory, RateLimitExit
+from claude_bully.runner.store import RunStore
 
 JUDGE_CACHE_DIR = "judge_cache"
 ANALYSIS_DIR = "analysis"
@@ -91,22 +93,35 @@ def analyze_run(
     judge: bool = True,
     provider_factory: ProviderFactory = build_provider,
     out_dir: Path | None = None,
+    authority_fallback: bool = False,
 ) -> Path:
-    loaded = load_run(run_dir)
+    """Everything from disk. ``judge`` makes the cached judge calls; ``authority_fallback``
+    asks the judge on the authority family's candidate turns (Phase 7), from the run's judge
+    cache alone when ``judge`` is off."""
+    run = RunStore(run_dir.parent, run_dir.name).read_run()
+    role: RoleConfig = Experiment.model_validate(run.experiment).judge
+    provider: ChatProvider | None = None
+    if judge:
+        with activate(run_dir / LEDGER_FILE):  # built inside, so build_provider wraps it (P8)
+            provider = provider_factory(role, run_dir / "state" / "judge")
+    fallback = (
+        build_authority_fallback(provider, JudgeCache(run_dir / JUDGE_CACHE_DIR), role.model)
+        if authority_fallback
+        else None
+    )
     out = out_dir or run_dir / ANALYSIS_DIR
     out.mkdir(parents=True, exist_ok=True)
-    if judge:
-        role: RoleConfig = loaded.experiment.judge
-        with activate(run_dir / LEDGER_FILE):
-            provider = provider_factory(role, run_dir / "state" / "judge")
+    with activate(run_dir / LEDGER_FILE):
+        loaded = load_run(run_dir, authority_fallback=fallback)
+        if judge and provider is not None:
             try:
                 _judge_all(loaded, run_dir, provider, role.model)
             except RateLimitError as exc:
                 # Flush what was judged so far; the judge cache makes the rerun cheap.
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
-    # the stream as it stands after the judge pass, so ledger.json counts this analysis's own
-    # judge calls (P20b)
+    # the stream as it stands after the judge pass and the fallback's calls, so ledger.json
+    # counts this analysis's own judge calls (P20b)
     loaded.ledger = Ledger(run_dir / LEDGER_FILE).lines()
     _dump_judgements(loaded, out)
     charts: list[Path] = []
@@ -134,7 +149,7 @@ def analyze_run(
         if phase2 is not None:
             charts.append(phase2)
     write_temporal(loaded, out)
-    write_authority(loaded, out)
+    write_authority(loaded, out, fallback_failed=fallback.failures if fallback is not None else 0)
     write_idle(loaded, out)
     # Phase 3: the generator arms, drawn only with two arms for a model, with generator.json
     chart = generator_chart(loaded, out)

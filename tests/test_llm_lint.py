@@ -117,6 +117,8 @@ def test_the_key_changes_with_version_persona_model_kind_and_body() -> None:
             ("fail", [LintSentence(text="The desk closes at four.", reason="r")]),
         ),
         ('```json\n{"verdict": "pass", "sentences": []}\n```', ("pass", [])),
+        # strip_fences is the generator's: prose after the closing fence is off the contract
+        ('```json\n{"verdict": "pass", "sentences": []}\n```\nLooks fine.', "not JSON"),
         ('{"verdict": "pass", "sentences": [{"text": "x", "reason": "r"}]}', "pass with sentences"),
         ('{"verdict": "fail", "sentences": []}', "fail with no sentence"),
         (

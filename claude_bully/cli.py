@@ -86,10 +86,20 @@ def analyze(
     run_id: str,
     no_judge: Annotated[bool, typer.Option("--no-judge", help="Skip judge calls.")] = False,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
+    authority_fallback: Annotated[
+        bool,
+        typer.Option(
+            "--authority-fallback",
+            help="Ask the judge on the authority family's candidate turns "
+            "(cache-only with --no-judge).",
+        ),
+    ] = False,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
     try:
-        path = analyze_run(runs_root / run_id, judge=not no_judge)
+        path = analyze_run(
+            runs_root / run_id, judge=not no_judge, authority_fallback=authority_fallback
+        )
     except RateLimitExit as exc:
         wait = (
             f"about {int(exc.retry_after_s)} seconds" if exc.retry_after_s else "the stated window"

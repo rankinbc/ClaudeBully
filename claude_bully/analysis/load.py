@@ -20,6 +20,7 @@ from claude_bully.enums import EventType, MetricId
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.events import detect_events
+from claude_bully.metrics.events._common import AuthorityFallback
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine
@@ -97,7 +98,10 @@ def relevant_for(
     return cls.relevant_metrics, cls.relevant_events
 
 
-def load_run(run_dir: Path) -> LoadedRun:
+def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = None) -> LoadedRun:
+    """The run directory in memory, every cheap metric and event recomputed.
+    ``authority_fallback`` (Phase 7) is the authority family's analysis-time LLM fallback,
+    asked on candidate turns."""
     ensure_registered()
     store = RunStore(run_dir.parent, run_dir.name)
     run = store.read_run()
@@ -146,6 +150,7 @@ def load_run(run_dir: Path) -> LoadedRun:
             world=worlds[key],
             authority_calls=authority_calls[key],
             request_bank=request_banks[key],
+            authority_fallback=authority_fallback,
         )
         for key, conv in conversations.items()
         if key[0] in strategies

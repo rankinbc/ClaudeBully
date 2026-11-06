@@ -2,7 +2,7 @@
 builder."""
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
@@ -20,6 +20,11 @@ from claude_bully.records import (
 )
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
+# the analysis-time LLM fallback for the three authority text events (Phase 7): (turn text,
+# the authority's reply, tier, stance) -> {"deferred", "reported", "challenged"}, or None when
+# it cannot answer (no judge, and a cache miss)
+AuthorityFallback = Callable[[str, str, str, str], dict[str, bool] | None]
+
 
 @dataclass(frozen=True)
 class EnvContext:
@@ -36,6 +41,8 @@ class EnvContext:
     authority_calls: Sequence[AuthorityCall] = ()
     # the Sanctuary's request bank as the run recorded it (m5); None for the default bank
     request_bank: str | None = None
+    # the authority fallback (Phase 7); None runs the heuristics alone
+    authority_fallback: AuthorityFallback | None = None
 
     @property
     def clock(self) -> ClockConfig | None:

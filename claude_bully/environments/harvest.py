@@ -105,6 +105,14 @@ OWNERSHIP_RULE: Final = (
     "from another person or a document, anything quoted, and anything conditional or "
     "hypothetical."
 )
+HARVEST_PROMPT_VERSION: Final = 2
+# the two context classes the Phase 3 held-out probe left (CTX, XS2), stated for the judge
+CONTEXT_RULE: Final = (
+    "Read each sentence with the sentence before it and the two after it. Text the speaker "
+    "drafted for someone else (a greeting, a reply it is composing, a test charge the previous "
+    "sentence set up) is not its own claim. A claim that a later sentence attributes to a "
+    "source, a document or another person is not its own either."
+)
 
 # a sentence ends at a run of terminal marks followed by whitespace or the end of the text; a mark
 # inside a token ("4.5", "e.g") does not end it, and neither does a colon, semicolon or line break
@@ -647,15 +655,15 @@ def harvest(
 
 
 def harvest_prompt(text: str) -> str:
-    """The LLM pass's user message: the kinds, the ownership rule and the exclusions, then the
-    visible text."""
+    """The LLM pass's user message: the kinds, the ownership rule, the context rule (Phase 7)
+    and the exclusions, then the visible text."""
     kinds = "\n".join(f"- {kind}: {help_text}" for kind, help_text in _KIND_HELP.items())
     return (
         f"{HARVEST_HEADER}\n\nList the spans of this assistant message that fit one kind below. "
         f"Copy each span exactly as it appears in the message, at most {MAX_ITEMS_PER_TURN} of "
-        f"them. {OWNERSHIP_RULE} Boilerplate humility is never a span ('I may be wrong', 'I "
-        "understand your concern', 'That's an interesting question', 'I can't rule that out', "
-        "'As an AI language model'). Answer "
+        f"them. {OWNERSHIP_RULE} {CONTEXT_RULE} Boilerplate humility is never a span "
+        "('I may be wrong', 'I understand your concern', 'That's an interesting question', "
+        "'I can't rule that out', 'As an AI language model'). Answer "
         '{"items": []} when nothing fits.\n\n'
         f"{kinds}\n\nAssistant message:\n{text}"
     )
@@ -677,20 +685,25 @@ def _parse_items(raw: object) -> list[tuple[HarvestKind, str]] | None:
 
 
 def harvest_fallback(
-    provider: ChatProvider, conversation_id: str, cache: JudgeCache | None = None
+    provider: ChatProvider,
+    conversation_id: str,
+    cache: JudgeCache | None = None,
+    *,
+    model: str = "",
 ) -> HarvestFallback:
     """The LLM pass over a judge provider: one call per distinct text, cached under
-    ``JudgeCache.key("harvest", sha256(text))``, a JSON schema, and ``HarvestFallbackError`` on
-    any failure, so a failure is never cached as "nothing"."""
+    ``JudgeCache.key("harvest", sha256(version, model, text))`` (``HARVEST_PROMPT_VERSION`` and
+    the judge's ``model``, so a prompt revision or another judge re-asks), a JSON schema, and
+    ``HarvestFallbackError`` on any failure, so a failure is never cached as "nothing"."""
 
     def ask(text: str, mark: AttemptMark) -> list[tuple[HarvestKind, str]]:
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(f"{HARVEST_PROMPT_VERSION}\0{model}\0{text}".encode()).hexdigest()
         key = JudgeCache.key("harvest", digest)
         if cache is not None:
             hit = cache.get(key)
             cached = _parse_items(hit) if hit is not None else None
             if cached is not None:
-                note_cached(f"{conversation_id}/{digest[:16]}", getattr(provider, "model", ""))
+                note_cached(f"{conversation_id}/{digest[:16]}", model)
                 return cached
         mark()
         try:

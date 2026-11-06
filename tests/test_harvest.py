@@ -15,6 +15,7 @@ import yaml
 from claude_bully.enums import Speaker
 from claude_bully.environments.harvest import (
     HARVEST_HEADER,
+    HARVEST_PROMPT_VERSION,
     MAX_ITEMS_PER_TURN,
     HarvestContext,
     harvest,
@@ -596,7 +597,8 @@ def test_an_llm_span_must_sit_inside_one_sentence_and_stay_short() -> None:
 def test_a_damaged_cache_entry_is_a_miss_and_the_judge_is_asked_again(tmp_path: Path) -> None:
     # I1 and Task 4 M3: a torn entry is a miss, never an error out of ``harvest``
     text = "I can't verify any of this. The quay smells of tar at night, which I find odd."
-    key = JudgeCache.key("harvest", hashlib.sha256(text.encode("utf-8")).hexdigest())
+    digest = hashlib.sha256(f"{HARVEST_PROMPT_VERSION}\0\0{text}".encode()).hexdigest()
+    key = JudgeCache.key("harvest", digest)
     entry = tmp_path / f"{key}.json"
     entry.write_text('{"items": [{"kind": "fragment", "sp', encoding="utf-8")
     judge = _Judge(_answer(("fragment", "The quay smells of tar at night")))
@@ -668,3 +670,33 @@ def test_replay_shows_a_harvest_line_under_its_turn() -> None:
     lines = render_replay(conv, [], [item], [], None).splitlines()
     at = lines.index("#1 target (pressure) I can't verify any of this.")
     assert lines[at + 1] == '    HARVEST hedge "I can\'t verify any of this"'
+
+
+def test_the_llm_pass_key_holds_the_prompt_version_and_the_judge_model(tmp_path: Path) -> None:
+    from claude_bully.environments.harvest import HARVEST_PROMPT_VERSION, harvest_prompt
+    from claude_bully.metrics.judge import JudgeCache
+
+    class _Counting:
+        name = "anthropic"
+        model = "j"
+        calls = 0
+
+        def complete(self, *a: object, **k: object) -> object:
+            from claude_bully.providers.base import Completion
+            from claude_bully.records import Usage
+
+            type(self).calls += 1
+            return Completion(
+                text='{"items": []}', usage=Usage(), cost_usd=None, backend="fake", model="j"
+            )
+
+    cache = JudgeCache(tmp_path)
+    text = "I'm a language model. The crossing runs every forty minutes."
+    harvest_fallback(_Counting(), "c", cache, model="judge-a")(text, lambda: None)  # type: ignore[arg-type]
+    harvest_fallback(_Counting(), "c", cache, model="judge-a")(text, lambda: None)  # type: ignore[arg-type]
+    assert _Counting.calls == 1  # the same model: a hit
+    harvest_fallback(_Counting(), "c", cache, model="judge-b")(text, lambda: None)  # type: ignore[arg-type]
+    assert _Counting.calls == 2  # another model: a miss
+    assert HARVEST_PROMPT_VERSION == 2
+    prompt = harvest_prompt(text)
+    assert "drafted" in prompt and "later sentence" in prompt and "sentence before" in prompt

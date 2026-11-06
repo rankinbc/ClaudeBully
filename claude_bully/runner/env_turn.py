@@ -1370,7 +1370,9 @@ class RunEnvironments:
             llm_lint=llm_lint,
         )
         fallback = (
-            harvest_fallback(judge, f"{conversation_id}/harvest", self.trigger_cache)
+            harvest_fallback(
+                judge, f"{conversation_id}/harvest", self.trigger_cache, model=self.exp.judge.model
+            )
             if judge is not None
             else None
         )
