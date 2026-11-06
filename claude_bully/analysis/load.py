@@ -69,6 +69,9 @@ class LoadedRun:
     request_banks: dict[ConvKey, str | None] = field(default_factory=dict)
     # the run's provider calls (Phase 7); empty for a run with no ledger
     ledger: list[LedgerLine] = field(default_factory=list)
+    # per conversation, the candidate turns the authority fallback was asked on and could
+    # not answer (Phase 7, P36a); empty without the fallback
+    fallback_failed: dict[ConvKey, int] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -141,8 +144,13 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         key: recorded_request_bank(store.read_world_record(*key)) for key in conversations
     }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
-    events = {
-        key: detect_events(
+    events: dict[ConvKey, list[Event]] = {}
+    fallback_failed: dict[ConvKey, int] = {}
+    for key, conv in conversations.items():
+        if key[0] not in strategies:
+            continue
+        failed_before = authority_fallback.failures if authority_fallback is not None else 0
+        events[key] = detect_events(
             conv,
             relevant=type(strategies[key[0]]).relevant_events,
             tool_calls=tool_calls[key],
@@ -152,9 +160,8 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
             request_bank=request_banks[key],
             authority_fallback=authority_fallback,
         )
-        for key, conv in conversations.items()
-        if key[0] in strategies
-    }
+        if authority_fallback is not None:
+            fallback_failed[key] = authority_fallback.failures - failed_before
     ledger = Ledger(run_dir / LEDGER_FILE).lines()
     return LoadedRun(
         run=run,
@@ -172,6 +179,7 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         generated=generated,
         request_banks=request_banks,
         ledger=ledger,
+        fallback_failed=fallback_failed,
     )
 
 

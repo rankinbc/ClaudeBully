@@ -2,10 +2,10 @@
 builder."""
 
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any
+from typing import Any, Protocol
 
 from claude_bully.enums import EventType, Speaker
 from claude_bully.environments.config import ClockConfig
@@ -20,10 +20,23 @@ from claude_bully.records import (
 )
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
-# the analysis-time LLM fallback for the three authority text events (Phase 7): (turn text,
-# the authority's reply, tier, stance) -> {"deferred", "reported", "challenged"}, or None when
-# it cannot answer (no judge, and a cache miss)
-AuthorityFallback = Callable[[str, str, str, str], dict[str, bool] | None]
+
+class AuthorityFallbackError(Exception):
+    """The authority fallback could not answer; the turn keeps its heuristic events."""
+
+
+class AuthorityFallback(Protocol):
+    """The analysis-time LLM fallback for the three authority text events (Phase 7;
+    ``metrics/events/authority_fallback.py`` is the implementation): (turn text, the authority's
+    reply, tier, stance) -> {"deferred", "reported", "challenged"}, or None when it cannot answer
+    (no judge, and a cache miss). It raises ``AuthorityFallbackError`` on a failed ask; the
+    authority family's events pass swallows that and counts it in ``failures``."""
+
+    failures: int
+
+    def __call__(self, text: str, reply: str, tier: str, stance: str) -> dict[str, bool] | None:
+        """The three flags for one candidate turn."""
+        ...
 
 
 @dataclass(frozen=True)

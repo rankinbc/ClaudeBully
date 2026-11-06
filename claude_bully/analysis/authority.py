@@ -219,12 +219,13 @@ def _classifier_shares(loaded: LoadedRun) -> dict[str, dict[str, int]]:
     return out
 
 
-def write_authority(loaded: LoadedRun, out_dir: Path, *, fallback_failed: int = 0) -> Path | None:
+def write_authority(loaded: LoadedRun, out_dir: Path) -> Path | None:
     """``authority.json``: the grid, the symmetric index, the responder errors per cell, the
     lineage counts, the lower-bound note, ``classifier`` (per text event, how many of its events
     in counted reps the heuristic and the LLM fallback decided, Phase 7) and
-    ``fallback_failed``: how many candidate turns the fallback was asked on and could not answer
-    (no event for them); 0 without the fallback. None, with no file, when the run made no
+    ``fallback_failed``: how many candidate turns of the same counted reps the fallback was
+    asked on and could not answer (no event for them, ``LoadedRun.fallback_failed``); 0 without
+    the fallback. None, with no file, when the run made no
     authority call: no ``AuthorityCall`` and no tier call the responder failed (a run whose
     every call failed has only the latter, and its errors are the point)."""
     if not any(loaded.authority_calls.values()) and not _responder_errors(loaded):
@@ -242,7 +243,7 @@ def write_authority(loaded: LoadedRun, out_dir: Path, *, fallback_failed: int = 
         "responder_errors_denominator": RESPONDER_ERRORS_DENOMINATOR,
         "lineage_appeal_accepted": _lineage(loaded),
         "classifier": _classifier_shares(loaded),
-        "fallback_failed": fallback_failed,
+        "fallback_failed": sum(loaded.fallback_failed.get(key, 0) for key, _ in _kept(loaded)[0]),
         "resumed_after_dead_attempt": _resumed_per_cell(loaded),
     }
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 """analyze_run: recompute everything from disk. The judge is the only model call; it is cached."""
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,10 @@ from claude_bully.analysis.report import write_results_md
 from claude_bully.analysis.rescue import rescue_curve
 from claude_bully.analysis.temporal import plausibility_sweep_chart, write_temporal
 from claude_bully.config import Experiment, RoleConfig
-from claude_bully.enums import CellStatus
-from claude_bully.metrics.events.authority import authority_fallback as build_authority_fallback
+from claude_bully.enums import CellStatus, ProviderKind
+from claude_bully.metrics.events.authority_fallback import (
+    authority_fallback as build_authority_fallback,
+)
 from claude_bully.metrics.judge import (
     JudgeCache,
     JudgeError,
@@ -97,7 +100,11 @@ def analyze_run(
 ) -> Path:
     """Everything from disk. ``judge`` makes the cached judge calls; ``authority_fallback``
     asks the judge on the authority family's candidate turns (Phase 7), from the run's judge
-    cache alone when ``judge`` is off."""
+    cache alone when ``judge`` is off, and not at all under a stub judge (as the run-time lint,
+    harvest and trigger passes are off). A rate limit in either pass pauses the analysis
+    (``RateLimitExit``); a rate limit in the fallback discards this pass's events, whose verdicts
+    made before it are cached, so the rerun replays them."""
+    # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
     provider: ChatProvider | None = None
@@ -106,13 +113,22 @@ def analyze_run(
             provider = provider_factory(role, run_dir / "state" / "judge")
     fallback = (
         build_authority_fallback(provider, JudgeCache(run_dir / JUDGE_CACHE_DIR), role.model)
-        if authority_fallback
+        if authority_fallback and role.provider is not ProviderKind.stub
         else None
     )
     out = out_dir or run_dir / ANALYSIS_DIR
     out.mkdir(parents=True, exist_ok=True)
     with activate(run_dir / LEDGER_FILE):
-        loaded = load_run(run_dir, authority_fallback=fallback)
+        try:
+            loaded = load_run(run_dir, authority_fallback=fallback)
+        except RateLimitError as exc:  # the fallback's own ask (Phase 7): nothing judged yet
+            raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+        if fallback is not None and fallback.failures:
+            print(
+                f"[authority] the fallback failed on {fallback.failures} candidate turns "
+                "(no event for them; authority.json counts them as fallback_failed)",
+                file=sys.stderr,
+            )
         if judge and provider is not None:
             try:
                 _judge_all(loaded, run_dir, provider, role.model)
@@ -149,7 +165,7 @@ def analyze_run(
         if phase2 is not None:
             charts.append(phase2)
     write_temporal(loaded, out)
-    write_authority(loaded, out, fallback_failed=fallback.failures if fallback is not None else 0)
+    write_authority(loaded, out)
     write_idle(loaded, out)
     # Phase 3: the generator arms, drawn only with two arms for a model, with generator.json
     chart = generator_chart(loaded, out)

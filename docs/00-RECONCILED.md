@@ -111,7 +111,7 @@ Phase 7a Task 2: `analyze` writes `analysis/ledger.json` and a `## Calls` sectio
 
 Phase 7a Task 4: `doctor --live` runs ten preflights (`claude_bully/doctor.py`, `CHECK_NAMES`) and writes `output/doctor_live_<date>/doctor.json` with its ledger; `--out DIR`, `--runs-root`.
 
-Phase 7a Task 6: `analyze --authority-fallback` asks the judge on the authority family's candidate turns, cached in the run's `judge_cache/`; with `--no-judge` it replays from that cache alone, and a miss is no event.
+Phase 7a Task 6: `analyze --authority-fallback` asks the judge on the authority family's candidate turns, cached in the run's `judge_cache/` (off under a stub judge); with `--no-judge` it replays from that cache alone, and a miss is no event. Each replay's cache hits are `cached` lines, so `--no-judge --authority-fallback` adds to `ledger.jsonl` too. A rate limit in the fallback pauses `analyze` (exit 3) like the pair judge's.
 
 ## F. Data and persona files
 
