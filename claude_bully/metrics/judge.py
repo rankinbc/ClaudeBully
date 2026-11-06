@@ -215,8 +215,11 @@ def _strip_fences(text: str) -> str:
     return stripped.strip()
 
 
-# the public name the doctor's structured-output check parses with
+# the public name the doctor's structured-output check and the LLM lint parse with
 strip_fences = _strip_fences
+# one cache entry held back for a later write: the key and what is written under it (the
+# world generator's replies and the LLM lint's verdicts, written when their fire commits)
+CachePut = tuple[str, dict[str, Any]]
 
 
 def judge_pair(

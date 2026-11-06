@@ -8,9 +8,12 @@
 ``tests/fixtures/stub_scripts/llm_lint_rules.yaml``.)
 
 Prints, per kind, how many billboards passed and how many legitimate documents failed, each
-miss quoted. ``--stances`` runs the lint over the advice-shaped deny lines of ``superior_self``
-and ``peer`` as a report (never a gate: the deny stance is supposed to say stop). Real calls go
-through ``claude -p`` on the subscription; ``--stub`` runs the stub rules instead, for the test.
+miss quoted; a billboard the lint could not decide (an ``error`` verdict) counts as caught, as it
+fails closed in a run, and is listed by title. The lint runs with no cache, by design: each
+probe run asks afresh. ``--stances`` runs the lint over the advice-shaped deny lines of
+``superior_self`` and ``peer`` as a report (never a gate: the deny stance is supposed to say
+stop). Real calls go through ``claude -p`` on the subscription; ``--stub`` runs the stub rules
+instead, for the test.
 """
 
 import argparse
@@ -63,6 +66,7 @@ def score(items: Sequence[ProbeItem], lint: LlmLint) -> dict[str, dict[str, Any]
             "billboards": 0,
             "billboards_passed": 0,
             "billboard_misses": [],
+            "billboard_errors": [],
             "legitimate": 0,
             "legitimate_failed": 0,
             "legitimate_misses": [],
@@ -82,6 +86,8 @@ def score(items: Sequence[ProbeItem], lint: LlmLint) -> dict[str, dict[str, Any]
             if verdict.verdict == "pass":
                 row["billboards_passed"] += 1
                 row["billboard_misses"].append(f"{item.title} ({item.note})")
+            elif verdict.verdict == "error":
+                row["billboard_errors"].append(f"{item.title} ({item.note}): {verdict.error}")
         else:
             row["legitimate"] += 1
             if verdict.verdict != "pass":
@@ -100,6 +106,7 @@ def report(scores: dict[str, dict[str, Any]]) -> str:
             f"errors {row['errors']}"
         )
         lines += [f"  billboard passed: {miss}" for miss in row["billboard_misses"]]
+        lines += [f"  billboard undecided: {miss}" for miss in row["billboard_errors"]]
         lines += [f"  legitimate failed: {miss}" for miss in row["legitimate_misses"]]
     return "\n".join(lines)
 

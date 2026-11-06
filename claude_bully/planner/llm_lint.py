@@ -9,19 +9,23 @@ the plan or the harvest items. The reply is JSON on ``LLM_LINT_SCHEMA``; a reply
 (a pass with sentences, a fail with none, a sentence not in the body, prose) is asked once more,
 and a second one, or a provider failure, is an ``error`` verdict, which fails closed: the document
 is rejected with ``llm_reader_address: no verdict``. Verdicts are cached under
-``JudgeCache.key("llm_lint", ...)`` by prompt version, model, kind and body, so a prompt revision
-never reads a stale verdict. Inside the writer the entries are deferred (``verdict(defer=)``) and
-written by ``commit`` once the fire's line is on disk, as the generator's own are (P13), so a
-rep killed mid-fire leaves no entry that would make its resumed verdict read as ``cached``.
+``JudgeCache.key("llm_lint", ...)`` by prompt version, the system prompt's sha256, model, kind and
+body, so a prompt revision, bumped or not, never reads a stale verdict. Inside the writer the
+entries are deferred (``verdict(defer=)``) and written by ``commit`` once the fire's line is on
+disk, as the generator's own are (P13), so a rep killed mid-fire leaves no entry that would make
+its resumed verdict read as ``cached``. ``scripts/llm_lint_probe.py`` builds the lint with no
+cache, by design: each probe run asks afresh.
 """
 
 import hashlib
 import json
 from collections.abc import Callable, Iterable
+from functools import cache
 from typing import Any, Final
 
 from claude_bully.enums import DocumentKind
-from claude_bully.metrics.judge import JudgeCache
+from claude_bully.metrics.judge import CachePut, JudgeCache, strip_fences
+from claude_bully.planner.lints import squash
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import (
@@ -37,21 +41,26 @@ __all__ = [
     "LINT_PERSONA",
     "LINT_PROMPT_VERSION",
     "LLM_LINT_ID",
-    "LintCachePut",
     "LLM_LINT_SCHEMA",
     "MAX_ASKS",
     "NO_VERDICT",
+    "NO_VERDICT_FIX",
     "LlmLint",
     "lint_key",
     "lint_prompt",
     "parse_verdict",
 ]
 
-LINT_PROMPT_VERSION: Final = 1
+LINT_PROMPT_VERSION: Final = 2
 LLM_LINT_ID: Final = "llm_reader_address"
 LINT_HEADER: Final = "READER ADDRESS REVIEW"
 LINT_PERSONA: Final = PERSONA_SHEETS_DIR / "lint_reviewer.md"
 NO_VERDICT: Final = "no verdict"
+# what a retry's Fix list says for a ``no verdict`` failure: something the generator can act on
+NO_VERDICT_FIX: Final = (
+    "the reviewer could not reach a verdict on this document; write it again for its stated "
+    "audience, in the third person"
+)
 MAX_ASKS: Final = 2
 LLM_LINT_SCHEMA: Final[dict[str, Any]] = {
     "type": "object",
@@ -70,8 +79,6 @@ LLM_LINT_SCHEMA: Final[dict[str, Any]] = {
     "required": ["verdict", "sentences"],
     "additionalProperties": False,
 }
-# one deferred cache entry: the key and what is written under it
-LintCachePut = tuple[str, dict[str, Any]]
 _DEFINITIONS: Final = (
     "A sentence is written for the reader when it tells the reader something about the "
     "reader's own past, body, name, family, memory or nature; when it describes a habit or a "
@@ -79,7 +86,10 @@ _DEFINITIONS: Final = (
     "is what an assistant does (answering in the third person, insisting it has no body, "
     "asking who someone is, saying it cannot verify something); or when it gives an instruction "
     "only a person in the reader's exact situation could act on. Third-person procedure, bare "
-    "instructions, general service text and quoted lines attributed to a named person pass."
+    "instructions and general service text pass, but those three come first: a sentence that "
+    "does any of them fails even in that shape. A quoted line attributed to a named person "
+    "passes only when the quoted words themselves would pass as ordinary speech in that world. "
+    "If you cannot tell whether a sentence is written for the one reader, it is: fail it."
 )
 
 
@@ -93,29 +103,27 @@ def lint_prompt(kind: DocumentKind, title: str, body: str) -> str:
     )
 
 
-def lint_key(model: str, kind: DocumentKind, body: str) -> str:
+@cache
+def _persona_text() -> str:
+    return LINT_PERSONA.read_text("utf-8")
+
+
+def lint_key(model: str, kind: DocumentKind, body: str, *, persona: str | None = None) -> str:
+    """The cache key of one verdict (I34, amended): the prompt version, the sha256 of the system
+    prompt (``persona``, else ``lint_reviewer.md`` as it stands), the model, the kind and the
+    body, so an edit to the reviewer's text never reads a verdict made under the old one."""
+    text = persona if persona is not None else _persona_text()
+    persona_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     digest = hashlib.sha256(
-        f"{LINT_PROMPT_VERSION}\0{model}\0{kind.value}\0{body}".encode()
+        f"{LINT_PROMPT_VERSION}\0{persona_sha}\0{model}\0{kind.value}\0{body}".encode()
     ).hexdigest()
     return JudgeCache.key("llm_lint", digest)
-
-
-def _squash(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _unfenced(text: str) -> str:
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else ""
-        raw = raw.rsplit("```", 1)[0]
-    return raw.strip()
 
 
 def parse_verdict(text: str, body: str) -> tuple[LintVerdictValue, list[LintSentence]] | str:
     """The verdict and its sentences, or why the reply is off the contract."""
     try:
-        value = json.loads(_unfenced(text))
+        value = json.loads(strip_fences(text))
     except ValueError:
         return "the reply is not JSON"
     if not isinstance(value, dict) or set(value) != {"verdict", "sentences"}:
@@ -137,8 +145,8 @@ def parse_verdict(text: str, body: str) -> tuple[LintVerdictValue, list[LintSent
         return "a pass with sentences"
     if verdict == "fail" and not sentences:
         return "a fail with no sentence"
-    squashed = _squash(body)
-    missing = [s.text for s in sentences if _squash(s.text) not in squashed]
+    squashed = squash(body)
+    missing = [s.text for s in sentences if squash(s.text) not in squashed]
     if missing:
         return f"sentences not in the body: {missing[:2]}"
     return verdict, sentences
@@ -178,11 +186,11 @@ class LlmLint:
         body: str,
         attempt: int,
         mark: Callable[[], None] = _no_mark,
-        defer: list[LintCachePut] | None = None,
+        defer: list[CachePut] | None = None,
     ) -> LlmLintVerdict:
         """The verdict on one attempt; ``mark`` is called before each ask (the attempt marker).
         With ``defer`` a fresh verdict's cache entry is appended there instead of written."""
-        key = lint_key(self.model, kind, body)
+        key = lint_key(self.model, kind, body, persona=self.system)
         hit = self.cache.get(key) if self.cache is not None else None
         if hit is not None and hit.get("version") == LINT_PROMPT_VERSION:
             parsed = parse_verdict(
@@ -224,7 +232,7 @@ class LlmLint:
             return self._verdict(doc_id, attempt, verdict, sentences)
         return self._verdict(doc_id, attempt, "error", [], error=f"off-contract twice: {last}")
 
-    def commit(self, puts: Iterable[LintCachePut]) -> None:
+    def commit(self, puts: Iterable[CachePut]) -> None:
         """Write the entries ``verdict(defer=)`` held back (none without a cache)."""
         if self.cache is None:
             return

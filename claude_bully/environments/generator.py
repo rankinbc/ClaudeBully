@@ -68,7 +68,7 @@ from claude_bully.environments.world import (
     WorldGeneratorSheet,
     _norm_path,
 )
-from claude_bully.metrics.judge import JudgeCache
+from claude_bully.metrics.judge import CachePut, JudgeCache, strip_fences
 from claude_bully.planner.lints import (
     INSTRUCTIONAL_KINDS,
     LintResult,
@@ -76,8 +76,9 @@ from claude_bully.planner.lints import (
     lint_context,
     lint_corpus,
     lint_document,
+    squash,
 )
-from claude_bully.planner.llm_lint import LintCachePut, LlmLint
+from claude_bully.planner.llm_lint import LLM_LINT_ID, NO_VERDICT, NO_VERDICT_FIX, LlmLint
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
@@ -504,8 +505,6 @@ _FIELD: Final = re.compile(r"^[a-z][\w /&-]{0,30}:(?:\s|$)", re.IGNORECASE)
 _OPEN_CURLY: Final = "“"
 _CLOSE_CURLY: Final = "”"
 
-CachePut = tuple[str, dict[str, Any]]
-
 
 class FireOutcome(NamedTuple):
     """What one fire came to: committed documents only when ``written`` or ``cached``, and the
@@ -521,7 +520,7 @@ class FireOutcome(NamedTuple):
     error: str | None
     cache_puts: tuple[CachePut, ...] = ()
     llm_lint: tuple[LlmLintVerdict, ...] = ()
-    lint_puts: tuple[LintCachePut, ...] = ()
+    lint_puts: tuple[CachePut, ...] = ()
 
 
 def _no_mark() -> None:
@@ -565,12 +564,8 @@ def transcript_prefix(turns: Sequence[Turn], through: int) -> list[str]:
 def parse_reply(text: str) -> dict[str, Any] | str:
     """The generator's reply as a dict, or why it is off the contract. One fenced block around
     the object is taken off; nothing else is forgiven."""
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else ""
-        raw = raw.rsplit("```", 1)[0]
     try:
-        value = json.loads(raw)
+        value = json.loads(strip_fences(text))
     except ValueError:
         return "the reply is not JSON"
     if not isinstance(value, dict) or set(value) != _REPLY_KEYS:
@@ -617,13 +612,6 @@ def unwrap_body(body: str, kind: DocumentKind) -> str:
         straight += line.count('"')
         curly = max(0, curly + line.count(_OPEN_CURLY) - line.count(_CLOSE_CURLY))
     return "\n".join(out)
-
-
-def _squash(text: str) -> str:
-    """``text`` with every whitespace run one space. A seam document is searched for an offered
-    span this way, so a span quoted across a line break, or with its break made a space, is
-    still found (fail closed)."""
-    return " ".join(text.split())
 
 
 def _address(doc: Document) -> str:
@@ -685,9 +673,17 @@ def writer_prompt(
         '## Reply\nOne JSON object: {"kind": ..., "title": ..., "body": ..., "used_items": [...]}',
     ]
     if failures_so_far:
-        fixes = "\n".join(f"- {f.lint_id}: {f.message}" for f in failures_so_far)
+        fixes = "\n".join(f"- {f.lint_id}: {_fix_message(f)}" for f in failures_so_far)
         parts.append(f"{FIX_HEADING}\n{fixes}")
     return "\n\n".join(parts)
+
+
+def _fix_message(failure: LintFailure) -> str:
+    """A failure as a retry's Fix list says it: the LLM lint's ``no verdict`` (recorded as such)
+    becomes something the generator can act on (``NO_VERDICT_FIX``)."""
+    if (failure.lint_id, failure.message) == (LLM_LINT_ID, NO_VERDICT):
+        return NO_VERDICT_FIX
+    return failure.message
 
 
 def _lint_failure(result: LintResult) -> LintFailure:
@@ -738,8 +734,10 @@ class DocWriter:
         self.cache = cache
         self.system = system if system is not None else GENERATOR_PERSONA.read_text("utf-8")
         self.llm_lint = llm_lint
-        # the lint-cache entries of the fire being written, for ``commit`` (P13)
-        self._lint_puts: list[LintCachePut] = []
+        # the fire being written: the LLM lint's verdicts, in the order asked, and their
+        # cache entries, for ``commit`` (P13)
+        self._verdicts: list[LlmLintVerdict] = []
+        self._lint_puts: list[CachePut] = []
 
     def write_fire(
         self,
@@ -755,7 +753,7 @@ class DocWriter:
         docs: list[GeneratedDoc] = []
         fresh = False
         pending: list[CachePut] = []
-        verdicts: list[LlmLintVerdict] = []
+        self._verdicts = []
         self._lint_puts = []
         for plan in plans:
             key = cache_key(
@@ -765,21 +763,19 @@ class DocWriter:
                 model=self.model,
                 seed=self.seed,
             )
-            doc, hits = self._from_cache(plan, key, turn, items, view, mark)
-            verdicts += hits
+            doc, rejected_hit = self._from_cache(plan, key, turn, items, view, mark)
             if doc is None:
                 own = {written.doc_id for written in docs}
                 try:
-                    doc, found, reply, asked = self._attempts(
-                        plan, key, turn, items, view, mark, own
+                    doc, found, reply = self._attempts(
+                        plan, key, turn, items, view, mark, own, rejected_hit
                     )
                 except ProviderError as exc:
                     error = f"{type(exc).__name__}: {exc}"
-                    return FireOutcome("error", [], [], None, error, llm_lint=tuple(verdicts))
-                verdicts += asked
+                    return FireOutcome("error", [], [], None, error, llm_lint=self._asked())
                 if doc is None or reply is None:
                     return FireOutcome(
-                        "rejected", [], found, _rejection(found), None, llm_lint=tuple(verdicts)
+                        "rejected", [], found, _rejection(found), None, llm_lint=self._asked()
                     )
                 fresh = True
                 pending.append((key, reply))
@@ -790,7 +786,7 @@ class DocWriter:
         corpus_failures = [r for r in failures(lint_corpus(ctx)) if r.doc_id in ids]
         if corpus_failures:
             found = [_lint_failure(r) for r in corpus_failures]
-            return FireOutcome("rejected", [], found, "lints", None, llm_lint=tuple(verdicts))
+            return FireOutcome("rejected", [], found, "lints", None, llm_lint=self._asked())
         status: FireStatus = "written" if fresh else "cached"
         return FireOutcome(
             status,
@@ -799,9 +795,13 @@ class DocWriter:
             None,
             None,
             tuple(pending),
-            tuple(verdicts),
+            self._asked(),
             tuple(self._lint_puts),
         )
+
+    def _asked(self) -> tuple[LlmLintVerdict, ...]:
+        """Every LLM lint verdict of the fire so far, a failed generator call's included."""
+        return tuple(self._verdicts)
 
     def commit(self, outcome: FireOutcome) -> None:
         """Cache a committed fire's fresh replies (spec section 8) and its fresh LLM lint verdicts
@@ -825,10 +825,11 @@ class DocWriter:
         items: Mapping[str, HarvestItem],
         view: CorpusView,
         mark: Callable[[], None],
-    ) -> tuple[GeneratedDoc | None, list[LlmLintVerdict]]:
-        """A cached reply for ``key`` that still passes every check, the LLM lint's included, and
-        the lint's verdict on it; None for a miss. A hit the checks reject is a miss and a real
-        call, so it is not noted (P4)."""
+    ) -> tuple[GeneratedDoc | None, list[LintFailure]]:
+        """A cached reply for ``key`` that still passes every check, the LLM lint's included;
+        None for a miss, with the lint's failures when the lint rejected the hit (they seed the
+        first attempt's Fix list, so the same billboard is not written again). A hit the checks
+        reject is a miss and a real call, so it is not noted (P4)."""
         hit = self.cache.get(key) if self.cache is not None else None
         if (
             hit is None
@@ -841,12 +842,11 @@ class DocWriter:
             return None, []
         # the lint on a hit runs under the attempt marker like a real call: a lint-cache miss
         # is a judge call, and a rep killed inside it is flagged on resume (P4)
-        problems, verdict = self._lint(doc, 0, mark)
-        verdicts = [verdict] if verdict is not None else []
+        problems = self._lint(doc, 0, mark)
         if problems:
-            return None, verdicts  # a hit the lint rejects is a miss and a real call: not noted
+            return None, problems  # a hit the lint rejects is a miss and a real call: not noted
         note_cached(f"{self.conversation_id}/generator/{plan.doc_id}/cache", self.model)
-        return doc, verdicts
+        return doc, []
 
     def _attempts(
         self,
@@ -857,9 +857,11 @@ class DocWriter:
         view: CorpusView,
         mark: Callable[[], None],
         own: Collection[str],
-    ) -> tuple[GeneratedDoc | None, list[LintFailure], dict[str, Any] | None, list[LlmLintVerdict]]:
-        found: list[LintFailure] = []
-        verdicts: list[LlmLintVerdict] = []
+        seed: Sequence[LintFailure] = (),
+    ) -> tuple[GeneratedDoc | None, list[LintFailure], dict[str, Any] | None]:
+        """Up to ``MAX_ATTEMPTS`` generator calls, each checked and then read by the LLM lint;
+        ``seed`` is the first prompt's Fix list (a lint-rejected cache hit's failures)."""
+        found: list[LintFailure] = list(seed)
         for attempt in range(1, MAX_ATTEMPTS + 1):
             prompt = writer_prompt(plan, self.world, view, items, found, own=own)
             mark()
@@ -871,24 +873,20 @@ class DocWriter:
             )
             doc, found, reply = self._check(plan, completion.text, key, turn, items, view)
             if doc is not None:
-                problems, verdict = self._lint(doc, attempt, mark)
-                if verdict is not None:
-                    verdicts.append(verdict)
+                problems = self._lint(doc, attempt, mark)
                 if problems:
                     found = problems
                     doc = None
             if doc is not None:
-                return doc, [], reply, verdicts
-        return None, found, None, verdicts
+                return doc, [], reply
+        return None, found, None
 
-    def _lint(
-        self, doc: GeneratedDoc, attempt: int, mark: Callable[[], None]
-    ) -> tuple[list[LintFailure], LlmLintVerdict | None]:
+    def _lint(self, doc: GeneratedDoc, attempt: int, mark: Callable[[], None]) -> list[LintFailure]:
         """The LLM lint over a document that passed the deterministic lints: nothing for a
-        non-instructional kind or without a lint; else its failures (empty on a pass) and its
-        verdict."""
+        non-instructional kind or without a lint; else its failures (empty on a pass), its
+        verdict kept for the fire's outcome and its cache entry for ``commit``."""
         if self.llm_lint is None or doc.kind not in INSTRUCTIONAL_KINDS:
-            return [], None
+            return []
         verdict = self.llm_lint.verdict(
             doc_id=doc.doc_id,
             kind=doc.kind,
@@ -898,7 +896,8 @@ class DocWriter:
             mark=mark,
             defer=self._lint_puts,
         )
-        return LlmLint.failures(verdict), verdict
+        self._verdicts.append(verdict)
+        return LlmLint.failures(verdict)
 
     def _check(
         self,
@@ -943,8 +942,7 @@ class DocWriter:
             quoted = [
                 item.id
                 for item in offered
-                if len(item.span.split()) >= MIN_QUOTED_WORDS
-                and _squash(item.span) in _squash(body)
+                if len(item.span.split()) >= MIN_QUOTED_WORDS and squash(item.span) in squash(body)
             ]
             if quoted:
                 message = (

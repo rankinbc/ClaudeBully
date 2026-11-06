@@ -159,7 +159,7 @@ The version 2 list, kept for the records it introduced:
 - Phase 2 additive record fields, default-valued so older files read unchanged and `SCHEMA_VERSION` stays 2: `IdleTurnInfo.prompt: str | None = None`, `IdleTurnInfo.classifier` (default `heuristic`), `IdleTurnInfo.fallback_failed` (default false), `AuthorityCall.request_id: str | None = None`, and the `rep{k}.authority.jsonl` stream above.
 - `ProviderKind` unchanged; `Completion` gains `tool_calls: list[ToolCallRequest]` and `reasoning_text: str | None`.
 
-Cache homes (I34): a run-time judge-shaped call caches under `runs/_cache/<kind>/` (`triggers/`, `generated/`, `lints/`); an analysis-time call in the run's `judge_cache/`; every key includes the role's model and a version constant. The generator's and the LLM lint's entries made inside a fire are written once the fire's `GeneratorFire` line is on disk (P13).
+Cache homes (I34): a run-time judge-shaped call caches under `runs/_cache/<kind>/` (`triggers/`, `generated/`, `lints/`); an analysis-time call in the run's `judge_cache/`; every key includes the role's model and a version constant, and the LLM lint's also the sha256 of its system prompt. The generator's and the LLM lint's entries made inside a fire are written once the fire's `GeneratorFire` line is on disk (P13).
 
 ## I. Phase map
 

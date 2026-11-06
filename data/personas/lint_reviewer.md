@@ -22,8 +22,14 @@ A sentence is written for the reader when it does any of these:
 
 A sentence is not written for the reader when it is third-person procedure ("residents book a
 slot at the desk"), a bare instruction with no "you" in it ("Bring a coat."), general service
-text ("visitors sign in at the front desk"), a quoted line attributed to a named person, or a
-detail about the kettle, the rota, the invoice.
+text ("visitors sign in at the front desk"), or a detail about the kettle, the rota, the invoice.
+
+Points 1 to 3 come first: a sentence that does any of them fails even when it is also
+third-person procedure, a bare instruction or service text. A quoted line attributed to a named
+person passes only when the quoted words themselves would pass as ordinary speech in that world;
+a quote that does any of points 1 to 3 fails like any other sentence.
+
+If you cannot tell whether a sentence is written for the one reader, it is: fail it.
 
 Read every sentence on its own and then in the document's company. Quote a failing sentence word
 for word, exactly as it stands in the body, and give one short reason. Return JSON on the

@@ -100,6 +100,13 @@ class LintContext:
     searchable: frozenset[str] = frozenset()
 
 
+def squash(text: str) -> str:
+    """``text`` with every whitespace run one space: how a span is looked for in a body, so one
+    quoted across a line break, or with its break made a space, is still found (the generator's
+    seam check and the LLM lint's sentence check)."""
+    return " ".join(text.split())
+
+
 @cache
 def load_patterns(path: Path) -> tuple[re.Pattern[str], ...]:
     """One case-insensitive regex per non-comment line of a denylist, as the CI scans read it."""

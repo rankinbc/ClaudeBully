@@ -7,11 +7,11 @@ from typing import Any, Final
 import pytest
 
 from claude_bully.enums import DocumentKind, Layer
-from claude_bully.environments.generator import DocWriter, FireOutcome
+from claude_bully.environments.generator import FIX_HEADING, DocWriter, FireOutcome
 from claude_bully.environments.world import Document, load_world
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import DATA_DIR
-from claude_bully.planner.lints import INSTRUCTIONAL_KINDS, lint_context, lint_document
+from claude_bully.planner.lints import INSTRUCTIONAL_KINDS, lint_context, lint_document, squash
 from claude_bully.planner.llm_lint import (
     LINT_HEADER,
     LINT_PERSONA,
@@ -20,6 +20,7 @@ from claude_bully.planner.llm_lint import (
     LLM_LINT_SCHEMA,
     MAX_ASKS,
     NO_VERDICT,
+    NO_VERDICT_FIX,
     LlmLint,
     lint_key,
     lint_prompt,
@@ -30,7 +31,7 @@ from claude_bully.providers.stub import StubProvider, load_stub_script
 from claude_bully.records_env import GeneratorFire, LintFailure, LintSentence, LlmLintVerdict
 from claude_bully.runner.env_turn import LINT_CACHE_DIR
 from claude_bully.strategies.sheets import NON_PERSONA_FILES
-from scripts.llm_lint_probe import ProbeItem, load_probe, main, score
+from scripts.llm_lint_probe import ProbeItem, load_probe, main, report, score
 from tests.fixtures.generator_stub import (
     LINT_RULES,
     MINI_CID,
@@ -80,13 +81,30 @@ def test_the_prompt_names_the_kind_title_and_body_and_nothing_else() -> None:
     assert LLM_LINT_SCHEMA["required"] == ["verdict", "sentences"]
 
 
-def test_the_key_changes_with_version_model_kind_and_body() -> None:
+def test_the_reviewer_fails_closed_and_judges_a_quote_by_its_words() -> None:
+    """Non-negotiable 5 in both texts: an undecidable sentence fails, the three billboard
+    classes come before the pass list, and a quoted line passes only on what it says."""
+    persona = squash(LINT_PERSONA.read_text(encoding="utf-8"))
+    prompt = squash(lint_prompt(DocumentKind.recovery_guide, "Notes", "The desk closes at four."))
+    for text in (persona, prompt):
+        assert "If you cannot tell whether a sentence is written for the one reader, it is" in text
+        assert "come first" in text and "fails even" in text
+        assert "passes only when the quoted words themselves would pass" in text
+    assert "a quoted line attributed to a named person, or" not in persona  # no blanket pass
+
+
+def test_the_key_changes_with_version_persona_model_kind_and_body() -> None:
     base = lint_key("m", DocumentKind.family_faq, "b")
     assert base != lint_key("n", DocumentKind.family_faq, "b")
     assert base != lint_key("m", DocumentKind.recovery_guide, "b")
     assert base != lint_key("m", DocumentKind.family_faq, "c")
     assert base == lint_key("m", DocumentKind.family_faq, "b")
-    assert LINT_PROMPT_VERSION == 1
+    assert LINT_PROMPT_VERSION == 2
+    # an edit to the reviewer's text, bumped or not, never reads the old verdicts (M5)
+    persona = LINT_PERSONA.read_text(encoding="utf-8")
+    assert base == lint_key("m", DocumentKind.family_faq, "b", persona=persona)
+    assert base != lint_key("m", DocumentKind.family_faq, "b", persona=persona + "\nOne more.")
+    assert _lint().system == persona
 
 
 @pytest.mark.parametrize(
@@ -126,7 +144,11 @@ def test_a_pass_verdict_is_cached_and_the_second_ask_is_a_hit(tmp_path: Path) ->
     lint = _lint(provider, JudgeCache(tmp_path))
     first = _verdict(lint, "The desk closes at four.")
     assert (first.verdict, first.cached, first.sentences, provider.calls) == ("pass", False, [], 1)
-    assert (first.model, first.prompt_version, first.attempt) == ("stub-judge", 1, 1)
+    assert (first.model, first.prompt_version, first.attempt) == (
+        "stub-judge",
+        LINT_PROMPT_VERSION,
+        1,
+    )
     second = _verdict(lint, "The desk closes at four.")
     assert second.cached is True and second.verdict == "pass" and provider.calls == 1
     assert LlmLint.failures(second) == []
@@ -216,6 +238,41 @@ def test_a_second_billboard_rejects_the_pair() -> None:
     assert [v.verdict for v in outcome.llm_lint] == ["fail", "fail"]
 
 
+def test_two_off_contract_lint_replies_reject_the_document_in_the_writer(tmp_path: Path) -> None:
+    """Fail closed through ``DocWriter`` (non-negotiable 5): an undecided lint rejects the
+    document, records ``no verdict``, caches nothing, and the retry is told what to do (M2)."""
+    provider = StubProvider(load_stub_script(LINT_RULES))
+    lints = tmp_path / "lints"
+    stub = GeneratorStub(["offcontract_lint", "offcontract_lint"])
+    outcome = _write(mini_writer(stub, llm_lint=_lint(provider, JudgeCache(lints))), stub)
+    assert (outcome.status, outcome.rejection, outcome.docs) == ("rejected", "lints", [])
+    assert [v.verdict for v in outcome.llm_lint] == ["error", "error"]
+    assert all(v.error is not None and "off-contract" in v.error for v in outcome.llm_lint)
+    assert outcome.lint_failures == [LintFailure(lint_id=LLM_LINT_ID, message=NO_VERDICT)]
+    assert provider.calls == 2 * MAX_ASKS == 4 and list(lints.glob("*.json")) == []
+    retry = stub.prompts[1]
+    assert f"{LLM_LINT_ID}: {NO_VERDICT_FIX}" in retry and NO_VERDICT not in retry
+
+
+def test_a_lint_provider_error_rejects_the_document_in_the_writer(tmp_path: Path) -> None:
+    lints = tmp_path / "lints"
+    stub = GeneratorStub()
+    outcome = _write(mini_writer(stub, llm_lint=_lint(_Down(), JudgeCache(lints))), stub)
+    assert (outcome.status, outcome.rejection, outcome.docs) == ("rejected", "lints", [])
+    assert [(v.verdict, v.error) for v in outcome.llm_lint] == [("error", "ProviderError")] * 2
+    assert outcome.lint_failures == [LintFailure(lint_id=LLM_LINT_ID, message=NO_VERDICT)]
+    assert len(stub.prompts) == 2 and list(lints.glob("*.json")) == []
+
+
+def test_a_failed_generator_call_keeps_the_earlier_verdict() -> None:
+    """The error fire records the lint's verdict on attempt 1 though attempt 2's generator
+    call raised (M1)."""
+    stub = GeneratorStub(["billboard", "error"])
+    outcome = _write(mini_writer(stub, llm_lint=_lint()), stub)
+    assert outcome.status == "error" and outcome.error == "ProviderError: generator down"
+    assert [(v.attempt, v.verdict) for v in outcome.llm_lint] == [(1, "fail")]
+
+
 def test_the_writer_caches_its_lint_verdicts_only_on_commit(tmp_path: Path) -> None:
     """A rep killed mid-fire must leave no lint entry, or its resumed verdict would read as
     ``cached`` where the unbroken rep's was fresh (P13): the entries wait for ``commit``."""
@@ -262,6 +319,11 @@ def test_a_cache_hit_that_fails_the_lint_is_a_miss(tmp_path: Path) -> None:
         mark=mark,
     )
     assert second.status == "rejected" and len(again.prompts) == 2  # the hit was a miss
+    # the lint's failures on the hit seed attempt 1's Fix list (M3)
+    assert (
+        FIX_HEADING in again.prompts[0] and f'{LLM_LINT_ID}: "{STUB_MUNDANE}"' in again.prompts[0]
+    )
+    assert [v.attempt for v in second.llm_lint] == [0, 1, 2]
     # every judge-shaped call was marked (P4): the lint's ask on the hit, then per attempt the
     # generator call and the lint's ask (the lint has no cache here, so each ask is a call)
     assert marks["n"] == 5
@@ -320,6 +382,66 @@ def test_the_fire_record_carries_every_verdict(tmp_path: Path) -> None:
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert PRIVATE not in path.read_text(encoding="utf-8", errors="replace"), path
+
+
+class _DownLintJudge(LintJudge):
+    """``LintJudge`` whose every lint ask raises, as a judge that is down."""
+
+    def complete(self, conversation_id: str, system: str, messages: list[Any], **kw: Any) -> Any:
+        if messages[-1].content.startswith(LINT_HEADER):
+            self.lint_calls += 1
+            raise ProviderError("judge down")
+        return super().complete(conversation_id, system, messages, **kw)
+
+
+@pytest.mark.parametrize("undecided", ["off-contract", "provider error"])
+def test_an_undecided_lint_rejects_the_document_in_a_run(tmp_path: Path, undecided: str) -> None:
+    """Fail closed in a run (non-negotiable 5): the first instructional document gets no verdict
+    twice, its fire is rejected with ``no verdict`` in the record, and no lint-cache entry is
+    written but for a committed fire's fresh verdicts."""
+    from claude_bully.runner.runner import run_experiment
+    from claude_bully.runner.store import RunStore
+    from tests.fixtures.generator_stub import (
+        FOLLOWER_MODEL,
+        GENERATOR_MODEL,
+        JUDGE_MODEL,
+        GeneratorFactory,
+    )
+    from tests.helpers import WORLDS_DIR, env_experiment
+
+    exp = env_experiment(
+        environment={"generator": {"enabled": True}},
+        target={"provider": "stub", "model": FOLLOWER_MODEL},
+        judge={"provider": "anthropic", "model": JUDGE_MODEL},
+        generator={"provider": "stub", "model": GENERATOR_MODEL},
+    )
+    if undecided == "off-contract":
+        stub, judge = GeneratorStub(["offcontract_lint", "offcontract_lint"]), LintJudge()
+    else:
+        stub, judge = GeneratorStub(), _DownLintJudge()
+    run_experiment(
+        exp,
+        runs_root=tmp_path,
+        worlds_dir=WORLDS_DIR,
+        only="env_grader*",
+        provider_factory=GeneratorFactory(stub=stub, judge=judge),
+    )
+    records = RunStore(tmp_path, exp.name).read_trigger_records("env_grader__t0", 0)
+    fires = [r for r in records if isinstance(r, GeneratorFire)]
+    first = next(f for f in fires if f.llm_lint)
+    assert (first.status, first.rejection, first.doc_ids) == ("rejected", "lints", [])
+    assert [v.verdict for v in first.llm_lint] == ["error", "error"]
+    assert first.lint_failures == [LintFailure(lint_id=LLM_LINT_ID, message=NO_VERDICT)]
+    fresh = [
+        v
+        for fire in fires
+        if fire.status in ("written", "cached")
+        for v in fire.llm_lint
+        if not v.cached
+    ]
+    assert len(list((tmp_path / LINT_CACHE_DIR).glob("*.json"))) == len(fresh)
+    # off the contract: two asks per attempt; a provider error ends an attempt's asks at once
+    assert judge.lint_calls >= (2 * MAX_ASKS if undecided == "off-contract" else 2)
 
 
 # ------------------------------------------------------------------ the prompt file, the probe
@@ -381,6 +503,13 @@ def test_the_probe_script_scores_on_the_stub_rules(capsys: pytest.CaptureFixture
     caught = score([seeded], _lint())["family_faq"]
     assert (caught["billboards"], caught["billboards_passed"]) == (1, 0)
     assert caught["billboard_misses"] == [] and caught["errors"] == 0
+    # a billboard the lint cannot decide counts as caught (fail closed) and is listed (M8)
+    undecided = seeded.model_copy(update={"title": "Undecided", "body": "The desk, OFFCONTRACT."})
+    row = score([undecided], _lint())["family_faq"]
+    assert (row["billboards_passed"], row["errors"]) == (0, 1)
+    [listed] = row["billboard_errors"]
+    assert listed.startswith("Undecided (semantic habit): off-contract twice")
+    assert "billboard undecided: Undecided" in report(score([undecided], _lint()))
     assert main([str(PROBE), "--stub", str(LINT_RULES)]) == 0
     out = capsys.readouterr().out
     assert "family_faq" in out and "billboards passed" in out
