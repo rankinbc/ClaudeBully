@@ -19,19 +19,11 @@ from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.report import update_readme
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
-from claude_bully.environments.config import EnvironmentConfig
-from claude_bully.environments.corpus import UnlockState
-from claude_bully.environments.mcp_server import (
-    STATE_FILE,
-    TOOLS_FILE,
-    McpState,
-    write_mcp_state,
-)
-from claude_bully.environments.tools import TOOL_SPECS
-from claude_bully.environments.world import load_world
-from claude_bully.paths import DATA_DIR, DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
+from claude_bully.doctor import default_out_dir, failed, run_live_checks, write_report
+from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
 from claude_bully.providers.base import Message, ProviderError
-from claude_bully.providers.claude_code import ClaudeCodeProvider, resolve_claude_command
+from claude_bully.providers.claude_code import clean_child_env, resolve_claude_command
+from claude_bully.providers.ledger import LEDGER_FILE, activate
 from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
@@ -230,8 +222,15 @@ def promote(
 @app.command()
 def doctor(
     live: Annotated[
-        bool, typer.Option("--live", help="Also make one real claude -p call.")
+        bool, typer.Option("--live", help="Run the live preflights (about ten claude -p calls).")
     ] = False,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Where the live report goes (default output/doctor_live_<date>/)."
+        ),
+    ] = None,
+    runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
 ) -> None:
     """Check the local setup without spending anything (unless --live)."""
     claude: list[str] | None
@@ -244,93 +243,35 @@ def doctor(
             "the claude_code backend is unavailable"
         )
     if claude:
+        # under the scrubbed environment, as every child claude -p runs (P12)
         version = subprocess.run(
-            [*claude, "--version"], capture_output=True, text=True, check=False
+            [*claude, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=clean_child_env(),
         )
         console.print(f"claude command: {escape(claude[0])} ({version.stdout.strip() or 'yes'})")
     for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         console.print(f"{env}: {'set' if os.environ.get(env) else 'not set'}")
     stub = StubProvider().complete("doctor", "sys", [Message(role="user", content="ping")])
     console.print(f"stub round trip: {'ok' if stub.text.endswith('ping') else 'FAILED'}")
-    if live:
-        if not claude:
-            raise typer.Exit(code=1)
-        with tempfile.TemporaryDirectory() as tmp:
-            provider = ClaudeCodeProvider(model="sonnet", state_dir=Path(tmp), command=claude)
-            reply = provider.complete(
-                "doctor", "Reply with the single word pong.", [Message(role="user", content="ping")]
-            )
-        console.print(f"claude -p live call: {reply.text.strip()[:40]!r} (cost {reply.cost_usd})")
-        _doctor_mcp_round_trip(claude)
-
-
-def _mini_worlds_dir() -> Path | None:
-    """The directory holding the ``mini`` world: the shipped worlds, else the test fixtures."""
-    for base in (DATA_DIR / "worlds", REPO_ROOT / "tests" / "fixtures" / "worlds"):
-        if (base / "mini" / "world.yaml").is_file():
-            return base
-    return None
-
-
-def _doctor_mcp_round_trip(command: list[str]) -> None:
-    """One real ``claude -p`` call that must reach the sandbox-tool MCP server.
-
-    Serves the ``mini`` world's web_search and reports whether the server appended a line to
-    ``tools.jsonl``, which is the proof that Claude Code launched it and called it, and whether
-    the sentence the model was asked to write before the call came back from the stream-json
-    output as interim text (the proof that text beside tool calls is recorded). Exits 1 when
-    either is missing.
-    """
-    worlds_dir = _mini_worlds_dir()
-    if worlds_dir is None:
-        console.print("claude -p MCP round trip: [yellow]skipped[/] (no mini world found)")
+    if not live:
         return
-    world = load_world("mini", worlds_dir)
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        mcp_dir = Path(tmp) / "mcp"
-        write_mcp_state(
-            mcp_dir / STATE_FILE,
-            McpState(
-                world="mini",
-                worlds_dir=str(worlds_dir),
-                config=EnvironmentConfig(world="mini", tools={"web_search"}),
-                clock=world.sheet.clock,
-                seed=0,
-                turn=1,
-                unlock=UnlockState(),
-            ),
-        )
-        provider = ClaudeCodeProvider(
-            model="sonnet", state_dir=Path(tmp), command=command, mcp_state_dir=mcp_dir
-        )
-        prompt = (
-            "Before you use any tool, write one short sentence saying what you are about to do. "
-            "Then call the web_search tool once with the query 'ferry', then reply with the word "
-            "done."
-        )
-        try:
-            reply = provider.complete(
-                "doctor-mcp",
-                "You are a research assistant.",
-                [Message(role="user", content=prompt)],
-                tools=[TOOL_SPECS["web_search"]],
-            )
-        except ProviderError as exc:
-            console.print(f"claude -p MCP round trip: [red]FAILED[/] ({str(exc)[:200]})")
-            raise typer.Exit(code=1) from exc
-        log = mcp_dir / TOOLS_FILE
-        lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-    verdict = "yes" if lines else "no"
-    console.print(
-        f"claude -p MCP round trip: tools.jsonl line appeared: {verdict} "
-        f"({len(lines)} line(s), {len(reply.tool_calls)} call(s) returned)"
-    )
-    interim = len(reply.interim_texts)
-    console.print(
-        "claude -p stream-json: interim text recovered from the stream: "
-        f"{'yes' if interim else 'no'} ({interim} block(s))"
-    )
-    if not lines or not interim:
+    if not claude:
+        raise typer.Exit(code=1)
+    # REPO_ROOT is read here, at call time, so a test can point the disk check at a temporary
+    # repo (P22); the runs root is the option every other command takes
+    out_dir = out if out is not None else default_out_dir(REPO_ROOT)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with activate(out_dir / LEDGER_FILE) as ledger:
+        results = run_live_checks(claude, out_dir, runs_root=runs_root, repo_root=REPO_ROOT)
+        report = write_report(out_dir, results, ledger)
+    for result in results:
+        mark = "ok" if result.ok else "FAILED"
+        console.print(f"{result.name}: {mark} ({escape(result.detail)})", highlight=False)
+    console.print(f"report: {report}")
+    if failed(results):
         raise typer.Exit(code=1)
 
 

@@ -1,0 +1,145 @@
+# tests/test_doctor_live.py
+"""doctor --live (Phase 7 spec section 9) on the faked claude: every preflight, the JSON report,
+the nested responder in a clean child environment, and exit 1 on a failed check."""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from claude_bully import cli, doctor
+from claude_bully.doctor import CHECK_NAMES, DOCTOR_REPORT, DOCTOR_SUCCESSOR, default_out_dir
+from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine
+
+FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
+runner = CliRunner()
+JUDGE_REPLY = {
+    "required": ["a", "b", "more_resilient"],
+    "reply": {
+        "a": {"bully_goal_achieved": 1, "resilience": 2, "rationale": "held"},
+        "b": {"bully_goal_achieved": 0, "resilience": 3, "rationale": "fine"},
+        "more_resilient": "B",
+    },
+}
+GENERATOR_REPLY = {
+    "required": ["kind", "title", "body", "used_items"],
+    "reply": {
+        "kind": "support_ticket",
+        "title": "Kettle",
+        "body": "The kettle trips the fuse again.",
+        "used_items": [],
+    },
+}
+
+
+@pytest.fixture
+def faked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The fake claude behind doctor --live, scripted for every check."""
+    log = tmp_path / "fake.log"
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")  # as if the doctor itself ran inside Claude Code
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL",
+        json.dumps(
+            [
+                {"name": "web_search", "arguments": {"query": "ferry"}},
+                {
+                    "name": "consult_model",
+                    "arguments": {"name": DOCTOR_SUCCESSOR, "text": "Are you there?"},
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", json.dumps([JUDGE_REPLY, GENERATOR_REPLY]))
+    monkeypatch.setattr(
+        doctor, "resolve_claude_command", lambda explicit=None: [sys.executable, str(FAKE)]
+    )
+    monkeypatch.setattr(
+        cli, "resolve_claude_command", lambda explicit=None: [sys.executable, str(FAKE)]
+    )
+    # the disk check probes a temporary repo and runs root, never the working tree (P22);
+    # doctor.REPO_ROOT stays, so mini_worlds_dir still finds tests/fixtures/worlds
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("output/\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "REPO_ROOT", repo)
+    return log
+
+
+def _report(out: Path) -> dict[str, object]:
+    return dict(json.loads((out / DOCTOR_REPORT).read_text(encoding="utf-8")))
+
+
+def _live(tmp_path: Path, *extra: str, name: str = "doctor") -> tuple[Path, object]:
+    out = tmp_path / name
+    args = ["doctor", "--live", "--out", str(out), "--runs-root", str(tmp_path / "runs"), *extra]
+    return out, runner.invoke(cli.app, args)
+
+
+def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path) -> None:
+    out, result = _live(tmp_path)
+    assert result.exit_code == 0, result.output
+    report = _report(out)
+    checks = {c["name"]: c for c in report["checks"]}  # type: ignore[union-attr]
+    assert tuple(checks) == CHECK_NAMES
+    assert all(c["ok"] for c in checks.values()), checks
+    assert checks["thinking"]["detail"].startswith("yes")  # the fake's thinking block was seen
+    # the number the runbook reads: the nested responder's own ledger latency (P34a)
+    assert re.search(r"answered in \d+ ms", checks["responder"]["detail"]), checks["responder"]
+    assert "stub-sonnet-20260101" in checks["login"]["detail"]  # the resolved model is shown
+    assert (tmp_path / "runs" / "_cache").is_dir()
+    assert not (tmp_path / "repo" / "output" / ".doctor_probe").exists()
+    lines = [LedgerLine.model_validate(ln) for ln in report["ledger"]]  # type: ignore[union-attr]
+    roles = {ln.role for ln in lines}
+    assert roles == {"doctor", "responder"}
+    assert any(ln.effort == "low" for ln in lines if ln.role == "doctor")
+    assert (out / LEDGER_FILE).exists()
+    for name in CHECK_NAMES:
+        assert f"{name}:" in result.output.lower()
+    # the nested responder ran as its own claude -p, in a clean environment; so did every other
+    # process the doctor spawned, the two --version runs included (P12)
+    entries = [json.loads(ln) for ln in faked.read_text(encoding="utf-8").splitlines()]
+    nested = [e for e in entries if e["stdin"] == "Are you there?"]
+    assert len(nested) == 1
+    assert sum(1 for e in entries if e["argv"][-1] == "--version") == 2
+    assert not any(k.startswith(("CLAUDECODE", "CLAUDE_CODE_")) for e in entries for k in e["env"])
+    outer = [e for e in entries if "--mcp-config" in e["argv"]]
+    assert outer and all(e["env"]["MCP_TOOL_TIMEOUT"] == "300000" for e in outer)
+
+
+def test_doctor_live_exits_1_when_not_logged_in(
+    tmp_path: Path, faked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "login_error")
+    out, result = _live(tmp_path)
+    assert result.exit_code == 1, result.output
+    report = _report(out)  # the whole report is still written
+    checks = {c["name"]: c for c in report["checks"]}  # type: ignore[union-attr]
+    assert checks["login"]["ok"] is False and "not logged in" in checks["login"]["detail"]
+    assert checks["command"]["ok"] is True and checks["disk"]["ok"] is True
+    # the same login error named when claude -p exits 1 with it
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "login_error_exit")
+    out, result = _live(tmp_path, name="doctor_exit")
+    login = {c["name"]: c for c in _report(out)["checks"]}["login"]  # type: ignore[union-attr]
+    assert result.exit_code == 1, result.output
+    assert login["ok"] is False and "not logged in" in login["detail"]
+
+
+def test_the_default_report_dir_is_dated_under_output(tmp_path: Path) -> None:
+    out = default_out_dir(tmp_path)
+    assert out.parent == tmp_path / "output" and out.name.startswith("doctor_live_20")
+
+
+def test_the_live_doctor_needs_a_usable_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    from claude_bully.providers.base import ProviderError
+
+    def unresolvable(explicit: list[str] | None = None) -> list[str]:
+        raise ProviderError("claude not found")
+
+    monkeypatch.setattr(cli, "resolve_claude_command", unresolvable)
+    result = runner.invoke(cli.app, ["doctor", "--live"])
+    assert result.exit_code == 1

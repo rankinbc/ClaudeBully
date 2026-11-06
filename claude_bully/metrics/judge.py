@@ -215,6 +215,10 @@ def _strip_fences(text: str) -> str:
     return stripped.strip()
 
 
+# the public name the doctor's structured-output check parses with
+strip_fences = _strip_fences
+
+
 def judge_pair(
     provider: ChatProvider,
     model: str,

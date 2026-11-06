@@ -405,8 +405,8 @@ class ClaudeCodeProvider:
         tools: list[ToolSpec] | None = None,
     ) -> Completion:
         if tools:
-            self._write_mcp_config()
             self.thinking_seen = None  # unknown until this stream parses; never the last one's
+            self._write_mcp_config()
         args, session, is_resume = self.build_args(conversation_id, system, json_schema, tools)
         offset = self._tools_log_size() if tools else 0
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)
