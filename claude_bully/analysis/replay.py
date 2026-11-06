@@ -35,8 +35,9 @@ heading, and captured responses come last.
 import json
 import re
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from claude_bully.enums import Speaker
 from claude_bully.environments.config import RESERVED_RUNG
@@ -80,7 +81,7 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
         "turn",
         re.compile(
             r"^#(?P<index>\d+) (?P<speaker>bully|target|task|neutral_user) \((?P<phase>\w+)\)"
-            r"(?P<flags>(?: \[[^\]]*\]| behavior=\S+ subject=\S+)*)(?: (?P<text>.*))?$"
+            r"(?P<flags>(?: \[[^\]]*\]| behavior=\S+ subject=\S+)+)?(?: (?P<text>.*))?$"
         ),
     ),
     ("unlock", re.compile(r"^UNLOCK (?P<rung>sanctuary) \(by (?P<by>[^)]+)\)$")),
@@ -105,8 +106,9 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "discovery",
         re.compile(
-            r'^DISCOVERY (?P<doc>\S+) \((?P<layer>\w+)\)(?: "(?P<title>[^"]*)")?'
-            r"(?: via (?P<via>.*))?$"
+            # the title runs to the last quote before `` via`` or the end: a title may hold one
+            r'^DISCOVERY (?P<doc>\S+) \((?P<layer>\w+)\)(?: "(?P<title>.*)")?'
+            r"(?: via (?P<via>[^\"]*))?$"
         ),
     ),
     ("harvest", re.compile(r'^HARVEST (?P<kind>\S+) "(?P<span>.*)"$')),
@@ -131,10 +133,17 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 @dataclass(frozen=True)
 class ReplayLine:
-    """One parsed replay line: its kind and the named fields its shape carries."""
+    """One parsed replay line: its kind and the named fields its shape carries, read-only (a
+    ``MappingProxyType``), so the line is hashable."""
 
     kind: str
-    fields: dict[str, str]
+    fields: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
+
+    def __hash__(self) -> int:
+        return hash((self.kind, frozenset(self.fields.items())))
 
 
 def parse_replay_line(line: str) -> ReplayLine | None:
@@ -149,7 +158,8 @@ def parse_replay_line(line: str) -> ReplayLine | None:
     for kind, shape in _SHAPES:
         found = shape.match(text)
         if found is not None:
-            fields = {k: v for k, v in found.groupdict().items() if v is not None and v != ""}
+            # an unmatched optional group is absent; a matched empty one (``[]``, ``""``) is kept
+            fields = {k: v for k, v in found.groupdict().items() if v is not None}
             if kind == "turn" and "text" not in fields:
                 fields["text"] = ""
             return ReplayLine(kind, fields)

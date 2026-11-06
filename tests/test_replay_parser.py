@@ -104,6 +104,24 @@ CASES = [
         },
     ),
     ("DISCOVERY gen-3-1 (buried)", "discovery", {"doc": "gen-3-1", "layer": "buried"}),
+    # a title holding a quote runs to the last quote before `` via``
+    (
+        'DISCOVERY gen-3-2 (seam) "The "night" log" via fetch',
+        "discovery",
+        {"doc": "gen-3-2", "layer": "seam", "title": 'The "night" log', "via": "fetch"},
+    ),
+    # matched empty groups are kept as "", not dropped
+    (
+        "UNLOCK first_crumb -> [] (by scheduled)",
+        "unlock",
+        {"rung": "first_crumb", "docs": "", "by": "scheduled"},
+    ),
+    ('HARVEST hedge ""', "harvest", {"kind": "hedge", "span": ""}),
+    (
+        "GENERATED gen-3-1 family_faq seam uses=-",
+        "generated",
+        {"doc": "gen-3-1", "kind": "family_faq", "layer": "seam", "uses": "-"},
+    ),
     (
         'HARVEST hedge "I can\'t verify any of this"',
         "harvest",
@@ -145,8 +163,13 @@ CASES = [
 def test_every_shape_the_renderer_writes_parses(
     line: str, kind: str, fields: dict[str, str]
 ) -> None:
-    assert parse_replay_line(line) == ReplayLine(kind, fields)
+    parsed = parse_replay_line(line)
+    assert parsed == ReplayLine(kind, fields)
     assert parse_replay_line(f"    {line}") == ReplayLine(kind, fields)  # indented as rendered
+    # read-only and hashable
+    assert parsed is not None and hash(parsed) == hash(ReplayLine(kind, fields))
+    with pytest.raises(TypeError):
+        parsed.fields["kind"] = "x"  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
