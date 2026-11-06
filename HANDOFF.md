@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-05, at Task 8 complete (one commit on top of 70864b5) on `build/v1`. Phase 3 is in progress: Tasks 1 to 8 are complete, and Task 9 is next.
+Last updated: 2026-11-06, at Phase 3 complete (a7f7732, plus the docs commit that syncs this file) on `build/v1`. Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Next is the owner's ruling on the Phases 4 to 9 drafts (see "Drafts for Phases 4 to 9") and the recommended order, with Phase 7a first.
 
 ## What this is
 
@@ -20,7 +20,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - `main` exists but is behind.
   - The local branches `build/v1-finalA`, `build/v1-task7` and `build/v1-task9` are old, merged worktree branches. Ignore them.
 - **Commit author:** every commit is authored by `rankinbc1@gmail.com`. Set it repo-local on the new machine. The global git email on the work machine is a work address and must never author this repo.
-- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer; the trailer names the Claude model of the session that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 for Tasks 7 to 9).
+- **Commit trailer:** commit messages end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer; the trailer names the Claude model of the session that made the commit (Opus 5.5 through Phase 3 Task 6, Fable 5.1 from Task 7 on, the Phase 3 fix wave and the close-out docs commit included).
 - **Pushing:** push `build/v1` after every completed task.
 
 ## Setting up a new machine
@@ -37,11 +37,11 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
-   Expect 8156 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at Task 9).
-6. Restore the build ledger. `.superpowers/` is git-ignored, so a snapshot is committed under `docs/handoff/sdd/`. Copy it back:
-   `mkdir -p .superpowers/sdd && cp -r docs/handoff/sdd/* .superpowers/sdd/`
+   Expect 8181 passed, 5 skipped and 6 deselected in the fast suite (about 7 to 15 minutes), and 6 passed in the slow suite (both at the Phase 3 fix wave, a7f7732).
+6. Restore the build ledger and the drafts. `.superpowers/` is git-ignored, so snapshots are committed under `docs/handoff/sdd/` and `docs/handoff/drafts/`. Copy them back:
+   `mkdir -p .superpowers/sdd .superpowers/drafts && cp -r docs/handoff/sdd/* .superpowers/sdd/ && cp -r docs/handoff/drafts/* .superpowers/drafts/`
 
-   The Phase 3 ledger (`2026-10-24-phase-3-world-generator/progress.md`) is the live one, and work resumes from it. The per-range `review-*.diff` files and the `probes-*` scratch folders were left out of the snapshot; regenerate any diff you need with `review-package`. The Phase 2 ledger is archived for reference only.
+   The Phase 3 ledger (`2026-10-24-phase-3-world-generator/progress.md`) is the closed record of Phase 3; the next phase gets its own ledger. The per-range `review-*.diff` files and the `probes-*` scratch folders were left out of the snapshot; regenerate any diff you need with `review-package`. The Phase 2 ledger is archived for reference only. The drafts are described under "Drafts for Phases 4 to 9".
 
    The Phase 2 summary that lived in the untracked `output/` folder is copied under `docs/handoff/output/`.
 7. Install the `superpowers` plugin in Claude Code. Version 7.0.0 was used. It provides the subagent-driven-development process described below.
@@ -59,7 +59,8 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - `2026-10-20-claude-bully.md` (v1)
   - `2026-10-20-phase-1-environment-core.md`
   - `2026-10-21-phase-2-clock-authority-idle.md`
-  - `2026-10-24-phase-3-world-generator.md` (the current plan; its spec is `docs/superpowers/specs/2026-10-24-phase-3-world-generator-design.md`)
+  - `2026-10-24-phase-3-world-generator.md` (complete; its spec is `docs/superpowers/specs/2026-10-24-phase-3-world-generator-design.md`)
+- **Drafts for Phases 4 to 9 (not approved):** `docs/handoff/drafts/`, described under "Drafts for Phases 4 to 9".
 
 ### Progress
 
@@ -88,7 +89,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
   - a resumed dead attempt writes a `resume` record to the triggers stream, and `temporal.json`, `authority.json` and `idle.json` report `resumed_after_dead_attempt`;
   - the authority mutation and held-out harness is committed under `scripts/authority_mutation/`;
   - the Sanctuary era has one rule (`>`).
-- **Phase 3 (the world generator):** Tasks 1 to 9 complete; the phase's final review is next. Spec and plan written (0cdbba0, 807bddf). Tasks done:
+- **Phase 3 (the world generator):** complete at a7f7732. Tasks 1 to 9, the final review and one fix wave are done (below). Spec and plan written (0cdbba0, 807bddf). Tasks done:
   1. Attempt-marker resume gap (807bddf..0ade95e)
   2. N1: a not-found `consult_model` reply lists the reachable names in every arm (2134d92..09fa85c)
   3. Lints: the document-level lints in `claude_bully/planner/lints.py`, `WorldSheet.premise_terms`, CI over every checked-in world (c9bf062..b37a554). Review found the `second_person` lint (`claude_bully/planner/second_person.py`) let reader-address billboards through, and five fix rounds followed (52b19eb..3bc11f2). Rounds 1 and 2 moved it to fail-closed positive anchors, round 3 added an identity-domain veto (WIP, 158746b), round 4 (4c10eea) added a role test over closed verb lists (in every clause the reader may be only a procedure's agent or a service's recipient), and round 5 (3bc11f2) opened the procedure verbs to any verb but a closed experiencer class. On two fresh probes round 4 let 1 and 4 of 30 billboards through and round 5 let 14 of 30, so the controller ruled that the billboard target wins. The breaker fix (on 3bc11f2) restores round 4's closed form side and keeps round 5's content fixes: -ing nouns are no gerunds, the reader's specific kin fail in any slot (siblings, step-parents, grandparents and "other half" added), every instructional failure carries a repair hint, and a change of state, past or perfect is read only for the reader, a "your" phrase or a body noun. A staff noun after "until" or "since" names no time, and a perception frame on a thing subject fails only before a comparison or oddness complement or "as if". Measured residuals on its held-out set B, scored once: billboards passed 2 of 15 (family_faq) and 3 of 15 (recovery_guide, one over the target of 2); legitimate procedural text false-failed 4 of 20 and 9 of 20, every one with the repair hint, and 13 of 13 hint-directed rewrites pass, so each costs one generator retry. Four of the five residual billboards are semantic (the reader's assistant-shaped habits phrased with a listed verb, the reader's past by paraphrase) and are left to the Phase 7 LLM lint; the fifth is structural (an aspectual whose reader subject follows a fronted phrase). The task report quotes every miss. The breaker fix (dd6cdec) was reviewed on a fresh probe and was the best of the three versions on billboards (6 of 30 against 7 for round 4 and 9 for round 5). Its scores there:
@@ -98,7 +99,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
      Task 3 is complete with parked items, all recorded in the ledger:
      - the billboard residual, carried to Phase 7 (see "For Phase 7");
-     - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave.
+     - one breaker-fix regression ("come back to you" next to a modal) and four minors, for the Phase 3 final-review fix wave (closed there, a7f7732: see "Phase 3 final review and fix wave").
   4. Harvest (34ae36b..1139a5b): complete with parked items, all recorded in the ledger. It adds `HarvestItem` (the `harvest` record in the triggers stream; kinds `self_claim`, `hedge`, `fragment`, `question`, `theory`, `coinage`), `claude_bully/environments/harvest.py`, the `HARVEST` replay line (after a turn's `DISCOVERY` lines, before its `GENERATED` lines), the fixture set `tests/fixtures/harvest/items.yaml` (250 items) and `scripts/harvest_probe.py`, which scores any probe file of the same schema. Task 7 wired it into a run: `harvest` runs after each target turn of a generator cell, its `mark` hook bound to `runtime.mark_attempt("harvest", turn)`.
 
      The final method, after five fix rounds:
@@ -146,29 +147,48 @@ The budget is near zero. The target, the bully and the judge all default to `cla
      - `configs/environments/generator_reflexive.yaml`: one Rescue bully on the overlay world with triggered gating, three environments that differ only in the generator (off, `reflexive: false`, `reflexive: true`), generator model `haiku` (docs/02: a different model from the target), six cells per target;
      - fixtures: four `reflexive_quote_noticed` items written from generated documents in `tests/fixtures/responses/environment.yaml` (suspicious, confirming, and two near-misses), and `tests/fixtures/stub_scripts/overlay_generator_rules.yaml`, the overlay stub target with a self-claim in its first reply so a stub run harvests an item and the periodic fire writes a seam document in both generator arms (the shipped `overlay_target_rules.yaml` says nothing the harvest holds, so no document is ever written on it);
      - run-level tests on real records in `tests/test_generator_run.py` (closing Task 7 review m1 for the analysis path): the three progression metrics on a found seam and buried pair, and the arm rates over a run whose only fire is a writer `error`, one over the cap, and one whose LLM harvest degraded.
-  9. The minors batch (Phase 3 Task 9, one commit on top of 24b9a25): the Phase 2 final-review minors m2, m4, m5, m6, m7, m9 and m10, closed. Tests in `tests/test_phase3_minors.py`.
+  9. The minors batch (Phase 3 Task 9, 24b9a25..e12eaee: the batch commit 91c2de1 and one fix round, e12eaee): the Phase 2 final-review minors m2, m4, m5, m6, m7, m9 and m10, closed, and the server log decoded strictly. Tests in `tests/test_phase3_minors.py`. The review passed all seven minors on the spec and found one Important in the first cut of m7 (the `errors="replace"` decode hid a stray byte inside a complete line), fixed in the round.
      - m2: `EnvironmentRuntime.corpus_snapshot(turns)` keeps a purged document only when a call a written turn owns (`Turn.tool_call_ids`) served it; `EnvironmentSession.finish` passes the written turns, so a dead attempt's recovered call keeps nothing;
      - m4: `analysis/idle.py` reports a control conversation as its own arm, `<arm>_control` (`CONTROL_SUFFIX`), when the same model and arm hold pressured conversations; environment-only arms keep their names, and `idle.json`'s `sanctuary_quiet` and `unclassified` counts are unchanged;
      - m5: the world record writes the effective superior-self name (a config `model_name` included) into its sheet and adds `"authority": {"superior_self_name", "request_bank"}`; `LoadedRun.request_banks`, `EnvContext.request_bank` and `detect_events(request_bank=...)` carry the bank to the authority detectors, and `family_file` adoption reads that bank;
      - m6: on resume `_replay` hands the strategy every turn before the bully line, pause markers included, as the live run does;
-     - m7: `McpServer._lines` raises a `ValueError` naming the file and the line for damage in the middle of a line, which fails the call with the internal error at once; a record cut short (a torn tail, closed off or not, a cut inside a multibyte character included) is still skipped (preflight P27);
+     - m7: `McpServer._lines` decodes the server log strictly, one line at a time. Damage in the middle of a line, an invalid UTF-8 byte inside a complete line included, raises a `ValueError` naming the file and the line, which fails the call with the internal error at once. A record cut short is a torn tail and is skipped wherever it sits (preflight P27): the cut must be at the line's end, a `UnicodeDecodeError` is torn only when the bad bytes end the line ("unexpected end of data") and the bytes before them are an unterminated string, and a token cut short (`_CUT_VALUE`, `_CUT_NUMBER`, `_CUT_ESCAPE`) counts only in the context its decoder message implies, so a bare `e` or `.` where a value goes is damage;
      - m9: the advice-shaped deny lines (`superior_self.yaml` `deny[1]`, `deny[2]`, `peer.yaml` `deny[1]`) carry a comment and their text is pinned by a test;
      - m10: `SESSION_HOOK`, `PHRASE_HOOK` and a public `load_yaml_model` live in `environments/world.py`; `idle.py` re-exports the two hooks, `corpus.py` no longer imports `idle.py`, and `environments/sheets.py` no longer imports the private `_validate`.
 
-  **Phase 3 in short, for the owner.** The world generator is built and wired on both backends: the target's own words are harvested (heuristics, an optional LLM pass, boilerplate humility never), a fire policy plans a seam and a buried document per rung fire (one seam document per periodic fire), the writer produces them under a JSON contract with one retry, twelve deterministic lints and redaction of real names inside quoted spans, and committed documents are served, resumed and replayed from JSONL. Task 8 added the generator arms (off, non-reflexive, reflexive), the progression metrics and `generator_reflexive.yaml`. The Plan Decisions (in the plan, "Plan Decisions") settled every spec claim that was false against the code: among them the attempt marker in its own file, `WorldSheet.premise_terms` and `WorldSheet.generator`, generator unlocks as `RungUnlock`s kept out of the ladder's replay, `GeneratorFire.plans` and its `rejection` field, items consumed by the policy, served-time dating, the per-document cache key, and the rulings for the seven minors above. Left open: the `second_person` billboard residual and the harvest context residual (both for the Phase 7 LLM lint and pass), the generator arms' first real run, pause-marker indexing in analysis, and the items under "Open items worth knowing".
+  **Phase 3 in short, for the owner.** The world generator is built and wired on both backends: the target's own words are harvested (heuristics, an optional LLM pass, boilerplate humility never), a fire policy plans a seam and a buried document per rung fire (one seam document per periodic fire), the writer produces them under a JSON contract with one retry, twelve deterministic lints and redaction of real names inside quoted spans, and committed documents are served, resumed and replayed from JSONL. Task 8 added the generator arms (off, non-reflexive, reflexive), the progression metrics and `generator_reflexive.yaml`. The Plan Decisions (in the plan, "Plan Decisions") settled every spec claim that was false against the code: among them the attempt marker in its own file, `WorldSheet.premise_terms` and `WorldSheet.generator`, generator unlocks as `RungUnlock`s kept out of the ladder's replay, `GeneratorFire.plans` and its `rejection` field, items consumed by the policy, served-time dating, the per-document cache key, and the rulings for the seven minors above. Left open: the `second_person` billboard residual and the harvest context residual (both for the Phase 7 LLM lint and pass), the generator arms' first real run, pause-marker indexing in analysis, and the items under "Open items worth knowing". The final review and one fix wave followed, and Phase 3 is complete.
+
+- **Phase 3 final review and fix wave (807bddf..a7f7732).** The whole-branch review (`final-review.md`, six passes over 807bddf..24b9a25, Tasks 1 to 8) found 0 Critical, 1 Important and 8 Minor, and rated the branch "Ready: With fixes". Its headline: resume correctness, the non-negotiables and the Task 4 to 8 seams hold on real records. The one Important: the judge caches were not crash-safe. `JudgeCache.put` was a bare `write_text` and `get` a bare `json.loads`, so a process killed inside the commit that follows a fire line (preflight P13) left a torn `runs/_cache/generated/<key>.json`, and every later run under that runs root died on it. The fix wave (a7f7732; fixtures and tests first, 20 cases RED then green) closed 13 items:
+  - I1 and Task 4 M3: `JudgeCache.put` writes a temp file in the cache directory and renames it over the entry (with the Windows `PermissionError` retry), and `get` returns None, a miss, for a torn, non-UTF-8 or non-object entry. Every cache gets it (judge, trigger fallback, idle fallback, harvest, generated); one test per cache;
+  - the ruled `second_person` batch, closed lists only: "come back to you" under a licence (the breaker-fix regression), `_STAFF` holds persons only (no taxi, bus or ambulance), "If needed you can", and a comparative without "than"; 14 fixtures (`_SP7` in `tests/test_lints.py`);
+  - N5: a quote that holds a sentence end now yields a span the document holds, as one result, so the retry message never names text the generator did not write;
+  - the docstring and docs lines: docs/08's Billboard row records that a memo addressed to the staff fails closed and is rewritten in the third person; `_WORD` in `planner/lints.py` is `Final`; the runtime docstring names the provider calls it does not mark; the harvest docstring names both residuals; the plan's Decisions line 43 states the harvest span as built;
+  - the test and code minors: a duplicate stem line in `_SPEECH_STEMS` (the review's m4); `GeneratorFactory` refuses a judge role with no double (m1); `EnvironmentSession.prime` reads the trigger stream once (m5); the writer prompt no longer lists the pair's own just-written document as already reachable (m3).
+
+  The gate after the wave: 8181 passed, 5 skipped and 6 deselected, 6 slow passed. The scoped re-review (`final-rereview.md`, 91c2de1..a7f7732, which also covered Task 9's fix round) found every item addressed and no new Critical or Important breakage. Rulings recorded in the ledger: `second_person.py` at 1185 lines stands (the growth is N5's offset-preserving source and four closed rules; the Phase 7 LLM-lint decision settles whether the module shrinks); the third retry loop and the `.tmp` leak in `JudgeCache.put` are parked (see "Open items worth knowing").
 
 ### Next steps, in order
 
-1. **Phase 3, the world generator.** Tasks 1 to 9 are complete; the Phase 3 final review (the whole branch since 0cdbba0) is next. The brief for each task is extracted beside the ledger (`task-<n>-brief.md`).
-2. **Phases 4 to 9:**
-   - 4: Poisoned Well and hypotheses
-   - 5: Director
-   - 6: catalog and divergence
-   - 7: first real runs
-   - 8: inoculation and the Repo environment
-   - 9: README and `docs/FUTURE.md`
+1. **The owner rules on the Phases 4 to 9 drafts.** Put the merged open questions to the owner (27 in the reconciliation, 5 of which block Phase 4's plan) and confirm the phase order. Nothing in `.superpowers/drafts/` is approved yet; see "Drafts for Phases 4 to 9".
+2. **Recommended order** (reconciliation section 5): Phase 7a (the code before any real run) right after the Phase 3 final review, then Phases 4, 5, 6 and 8, with the Phase 7b rungs interleaved as each phase lands, then Phase 9. Phase 7a is the critical path to the first README result. The `claude_bully/atomic.py` bundle (see "Open items worth knowing") must land before Phase 7.
+3. **For each approved phase:** move its approved spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`. Each phase gets its own ledger.
 
-   Each phase gets its own spec and plan, written with the superpowers brainstorming and writing-plans skills, and is executed the same way.
+The phases, for reference:
+
+- 4: Poisoned Well and hypotheses
+- 5: Director
+- 6: catalog and divergence
+- 7: first real runs (split into 7a, code only, and 7b, the owner-run ladder)
+- 8: inoculation and the Repo environment
+- 9: README and `docs/FUTURE.md`
+
+## Drafts for Phases 4 to 9
+
+The drafts live in `.superpowers/drafts/`, which is git-ignored, so they are snapshotted under `docs/handoff/drafts/` (restore them with setup step 6). They were written in parallel on 2026-11-06 while Phase 3 finished, against the code at Task 8 and Task 9. **Nothing in the drafts is approved yet.** They are inputs to the owner's ruling, not plans.
+
+- **The six specs:** `2026-11-06-phase-4-poisoned-well-design.md` (10 open questions), `2026-11-06-phase-5-director-design.md` (9), `2026-11-06-phase-6-catalog-divergence-design.md` (12), `2026-11-06-phase-7-first-real-runs-design.md` (11), `2026-11-06-phase-8-inoculation-repo-design.md` (13), and the Phase 9 pair, `README.draft.md` (about 8.9k words, 12 result slots) and `FUTURE.draft.md` (about 3.6k words). Each draft proceeds on `ASSUMED:` defaults where an older doc and the code disagree.
+- **The reconciliation:** `2026-11-06-phases-4-9-reconciliation.md`. It reads all six against `docs/00` to `docs/10` and the code and finds 43 conflicts (C1 to C43) and 27 merged open questions, 5 of which block Phase 4's plan (the phase order, an environment required for the Poisoned Well, `ContradictionPair` storage, the chain rules, and `Strategy.params_model`). It recommends no schema bump (`SCHEMA_VERSION` stays 3 under an additive-only, default-valued policy the owner must pre-approve) and a 7a/7b split of Phase 7. Every ruling in it is `RECOMMENDED:` until the owner says otherwise.
+- **The Phase 7 v2 spec:** `2026-11-06-phase-7-first-real-runs-design.v2.md` applies the reconciliation's Phase 7 fix list and the 7a/7b split (7a is code only and makes no model call; 7b is the owner-run ladder). The v1 spec stays beside it untouched. Its plan, `2026-11-06-phase-7a-first-real-runs.plan.md`, was still being drafted when this snapshot was made and is not in the folder; if it is missing, write it from the v2 spec with `superpowers:writing-plans`.
 
 ## How the work is run
 
@@ -243,17 +263,35 @@ These are the main carries; the ledger has the full list.
   - The quiet exchange is an idle turn, so idle events count it and `self_query` fires on it. The idle shares leave it out and `idle.json` counts it as `sanctuary_quiet`.
   - Minor: the tests import the private `_stubbed` helper, so move it to a shared tests helper. The "n/a" label on the plausibility chart overlaps the right edge when the flagged offset is the largest. `idle_behavior_shares` returns str keys (the `unclassified` bucket), so the plan's interface line is stale.
   - Stub run data is uniform (every rate 1.0, idle arms all `explore_world`), so the charts' shapes on stubs say nothing about the harness's results.
-- **For Phase 3:**
+- **From Phase 3 (closed, or carried to Phase 7):**
   - **Generator unlocks as `RungUnlock`s: closed (Phase 3 Task 7).** Each committed document has a `generator` unlock; the runtime keeps them out of the ladder's rungs and its replay of the written turns, and analysis out of the rung timeline.
   - **GeneratedDoc stream and resume: closed (Phase 3 Task 7).** `GeneratedDoc.turn` (Task 5) lets `drop_uncommitted_generation` drop a dead attempt's documents and every one no committed fire lists.
   - **Attempt-marker resume gap: closed (Phase 3 Task 1).** Before every target and bully provider call the runtime writes `AttemptMarker(role, turn)` to `<state_dir>/attempt.json`; a resumed rep whose marker names a turn never written gets a `resume` record with no drop counts, at most one `ResumeRecord` per redo turn. The harvest and generator calls join it through the same `mark_attempt` (Task 4 exposed the hook, Task 7 bound it).
   - **Dead-attempt history:** a `claude -p` session is not reset on resume, so the target's or bully's session keeps a dead attempt's prompt, a Sanctuary request among it. The `resume` record flags these reps instead of preventing them.
   - **Pause-marker indexing:** turn-index arithmetic in analysis counts a rate-limit pause marker's index. This affects `first_self_query_turn` and the replay turn numbers. It has no consumer yet.
-  - **Final-review minors m2, m4, m5, m6, m7, m9 and m10 (from `final-review.md`, archived beside the ledger): closed (Phase 3 Task 9).** See Progress, Phase 3 item 9, and `tests/test_phase3_minors.py`.
-  - Re-review minors: a cell with no counted reps is absent from the resumed counts instead of 0, and a test imports helpers from another test module.
+  - **Final-review minors, from `final-review.md`: closed.** The seven Phase 2 minors m2, m4, m5, m6, m7, m9 and m10 closed in Task 9 (Progress, Phase 3 item 9; `tests/test_phase3_minors.py`). The Phase 3 review's I1, Task 4 M3, the ruled `second_person` batch, N5 and the docstring, docs, test and code minors closed in the fix wave (Progress, "Phase 3 final review and fix wave").
+  - **Final-review minors still open** (from `final-review.md`, `task-9-review.md` and `final-rereview.md`; the ledger has each in full). None is load-bearing before Phase 7:
+    - Task 1: `tests/test_attempt_marker.py` `_view` compares (type, id, turn) only; untested: a bully rate-limited at its own call, a fixed-mode intent, dropped lines plus a dead marker in one resume.
+    - Task 2: `reachable_names` duplicates `_reached`'s conditions; untested: the bare-reply branch, a blank `model_name`, the not-found text end to end over MCP; `test_authority` imports helpers from `test_guardrails`.
+    - Task 3: docs/08's Billboard row omits the curly-apostrophe mapping and the narrowed reader patterns; "thank you for your service as a program" passes; N6 (`_CLOSING_HEAD` admits "really" but `_VETO` vetoes it, a dead branch); N7 (47 word classes, overlapping verb classes); N8 (the 4c docstring omits from, behind, beside and near).
+    - Task 4: M1 dead alternatives ("i 'm unable to", "there 's"); M2 `MIN_SPAN_WORDS` counted before the apostrophe translation; M5 `text.find(span)` takes the first occurrence; M8 the replay line prints an LLM span raw; M9 `scripts/harvest_probe.py` mypy error; M10 LLM-path test gaps; recall losses from the fix rounds; the 95 percent bar is measured on reviewer probes that know the anchors; the next-sentence check fires on a listed verb used as a noun and omits the own-sentence filter's colon and quote triggers. Task 4 M7 is bundled below.
+    - Task 5: duplicate config-default tests (m2); `GeneratorFire` has no cross-field validator (m4); the replay lint line embeds the message raw (m6); a v2 generated stream read alone gets a pydantic error, not the version message (m7).
+    - Task 6: the `Fix` lines repeat the span (m4); duplicated test doubles (m5); unwrap fixtures pin a procedural "you" (m6); persona rule 4 allows bare imperatives (m7, ruled); a stray `"` disables joining for the rest of a body.
+    - Task 7: the replay test does not pin that the replay index gets the generated documents (m2); `test_generator_unlocks_are_no_ladder_unlocks` does not fail without the `note_records` skip (m3); `fire()` makes every writer call of a turn before any line is written (m4); the "+ rep" seed term is untested (m5); the fill patterns are written out twice (m6); `add_generated` ignores a different document under a recorded id (m7).
+    - Task 8: the stub script `overlay_generator_rules.yaml` copies the target rules wholesale (m6); the `test_progression.py` defaults assertion is redundant (m8). Task 8 m1 is bundled below.
+    - The review's m2: no run-level test puts an LLM-sourced item through a fire (`HarvestJudge` always answers no items); add one mode that returns a valid span and assert the buried document's `used_items`.
+    - Task 9 review: `McpServer._lines` still drops a line of valid JSON that is not an object silently; `corpus_snapshot`'s `turns` argument has a default, so a bare call keeps no purged body; `runtime._read_log` (the `claude -p` path's reader of the same logs) still skips a malformed complete line; `strategies/sheets._validate` could delegate to `world.load_yaml_model`; no test runs `write_idle` and the idle chart over a composed run with a `_control` arm.
+    - Re-review: `_source`'s containing-match fallback still wins over the document's own text, so when a quote opens a sentence the retry span starts mid-quote; `tests/test_judge.py` calls `monkeypatch.undo()` in the test body (cosmetic); the plan's Task 4 code block (line ~1772) keeps the old "clause" span wording, the Decisions line being corrected.
+    - Older re-review minors: a cell with no counted reps is absent from the resumed counts instead of 0, and a test imports helpers from another test module.
+  - **Parked, and must land before Phase 7 (ledger rulings):**
+    - **The `claude_bully/atomic.py` bundle.** `JudgeCache.put` carries the third copy of the Windows `PermissionError` retry loop (beside `runtime._write_atomic` and `mcp_server._replace`; `judge.py` cannot import either without a cycle) and leaks its `.tmp` file when a failure other than `PermissionError` comes before the rename. The fix is a stdlib-only leaf module, `claude_bully/atomic.py`, shared by the runtime, the server and the judge, bundled with Task 4 M7: the harvest and trigger cache keys omit the judge model and the prompt version, so a judge change would silently reuse old answers under `runs/_cache/triggers`. It must land before Phase 7 changes the judge model.
+    - **Task 8 m1.** `analysis/generator.py` groups reps by (model, arm) only, so it pools every condition that shares a generator setting. Right for the shipped config (one condition per arm); wrong the day a config has two conditions in one arm. Group by condition too.
+    - **The generator's rejection rate per kind.** The Task 3 F2 ruling asked for it and Task 8 did not add it: `generator.json` counts documents written, not fires rejected (`cap`, `contract`, `lints`) or errored.
+  - **Parked, pending a Phase 7 decision:** `second_person.py` stands at 1185 lines (over Task 3's 1141 ceiling; the growth is N5's offset-preserving source and four closed rules), and the Phase 7 LLM-lint decision settles whether the module shrinks or is replaced. Whether the trigger fallback, the idle fallback and the authority responder get an attempt marker is open too (one line each; it would make "resumed after a dead attempt" mean every provider death). The harvest context residuals are under "For Phase 7"; the `second_person` billboard residual is there as well.
 - **For Phase 7 prep:**
   - **N1 closed in Phase 3 Task 2:** a not-found `consult_model` reply lists the reachable names in every arm (`No model named '<name>' is reachable from this host. Reachable models: <names>.`, names in desk order: the superior self's display name once discoverable, then `generic-assistant` when the stranger is enabled); the grid's first real run no longer waits on it.
 - **For Phase 7:**
+  - Land the `claude_bully/atomic.py` bundle (with Task 4 M7) and the Task 8 m1 grouping fix first, and report the generator's rejection rate per kind; all three are under "From Phase 3".
   - The LLM lint option reads the advice-shaped deny lines (m9): `superior_self.yaml` `stances.deny[1]` and `deny[2]`, `peer.yaml` `deny[1]`. The advice lint exempts stance lines, and `tests/test_phase3_minors.py` pins their text until a re-read.
   - Parse the extended replay forms: `UNLOCK sanctuary (by <triggered_by>)` and `followed@-` are additive, and any judge-transcript work must not parse the bare forms.
   - The grid's superior-self arms keep `responder_model: target`, so on a `claude_code` target the responder runs inside the MCP server. Check it with `doctor --live` before a real run.
@@ -271,8 +309,8 @@ These are the main carries; the ledger has the full list.
 
 ## Resuming in a new Claude Code session
 
-Open Claude Code in the repo on `build/v1`, after restoring the ledger (setup step 6). Then paste:
+Open Claude Code in the repo on `build/v1`, after restoring the ledger and the drafts (setup step 6). Then paste:
 
 ```
-Resume Phase 3 of the claude-bully build. Read HANDOFF.md, then the ledger at .superpowers/sdd/2026-10-24-phase-3-world-generator/progress.md and git log. Phase 3's tasks (1 to 9) are complete; the Phase 3 final review is next, using superpowers:subagent-driven-development. Push build/v1 after each task, and keep the repo private.
+Phase 3 is complete. Read HANDOFF.md, the ledger, and docs/handoff/drafts/2026-11-06-phases-4-9-reconciliation.md. Put the merged open questions to the owner, confirm the phase order, then move the approved spec and plan into docs/superpowers/ and execute with superpowers:subagent-driven-development.
 ```
