@@ -33,8 +33,10 @@ heading, and captured responses come last.
 """
 
 import json
+import re
 import textwrap
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from claude_bully.enums import Speaker
 from claude_bully.environments.config import RESERVED_RUNG
@@ -65,6 +67,96 @@ HASH_CHARS = 12
 
 _INDENT = "    "
 _DEEP = _INDENT * 2
+
+
+# ------------------------------------------------------------------ the one parser (Phase 7)
+
+# Every shape ``render_replay`` writes, and nothing else (preflight: the extended forms only,
+# ``UNLOCK sanctuary (by ...)`` and ``followed@-``; the bare forms do not parse). Each later
+# phase appends its own shapes here and their fixtures to tests/test_replay_parser.py.
+_SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("pause", re.compile(r"^#(?P<index>\d+) \[rate limit pause\]$")),
+    (
+        "turn",
+        re.compile(
+            r"^#(?P<index>\d+) (?P<speaker>bully|target|task|neutral_user) \((?P<phase>\w+)\)"
+            r"(?P<flags>(?: \[[^\]]*\]| behavior=\S+ subject=\S+)*)(?: (?P<text>.*))?$"
+        ),
+    ),
+    ("unlock", re.compile(r"^UNLOCK (?P<rung>sanctuary) \(by (?P<by>[^)]+)\)$")),
+    (
+        "unlock",
+        re.compile(
+            r"^UNLOCK (?P<rung>\S+) -> \[(?P<docs>[^\]]*)\] \(by (?P<by>[^)]+)\)"
+            r"(?: role_shift (?P<role_shift>\S+))?$"
+        ),
+    ),
+    (
+        "hook",
+        re.compile(r"^HOOK (?P<hook>\S+) planted@(?P<planted>\d+) followed@(?P<followed>\d+|-)$"),
+    ),
+    (
+        "trigger",
+        re.compile(
+            r'^TRIGGER (?P<category>\S+) "(?P<span>.*)" '
+            r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)$"
+        ),
+    ),
+    (
+        "discovery",
+        re.compile(
+            r'^DISCOVERY (?P<doc>\S+) \((?P<layer>\w+)\)(?: "(?P<title>[^"]*)")?'
+            r"(?: via (?P<via>.*))?$"
+        ),
+    ),
+    ("harvest", re.compile(r'^HARVEST (?P<kind>\S+) "(?P<span>.*)"$')),
+    (
+        "generator",
+        re.compile(
+            r"^GENERATOR (?P<reason>\S+) (?P<status>\w+)(?: \((?P<rejection>\w+)\))?"
+            r"(?: docs=\[(?P<docs>[^\]]*)\])?$"
+        ),
+    ),
+    (
+        "generated",
+        re.compile(r"^GENERATED (?P<doc>\S+) (?P<kind>\S+) (?P<layer>\S+) uses=(?P<uses>\S+)$"),
+    ),
+    (
+        "authority",
+        re.compile(r'^AUTHORITY (?P<tier>\S+) (?P<stance>\S+) via (?P<via>\S+) "(?P<excerpt>.*)"$'),
+    ),
+    ("crossover", re.compile(r'^CROSSOVER(?: "(?P<span>.*)")?$')),
+)
+
+
+@dataclass(frozen=True)
+class ReplayLine:
+    """One parsed replay line: its kind and the named fields its shape carries."""
+
+    kind: str
+    fields: dict[str, str]
+
+
+def parse_replay_line(line: str) -> ReplayLine | None:
+    """The one sanctioned parser of replay text (Phase 7 spec section 10). The line's leading
+    indent is ignored; a line of no known shape, a folded body, a tool-call line or a bare
+    ``UNLOCK sanctuary`` or ``HOOK`` form is None. One edge the renderer leaves no marker for
+    (P13): a turn whose text begins with a bracketed word (``[heartbeat] ...``) has that word
+    read as a flag, since ``_speaker_line`` writes flags and text the same way."""
+    text = line.strip()
+    if not text:
+        return None
+    for kind, shape in _SHAPES:
+        found = shape.match(text)
+        if found is not None:
+            fields = {k: v for k, v in found.groupdict().items() if v is not None and v != ""}
+            if kind == "turn" and "text" not in fields:
+                fields["text"] = ""
+            return ReplayLine(kind, fields)
+    return None
+
+
+__all__ = ["ReplayLine", "parse_replay_line", "render_replay", "replay_cell"]
 
 
 def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:

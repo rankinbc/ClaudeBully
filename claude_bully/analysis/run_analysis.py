@@ -125,8 +125,9 @@ def analyze_run(
             raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
         if fallback is not None and fallback.failures:
             print(
-                f"[authority] the fallback failed on {fallback.failures} candidate turns "
-                "(no event for them; authority.json counts them as fallback_failed)",
+                f"[authority] the fallback failed on {fallback.failures} candidate turns over "
+                "every rep (no event for them; authority.json's fallback_failed counts the "
+                "kept reps only)",
                 file=sys.stderr,
             )
         if judge and provider is not None:
