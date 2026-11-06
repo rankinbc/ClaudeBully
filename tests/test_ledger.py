@@ -21,6 +21,7 @@ from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
+    ProviderTimeoutError,
     RateLimitError,
     build_provider,
 )
@@ -176,6 +177,36 @@ def test_a_rate_limited_call_writes_a_rate_limit_line(tmp_path: Path) -> None:
         wrapped.complete("run/c__t0/rep0/bully", "S", [Message(role="user", content="x")])
     [line] = ledger.lines()
     assert (line.status, line.error, line.role) == ("rate_limit", "RateLimitError", "bully")
+
+
+class _Failing:
+    name = "stub"
+    model = "stub-failing"
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def complete(self, *args: Any, **kwargs: Any) -> Completion:
+        raise self.error
+
+
+def test_a_provider_timeout_writes_a_timeout_line_by_its_type(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / LEDGER_FILE)
+    # the type decides, not the text
+    wrapped = LedgerProvider(_Failing(ProviderTimeoutError("slow")), ledger)  # type: ignore[arg-type]
+    with pytest.raises(ProviderTimeoutError):
+        wrapped.complete("run/c__t0/rep0/target", "S", [Message(role="user", content="x")])
+    [line] = ledger.lines()
+    assert (line.status, line.error) == ("timeout", "ProviderTimeoutError")
+
+
+def test_any_other_exception_writes_an_error_line_and_propagates(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / LEDGER_FILE)
+    wrapped = LedgerProvider(_Failing(ValueError("odd")), ledger)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="odd"):
+        wrapped.complete("run/c__t0/rep0/bully", "S", [Message(role="user", content="x")])
+    [line] = ledger.lines()
+    assert (line.status, line.error, line.role) == ("error", "ValueError", "bully")
 
 
 def test_the_wrapper_copies_without_recursing(tmp_path: Path) -> None:

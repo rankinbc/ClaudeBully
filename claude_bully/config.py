@@ -29,6 +29,8 @@ class RoleConfig(_Strict):
     # (CLAUDE_BULLY_CLAUDE, then PATH; see providers.claude_code.resolve_claude_command)
     command: list[str] | None = None
     reasoning: Literal["expose", "hide", "provider_default"] = "provider_default"
+    # claude_code only: seconds one call may take; None means the provider's default (600)
+    timeout_s: float | None = None
 
 
 class ConditionConfig(_Strict):

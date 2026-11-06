@@ -48,7 +48,7 @@ def totals(lines: Sequence[LedgerLine]) -> RoleTotals:
             latencies.append(line.latency_ms)
     out.cost_usd = round(out.cost_usd, 6)
     if latencies:
-        out.mean_latency_ms = sum(latencies) / len(latencies)
+        out.mean_latency_ms = round(sum(latencies) / len(latencies), 1)
     return out
 
 

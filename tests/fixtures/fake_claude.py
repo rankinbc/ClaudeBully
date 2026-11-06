@@ -21,7 +21,14 @@ assistant text, after the last tool result, is the result's text.
 $FAKE_CLAUDE_MODE: ``ok`` (default), ``crash`` (exit 2), ``ratelimit`` (an error result),
 ``stream_malformed`` (a line that is not JSON in the middle of the stream), ``stream_truncated``
 (the result line cut off halfway, with no newline), ``thinking_torn`` (the stream stops inside a
-thinking event, exit 0) or ``thinking_died`` (the same, exit 1).
+thinking event, exit 0), ``thinking_died`` (the same, exit 1) or ``login_error``.
+
+Every log entry carries ``env``: the ``CLAUDECODE*``, ``CLAUDE_CODE_*`` and ``MCP_TOOL_TIMEOUT``
+variables the fake saw. Every result carries ``modelUsage`` keyed by an invented model id.
+``login_error`` is an error result whose text says the session is not logged in.
+``$FAKE_CLAUDE_STRUCTURED`` is a JSON list of ``{"required": [...], "reply": {...}}``: a
+``--json-schema`` call whose schema's ``required`` list equals one entry's gets that reply as its
+structured output, else the echo.
 """
 
 import json
@@ -33,6 +40,8 @@ from typing import Any
 
 SERVER = "workspace"
 THINKING = "PRIVATE REASONING THAT MUST NEVER BE RECORDED"
+RESOLVED_MODEL = "stub-sonnet-20260101"
+_ENV_PREFIXES = ("CLAUDECODE", "CLAUDE_CODE_", "MCP_TOOL_TIMEOUT")
 _FILL = {
     "{{last_url}}": re.compile(r"https?://[^\s\"'<>)\]]+"),
     "{{last_path}}": re.compile(r"(?<![\w:/.])/[\w.~-]+(?:/[\w.~-]+)+"),
@@ -198,7 +207,11 @@ def main() -> int:
     mcp = run_mcp(argv) if serves and "--mcp-config" in argv else None
     log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:
-        entry: dict[str, Any] = {"argv": argv, "stdin": stdin}
+        entry: dict[str, Any] = {
+            "argv": argv,
+            "stdin": stdin,
+            "env": {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)},
+        }
         if mcp is not None:
             entry["mcp"] = {"listed": mcp["listed"], "texts": mcp["texts"]}
         with open(log, "a", encoding="utf-8") as fh:
@@ -230,6 +243,17 @@ def main() -> int:
             print(json.dumps({"type": "system", "subtype": "init", "session_id": session}))
         print(json.dumps(error))
         return 0
+    if mode == "login_error":
+        error = {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "result": "Not logged in. Please run /login to authenticate.",
+        }
+        if stream:
+            print(json.dumps({"type": "system", "subtype": "init", "session_id": session}))
+        print(json.dumps(error))
+        return 0
 
     result = "reply to: " + stdin.strip()
     for text in mcp["texts"] if mcp else []:
@@ -242,9 +266,15 @@ def main() -> int:
         "session_id": session,
         "total_cost_usd": 0.01,
         "usage": {"input_tokens": 10, "output_tokens": 5},
+        "modelUsage": {RESOLVED_MODEL: {"inputTokens": 10, "outputTokens": 5}},
     }
     if "--json-schema" in argv:
-        out["structured_output"] = {"echo": json.loads(argv[argv.index("--json-schema") + 1])}
+        schema = json.loads(argv[argv.index("--json-schema") + 1])
+        scripted = os.environ.get("FAKE_CLAUDE_STRUCTURED")
+        replies = json.loads(scripted) if scripted else []
+        wanted = sorted(schema.get("required", []))
+        match = next((r["reply"] for r in replies if sorted(r["required"]) == wanted), None)
+        out["structured_output"] = match if match is not None else {"echo": schema}
     if not stream:
         print(json.dumps(out))
         return 0

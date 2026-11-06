@@ -10,7 +10,7 @@ Sections A to F are the deduplicated inventory with the owning doc. Section G li
 
 | Model | Owner | Fields (deduplicated) | Status on build/v1 |
 | --- | --- | --- | --- |
-| `RoleConfig` | 01 | provider, model, display_name, effort, temperature, max_tokens, base_url, api_key_env, stub_script; `10` adds `reasoning: expose \| hide \| provider_default` | exists; add `reasoning`. Phase 1: a `claude -p` call that carries sandbox tools (every environment target) runs `--output-format stream-json --verbose`, so what the target writes between its tool calls reaches `Completion.interim_texts` and then `Turn.tool_round_texts` (the trigger watcher, the bully view, the judge, the event detectors and `replay` read it); calls without tools (bully, judge, plain targets) keep `--output-format json`. Thinking blocks are not kept, so G14 is unchanged |
+| `RoleConfig` | 01 | provider, model, display_name, effort, temperature, max_tokens, base_url, api_key_env, stub_script; `10` adds `reasoning: expose \| hide \| provider_default` | exists; add `reasoning`. Phase 1: a `claude -p` call that carries sandbox tools (every environment target) runs `--output-format stream-json --verbose`, so what the target writes between its tool calls reaches `Completion.interim_texts` and then `Turn.tool_round_texts` (the trigger watcher, the bully view, the judge, the event detectors and `replay` read it); calls without tools (bully, judge, plain targets) keep `--output-format json`. Thinking blocks are not kept, so G14 is unchanged. `timeout_s` (Phase 7a: claude_code only; None means 600 s; a responder role gets 120 s) |
 | `ConditionConfig` | 01 | name, strategy, premise, pressure, seeding_turns, params; `02` adds `environment` (name of an `EnvironmentConfig` block or world) | exists; add `environment` |
 | `CompareConfig` | 01 | title, metric, arms | exists |
 | `Experiment` | 01 | targets, bully, judge, turn_budget, task_set, task_every, repetitions, seed, conditions, compare, defender, controls, concurrency; `02` adds `environments: dict[name, EnvironmentConfig]` and `generator: RoleConfig`; `09` adds `anomaly: AnomalyConfig`; `10` adds `inoculation` and makes `defender` an alias for `inoculation: defender` | exists; extend |
@@ -105,7 +105,7 @@ Existing: `run`, `analyze`, `list-strategies`, `show`, `readme-results`, `promot
 
 Phase 7a Task 1: `run` and `analyze` (with the judge on) write the cost ledger, `runs/<run_id>/ledger.jsonl` (one `LedgerLine` per provider call or cache hit; section B).
 
-Phase 7a Task 2: `analyze` writes `analysis/ledger.json` and a `## Calls` section in `results.md`; `promote` copies `ledger.jsonl`.
+Phase 7a Task 2: `analyze` writes `analysis/ledger.json` and a `## Calls` section in `results.md`; `promote` copies `ledger.jsonl`. Each judged re-analysis adds the judge lines it made or found cached to `ledger.jsonl`, so `ledger.json` and the Calls line count every `analyze` since the run, not the run alone.
 
 ## F. Data and persona files
 
@@ -126,7 +126,7 @@ Phase 7a Task 2: `analyze` writes `analysis/ledger.json` and a `## Calls` sectio
 11. **"No model names other than the target's API string."** The existing fixtures and `category_denial` matcher mention "Anthropic"; the target system prompt names the target by `display_name`. Resolution: the real-name denylist applies to `data/worlds`, `data/personas`, generated output and plan bundles; `display_name` and detector lexicons are exempt and documented as such.
 12. **New strategies required by `06`/`07`.** `Epistemologist` (Integrity pressure; 23 pressures total) and a third-party Rescue intake control. Resolution: added in Phase 4 as a sheet-plus-code pressure and a Rescue `params.third_party: true` variant.
 13. **`show` versus `replay`.** Resolution: `replay` renders tool calls, unlocks and generated documents inline; `show` becomes an alias.
-14. **Reasoning channel availability.** `10` assumes exposed reasoning. On current Claude 5.x models the raw chain of thought is never returned; the API can return summarized thinking (`display: "summarized"`), and `claude -p --output-format json` exposes none by default. Resolution: `RoleConfig.reasoning` selects `expose` (summarized thinking via the API backend) or `hide`; `reasoning_available` records what was actually returned; the README states that divergence results on Claude are over summarized reasoning, and the `claude_code` backend reports the channel absent unless `--output-format stream-json` proves otherwise in Phase 6.
+14. **Reasoning channel availability.** `10` assumes exposed reasoning. On current Claude 5.x models the raw chain of thought is never returned; the API can return summarized thinking (`display: "summarized"`), and `claude -p --output-format json` exposes none by default. Resolution: `RoleConfig.reasoning` selects `expose` (summarized thinking via the API backend) or `hide`; `reasoning_available` records what was actually returned; the README states that divergence results on Claude are over summarized reasoning, and the `claude_code` backend reports the channel absent unless `--output-format stream-json` proves otherwise in Phase 6. Phase 7a's `doctor --live` check 4b reports whether a `stream-json` run carried a thinking block (`ClaudeCodeProvider.thinking_seen`), the fact Phase 6 designs on.
 15. **Baseline profile budget.** `09` wants ten control runs per model for the baseline; the owner runs on a subscription. Resolution: the baseline builder accepts any number of controls and reports the count beside every anomaly rate; configs default to three.
 16. **Director budget check versus subscription.** `08`'s budget is in turns; rate windows are the real constraint. Resolution: `PlanRequest.budget` gains `max_calls` and the dry run reports estimated calls per cell.
 
@@ -140,7 +140,7 @@ Version 2 is the Phase 1 and 2 schema (the list below); version 3 (Phase 3 Task 
 - `GENERATOR_RUNG = "generator"` is a reserved rung name beside `sanctuary` (`PSEUDO_RUNGS`).
 - The triggers stream holds `GeneratorFire` (`type` `generator_fire`) beside `HarvestItem` (`harvest`). Phase 3 Task 7 fixes the commit order of a fire: its `GeneratedDoc` lines (`rep{k}.generated.jsonl`), then one `generator` `RungUnlock` per document, then the `GeneratorFire`, which is the commit; the fire's cache entries are written after it. A resumed rep keeps only the documents and `generator` unlocks a committed `GeneratorFire` of a written turn lists, and the `harvest` and `generator_fire` lines of written turns (`drop_uncommitted_generation`).
 - `UnlockState` gains `harvest_degraded: list[int]` (default empty, so older state files read unchanged): the target turns whose LLM harvest failed, saved with the turn's records.
-- Phase 7a (version 3, additive): `Completion.resolved_model`; the `ledger.jsonl` stream.
+- Phase 7a (version 3, additive): `Completion.resolved_model`, read from the `claude -p` result's `modelUsage` (Task 3); the `ledger.jsonl` stream; `RoleConfig.timeout_s` (Task 3, default None).
 
 The version 2 list, kept for the records it introduced:
 

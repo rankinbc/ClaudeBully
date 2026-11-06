@@ -28,7 +28,7 @@ from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
-    ProviderError,
+    ProviderTimeoutError,
     RateLimitError,
     ToolSpec,
 )
@@ -227,9 +227,11 @@ class LedgerProvider:
         except RateLimitError as exc:
             self._write(conversation_id, started, "rate_limit", None, exc)
             raise
-        except ProviderError as exc:
-            status: LedgerStatus = "timeout" if "timed out" in str(exc) else "error"
-            self._write(conversation_id, started, status, None, exc)
+        except ProviderTimeoutError as exc:
+            self._write(conversation_id, started, "timeout", None, exc)
+            raise
+        except Exception as exc:  # any other failure is still a call: the ledger never misses one
+            self._write(conversation_id, started, "error", None, exc)
             raise
         self._write(conversation_id, started, "ok", completion, None)
         return completion

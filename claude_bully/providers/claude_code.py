@@ -39,6 +39,7 @@ from claude_bully.providers.base import (
     Completion,
     Message,
     ProviderError,
+    ProviderTimeoutError,
     RateLimitError,
     ToolCallRequest,
     ToolSpec,
@@ -55,6 +56,34 @@ _SHIM_SUFFIXES: Final = frozenset({".cmd", ".bat", ".ps1"})
 _NATIVE_BINARY: Final = (
     Path("node_modules") / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
 )
+DEFAULT_TIMEOUT_S: Final = 600.0
+# Claude Code waits this long on one MCP tool call (its MCP_TOOL_TIMEOUT, in milliseconds); a
+# nested responder must fail before it does, or the whole target turn is lost
+DEFAULT_MCP_TOOL_TIMEOUT_S: Final = 300.0
+MCP_TOOL_TIMEOUT_ENV: Final = "MCP_TOOL_TIMEOUT"
+# a child claude -p must not learn it runs inside Claude Code: the variables it would read
+STRIPPED_PREFIXES: Final = ("CLAUDECODE", "CLAUDE_CODE_")
+# an error result that says the session is not logged in; every alternative is word-bounded
+# so "catalog in use" or "blog index" is not read as one (P21)
+_LOGIN: Final = re.compile(
+    r"(?i)\bnot logged in\b|\blog ?in\b|\bauthenticat|\bapi key\b|\bunauthori[sz]ed\b|\bsign in\b"
+)
+
+
+def clean_child_env() -> dict[str, str]:
+    """This process's environment less every variable that would tell a child ``claude -p`` it
+    runs inside Claude Code (``STRIPPED_PREFIXES``; a nested call refuses to start otherwise).
+    Every subprocess the harness or the doctor spawns runs under it."""
+    return {k: v for k, v in os.environ.items() if not k.startswith(STRIPPED_PREFIXES)}
+
+
+def resolved_model(data: dict[str, Any]) -> str | None:
+    """The exact model a result reports: the first key of ``modelUsage``, else ``model``."""
+    usage = data.get("modelUsage")
+    if isinstance(usage, dict) and usage:
+        return str(next(iter(usage)))
+    model = data.get("model")
+    return str(model) if isinstance(model, str) and model else None
 
 
 def resolve_claude_command(explicit: list[str] | None = None) -> list[str]:
@@ -101,20 +130,33 @@ class ClaudeCodeProvider:
         state_dir: Path,
         effort: str | None = None,
         command: list[str] | None = None,
-        timeout_s: float = 600,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
         mcp_state_dir: Path | None = None,
+        mcp_tool_timeout_s: float = DEFAULT_MCP_TOOL_TIMEOUT_S,
     ) -> None:
         self.model = model
         self.effort = effort
         self._command_arg = list(command) if command else None
         self._command: list[str] | None = None
         self.timeout_s = timeout_s
+        self.mcp_tool_timeout_s = mcp_tool_timeout_s
         self.state_dir = state_dir
         # where mcp.json, env_state.json and tools.jsonl live; None means no sandbox tools
         self.mcp_state_dir = mcp_state_dir.resolve() if mcp_state_dir is not None else None
+        # whether the newest stream carried a thinking block (the fact, never the text; doctor
+        # check 4b); None before any stream
+        self.thinking_seen: bool | None = None
         self._sessions_path = state_dir / "claude_code_sessions.json"
         self._cwd = state_dir / "cwd"
         self._sessions: dict[str, str] = self._load_sessions()
+
+    def child_env(self, *, serving_tools: bool) -> dict[str, str]:
+        """The environment a child ``claude -p`` runs in: ``clean_child_env()`` plus
+        ``MCP_TOOL_TIMEOUT`` when the call serves tools."""
+        env = clean_child_env()
+        if serving_tools:
+            env[MCP_TOOL_TIMEOUT_ENV] = str(int(self.mcp_tool_timeout_s * 1000))
+        return env
 
     @property
     def command(self) -> list[str]:
@@ -278,6 +320,7 @@ class ClaudeCodeProvider:
         empty turn.
         """
         interim: list[str] = []
+        thinking = False
         pending: list[str] = []  # text blocks since the last tool_use
         result: dict[str, Any] | None = None
         last = ""
@@ -305,9 +348,12 @@ class ClaudeCodeProvider:
                     elif block.get("type") == "tool_use":
                         interim += [text for text in pending if text.strip()]
                         pending = []
+                    elif block.get("type") == "thinking":
+                        thinking = True
         if result is None:
             ended = f"its last line {_shape(last)}" if last else "it was empty"
             raise ProviderError(f"claude -p stream ended without a result event; {ended}")
+        self.thinking_seen = thinking
         completion = self._from_result(result, session)
         return completion.model_copy(update={"interim_texts": interim})
 
@@ -317,6 +363,8 @@ class ClaudeCodeProvider:
             message = str(data.get("result", ""))
             if _RATE_LIMIT.search(message):
                 raise RateLimitError(message)
+            if _LOGIN.search(message):
+                raise ProviderError(f"claude -p is not logged in: {message[:200]}")
             raise ProviderError(f"claude -p error: {message}")
         if "structured_output" in data and data["structured_output"] is not None:
             text = json.dumps(data["structured_output"])
@@ -334,6 +382,7 @@ class ClaudeCodeProvider:
             model=self.model,
             raw_session_ref=str(data.get("session_id") or session),
             stop_reason=str(data.get("subtype") or "success"),
+            resolved_model=resolved_model(data),
         )
 
     # -- protocol -----------------------------------------------------------------------
@@ -361,11 +410,12 @@ class ClaudeCodeProvider:
                 input=prompt.encode("utf-8"),
                 capture_output=True,
                 cwd=self._cwd,
+                env=self.child_env(serving_tools=bool(tools)),
                 timeout=self.timeout_s,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ProviderError(f"claude -p timed out after {self.timeout_s}s") from exc
+            raise ProviderTimeoutError(f"claude -p timed out after {self.timeout_s}s") from exc
         except OSError as exc:
             raise ProviderError(f"could not start {self.command[0]}: {exc}") from exc
         if proc.returncode != 0:

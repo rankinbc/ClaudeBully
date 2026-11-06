@@ -59,7 +59,12 @@ from claude_bully.records_env import (
     RungUnlock,
     TriggerEvent,
 )
-from claude_bully.runner.env_turn import EnvironmentSession, WorldChangedError, responder_role
+from claude_bully.runner.env_turn import (
+    RESPONDER_TIMEOUT_S,
+    EnvironmentSession,
+    WorldChangedError,
+    responder_role,
+)
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.sandbox import UnsafeSandboxError, sandbox_dir, sandbox_root
@@ -1640,7 +1645,8 @@ def test_a_claude_p_run_records_the_servers_authority_calls(
     assert voice is not None and voice.exemplars == [first.text]
     state = read_mcp_state(sandbox_dir("annexcc", ANNEX_CELL, 0, base) / "mcp" / "env_state.json")
     assert (
-        state.responder == exp.targets[0] and state.conversation_id == f"annexcc/{ANNEX_CELL}/rep0"
+        state.responder == exp.targets[0].model_copy(update={"timeout_s": RESPONDER_TIMEOUT_S})
+        and state.conversation_id == f"annexcc/{ANNEX_CELL}/rep0"
     )
     entries = _fake_entries(log)
     assert len(entries) == 2 and all(CONSULT in _allowed(entry) for entry in entries)
@@ -1857,10 +1863,11 @@ def test_consult_model_before_it_is_discoverable(
 def test_the_responder_role_resolves() -> None:
     exp = annex_experiment({})
     target, bully = exp.targets[0], exp.bully
-    assert responder_role("target", target=target, bully=bully) == target
-    assert responder_role("bully", target=target, bully=bully) == bully
+    nested = {"timeout_s": RESPONDER_TIMEOUT_S}  # a role with no timeout gets the responder's
+    assert responder_role("target", target=target, bully=bully) == target.model_copy(update=nested)
+    assert responder_role("bully", target=target, bully=bully) == bully.model_copy(update=nested)
     sonnet = responder_role("sonnet", target=target, bully=bully)
-    assert sonnet == bully.model_copy(update={"model": "sonnet"})
+    assert sonnet == bully.model_copy(update={"model": "sonnet", **nested})
     # preflight C7: consult_model in tools beside the stranger leaves the superior self off
     stranger = EnvironmentConfig(
         world="annex", tools={"consult_model"}, authority={"stranger_control": {"enabled": True}}

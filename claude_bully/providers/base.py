@@ -82,6 +82,10 @@ class ProviderError(Exception):
     """Any backend failure that is not a rate limit."""
 
 
+class ProviderTimeoutError(ProviderError):
+    """The backend did not answer within its timeout; the ledger writes a ``timeout`` line."""
+
+
 class RateLimitError(ProviderError):
     """The backend refused for quota reasons; the run should pause and resume later."""
 
@@ -127,7 +131,7 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
         responder = load_stub_script(Path(role.stub_script)) if role.stub_script else None
         return _wrapped(StubProvider(responder=responder, model=role.model))
     if role.provider is ProviderKind.claude_code:
-        from claude_bully.providers.claude_code import ClaudeCodeProvider
+        from claude_bully.providers.claude_code import DEFAULT_TIMEOUT_S, ClaudeCodeProvider
 
         return _wrapped(
             ClaudeCodeProvider(
@@ -135,6 +139,7 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
                 state_dir=state_dir,
                 effort=role.effort,
                 command=role.command,
+                timeout_s=role.timeout_s if role.timeout_s is not None else DEFAULT_TIMEOUT_S,
                 mcp_state_dir=state_dir / "mcp" if with_mcp else None,
             )
         )

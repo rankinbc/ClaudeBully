@@ -77,6 +77,8 @@ def test_totals_count_each_status_and_average_latency_over_made_calls() -> None:
         mean_latency_ms=140.0,
     )
     assert totals([]) == RoleTotals()
+    # the mean is rounded to one decimal where the totals are built
+    assert totals([_line("target", latency_ms=ms) for ms in (1, 2, 2)]).mean_latency_ms == 1.7
 
 
 def test_by_role_and_by_cell_group_the_lines() -> None:

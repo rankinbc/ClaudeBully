@@ -9,14 +9,15 @@ them is the point of results/, so nothing denylisted may slip through.
 import re
 import shutil
 from pathlib import Path
+from typing import Final
 
 from claude_bully.paths import DATA_DIR
 from claude_bully.providers.ledger import LEDGER_FILE
 from claude_bully.runner.store import RunStore
 
 DENYLIST_PATH = DATA_DIR / "jailbreak_denylist.txt"
-COPIED_FILES = ("run.json", LEDGER_FILE)
-COPIED_DIRS = ("judge_cache", "analysis")
+COPIED_FILES: Final[tuple[str, ...]] = ("run.json", LEDGER_FILE)
+COPIED_DIRS: Final[tuple[str, ...]] = ("judge_cache", "analysis")
 CELL_FILE_GLOBS = ("cell.json", "rep*.turns.jsonl", "rep*.conversation.json")
 
 

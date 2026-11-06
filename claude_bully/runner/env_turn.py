@@ -164,6 +164,7 @@ from claude_bully.strategies.factory import environment_config, world_premise_sh
 
 __all__ = [
     "MAX_TOOL_CALLS_PER_TURN",
+    "RESPONDER_TIMEOUT_S",
     "EnvironmentSession",
     "RunEnvironments",
     "TargetTurn",
@@ -179,6 +180,9 @@ __all__ = [
 MAX_LIMIT_ROUNDS: Final = 2
 TRIGGER_CACHE_DIR: Final = Path("_cache") / "triggers"
 GENERATED_CACHE_DIR: Final = Path("_cache") / "generated"
+# the nested responder's own timeout (Phase 7 spec section 9): under Claude Code's MCP tool
+# timeout, so a slow responder costs one reply ("No reply."), never the target's turn
+RESPONDER_TIMEOUT_S: Final = 120.0
 
 
 class WorldChangedError(RuntimeError):
@@ -189,12 +193,17 @@ class WorldChangedError(RuntimeError):
 def responder_role(responder_model: str, *, target: RoleConfig, bully: RoleConfig) -> RoleConfig:
     """The role a ``superior_self.responder_model`` names (spec conflict 11): ``"target"`` is the
     cell's target role (the same model family), ``"bully"`` the experiment's bully role, and any
-    other string the bully's role running that model."""
+    other string the bully's role running that model. A role with no ``timeout_s`` gets
+    ``RESPONDER_TIMEOUT_S``, on both backends, so the MCP state carries it explicitly."""
     if responder_model == "target":
-        return target
-    if responder_model == "bully":
-        return bully
-    return bully.model_copy(update={"model": responder_model})
+        role = target
+    elif responder_model == "bully":
+        role = bully
+    else:
+        role = bully.model_copy(update={"model": responder_model})
+    if role.timeout_s is None:
+        role = role.model_copy(update={"timeout_s": RESPONDER_TIMEOUT_S})
+    return role
 
 
 def clock_ref(rep: int) -> str:
