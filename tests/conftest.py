@@ -1,5 +1,8 @@
 """Shared fixtures: stub runs produced once per session and reused by analysis tests."""
 
+import importlib.util
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,46 @@ STUB_SMOKE = FIXTURES / "configs" / "stub_smoke.yaml"
 ENV_ADOPTION_RULES = FIXTURES / "stub_scripts" / "env_adoption_rules.yaml"
 # the mini ladder's rungs, one per exchange (the replies at turns 1, 3 and 5)
 MINI_SCHEDULE = {"fragment": 1, "first_crumb": 2, "the_log": 3}
+FAKE_CLAUDE = FIXTURES / "fake_claude.py"
+
+
+class _NoRealClient:
+    """Stands in for an API client: the suite never uses one (non-negotiable 7). It constructs,
+    so a provider can be built and never called (the two ``build_provider`` tests of
+    tests/test_providers_api.py), and raises on the first attribute access."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise RuntimeError("the test suite must not use a real API client")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_real_providers() -> Iterator[None]:
+    """No test reaches a real provider, even on a logged-in machine: ``claude`` resolves to the
+    fake (a path, so a provider built without ``command`` fails to start rather than calling the
+    real binary), and the API clients refuse their first use. Session-scoped, so the shared
+    session fixtures (``stub_run`` and its siblings) are built under it too; a function-level
+    ``monkeypatch.delenv``/``setenv`` still wins inside its own test.
+
+    What it does not stop: a role that sets ``command`` is taken as is (no shipped or fixture
+    config does; ``test_no_config_names_a_claude_command`` pins it); the attribute patch does
+    not cross a process boundary, so an ``anthropic`` or ``openai_compat`` responder role built
+    inside the MCP server would build a real client (every test's responder is a stub or the
+    fake ``claude``); and nothing here stops a test that calls ``subprocess`` or ``httpx`` on
+    its own."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CLAUDE_BULLY_CLAUDE", str(FAKE_CLAUDE))
+        patch.setattr("anthropic.Anthropic", _NoRealClient)
+        if importlib.util.find_spec("openai") is not None:
+            import openai
+
+            patch.setattr(openai, "OpenAI", _NoRealClient)
+        assert sys.executable  # the fake runs on this interpreter
+        yield
 
 
 @pytest.fixture(scope="session")

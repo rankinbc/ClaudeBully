@@ -1,6 +1,7 @@
 .venv/
 runs/*
 !runs/.gitkeep
+output/
 __pycache__/
 .mypy_cache/
 .ruff_cache/

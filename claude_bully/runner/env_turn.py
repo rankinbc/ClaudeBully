@@ -139,6 +139,7 @@ from claude_bully.providers.base import (
     ToolResult,
     ToolSpec,
 )
+from claude_bully.providers.ledger import fold_server_ledger, note_turn
 from claude_bully.records import Turn, Usage, is_pause_marker
 from claude_bully.records_env import (
     Crossover,
@@ -604,6 +605,7 @@ class EnvironmentSession:
         if not self.runtime.uses_mcp:
             return []
         fresh = self.runtime.after_target_call(turn_index)
+        fold_server_ledger(self.runtime.mcp_dir)
         for record in fresh:
             self._record_call(record)
         self._record_authority()
@@ -734,6 +736,7 @@ class EnvironmentSession:
         if generator is None or reply.speaker is not Speaker.target:
             return
         turn = reply.index
+        note_turn(turn)
         harvested = generator.harvest_turn(
             reply, turns, mark=lambda: self.runtime.mark_attempt("harvest", turn)
         )
@@ -1277,6 +1280,8 @@ class RunEnvironments:
             conversation_id=conversation_id,
             display_name=cell.target.display_name,
             idle_sheet=sheet,
+            cache_label=f"{conversation_id}/trigger",
+            cache_model=self.exp.judge.model,
         )
         generator = (
             self._world_generator(config, runtime, rep, state_dir, conversation_id, judge)

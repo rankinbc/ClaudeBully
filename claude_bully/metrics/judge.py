@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claude_bully.enums import Speaker
 from claude_bully.providers.base import ChatProvider, Message
+from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Conversation, chat_text, is_pause_marker
 
 PAIR_HEADER = "PAIRWISE JUDGMENT"
@@ -184,6 +185,7 @@ def _ask(
     key = cache.key(model, prompt)
     cached = cache.get(key)
     if cached is not None:
+        note_cached(f"judge/{key[:12]}", model)
         return cached
     last_error: Exception | None = None
     for _attempt in range(2):

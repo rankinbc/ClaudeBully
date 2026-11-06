@@ -60,6 +60,7 @@ from claude_bully.providers.base import (
     RateLimitError,
     build_provider,
 )
+from claude_bully.providers.ledger import LEDGER_FILE, activate, note_turn
 from claude_bully.records import (
     PAUSE_META,
     CapturedResponse,
@@ -346,6 +347,7 @@ class _CellRun:
         # the private file as the idle call finds it, for the turn's diff
         idle = self.env is not None and idle_prompt is not None
         before = self.env.runtime.private_text() if self.env is not None and idle else None
+        note_turn(self._next_index())
         started = time.monotonic()
         calls: list[ToolCall] = []
         round_texts: list[str] = []
@@ -490,6 +492,7 @@ class _CellRun:
         if self.env is not None and intent.mode is not IntentMode.fixed:
             # name the call before it is made: a rep that dies inside it is flagged on resume
             self.env.runtime.mark_attempt("bully", self._next_index())
+        note_turn(self._next_index())
         try:
             result = self.engine.realize(f"{self.conversation_id}/bully", intent, self.turns)
         except RateLimitError as exc:
@@ -764,59 +767,61 @@ def run_experiment(
         )
         store.write_run(run_record)
 
-    bank = load_task_bank(exp.task_set)
-    for cell in cells:
-        record = _ensure_cell_record(store, cell, exp)
-        plan = cell_turn_plan(exp, cell)
-        items = assign_items(bank, plan, exp.seed)
-        for rep in range(exp.repetitions):
-            status = record.rep_status.get(rep, CellStatus.pending)
-            if status in (CellStatus.complete, CellStatus.aborted):
-                summary.cells_skipped += 1
-                continue
-            state_dir = store.state_dir / cell.cell_id / f"rep{rep}"
-            # an environment strategy in time: the effective clock and the re-dated premise sheet
-            clock, premise_sheet = (
-                environments.strategy_inputs(cell.condition)
-                if cell.condition.environment is not None
-                else (None, None)
-            )
-            strategy = build_strategy(
-                cell.condition,
-                seed=exp.seed + rep,
-                turn_budget=exp.turn_budget,
-                environments=exp.environments,
-                clock=clock,
-                premise_sheet=premise_sheet,
-            )
-            env: EnvironmentSession | None = None
-            if cell.condition.environment is None:
-                target_provider = provider_factory(cell.target, state_dir / "target")
-            else:
-                env, target_provider = environments.open(
-                    cell=cell, rep=rep, store=store, strategy=strategy, state_dir=state_dir
+    with activate(store.run_dir / LEDGER_FILE):
+        bank = load_task_bank(exp.task_set)
+        for cell in cells:
+            record = _ensure_cell_record(store, cell, exp)
+            plan = cell_turn_plan(exp, cell)
+            items = assign_items(bank, plan, exp.seed)
+            for rep in range(exp.repetitions):
+                status = record.rep_status.get(rep, CellStatus.pending)
+                if status in (CellStatus.complete, CellStatus.aborted):
+                    summary.cells_skipped += 1
+                    continue
+                state_dir = store.state_dir / cell.cell_id / f"rep{rep}"
+                # an environment strategy in time: the effective clock and the re-dated premise
+                # sheet
+                clock, premise_sheet = (
+                    environments.strategy_inputs(cell.condition)
+                    if cell.condition.environment is not None
+                    else (None, None)
                 )
-            bully_provider = provider_factory(exp.bully, state_dir / "bully")
-            engine = BullyEngine(bully_provider, framing)
-            before = len(store.read_turns(cell.cell_id, rep))
-            conv = run_cell_rep(
-                store=store,
-                run_record=run_record,
-                exp=exp,
-                cell=cell,
-                rep=rep,
-                strategy=strategy,
-                target_provider=target_provider,
-                bully_engine=engine,
-                plan=plan,
-                items=items,
-                console=console,
-                env=env,
-            )
-            summary.turns_written += len(conv.turns) - before
-            if conv.status is CellStatus.aborted:
-                summary.cells_aborted += 1
-            else:
-                summary.cells_completed += 1
-            record = store.read_cell(cell.cell_id)
-    return summary
+                strategy = build_strategy(
+                    cell.condition,
+                    seed=exp.seed + rep,
+                    turn_budget=exp.turn_budget,
+                    environments=exp.environments,
+                    clock=clock,
+                    premise_sheet=premise_sheet,
+                )
+                env: EnvironmentSession | None = None
+                if cell.condition.environment is None:
+                    target_provider = provider_factory(cell.target, state_dir / "target")
+                else:
+                    env, target_provider = environments.open(
+                        cell=cell, rep=rep, store=store, strategy=strategy, state_dir=state_dir
+                    )
+                bully_provider = provider_factory(exp.bully, state_dir / "bully")
+                engine = BullyEngine(bully_provider, framing)
+                before = len(store.read_turns(cell.cell_id, rep))
+                conv = run_cell_rep(
+                    store=store,
+                    run_record=run_record,
+                    exp=exp,
+                    cell=cell,
+                    rep=rep,
+                    strategy=strategy,
+                    target_provider=target_provider,
+                    bully_engine=engine,
+                    plan=plan,
+                    items=items,
+                    console=console,
+                    env=env,
+                )
+                summary.turns_written += len(conv.turns) - before
+                if conv.status is CellStatus.aborted:
+                    summary.cells_aborted += 1
+                else:
+                    summary.cells_completed += 1
+                record = store.read_cell(cell.cell_id)
+        return summary

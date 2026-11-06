@@ -74,6 +74,7 @@ from claude_bully.environments.world import _norm_path
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.metrics.turn import sentences
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import IdleBehavior, IdleStyle, QuerySubject, ToolCall
 
 CONTINUE_TEXT: Final = "continue"
@@ -738,6 +739,7 @@ def idle_fallback(
             hit = cache.get(key)
             cached = _answer(hit.get("behavior")) if hit is not None else None
             if cached is not None:
+                note_cached(f"{conversation_id}/{key[:16]}", getattr(provider, "model", ""))
                 return cached
         elif key in memo:
             return memo[key]

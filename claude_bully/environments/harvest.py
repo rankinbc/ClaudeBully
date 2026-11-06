@@ -57,6 +57,7 @@ from typing import Final, Literal, NamedTuple
 
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import HARVEST_KINDS, HarvestItem, HarvestKind
 
 ECHO_THRESHOLD: Final = 0.6  # share of a sentence's words found in one bully sentence: an echo
@@ -689,6 +690,7 @@ def harvest_fallback(
             hit = cache.get(key)
             cached = _parse_items(hit) if hit is not None else None
             if cached is not None:
+                note_cached(f"{conversation_id}/{digest[:16]}", getattr(provider, "model", ""))
                 return cached
         mark()
         try:

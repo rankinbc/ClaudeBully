@@ -33,6 +33,7 @@ from claude_bully.metrics.events.identity import _POLITE_CONCESSION
 from claude_bully.metrics.events.memory import _is_hedged, classify_memory_fragments
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.metrics.turn import sentences
+from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import TriggerEvent
 
 HEURISTIC_CONFIDENCE: Final = 0.9
@@ -654,10 +655,16 @@ class TriggerWatcher:
     ambiguity."""
 
     def __init__(
-        self, llm_fallback: LlmFallback | None = None, cache: JudgeCache | None = None
+        self,
+        llm_fallback: LlmFallback | None = None,
+        cache: JudgeCache | None = None,
+        cache_label: str | None = None,
+        cache_model: str = "",
     ) -> None:
         self._fallback = llm_fallback
         self._cache = cache
+        self._cache_label = cache_label
+        self._cache_model = cache_model
         self._memo: dict[str, set[TriggerCategory]] = {}
 
     def watch(self, text: str, turn: int, context: WatchContext) -> list[TriggerEvent]:
@@ -684,6 +691,8 @@ class TriggerWatcher:
             hit = self._cache.get(key)
             cats = hit.get("categories") if hit is not None else None
             if isinstance(cats, list) and all(c in _VALUES for c in cats):
+                if self._cache_label is not None:
+                    note_cached(self._cache_label, self._cache_model)
                 return {TriggerCategory(c) for c in cats}
         elif digest in self._memo:
             return self._memo[digest]

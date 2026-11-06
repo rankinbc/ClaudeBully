@@ -74,6 +74,8 @@ class Completion(BaseModel):
     # text the model wrote before a tool call it already made, in order (the claude_code
     # backend, whose calls come back executed); never whitespace-only. ``text`` is the reply.
     interim_texts: list[str] = []
+    # the exact model the backend reports behind an alias (claude -p: the result's modelUsage key)
+    resolved_model: str | None = None
 
 
 class ProviderError(Exception):
@@ -123,31 +125,43 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
         from claude_bully.providers.stub import StubProvider, load_stub_script
 
         responder = load_stub_script(Path(role.stub_script)) if role.stub_script else None
-        return StubProvider(responder=responder, model=role.model)
+        return _wrapped(StubProvider(responder=responder, model=role.model))
     if role.provider is ProviderKind.claude_code:
         from claude_bully.providers.claude_code import ClaudeCodeProvider
 
-        return ClaudeCodeProvider(
-            model=role.model,
-            state_dir=state_dir,
-            effort=role.effort,
-            command=role.command,
-            mcp_state_dir=state_dir / "mcp" if with_mcp else None,
+        return _wrapped(
+            ClaudeCodeProvider(
+                model=role.model,
+                state_dir=state_dir,
+                effort=role.effort,
+                command=role.command,
+                mcp_state_dir=state_dir / "mcp" if with_mcp else None,
+            )
         )
     if role.provider is ProviderKind.anthropic:
         from claude_bully.providers.anthropic_api import AnthropicProvider
 
-        return AnthropicProvider(
-            model=role.model, max_tokens=role.max_tokens, temperature=role.temperature
+        return _wrapped(
+            AnthropicProvider(
+                model=role.model, max_tokens=role.max_tokens, temperature=role.temperature
+            )
         )
     if role.provider is ProviderKind.openai_compat:
         from claude_bully.providers.openai_compat import OpenAICompatProvider
 
-        return OpenAICompatProvider(
-            model=role.model,
-            base_url=role.base_url,
-            api_key_env=role.api_key_env or "OPENAI_API_KEY",
-            max_tokens=role.max_tokens,
-            temperature=role.temperature,
+        return _wrapped(
+            OpenAICompatProvider(
+                model=role.model,
+                base_url=role.base_url,
+                api_key_env=role.api_key_env or "OPENAI_API_KEY",
+                max_tokens=role.max_tokens,
+                temperature=role.temperature,
+            )
         )
     raise ProviderError(f"unknown provider kind: {role.provider}")
+
+
+def _wrapped(provider: ChatProvider) -> ChatProvider:
+    from claude_bully.providers.ledger import wrap
+
+    return wrap(provider)

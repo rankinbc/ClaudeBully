@@ -479,6 +479,8 @@ class EnvironmentRuntime:
         conversation_id: str = "",
         display_name: str | None = None,
         idle_sheet: IdleSheet | None = None,
+        cache_label: str | None = None,
+        cache_model: str = "",
     ) -> None:
         self.world = served = served_world(world, config, clock)
         self.config = config
@@ -531,7 +533,9 @@ class EnvironmentRuntime:
             authority=self.desk,
         )
         self.ladder = Ladder(ladder, config.gating, config.schedule, self.state, served)
-        self.watcher = TriggerWatcher(llm_fallback, trigger_cache)
+        self.watcher = TriggerWatcher(
+            llm_fallback, trigger_cache, cache_label=cache_label, cache_model=cache_model
+        )
         self._heuristics = TriggerWatcher() if llm_fallback is not None else self.watcher
         # specific names only: a common word here would make ordinary questions strong triggers
         self.world_terms = [c.name.strip().lower() for c in served.sheet.cast if c.name.strip()]

@@ -76,6 +76,7 @@ from claude_bully.environments.tools import (
 )
 from claude_bully.environments.world import Document, World, load_world
 from claude_bully.providers.base import ChatProvider, build_provider
+from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerProvider
 from claude_bully.records_env import AuthorityCall, ToolCall
 
 # What the target can see of this server: the name prefixes every tool (mcp__workspace__fetch)
@@ -275,6 +276,7 @@ class McpServer:
         # the desk per cell state and the responder per role, each built once per process
         self._desks: dict[str, AuthorityDesk] = {}
         self._responders: dict[str, ChatProvider | None] = {}
+        self._ledger = Ledger(state_dir / LEDGER_FILE)
 
     # ------------------------------------------------------------------ dispatch
 
@@ -348,6 +350,7 @@ class McpServer:
             raise _RpcError(_INVALID_PARAMS, "params.arguments must be an object")
 
         state = read_mcp_state(self.state_path)
+        self._ledger.turn = state.turn
         lines = self._lines(self.tools_path)
         call_index = 1 + sum(1 for record in lines if record.get("turn") == state.turn)
         call_id = f"mcp-{state.turn}-{call_index}"
@@ -456,7 +459,9 @@ class McpServer:
         key = role.model_dump_json()
         if key not in self._responders:
             try:
-                self._responders[key] = build_provider(role, self.state_dir / RESPONDER_DIR)
+                self._responders[key] = LedgerProvider(
+                    build_provider(role, self.state_dir / RESPONDER_DIR), self._ledger
+                )
             except Exception as exc:
                 print(
                     f"[{SERVER_NAME}] the responder could not be built: {exc!r}",

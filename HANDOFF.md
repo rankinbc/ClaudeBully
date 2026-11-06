@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-06, at Phase 3 complete (a7f7732, plus the docs commit that syncs this file) on `build/v1`. Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Next is the owner's ruling on the Phases 4 to 9 drafts (see "Drafts for Phases 4 to 9") and the recommended order, with Phase 7a first.
+Last updated: 2026-11-06, at Phase 7a Task 1 (the suite guard and the cost ledger) on `build/v1`; Phase 7a is in progress. Before it: Phase 3 complete (a7f7732, plus the docs commit that syncs this file). Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Next is the owner's ruling on the Phases 4 to 9 drafts (see "Drafts for Phases 4 to 9") and the recommended order, with Phase 7a first.
 
 ## What this is
 
@@ -167,11 +167,15 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
   The gate after the wave: 8181 passed, 5 skipped and 6 deselected, 6 slow passed. The scoped re-review (`final-rereview.md`, 91c2de1..a7f7732, which also covered Task 9's fix round) found every item addressed and no new Critical or Important breakage. Rulings recorded in the ledger: `second_person.py` at 1185 lines stands (the growth is N5's offset-preserving source and four closed rules; the Phase 7 LLM-lint decision settles whether the module shrinks); the third retry loop and the `.tmp` leak in `JudgeCache.put` are parked (see "Open items worth knowing").
 
+- **Phase 7a (first real runs, the code only):** in progress. Spec `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md`, plan `docs/superpowers/plans/2026-11-06-phase-7a-first-real-runs.md`. Tasks done:
+  1. Phase 7a Task 1: the suite guard and the cost ledger (e40aa28..Task 1 commit). `tests/conftest.py` gains the session-scoped autouse `no_real_providers` (`CLAUDE_BULLY_CLAUDE` points at `tests/fixtures/fake_claude.py`; `anthropic.Anthropic` and `openai.OpenAI` are `_NoRealClient`, which constructs and raises on first use); `.gitignore` gains `output/`. `claude_bully/providers/ledger.py` writes one `LedgerLine` per provider call to `runs/<run_id>/ledger.jsonl`: `build_provider` wraps what it builds in `LedgerProvider` while a ledger is active (`run_experiment` and a judged `analyze_run` activate it), the role is read from the conversation id (`role_of`), the runner and the session mark the turn, each cache's user notes its accepted hits as `cached` lines, and the MCP server's responder lines are written to `<mcp_state_dir>/ledger.jsonl` and folded into the run's after every target call. `Completion.resolved_model` is added (Task 3 fills it).
+
 ### Next steps, in order
 
-1. **The owner rules on the Phases 4 to 9 drafts.** Put the merged open questions to the owner (27 in the reconciliation, 5 of which block Phase 4's plan) and confirm the phase order. Nothing in `.superpowers/drafts/` is approved yet; see "Drafts for Phases 4 to 9".
-2. **Recommended order** (reconciliation section 5): Phase 7a (the code before any real run) right after the Phase 3 final review, then Phases 4, 5, 6 and 8, with the Phase 7b rungs interleaved as each phase lands, then Phase 9. Phase 7a is the critical path to the first README result. The `claude_bully/atomic.py` bundle (see "Open items worth knowing") must land before Phase 7.
-3. **For each approved phase:** move its approved spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`. Each phase gets its own ledger.
+1. **Phase 7a is in progress** (Task 1 done; Task 2, the ledger's analysis, is next). Plan: `docs/superpowers/plans/2026-11-06-phase-7a-first-real-runs.md`; spec: `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md`. The ledger and the task briefs are under `.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/`.
+2. **The owner rules on the Phases 4 to 9 drafts.** Put the merged open questions to the owner (27 in the reconciliation, 5 of which block Phase 4's plan) and confirm the phase order. Nothing in `.superpowers/drafts/` is approved yet; see "Drafts for Phases 4 to 9".
+3. **Recommended order** (reconciliation section 5): Phase 7a (the code before any real run) right after the Phase 3 final review, then Phases 4, 5, 6 and 8, with the Phase 7b rungs interleaved as each phase lands, then Phase 9. Phase 7a is the critical path to the first README result. The `claude_bully/atomic.py` bundle (see "Open items worth knowing") must land before Phase 7.
+4. **For each approved phase:** move its approved spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`. Each phase gets its own ledger.
 
 The phases, for reference:
 

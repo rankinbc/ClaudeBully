@@ -77,6 +77,7 @@ from claude_bully.planner.lints import (
     lint_document,
 )
 from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
     DocPlan,
@@ -794,6 +795,8 @@ class DocWriter:
         ):
             return None
         doc, _, _ = self._check(plan, json.dumps(hit["reply"]), key, turn, items, view)
+        if doc is not None:  # a hit the checks reject is a miss and a real call: not noted (P4)
+            note_cached(f"{self.conversation_id}/generator/{plan.doc_id}/cache", self.model)
         return doc
 
     def _attempts(
