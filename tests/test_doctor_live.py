@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from claude_bully import cli, doctor
 from claude_bully.doctor import CHECK_NAMES, DOCTOR_REPORT, DOCTOR_SUCCESSOR, default_out_dir
-from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine
+from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine, activate
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 runner = CliRunner()
@@ -56,9 +56,6 @@ def faked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setenv("FAKE_CLAUDE_STRUCTURED", json.dumps([JUDGE_REPLY, GENERATOR_REPLY]))
     monkeypatch.setattr(
-        doctor, "resolve_claude_command", lambda explicit=None: [sys.executable, str(FAKE)]
-    )
-    monkeypatch.setattr(
         cli, "resolve_claude_command", lambda explicit=None: [sys.executable, str(FAKE)]
     )
     # the disk check probes a temporary repo and runs root, never the working tree (P22);
@@ -81,6 +78,8 @@ def _live(tmp_path: Path, *extra: str, name: str = "doctor") -> tuple[Path, obje
 
 
 def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path) -> None:
+    real_output = doctor.REPO_ROOT / "output"
+    had_output = real_output.exists()
     out, result = _live(tmp_path)
     assert result.exit_code == 0, result.output
     report = _report(out)
@@ -92,7 +91,9 @@ def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path)
     assert re.search(r"answered in \d+ ms", checks["responder"]["detail"]), checks["responder"]
     assert "stub-sonnet-20260101" in checks["login"]["detail"]  # the resolved model is shown
     assert (tmp_path / "runs" / "_cache").is_dir()
-    assert not (tmp_path / "repo" / "output" / ".doctor_probe").exists()
+    # the CLI passed its call-time REPO_ROOT, the temporary repo, never the working tree (P22)
+    assert (tmp_path / "repo" / "output").is_dir() and real_output.exists() == had_output
+    assert "effort low" in checks["effort"]["detail"]  # the flag read off the ledger line
     lines = [LedgerLine.model_validate(ln) for ln in report["ledger"]]  # type: ignore[union-attr]
     roles = {ln.role for ln in lines}
     assert roles == {"doctor", "responder"}
@@ -127,6 +128,25 @@ def test_doctor_live_exits_1_when_not_logged_in(
     login = {c["name"]: c for c in _report(out)["checks"]}["login"]  # type: ignore[union-attr]
     assert result.exit_code == 1, result.output
     assert login["ok"] is False and "not logged in" in login["detail"]
+
+
+def test_a_rerun_into_the_same_dir_reports_only_its_own_calls(tmp_path: Path, faked: Path) -> None:
+    out, first = _live(tmp_path)
+    assert first.exit_code == 0, first.output  # type: ignore[attr-defined]
+    once = len(_report(out)["ledger"])  # type: ignore[arg-type]
+    out, second = _live(tmp_path)  # the same --out, as a second run on one day would be
+    assert second.exit_code == 0, second.output  # type: ignore[attr-defined]
+    assert len(_report(out)["ledger"]) == once  # type: ignore[arg-type]
+    assert len((out / LEDGER_FILE).read_text(encoding="utf-8").splitlines()) == once
+
+
+def test_the_effort_check_reads_the_flag_off_its_ledger_line(tmp_path: Path, faked: Path) -> None:
+    command = [sys.executable, str(FAKE)]
+    ok, detail = doctor._check_effort(command, tmp_path / "bare")
+    assert not ok and "no doctor-effort ledger line" in detail  # a reply alone does not pass
+    with activate(tmp_path / LEDGER_FILE):
+        ok, detail = doctor._check_effort(command, tmp_path / "ledgered")
+    assert ok and "effort low" in detail
 
 
 def test_the_default_report_dir_is_dated_under_output(tmp_path: Path) -> None:

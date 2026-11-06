@@ -264,8 +264,10 @@ def doctor(
     # repo (P22); the runs root is the option every other command takes
     out_dir = out if out is not None else default_out_dir(REPO_ROOT)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # each run starts on an empty ledger: a rerun into the same day's dir reports its own calls
+    (out_dir / LEDGER_FILE).unlink(missing_ok=True)
     with activate(out_dir / LEDGER_FILE) as ledger:
-        results = run_live_checks(claude, out_dir, runs_root=runs_root, repo_root=REPO_ROOT)
+        results = run_live_checks(claude, runs_root=runs_root, repo_root=REPO_ROOT)
         report = write_report(out_dir, results, ledger)
     for result in results:
         mark = "ok" if result.ok else "FAILED"

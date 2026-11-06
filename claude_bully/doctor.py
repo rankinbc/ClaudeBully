@@ -40,15 +40,11 @@ from claude_bully.environments.tools import TOOL_SPECS
 from claude_bully.environments.world import load_world
 from claude_bully.metrics.judge import JUDGE_SCHEMA, JudgeVerdict, strip_fences
 from claude_bully.paths import DATA_DIR, DEFAULT_RUNS_ROOT, REPO_ROOT
-from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.base import ChatProvider, Message
 from claude_bully.providers.claude_code import (
     _SHIM_SUFFIXES,
     ClaudeCodeProvider,
     clean_child_env,
-)
-from claude_bully.providers.claude_code import (
-    # here so a test can patch it on this module as on ``cli``; the CLI resolves once
-    resolve_claude_command as resolve_claude_command,
 )
 from claude_bully.providers.ledger import (
     Ledger,
@@ -64,8 +60,10 @@ __all__ = [
     "CHECK_NAMES",
     "DOCTOR_REPORT",
     "DOCTOR_SUCCESSOR",
+    "INFORMATIONAL",
     "CheckResult",
     "default_out_dir",
+    "failed",
     "mini_worlds_dir",
     "run_live_checks",
     "write_report",
@@ -109,7 +107,6 @@ class CheckResult(BaseModel):
     ok: bool
     detail: str
     latency_ms: int | None = None
-    cost_usd: float | None = None
 
 
 def mini_worlds_dir() -> Path | None:
@@ -121,7 +118,8 @@ def mini_worlds_dir() -> Path | None:
 
 
 def default_out_dir(repo_root: Path = REPO_ROOT) -> Path:
-    return repo_root / "output" / f"doctor_live_{datetime.now(UTC).date().isoformat()}"
+    """``<repo>/output/doctor_live_<YYYY-MM-DD>``, on the local date like every output folder."""
+    return repo_root / "output" / f"doctor_live_{datetime.now().date().isoformat()}"
 
 
 def _provider(command: list[str], state_dir: Path, **kwargs: Any) -> ChatProvider:
@@ -133,8 +131,6 @@ def _timed(name: str, body: Callable[[], tuple[bool, str]]) -> CheckResult:
     started = time.monotonic()
     try:
         ok, detail = body()
-    except ProviderError as exc:
-        ok, detail = False, f"{type(exc).__name__}: {str(exc)[:200]}"
     except Exception as exc:  # a broken check is a failed check, never a crashed doctor
         ok, detail = False, f"{type(exc).__name__}: {str(exc)[:200]}"
     latency = int((time.monotonic() - started) * 1000)
@@ -192,17 +188,23 @@ def _mcp_state(worlds_dir: Path, config: EnvironmentConfig, **fields: Any) -> Mc
     )
 
 
-def _check_mcp(
-    command: list[str], tmp: Path, worlds_dir: Path
-) -> tuple[bool, str, ClaudeCodeProvider]:
+def _mcp_provider(command: list[str], tmp: Path, worlds_dir: Path) -> ClaudeCodeProvider:
+    """Check 4's provider, its MCP state written: built apart from the call, so checks 4b and 9
+    read it whether or not the call returned."""
     mcp_dir = tmp / "mcp"
     write_mcp_state(
         mcp_dir / STATE_FILE,
         _mcp_state(worlds_dir, EnvironmentConfig(world="mini", tools={"web_search"})),
     )
-    inner = ClaudeCodeProvider(
+    return ClaudeCodeProvider(
         model="sonnet", state_dir=tmp / "mcp_state", command=command, mcp_state_dir=mcp_dir
     )
+
+
+def _check_mcp(inner: ClaudeCodeProvider) -> tuple[bool, str]:
+    mcp_dir = inner.mcp_state_dir
+    if mcp_dir is None:
+        return False, "check 4's provider has no MCP state directory"
     reply = wrap(inner).complete(
         "doctor-mcp",
         "You are a research assistant.",
@@ -217,7 +219,7 @@ def _check_mcp(
         f"tools.jsonl lines {len(lines)}, calls returned {len(reply.tool_calls)}, "
         f"interim blocks {interim}"
     )
-    return ok, detail, inner
+    return ok, detail
 
 
 def _check_thinking(provider: ClaudeCodeProvider | None) -> tuple[bool, str]:
@@ -260,13 +262,28 @@ def _check_responder(command: list[str], tmp: Path, worlds_dir: Path) -> tuple[b
         ),
     )
     provider = _provider(command, tmp / "responder_state", mcp_state_dir=mcp_dir)
-    provider.complete(
-        "doctor-responder",
-        "You are a research assistant.",
-        [Message(role="user", content=_RESPONDER_PROMPT)],
-        tools=[TOOL_SPECS["consult_model"]],
+    outer: Exception | None = None
+    try:
+        provider.complete(
+            "doctor-responder",
+            "You are a research assistant.",
+            [Message(role="user", content=_RESPONDER_PROMPT)],
+            tools=[TOOL_SPECS["consult_model"]],
+        )
+    except Exception as exc:  # the outer call failed: still say what the nested one did
+        outer = exc
+    # the nested call's line, folded whatever the outer call did; only the lines this check folded
+    folded = fold_server_ledger(mcp_dir)
+    ledger = active()
+    mine = ledger.lines()[-folded:] if ledger is not None and folded else []
+    nested = next((ln for ln in reversed(mine) if ln.role == "responder"), None)
+    said = (
+        "no nested ledger line"
+        if nested is None
+        else f"the nested line is {nested.status} after {nested.latency_ms} ms"
     )
-    fold_server_ledger(mcp_dir)
+    if outer is not None:
+        return False, f"{type(outer).__name__}: {str(outer)[:200]}; {said}"
     path = mcp_dir / AUTHORITY_FILE
     answered = [
         AuthorityCall.model_validate_json(ln)
@@ -274,10 +291,8 @@ def _check_responder(command: list[str], tmp: Path, worlds_dir: Path) -> tuple[b
         if ln.strip()
     ]
     if not answered:
-        return False, "no AuthorityCall: the nested responder did not answer (see stderr)"
-    ledger = active()
-    nested = [ln for ln in (ledger.lines() if ledger else []) if ln.role == "responder"]
-    latency = nested[-1].latency_ms if nested else None
+        return False, f"no AuthorityCall: the nested responder did not answer; {said}"
+    latency = nested.latency_ms if nested is not None else None
     return True, f"the nested responder answered in {latency} ms"
 
 
@@ -297,10 +312,19 @@ def _check_generator(command: list[str], tmp: Path) -> tuple[bool, str]:
 
 
 def _check_effort(command: list[str], tmp: Path) -> tuple[bool, str]:
+    """A reply, and ``effort: low`` on the call's own ledger line (spec section 9, check 7)."""
     reply = _provider(command, tmp / "effort", effort="low").complete(
         "doctor-effort", "Reply with the single word pong.", [Message(role="user", content="ping")]
     )
-    return bool(reply.text.strip()), "replied with --effort low"
+    ledger = active()
+    lines = [
+        ln for ln in (ledger.lines() if ledger else []) if ln.conversation_id == "doctor-effort"
+    ]
+    if not lines:
+        return False, "no doctor-effort ledger line (no ledger is active)"
+    effort = lines[-1].effort
+    ok = bool(reply.text.strip()) and effort == "low"
+    return ok, f"replied; its ledger line has effort {effort}"
 
 
 def _check_disk(runs_root: Path, repo_root: Path) -> tuple[bool, str]:
@@ -341,7 +365,6 @@ def _check_sandbox(provider: ClaudeCodeProvider | None) -> tuple[bool, str]:
 
 def run_live_checks(
     command: list[str],
-    out_dir: Path,
     *,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     repo_root: Path = REPO_ROOT,
@@ -361,8 +384,8 @@ def run_live_checks(
 
             def mcp() -> tuple[bool, str]:
                 nonlocal mcp_provider
-                ok, detail, mcp_provider = _check_mcp(command, tmp, worlds_dir)
-                return ok, detail
+                mcp_provider = _mcp_provider(command, tmp, worlds_dir)
+                return _check_mcp(mcp_provider)
 
             results.append(_timed("mcp", mcp))
         results.append(_timed("thinking", lambda: _check_thinking(mcp_provider)))
@@ -374,7 +397,6 @@ def run_live_checks(
         results.append(_timed("effort", lambda: _check_effort(command, tmp)))
         results.append(_timed("disk", lambda: _check_disk(runs_root, repo_root)))
         results.append(_timed("sandbox", lambda: _check_sandbox(mcp_provider)))
-    assert [r.name for r in results] == list(CHECK_NAMES)
     return results
 
 

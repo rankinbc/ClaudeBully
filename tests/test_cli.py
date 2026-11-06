@@ -248,7 +248,9 @@ def test_doctor_offline_has_no_mcp_check_and_never_builds_a_provider(
     def explode(*args: object, **kwargs: object) -> None:
         raise AssertionError("the offline doctor must not call claude")
 
-    monkeypatch.setattr("claude_bully.doctor.run_live_checks", explode)
+    # the names the CLI and the doctor look up at call time
+    monkeypatch.setattr(cli, "run_live_checks", explode)
+    monkeypatch.setattr("claude_bully.doctor.ClaudeCodeProvider", explode)
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
     assert "mcp" not in result.output.lower()

@@ -425,3 +425,10 @@ Task 4 (`doctor --live`: the nine preflights, check 4b and the JSON report):
 - **The checks in their own module.** The checks live in `claude_bully/doctor.py` (`run_live_checks`, `CHECK_NAMES`, `CheckResult`, `write_report`); the CLI resolves `claude` once and passes it in, with `--runs-root` and the repo root, so the disk check probes where a test says and never the working tree (P22). Every check runs whatever the one before it did; one that raises is a failed result naming the exception class.
 - **The report.** `doctor --live` writes `--out DIR` (default `output/doctor_live_<YYYY-MM-DD>/`): `doctor.json` (the date, every check, the ledger lines) beside the doctor's own `ledger.jsonl`, prints one line per check and the report's path, and exits 1 after the whole report is written when any check but `thinking` failed. Check 4b (`thinking`) reads `ClaudeCodeProvider.thinking_seen` off check 4's provider and is never a failure (C21).
 - **Every child clean.** Every process the doctor spawns, the two `--version` runs (offline and check 1) included, runs under `clean_child_env()` (P12); the nested responder inherits `MCP_TOOL_TIMEOUT` from the outer child, which `clean_child_env()` does not strip.
+- **Task 4 review (amends the plan's Task 4 interface).**
+  - Each `doctor --live` run starts on an empty `ledger.jsonl` in its out dir, so a rerun into the same day's dir reports only its own calls. Check 5 reads its latency from the lines it folded itself.
+  - `run_live_checks(command, *, runs_root, repo_root)` takes no `out_dir`, and `CheckResult` has no `cost_usd`: neither was used. `failed` and `INFORMATIONAL` are in `doctor.__all__`.
+  - Check 7 passes on a reply and `effort: low` on its own ledger line (section 9's "the flag in the ledger line").
+  - Check 4's provider is built before its call, so checks 4b and 9 read it even when the call raised.
+  - Check 5 folds the server's ledger whatever the outer call did, and on a failure names the nested line's status and latency (or its absence).
+  - The default out dir is dated by the local date.
