@@ -7,14 +7,12 @@ by sha256(model + prompt), so analysis never re-pays for a judgement it already 
 
 import hashlib
 import json
-import os
-import tempfile
-import time
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from claude_bully import atomic
 from claude_bully.enums import Speaker
 from claude_bully.providers.base import ChatProvider, Message
 from claude_bully.providers.ledger import note_cached
@@ -115,20 +113,9 @@ class JudgeCache:
         return data if isinstance(data, dict) else None
 
     def put(self, key: str, value: dict[str, Any]) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        path = self._path(key)
-        fd, name = tempfile.mkstemp(dir=self.directory, prefix=f".{key}.", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            tmp.write(json.dumps(value, indent=1))
-        for attempt in range(20):
-            try:
-                os.replace(name, path)
-                return
-            except PermissionError:  # a reader briefly holding the entry open on Windows
-                if attempt == 19:
-                    Path(name).unlink(missing_ok=True)
-                    raise
-                time.sleep(0.05)
+        """Write the entry atomically (``atomic.write_atomic``: no temp file is left on any
+        failure)."""
+        atomic.write_atomic(self._path(key), json.dumps(value, indent=1))
 
 
 def neutralize_transcript(conv: Conversation, window: tuple[int, int]) -> str:

@@ -1,5 +1,6 @@
 """claude-bully command line."""
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -26,6 +27,7 @@ from claude_bully.providers.base import Message, ProviderError
 from claude_bully.providers.claude_code import clean_child_env, resolve_claude_command
 from claude_bully.providers.ledger import LEDGER_FILE, activate
 from claude_bully.providers.stub import StubProvider
+from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.wait import wait_on_rate_limit as wait_on_rate_limit_
@@ -73,6 +75,8 @@ def run(
 ) -> None:
     """Run (or resume) an experiment. Exit code 3 means a rate limit paused it."""
     exp = load_experiment(config)
+    if only is not None and not any(fnmatch.fnmatch(c.cell_id, only) for c in expand_cells(exp)):
+        raise typer.BadParameter(f"{only!r} matches no cell of {exp.name!r}", param_hint="--only")
     try:
         summary = wait_on_rate_limit_(
             lambda: run_experiment(

@@ -486,7 +486,9 @@ def test_the_probe_file_schema_and_the_seed() -> None:
         assert [r for r in results if r.lint_id == "second_person"] == [], item.title
 
 
-def test_the_probe_script_scores_on_the_stub_rules(capsys: pytest.CaptureFixture[str]) -> None:
+def test_the_probe_script_scores_on_the_stub_rules(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     items = load_probe(PROBE)
     scores = score(items, _lint())
     for kind in INSTRUCTIONAL_KINDS:
@@ -512,6 +514,24 @@ def test_the_probe_script_scores_on_the_stub_rules(capsys: pytest.CaptureFixture
     [listed] = row["billboard_errors"]
     assert listed.startswith("Undecided (semantic habit): off-contract twice")
     assert "billboard undecided: Undecided" in report(score([undecided], _lint()))
-    assert main([str(PROBE), "--stub", str(LINT_RULES)]) == 0
+    assert main([str(PROBE), "--stub", str(LINT_RULES), "--state", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "family_faq" in out and "billboards passed" in out
+
+
+@pytest.mark.parametrize("stances", [False, True], ids=["probe", "stances"])
+def test_the_probe_ledgers_its_calls_under_state_and_prints_the_calls_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], stances: bool
+) -> None:
+    """Final review I3: the probe's calls are ledgered under ``--state`` (one line per call, the
+    lint's role) and the run ends with the ledger's calls line, so rung 1b's tally holds them."""
+    from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine
+
+    argv = ["--stances"] if stances else [str(PROBE)]
+    assert main([*argv, "--stub", str(LINT_RULES), "--state", str(tmp_path)]) == 0
+    raw = (tmp_path / LEDGER_FILE).read_text("utf-8").splitlines()
+    lines = [LedgerLine.model_validate_json(line) for line in raw]
+    assert lines and all((ln.role, ln.status) == ("llm_lint", "ok") for ln in lines)
+    out = capsys.readouterr().out.splitlines()
+    assert out[-2] == f"Calls: {len(lines)} calls made, 0 cached; by role: llm_lint {len(lines)}"
+    assert out[-1] == f"Ledger: {tmp_path / LEDGER_FILE}"

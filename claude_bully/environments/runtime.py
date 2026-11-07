@@ -82,9 +82,7 @@ a generated document's, never a ladder rung's: ``note_records`` keeps it out of 
 """
 
 import json
-import os
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from random import Random
@@ -92,6 +90,7 @@ from typing import Any, Final, Literal, NamedTuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from claude_bully import atomic
 from claude_bully.config import RoleConfig
 from claude_bully.enums import Layer, Phase, Speaker, Tier, TriggerCategory
 from claude_bully.environments.authority import (
@@ -163,6 +162,7 @@ from claude_bully.providers.base import (
     ChatProvider,
     Message,
     ProviderError,
+    RateLimitError,
     ToolCallRequest,
     ToolSpec,
 )
@@ -435,18 +435,9 @@ def exchange_of(turn_index: int, history: Sequence[Turn], *, idle: bool = False)
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    for attempt in range(20):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:  # a reader briefly holding the file open on Windows
-            if attempt == 19:
-                tmp.unlink(missing_ok=True)
-                raise
-            time.sleep(0.05)
+    """The state and attempt-marker writes: ``atomic.write_atomic``, through the module so the
+    one retry loop is the one every writer uses."""
+    atomic.write_atomic(path, text)
 
 
 class EnvironmentRuntime:
@@ -1369,13 +1360,16 @@ def _trigger_prompt(text: str, context: WatchContext) -> str:
     )
 
 
-def trigger_fallback(provider: ChatProvider, conversation_id: str) -> LlmFallback:
+def trigger_fallback(
+    provider: ChatProvider, conversation_id: str, *, model: str = ""
+) -> LlmFallback:
     """The watcher's LLM fallback over a judge provider: one call per distinct turn text and set
     of bully claims (the watcher caches the answer), a JSON schema, and ``TriggerFallbackError``
-    on any failure so a failed call is never cached as "none"."""
+    on any failure so a failed call is never cached as "none". ``model`` is the judge model the
+    watcher's ``cache_model`` names: the call's conversation id carries the cache key's digest."""
 
     def ask(text: str, context: WatchContext) -> list[TriggerCategory]:
-        digest = fallback_digest(text, context)[:16]
+        digest = fallback_digest(text, context, model)[:16]
         try:
             completion = provider.complete(
                 f"{conversation_id}/{digest}",
@@ -1384,6 +1378,8 @@ def trigger_fallback(provider: ChatProvider, conversation_id: str) -> LlmFallbac
                 json_schema=TRIGGER_SCHEMA,
             )
             answer = json.loads(completion.text)["category"]
+        except RateLimitError:
+            raise  # the run pauses on it (final review I2); never a heuristic-only watch
         except (ProviderError, ValueError, KeyError, TypeError) as exc:
             raise TriggerFallbackError(f"{type(exc).__name__}: {exc}") from exc
         if answer == "none":

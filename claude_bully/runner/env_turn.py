@@ -1286,7 +1286,11 @@ class RunEnvironments:
             state_dir / "environment",
             worlds_dir=self.catalog.worlds_dir,
             mcp_dir=mcp_dir,
-            llm_fallback=trigger_fallback(judge, f"{conversation_id}/trigger") if judge else None,
+            llm_fallback=(
+                trigger_fallback(judge, f"{conversation_id}/trigger", model=self.exp.judge.model)
+                if judge
+                else None
+            ),
             trigger_cache=self.trigger_cache,
             responder=responder,
             responder_role=role,

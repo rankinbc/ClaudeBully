@@ -13,7 +13,9 @@ fails closed in a run, and is listed by title. The lint runs with no cache, by d
 probe run asks afresh. ``--stances`` runs the lint over the advice-shaped deny lines of
 ``superior_self`` and ``peer`` as a report (never a gate: the deny stance is supposed to say
 stop). Real calls go through ``claude -p`` on the subscription; ``--stub`` runs the stub rules
-instead, for the test.
+instead, for the test. Every call is ledgered in ``<state>/ledger.jsonl`` (the ``--state``
+directory), and the run ends with the ledger's calls line and its path, so a rung that runs the
+probe counts its calls (final review I3).
 """
 
 import argparse
@@ -27,12 +29,14 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from claude_bully.analysis.ledger import calls_line  # noqa: E402
 from claude_bully.config import RoleConfig  # noqa: E402
 from claude_bully.enums import DocumentKind, ProviderKind, Stance  # noqa: E402
 from claude_bully.environments.sheets import PeerSheet, SuperiorSelfSheet, load_env_sheet  # noqa: E402
 from claude_bully.planner.lints import INSTRUCTIONAL_KINDS  # noqa: E402
 from claude_bully.planner.llm_lint import LlmLint  # noqa: E402
 from claude_bully.providers.base import build_provider  # noqa: E402
+from claude_bully.providers.ledger import LEDGER_FILE, activate, wrap  # noqa: E402
 from claude_bully.providers.stub import StubProvider, load_stub_script  # noqa: E402
 
 
@@ -112,9 +116,11 @@ def report(scores: dict[str, dict[str, Any]]) -> str:
 
 
 def _lint(args: argparse.Namespace) -> LlmLint:
+    """The lint on the stub rules or ``claude -p``; built inside the probe's ledger, so either
+    provider writes a line per call."""
     if args.stub is not None:
-        provider = StubProvider(load_stub_script(Path(args.stub)), model="stub-judge")
-        return LlmLint(provider, model="stub-judge", conversation_id="probe/lint/rep0")
+        stub = StubProvider(load_stub_script(Path(args.stub)), model="stub-judge")
+        return LlmLint(wrap(stub), model="stub-judge", conversation_id="probe/lint/rep0")
     role = RoleConfig(
         provider=ProviderKind.claude_code,
         model=args.model,
@@ -170,13 +176,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--stub", default=None, help="a stub rules file instead of claude -p")
     parser.add_argument("--stances", action="store_true", help="report on the deny stance lines")
     args = parser.parse_args(argv)
-    lint = _lint(args)
-    if args.stances:
-        print(_stances(lint))
-        return 0
-    if args.probe is None:
+    if not args.stances and args.probe is None:
         parser.error("a probe file is required unless --stances")
-    print(report(score(load_probe(args.probe), lint)))
+    path = Path(args.state) / LEDGER_FILE
+    with activate(path) as ledger:
+        try:
+            lint = _lint(args)
+            print(_stances(lint) if args.stances else report(score(load_probe(args.probe), lint)))
+        finally:  # a rate limit or a failure still reports the calls it made
+            print(f"Calls: {calls_line(ledger.lines()) or 'none'}")
+            print(f"Ledger: {path}")
     return 0
 
 

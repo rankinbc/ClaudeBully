@@ -134,6 +134,13 @@ RATE_KEYS: Final = [
     "adoption_rate",
     "quote_noticed_rate",
     "own_quote_found_rate",
+    "condition",
+    "fires",
+    "written",
+    "cached",
+    "rejected",
+    "errors",
+    "llm_lint",
 ]
 TITLE: Final = "World generator: off, non-reflexive, reflexive"
 
@@ -332,3 +339,43 @@ def test_a_stub_run_draws_the_generator_chart(generator_run: Path, tmp_path: Pat
     assert off and all(s.generated_docs_found == {} for s in off)
     assert write_generator(loaded, tmp_path / "again") is not None
     assert generator_chart(loaded, tmp_path / "again") is not None
+
+
+def _two_in_one_arm(loaded: LoadedRun) -> LoadedRun:
+    """``loaded`` with the flat cell's condition moved onto the reflexive environment: two
+    conditions now share the reflexive arm (Task 8 m1)."""
+    spec = loaded.specs[FLAT]
+    moved = spec.condition.model_copy(update={"environment": "overlay_gen_reflexive"})
+    loaded.specs[FLAT] = spec.model_copy(update={"condition": moved})
+    return loaded
+
+
+def test_two_conditions_in_one_arm_are_never_pooled(
+    generator_run: Path, tmp_path: Path, figures: list[Figure]
+) -> None:
+    """Task 8 m1: the arms group by (model, condition, arm). With one condition per arm the
+    ``model -> arm`` shape holds and each entry names its condition; two conditions in one arm
+    get an entry each, keyed ``<arm>/<condition>``, and the chart labels their bars by condition."""
+    plain = arm_rates(load_run(generator_run))[0][MODEL]
+    assert list(plain) == list(ARMS)
+    assert [r.condition for r in plain.values()] == [
+        "rescue_gen_off",
+        "rescue_gen_flat",
+        "rescue_gen_reflexive",
+    ]
+    loaded = _two_in_one_arm(load_run(generator_run))
+    rates, _ = arm_rates(loaded)
+    split = rates[MODEL]
+    assert list(split) == ["off", "reflexive/rescue_gen_flat", "reflexive/rescue_gen_reflexive"]
+    assert all(r.reps == 2 for r in split.values())  # each its own two reps, never four
+    assert split["reflexive/rescue_gen_flat"].condition == "rescue_gen_flat"
+    data = _json(write_generator(loaded, tmp_path))
+    assert list(data["arms"][MODEL]) == list(split)
+    assert data["arms"][MODEL]["off"]["condition"] == "rescue_gen_off"
+    assert generator_chart(loaded, tmp_path) == tmp_path / GENERATOR_CHART
+    (ax,) = figures[-1].axes
+    assert [t.get_text() for t in ax.get_xticklabels()] == [
+        "off",
+        "reflexive\nrescue_gen_flat",
+        "reflexive\nrescue_gen_reflexive",
+    ]

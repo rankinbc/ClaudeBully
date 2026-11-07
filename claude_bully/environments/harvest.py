@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, NamedTuple
 
 from claude_bully.metrics.judge import JudgeCache
-from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.base import ChatProvider, Message, ProviderError, RateLimitError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import HARVEST_KINDS, HarvestItem, HarvestKind
 
@@ -714,6 +714,8 @@ def harvest_fallback(
                 json_schema=HARVEST_SCHEMA,
             )
             raw = json.loads(completion.text)
+        except RateLimitError:
+            raise  # the run pauses on it (final review I2); never a degraded harvest
         except (ProviderError, ValueError) as exc:
             raise HarvestFallbackError(f"{type(exc).__name__}: {exc}") from exc
         parsed = _parse_items(raw)

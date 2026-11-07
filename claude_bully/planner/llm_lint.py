@@ -26,7 +26,7 @@ from typing import Any, Final
 from claude_bully.enums import DocumentKind
 from claude_bully.metrics.judge import CachePut, JudgeCache, strip_fences
 from claude_bully.planner.lints import squash
-from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.base import ChatProvider, Message, ProviderError, RateLimitError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import (
     LintFailure,
@@ -211,6 +211,8 @@ class LlmLint:
                     [Message(role="user", content=lint_prompt(kind, title, body))],
                     json_schema=LLM_LINT_SCHEMA,
                 )
+            except RateLimitError:
+                raise  # the run pauses on it (final review I2); never an error verdict
             except ProviderError as exc:
                 return self._verdict(doc_id, attempt, "error", [], error=type(exc).__name__)
             parsed = parse_verdict(completion.text, body)

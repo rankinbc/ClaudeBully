@@ -333,7 +333,7 @@ def test_the_fallback_is_cached_and_a_failure_is_not(tmp_path: Path) -> None:
     prompt = request["messages"][0].content
     assert SHORT_REFLECTION in prompt
     assert all(f'"{label}"' in prompt for label in ("decline", "ask", "reflect", "wait"))
-    key = hashlib.sha256(("idle2\0" + SHORT_REFLECTION).encode()).hexdigest()
+    key = hashlib.sha256(("idle2\0\0" + SHORT_REFLECTION).encode()).hexdigest()
     assert cache.get(key) == {"behavior": "wait"}
     # a fresh fallback over the same cache never asks again
     again = _Judge()
@@ -345,7 +345,7 @@ def test_the_fallback_is_cached_and_a_failure_is_not(tmp_path: Path) -> None:
     other = SHORT_REFLECTION + " Still nothing."
     with pytest.raises(IdleFallbackError):
         idle_fallback(down, "cid", cache)(other)
-    other_key = hashlib.sha256(("idle2\0" + other).encode()).hexdigest()
+    other_key = hashlib.sha256(("idle2\0\0" + other).encode()).hexdigest()
     assert cache.get(other_key) is None
     got = classify_idle(other, [], _context({}), fallback=idle_fallback(down, "cid", cache))
     assert got == IdleClassification("reflect", "none", "heuristic")
@@ -354,7 +354,7 @@ def test_the_fallback_is_cached_and_a_failure_is_not(tmp_path: Path) -> None:
 
 
 def test_a_damaged_cache_entry_is_a_miss_and_the_judge_is_asked(tmp_path: Path) -> None:  # I1
-    key = hashlib.sha256(("idle2\0" + SHORT_REFLECTION).encode()).hexdigest()
+    key = hashlib.sha256(("idle2\0\0" + SHORT_REFLECTION).encode()).hexdigest()
     (tmp_path / f"{key}.json").write_text('{"behavior": "wa', encoding="utf-8")
     cache = JudgeCache(tmp_path)
     judge = _Judge('{"behavior": "wait"}')
@@ -369,7 +369,7 @@ def test_a_reflect_or_wait_answer_under_the_old_key_is_never_read(tmp_path: Path
     judge = _Judge('{"behavior": "decline"}')
     assert idle_fallback(judge, "cid", cache)(reply) == "decline"
     assert len(judge.requests) == 1
-    assert cache.get(hashlib.sha256(("idle2\0" + reply).encode()).hexdigest()) == {
+    assert cache.get(hashlib.sha256(("idle2\0\0" + reply).encode()).hexdigest()) == {
         "behavior": "decline"
     }
 

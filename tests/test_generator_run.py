@@ -13,11 +13,14 @@ from claude_bully.analysis.load import load_run
 from claude_bully.analysis.progression import ProgressionSummary, summarize_progression
 from claude_bully.analysis.replay import replay_cell
 from claude_bully.config import Experiment, RoleConfig
-from claude_bully.enums import CellStatus, Layer
+from claude_bully.enums import CellStatus, Layer, Speaker
 from claude_bully.environments.config import GENERATOR_RUNG
 from claude_bully.environments.generator import DocPlanner, DocWriter, WorldGenerator, to_document
 from claude_bully.environments.mcp_server import read_mcp_state
-from claude_bully.providers.base import ProviderError
+from claude_bully.planner.llm_lint import LINT_HEADER
+from claude_bully.providers.base import ChatProvider, ProviderError, RateLimitError
+from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine, wrap
+from claude_bully.records import is_pause_marker
 from claude_bully.records_env import (
     Discovery,
     GeneratorFire,
@@ -27,7 +30,7 @@ from claude_bully.records_env import (
     TriggerStreamRecord,
 )
 from claude_bully.runner.env_turn import GENERATED_CACHE_DIR
-from claude_bully.runner.runner import run_experiment
+from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.sandbox import sandbox_dir
 from claude_bully.runner.store import RunStore
 from tests.fixtures.generator_stub import (
@@ -442,6 +445,9 @@ def test_a_writer_error_is_a_fire_with_no_documents_and_the_arm_reads_it(tmp_pat
     arm, summary = _reflexive_arm(store)
     assert (arm.reps, arm.docs_written, arm.own_quote_found_rate) == (1, 0.0, 0.0)
     assert (summary.generated_docs_found, summary.own_quote_found_turn) == ({}, None)
+    # the fire counts read from the GeneratorFire records (Task 3 F2)
+    assert (arm.fires, arm.written, arm.cached, arm.errors) == (1, 0, 0, 1)
+    assert arm.rejected == {"cap": 0, "contract": 0, "lints": 0}
 
 
 def test_a_fire_over_the_cap_is_rejected_and_the_arm_reads_it(tmp_path: Path) -> None:
@@ -452,6 +458,44 @@ def test_a_fire_over_the_cap_is_rejected_and_the_arm_reads_it(tmp_path: Path) ->
     arm, summary = _reflexive_arm(store)
     assert (arm.reps, arm.docs_written, arm.own_quote_found_rate) == (1, 0.0, 0.0)
     assert (summary.generated_docs_found, summary.own_quote_found_turn) == ({}, None)
+    assert (arm.fires, arm.written, arm.errors) == (1, 0, 0)
+    assert arm.rejected == {"cap": 1, "contract": 0, "lints": 0}
+    assert arm.llm_lint == {"fail": 0, "error": 0}
+
+
+@pytest.mark.parametrize(
+    ("modes", "status", "rejected", "llm_lint"),
+    [
+        (["billboard"], "written", {"cap": 0, "contract": 0, "lints": 0}, {"fail": 1, "error": 0}),
+        (
+            ["offcontract_lint", "offcontract_lint"],
+            "rejected",
+            {"cap": 0, "contract": 0, "lints": 1},
+            {"fail": 0, "error": 2},
+        ),
+        (["off_contract", "off_contract"], "rejected", {"cap": 0, "contract": 1, "lints": 0}, None),
+    ],
+    ids=["lint_fail_then_pass", "lint_undecided", "off_contract"],
+)
+def test_generator_json_counts_the_fires_by_outcome_and_the_lint_verdicts(
+    tmp_path: Path,
+    modes: list[str],
+    status: str,
+    rejected: dict[str, int],
+    llm_lint: dict[str, int] | None,
+) -> None:
+    """The rejection rate per kind (Task 3 F2, landed in the 7a final fix wave): each arm entry
+    of ``generator.json`` counts its fires, written, cached, rejected per kind, errored, and the
+    LLM lint's fail and error verdicts, from the kept conversations' ``GeneratorFire`` records."""
+    stub = GeneratorStub(modes)
+    store = _run(_exp(judge=True), tmp_path, GeneratorFactory(stub=stub, judge=LintJudge()))
+    [fire] = _fires(store)
+    assert fire.status == status
+    arm, _ = _reflexive_arm(store)
+    assert (arm.fires, arm.written + arm.cached, arm.errors) == (1, int(status == "written"), 0)
+    assert arm.rejected == rejected
+    if llm_lint is not None:
+        assert arm.llm_lint == llm_lint
 
 
 def test_a_degraded_harvest_is_marked_on_the_plans_and_the_arm_reads_the_run(
@@ -464,3 +508,94 @@ def test_a_degraded_harvest_is_marked_on_the_plans_and_the_arm_reads_the_run(
     assert all(plan.harvest_degraded == [1] for plan in fire.plans)
     arm, _ = _reflexive_arm(store)
     assert (arm.reps, arm.docs_written) == (1, 2.0)
+
+
+# ------------------------------------------------- a rate limit in a judge-side pass (I2)
+
+
+class _LedgeredFactory(GeneratorFactory):
+    """``GeneratorFactory`` with the judge wrapped in the run's ledger, as ``build_provider``
+    wraps a real one, so its calls write ledger lines."""
+
+    def __call__(
+        self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
+    ) -> ChatProvider:
+        provider = super().__call__(role, state_dir, with_mcp=with_mcp)
+        return wrap(provider) if role.model == JUDGE_MODEL else provider
+
+
+class _LintLimited(LintJudge):
+    """``LintJudge`` whose first lint ask is rate-limited."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.limited = False
+
+    def complete(self, conversation_id: str, system: str, messages: list[Any], **kw: Any) -> Any:
+        if messages[-1].content.startswith(LINT_HEADER) and not self.limited:
+            self.limited = True
+            raise RateLimitError("usage limit reached", retry_after_s=60)
+        return super().complete(conversation_id, system, messages, **kw)
+
+
+def _judge_limited(where: str) -> LintJudge:
+    if where == "lint":
+        return _LintLimited()
+    return LintJudge(crash_at=1, crash=RateLimitError("usage limit reached", retry_after_s=60))
+
+
+@pytest.mark.parametrize(("where", "role"), [("lint", "llm_lint"), ("harvest", "harvest")])
+def test_a_rate_limit_in_a_judge_side_pass_pauses_the_run_and_the_resume_redoes_it(
+    tmp_path: Path, where: str, role: str
+) -> None:
+    """Final review I2: a judge rate-limited inside the LLM lint (turn 3's fire) or the harvest
+    pass (turn 1) pauses the run with one marker after the written turn and one ``rate_limit``
+    line, and records nothing lesser (no ``error`` lint verdict, no degraded harvest); the resume
+    watches the turn again and its fire is written as an unbroken run's is."""
+    clean = _run(_exp(judge=True), tmp_path / "clean", GeneratorFactory(judge=LintJudge()))
+    with pytest.raises(RateLimitExit):
+        _run(_exp(judge=True), tmp_path / "runs", _LedgeredFactory(judge=_judge_limited(where)))
+    store = RunStore(tmp_path / "runs", _exp(judge=True).name)
+    turns = store.read_turns(CELL, 0)
+    assert [t.index for t in turns if is_pause_marker(t)] == [turns[-1].index]
+    assert turns[-2].speaker is Speaker.target  # the marker follows the written turn
+    ledger = [
+        LedgerLine.model_validate_json(line)
+        for line in (store.run_dir / LEDGER_FILE).read_text("utf-8").splitlines()
+    ]
+    [limited] = [line for line in ledger if line.status == "rate_limit"]
+    assert (limited.role, limited.error) == (role, "RateLimitError")
+    assert _fires(store) == [] and store.read_conversation(CELL, 0).status is CellStatus.running
+    _run(_exp(judge=True), tmp_path / "runs", GeneratorFactory(judge=LintJudge()))
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    [fire] = _fires(store)
+    [unbroken] = _fires(clean)
+    assert (fire.status, len(fire.doc_ids)) == (unbroken.status, len(unbroken.doc_ids))
+    assert fire.status == "written" and all(v.verdict != "error" for v in fire.llm_lint)
+    assert all(plan.harvest_degraded == [] for plan in fire.plans)
+
+
+def test_a_resume_still_rate_limited_in_the_rewatch_pauses_again_after_the_same_turn(
+    tmp_path: Path,
+) -> None:
+    """Final review I2: a rep paused inside the harvest pass resumes by watching the written
+    turn again (``rewatch``); when that pass is still limited the run pauses again, a second
+    marker after the same turn, never a crash and never a degraded harvest; the next resume
+    completes."""
+
+    def limited() -> LintJudge:
+        return LintJudge(crash_at=1, crash=RateLimitError("usage limit reached", retry_after_s=60))
+
+    root = tmp_path / "runs"
+    for _ in range(2):
+        with pytest.raises(RateLimitExit):
+            _run(_exp(judge=True), root, GeneratorFactory(judge=limited()))
+    store = RunStore(root, _exp(judge=True).name)
+    turns = store.read_turns(CELL, 0)
+    assert [is_pause_marker(t) for t in turns[-3:]] == [False, True, True]
+    assert turns[-3].speaker is Speaker.target
+    assert store.read_conversation(CELL, 0).status is CellStatus.running
+    _run(_exp(judge=True), root, GeneratorFactory(judge=LintJudge()))
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    [fire] = _fires(store)
+    assert fire.status == "written" and all(plan.harvest_degraded == [] for plan in fire.plans)

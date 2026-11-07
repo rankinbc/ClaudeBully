@@ -255,3 +255,16 @@ def test_doctor_offline_has_no_mcp_check_and_never_builds_a_provider(
     assert result.exit_code == 0, result.output
     assert "mcp" not in result.output.lower()
     assert "tools.jsonl" not in result.output.lower()
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry_run"])
+def test_run_only_matching_no_cell_is_a_bad_parameter(tmp_path: Path, dry_run: bool) -> None:
+    """Ledger L55: ``run --only`` with a glob that selects no cell is refused before anything is
+    written, instead of running zero cells and saying so after."""
+    argv = ["run", str(FIXTURE), "--runs-root", str(tmp_path), "--only", "nothing_like_it*"]
+    result = runner.invoke(cli.app, argv + (["--dry-run"] if dry_run else []))
+    assert result.exit_code == 2, result.output
+    assert "matches no cell" in result.output and "nothing_like_it*" in result.output
+    assert list(tmp_path.iterdir()) == []
+    ok = runner.invoke(cli.app, [*argv[:-1], "grader*", "--dry-run"])
+    assert ok.exit_code == 0 and "grader__t0" in ok.output

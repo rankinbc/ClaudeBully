@@ -224,10 +224,11 @@ def test_a_kill_between_the_temp_write_and_the_rename_leaves_the_old_entry(
     def killed(src: object, dst: object) -> None:
         raise _KillError()
 
-    monkeypatch.setattr("claude_bully.metrics.judge.os.replace", killed)
+    monkeypatch.setattr("claude_bully.atomic.os.replace", killed)  # the one writer (7a fix wave)
     with pytest.raises(_KillError):
         cache.put("k", {"new": 2})
     assert cache.get("k") == {"old": 1}
+    assert list(tmp_path.glob(".*.tmp")) == []  # the temp file is removed on any failure
     assert json.loads((tmp_path / "k.json").read_text(encoding="utf-8")) == {"old": 1}
     monkeypatch.undo()
     cache.put("k", {"new": 2})

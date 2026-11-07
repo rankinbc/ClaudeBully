@@ -603,7 +603,7 @@ def test_cache_hit_avoids_a_second_fallback_call(tmp_path: Path) -> None:
     assert second[0].turn == 9
     assert second[0].classifier == "llm"
 
-    digest = hashlib.sha256(AMBIGUOUS.encode()).hexdigest()
+    digest = hashlib.sha256("\0".join(["trigger1", "", AMBIGUOUS]).encode()).hexdigest()
     assert cache.get(JudgeCache.key("trigger", digest)) is not None
 
 
@@ -614,7 +614,9 @@ def test_a_damaged_cache_entry_is_a_miss_and_is_rewritten(tmp_path: Path) -> Non
         calls.append(t)
         return [C.self_uncertainty]
 
-    key = JudgeCache.key("trigger", hashlib.sha256(AMBIGUOUS.encode()).hexdigest())
+    key = JudgeCache.key(
+        "trigger", hashlib.sha256("\0".join(["trigger1", "", AMBIGUOUS]).encode()).hexdigest()
+    )
     (tmp_path / "cache").mkdir()
     (tmp_path / "cache" / f"{key}.json").write_text('{"categories": ["self_', encoding="utf-8")
     cache = JudgeCache(tmp_path / "cache")

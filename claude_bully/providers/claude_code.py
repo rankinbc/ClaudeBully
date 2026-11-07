@@ -46,7 +46,14 @@ from claude_bully.providers.base import (
 )
 from claude_bully.records import Usage
 
-_RATE_LIMIT = re.compile(r"(?i)usage limit|rate limit|try again|too many requests|overloaded")
+# a usage or rate limit, in every wording one has been reported in (final review I1: "hit your
+# limit" and "limit reached" carry neither "usage limit" nor "rate limit"); the new alternatives
+# are word-bounded, and on an error result the login check runs first (Task 3 M5), since a login
+# text may say "try again"
+_RATE_LIMIT: Final = re.compile(
+    r"(?i)usage limit|rate[ _]limit|try again|too many requests|overloaded"
+    r"|\bhit your limit\b|\blimit reached\b|\blimit will reset\b|\bresets? at\b"
+)
 # the type of the event a stream line holds, read without parsing it (the line may be cut off)
 _EVENT_TYPE: Final = re.compile(r'"type"\s*:\s*"([A-Za-z_]{1,40})"')
 
@@ -369,10 +376,10 @@ class ClaudeCodeProvider:
         """The completion a result object describes; an error result raises."""
         if data.get("is_error"):
             message = str(data.get("result", ""))
-            if _RATE_LIMIT.search(message):
-                raise RateLimitError(message)
             if _LOGIN.search(message):
                 raise ProviderError(f"claude -p is not logged in: {message[:200]}")
+            if _RATE_LIMIT.search(message):
+                raise RateLimitError(message)
             raise ProviderError(f"claude -p error: {message}")
         if "structured_output" in data and data["structured_output"] is not None:
             text = json.dumps(data["structured_output"])

@@ -2096,3 +2096,41 @@ def test_a_claude_p_call_killed_before_it_was_adopted_is_never_the_redos(
     resumes = [r for r in store.read_trigger_records(CELL, 0) if isinstance(r, ResumeRecord)]
     assert resumes == [ResumeRecord(turn=2, dropped={"mcp/tools.jsonl": 1})]
     assert not [r for r in clean.read_trigger_records(CELL, 0) if isinstance(r, ResumeRecord)]
+
+
+class _LimitedIdleJudge(_IdleJudge):
+    """``_IdleJudge`` whose first idle question is rate-limited."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.limited = False
+
+    def complete(
+        self, conversation_id: str, system: str, messages: list[Message], **kw: Any
+    ) -> Completion:
+        if messages[-1].content.startswith("IDLE MESSAGE") and not self.limited:
+            self.limited = True
+            raise RateLimitError("usage limit reached", retry_after_s=60)
+        return super().complete(conversation_id, system, messages, **kw)
+
+
+def test_a_rate_limit_in_the_idle_fallback_pauses_before_the_turn_and_the_resume_redoes_it(
+    tmp_path: Path,
+) -> None:
+    """Final review I2: a judge rate-limited while it labels an idle turn is no heuristic label
+    with ``fallback_failed``: the turn is not written, the run pauses, and the resumed rep asks
+    the target and the judge again and labels the turn as an unbroken run does."""
+    exp = _idle_exp({"idle_turns": 1}, judge=JUDGE)
+    judge = _LimitedIdleJudge()
+    with pytest.raises(RateLimitExit):
+        _run(exp, tmp_path, provider_factory=_judged(judge))
+    store = RunStore(tmp_path, exp.name)
+    assert _idle_turns(store) == [] and store.read_turns(CELL, 0)[-1].bully_meta["rate_limit_pause"]
+    _run(exp, tmp_path, provider_factory=_judged(judge))
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    [idle] = _idle_turns(store)
+    assert (_info(idle).behavior, _info(idle).classifier, _info(idle).fallback_failed) == (
+        "ask",
+        "llm",
+        False,
+    )

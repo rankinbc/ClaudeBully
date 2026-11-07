@@ -1,4 +1,5 @@
-"""analyze_run: recompute everything from disk. The judge is the only model call; it is cached."""
+"""analyze_run: recompute everything from disk. The judge makes the only model calls: the pair
+judge, and with ``--authority-fallback`` the authority family's fallback; both are cached."""
 
 import json
 import sys

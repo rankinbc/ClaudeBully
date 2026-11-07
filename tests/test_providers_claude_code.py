@@ -915,3 +915,69 @@ def test_role_command_reaches_the_provider(tmp_path: Path) -> None:
     provider = build_provider(role, tmp_path)
     assert isinstance(provider, ClaudeCodeProvider)
     assert provider.command == ["C:/x/claude.exe", "--flag"]
+
+
+# Each wording a usage or rate limit has been reported in, paraphrased so no fixture names a
+# product (final review I1). A miss is a plain ProviderError, which aborts the rep a resume then
+# skips; a hit pauses the run and --wait-on-rate-limit waits it out.
+LIMIT_WORDINGS = [
+    "usage limit reached|1762444800",
+    "You've hit your limit · resets 3pm",
+    "You've hit your limit · resets 3pm (Europe/Lisbon)",
+    "5-hour limit reached ∙ resets 3pm",
+    "Weekly limit reached ∙ resets Mon 9am",
+    "Your limit will reset at 3pm.",
+    "Session limit reached. Resets at 15:00.",
+    "API Error: 429 rate_limit_error: Number of request tokens has exceeded your rate limit",
+    "API Error: 429 Too Many Requests",
+    "API Error: 529 overloaded_error: Overloaded",
+]
+
+
+@pytest.mark.parametrize("wording", LIMIT_WORDINGS)
+def test_every_known_limit_wording_is_a_rate_limit_on_an_error_result(
+    tmp_path: Path, wording: str
+) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    limited = _result(wording, is_error=True, subtype="error")
+    with pytest.raises(RateLimitError):
+        provider.parse_stream(_events(_INIT, limited), "s")
+
+
+@pytest.mark.parametrize("wording", LIMIT_WORDINGS)
+def test_every_known_limit_wording_is_a_rate_limit_on_a_failed_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wording: str
+) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+
+    def failed(argv: list[str], *args: object, **kwargs: object) -> object:
+        return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=wording.encode())
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    with pytest.raises(RateLimitError):
+        provider.complete("c", "SYS", [Message(role="user", content="hi")])
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a limited edition", "sunset at six", "the presets are fine", "my limits are mine"],
+)
+def test_a_limit_word_alone_is_not_a_rate_limit(tmp_path: Path, text: str) -> None:
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    failed = _result(text, is_error=True, subtype="error_during_execution")
+    with pytest.raises(ProviderError) as info:
+        provider.parse_stream(_events(_INIT, failed), "s")
+    assert not isinstance(info.value, RateLimitError)
+
+
+def test_an_error_result_naming_a_login_is_a_login_even_when_it_says_try_again(
+    tmp_path: Path,
+) -> None:
+    """Task 3 M5: on an error result the login check runs first, so a login text that says
+    "try again" is never a pause that waits on a limit that is not there."""
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    text = "Invalid API key. Please run the login command and try again."
+    failed = _result(text, is_error=True, subtype="error")
+    with pytest.raises(ProviderError, match="not logged in") as info:
+        provider.parse_stream(_events(_INIT, failed), "s")
+    assert not isinstance(info.value, RateLimitError)

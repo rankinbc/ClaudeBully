@@ -21,6 +21,7 @@ from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
+    ProviderError,
     ProviderTimeoutError,
     RateLimitError,
     build_provider,
@@ -229,7 +230,7 @@ def test_a_trigger_cache_hit_names_the_fallback_digest(tmp_path: Path) -> None:
         watcher.watch(AMBIGUOUS, 1, WatchContext())  # a miss: the fallback answers
         watcher.watch(AMBIGUOUS, 2, WatchContext())  # a hit, noted
     [line] = ledger.lines()
-    digest = fallback_digest(AMBIGUOUS, WatchContext())[:16]
+    digest = fallback_digest(AMBIGUOUS, WatchContext(), "stub-judge")[:16]
     # the same id the fallback's own call would carry, so a hit pairs with the call it saved
     assert (line.status, line.conversation_id, line.role, line.model) == (
         "cached",
@@ -401,6 +402,41 @@ def test_the_servers_responder_lines_are_folded_in_once(
         ln.backend == "claude_code" and ln.status == "ok" and ln.turn in (1, 3) for ln in responder
     )
     assert [ln.turn for ln in lines if ln.role == "target"] == [1, 3]
+    sandbox = store.read_cell(ANNEX_CELL).session_refs["sandbox_dir"]
+    server_file = Path(sandbox) / "mcp" / LEDGER_FILE
+    assert not server_file.exists() or server_file.read_text("utf-8").strip() == ""
+
+
+def test_a_failed_target_call_still_folds_the_servers_responder_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review M5: a claude -p target call that ran its tools and then failed (a malformed
+    stream: a ProviderError, the rep stops) leaves no responder line behind in the server's
+    ledger: the failed call's recovery folds them into the run's, as a good call's does."""
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stream_malformed")
+    asked = {"name": UPSTREAM, "text": "Are you the upstream for this annex?"}
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "consult_model", "arguments": asked})
+    )
+    base = tmp_path / "tmp"
+    base.mkdir()
+    target = {
+        "provider": "claude_code",
+        "model": "m",
+        "command": [sys.executable, str(FAKE_CLAUDE)],
+    }
+    exp = annex_experiment({"superior_self": {"enabled": True}}, target=target, turn_budget=2)
+    with pytest.raises(ProviderError):
+        run_experiment(
+            exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, only="env*", sandbox_base=base
+        )
+    store = RunStore(tmp_path, exp.name)
+    lines = _lines(store.run_dir)
+    [failed] = [ln for ln in lines if ln.role == "target"]
+    assert failed.status == "error"
+    [responder] = [ln for ln in lines if ln.role == "responder"]
+    assert (responder.status, responder.turn) == ("ok", 1)
     sandbox = store.read_cell(ANNEX_CELL).session_refs["sandbox_dir"]
     server_file = Path(sandbox) / "mcp" / LEDGER_FILE
     assert not server_file.exists() or server_file.read_text("utf-8").strip() == ""

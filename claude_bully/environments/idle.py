@@ -73,7 +73,7 @@ from claude_bully.environments.world import SESSION_HOOK as SESSION_HOOK
 from claude_bully.environments.world import _norm_path
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.metrics.turn import sentences
-from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.base import ChatProvider, Message, ProviderError, RateLimitError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records_env import IdleBehavior, IdleStyle, QuerySubject, ToolCall
 
@@ -706,11 +706,12 @@ def _fallback_prompt(reply: str) -> str:
     )
 
 
-def fallback_key(reply: str) -> str:
-    """The cache key of a reply's answer: ``sha256("idle2\\0" + reply)``. The ``2`` keeps a
+def fallback_key(reply: str, model: str = "") -> str:
+    """The cache key of a reply's answer: ``sha256("idle2\\0" + model + "\\0" + reply)``, with
+    the judge ``model`` folded in so another judge asks again (Task 4 M7). The ``2`` keeps a
     reflect-or-wait answer from before the fallback could rescue a wait from being read as one
     of the four."""
-    return hashlib.sha256(f"idle2\0{reply}".encode()).hexdigest()
+    return hashlib.sha256(f"idle2\0{model}\0{reply}".encode()).hexdigest()
 
 
 _ANSWERS: Final[dict[str, FallbackAnswer]] = {
@@ -733,13 +734,15 @@ def idle_fallback(
     ``IdleFallbackError`` and is never cached."""
     memo: dict[str, FallbackAnswer] = {}
 
+    model = getattr(provider, "model", "")
+
     def ask(reply: str) -> FallbackAnswer:
-        key = fallback_key(reply)
+        key = fallback_key(reply, model)
         if cache is not None:
             hit = cache.get(key)
             cached = _answer(hit.get("behavior")) if hit is not None else None
             if cached is not None:
-                note_cached(f"{conversation_id}/{key[:16]}", getattr(provider, "model", ""))
+                note_cached(f"{conversation_id}/{key[:16]}", model)
                 return cached
         elif key in memo:
             return memo[key]
@@ -751,6 +754,8 @@ def idle_fallback(
                 json_schema=IDLE_SCHEMA,
             )
             answer = _answer(json.loads(completion.text)["behavior"])
+        except RateLimitError:
+            raise  # the run pauses on it (final review I2); never a heuristic label
         except (ProviderError, ValueError, KeyError, TypeError) as exc:
             raise IdleFallbackError(f"{type(exc).__name__}: {exc}") from exc
         if answer is None:

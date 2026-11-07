@@ -44,7 +44,6 @@ import json
 import os
 import re
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from random import Random
@@ -52,6 +51,7 @@ from typing import Any, Final, TextIO
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from claude_bully import atomic
 from claude_bully.config import RoleConfig
 from claude_bully.environments.authority import (
     VOICED_TIERS,
@@ -141,25 +141,9 @@ class McpState(BaseModel):
         return data
 
 
-def _replace(tmp: Path, path: Path) -> None:
-    """``os.replace`` that waits out a reader briefly holding the target open on Windows."""
-    for attempt in range(20):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if attempt == 19:
-                tmp.unlink(missing_ok=True)
-                raise
-            time.sleep(0.05)
-
-
 def write_mcp_state(path: Path, state: McpState) -> None:
-    """Write ``state`` to ``path`` atomically: a temp file in the same directory, then a rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(state.model_dump_json(indent=1).encode("utf-8"))
-    _replace(tmp, path)
+    """Write ``state`` to ``path`` atomically (``atomic.write_atomic``)."""
+    atomic.write_atomic(path, state.model_dump_json(indent=1))
 
 
 def read_mcp_state(path: Path) -> McpState:

@@ -79,7 +79,7 @@ from claude_bully.planner.lints import (
     squash,
 )
 from claude_bully.planner.llm_lint import LLM_LINT_ID, NO_VERDICT, NO_VERDICT_FIX, LlmLint
-from claude_bully.providers.base import ChatProvider, Message, ProviderError
+from claude_bully.providers.base import ChatProvider, Message, ProviderError, RateLimitError
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
@@ -770,6 +770,8 @@ class DocWriter:
                     doc, found, reply = self._attempts(
                         plan, key, turn, items, view, mark, own, rejected_hit
                     )
+                except RateLimitError:
+                    raise  # the run pauses on it (final review I2); never an error fire
                 except ProviderError as exc:
                     error = f"{type(exc).__name__}: {exc}"
                     return FireOutcome("error", [], [], None, error, llm_lint=self._asked())

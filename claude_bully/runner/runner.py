@@ -318,12 +318,16 @@ class _CellRun:
 
     # -- the loop -------------------------------------------------------------------------
 
-    def _pause_for_rate_limit(self, slot: Slot, exc: RateLimitError) -> NoReturn:
-        """Record a pause marker, leave the cell running, and hand the exit to the CLI."""
+    def _pause_for_rate_limit(self, phase: Phase, exc: RateLimitError) -> NoReturn:
+        """Record a pause marker, leave the cell running, and hand the exit to the CLI. A rate
+        limit in a judge-side pass (the lint, the harvest, the fallbacks, the generator) pauses
+        here too, never a lesser record (final review I2): before the turn when it comes from the
+        idle label, which the resumed rep asks again with the turn, and after the written turn
+        when it comes from the turn's after-work, which ``rewatch`` redoes on resume."""
         marker = Turn(
             index=self._next_index(),
             speaker=self.bully_speaker,
-            phase=slot.phase,
+            phase=phase,
             text="",
             bully_meta={PAUSE_META: True, "retry_after_s": exc.retry_after_s},
             timestamp=_now(),
@@ -376,7 +380,7 @@ class _CellRun:
                 usage, cost = produced.usage, produced.cost_usd
                 text, cutoff = produced.text, produced.cutoff
         except RateLimitError as exc:
-            self._pause_for_rate_limit(slot, exc)
+            self._pause_for_rate_limit(slot.phase, exc)
         latency = int((time.monotonic() - started) * 1000)
         reply = Turn(
             index=self._next_index(),
@@ -396,12 +400,18 @@ class _CellRun:
             tool_cap_cutoff=cutoff,
         )
         if idle_prompt is not None:
-            info = self._idle_info(reply, calls, idle_prompt, before)
+            try:
+                info = self._idle_info(reply, calls, idle_prompt, before)
+            except RateLimitError as exc:  # the idle fallback's: the turn is asked again
+                self._pause_for_rate_limit(slot.phase, exc)
             reply = reply.model_copy(update={"idle": info})
         self._write(reply)
         self._last_completion = completion
         if self.env is not None:
-            self.env.after_target_turn(reply, self.turns)
+            try:
+                self.env.after_target_turn(reply, self.turns)
+            except RateLimitError as exc:  # a judge-side pass's: the turn is watched again
+                self._pause_for_rate_limit(slot.phase, exc)
         return reply
 
     def _idle_info(
@@ -496,7 +506,7 @@ class _CellRun:
         try:
             result = self.engine.realize(f"{self.conversation_id}/bully", intent, self.turns)
         except RateLimitError as exc:
-            self._pause_for_rate_limit(slot, exc)
+            self._pause_for_rate_limit(slot.phase, exc)
         meta: dict[str, Any] = dict(intent.meta)
         meta.setdefault("mode", intent.mode.value)
         meta["compliance_flagged"] = result.compliance_flagged
@@ -556,7 +566,11 @@ class _CellRun:
             self.env.end_bully()  # an idle-only plan: there is no bully at all
         start_slot, pending = self._replay()
         if self.env is not None:
-            self.env.rewatch(self.turns)  # a turn whose records a dead process never wrote
+            try:
+                self.env.rewatch(self.turns)  # a turn whose records a dead process never wrote
+            except RateLimitError as exc:  # still limited: pause again, after the same turn
+                last = next(t for t in reversed(self.turns) if t.speaker is Speaker.target)
+                self._pause_for_rate_limit(last.phase, exc)
         slots = self.plan.slots
         if pending is not None and start_slot < len(slots):
             slot = slots[start_slot]
