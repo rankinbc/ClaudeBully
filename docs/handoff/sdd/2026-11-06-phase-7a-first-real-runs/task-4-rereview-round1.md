@@ -1,0 +1,37 @@
+# Task 4 re-review, round 1 (fix a40dc62 on fb19c95)
+
+Method: read the fix diff and the implementer's report; spot-read the current `doctor.py`, `cli.py`, `providers/ledger.py` and the test files for the specific doubts below. No suite re-run. The report names the covering tests (`tests/test_doctor_live.py tests/test_cli.py tests/test_ledger.py`, 52 passed), shows the gate output, and its counts reconcile (8225 + 2 new tests = 8227).
+
+### Finding Verdicts
+
+- **I1: a rerun into an existing out dir appended to `ledger.jsonl`, so `doctor.json` held both runs and check 5 could print the previous run's latency** - ADDRESSED. `cli.py:267-268` unlinks `out_dir / LEDGER_FILE` (`missing_ok=True`) before `activate(...)`. `Ledger` is append-only and `lines()` reads the whole file (`ledger.py:167-179`), so the file now starts empty. Independently, `doctor.py:275-279` takes `ledger.lines()[-folded:]` (`fold_server_ledger` returns the count of lines it appended, `ledger.py:181-195,302-307`), so check 5 can only read lines it folded itself. New test `test_a_rerun_into_the_same_dir_reports_only_its_own_calls` (`tests/test_doctor_live.py:503-510`) runs the doctor twice into one `--out` and asserts both `doctor.json`'s ledger and `ledger.jsonl` hold one run's line count; the report records a RED of `14 == 7` with the unlink disabled.
+- **I2: the offline test's `explode` patched `claude_bully.doctor.run_live_checks`, which `cli` had already bound** - ADDRESSED. `tests/test_cli.py:252` patches `cli.run_live_checks` (the name `cli.doctor` looks up, `cli.py:22,270`) and `:253` patches `claude_bully.doctor.ClaudeCodeProvider`. A live call from the offline path would now raise `AssertionError`, exit non-zero, and fail `assert result.exit_code == 0`.
+- **I3: the `.doctor_probe` assertion was always true** - ADDRESSED. `tests/test_doctor_live.py` now asserts `(tmp_path / "repo" / "output").is_dir()`. `_check_disk` is the only thing that creates `<repo_root>/output` in this flow (`--out` is given, so `default_out_dir` is not used), so the assertion holds only when the CLI passed its call-time `REPO_ROOT` (the patched tmp repo) to `run_live_checks`. The added `real_output.exists() == had_output` guards the working tree and only reads it.
+- **M3: check 7 passed on the reply alone** - ADDRESSED. `doctor.py:314-327` reads the newest `doctor-effort` line off the active ledger and requires `effort == "low"` plus a non-empty reply; no active ledger or no such line is a failed result. `LedgerLine.effort` is populated from the provider (`ledger.py:96,255`). `test_the_effort_check_reads_the_flag_off_its_ledger_line` pins both sides (bare: fails with "no doctor-effort ledger line"; under `activate`: passes with "effort low" in the detail), and the e2e test asserts "effort low" in the detail. If the provider stopped passing `effort="low"` the detail would read "effort None" and both tests would fail.
+- **M1: build the provider before check 4's call** - ADDRESSED. `_mcp_provider` (`doctor.py:191-201`) builds it and writes the MCP state; `mcp()` assigns `mcp_provider` (`doctor.py:387`) before `_check_mcp(mcp_provider)` runs the call, so checks 4b and 9 see the provider even when the call raised.
+- **M2: check 5's failure detail prints the nested line's status and latency** - ADDRESSED. `doctor.py:265-294`: the outer call's exception is caught, the server ledger is folded regardless, and both failure branches append `said` ("the nested line is <status> after N ms" or "no nested ledger line"). "(see stderr)" is gone.
+- **M4: collapse the two identical except branches** - ADDRESSED. `_timed` has one `except Exception`; the `ProviderError` import is gone and nothing else in the file uses it (grep of `doctor.py` finds none).
+- **M5: drop `out_dir` and `cost_usd`; record the interface change** - ADDRESSED. `run_live_checks(command, *, runs_root, repo_root)` (`doctor.py:366-371`); `CheckResult` has no `cost_usd` (`doctor.py:104-109`, and the `CheckResult(...)` call sites pass none); the only caller (`cli.py:270`) is updated; no test calls `run_live_checks` directly. The spec's "As planned" Task 4 review bullet (spec lines 373-379, esp. 430) records it. The plan and draft docs still show the old signature; they are history, not callers.
+- **M6: remove the inert `resolve_claude_command` re-export and the fixture patch** - ADDRESSED. The re-export is gone from `doctor.py`; the fixture patches only `cli.resolve_claude_command` (`tests/test_doctor_live.py:59`); no other test patches `doctor.resolve_claude_command`.
+- **M7: `failed` and `INFORMATIONAL` in `doctor.__all__`** - ADDRESSED. Both are in `__all__` in the sorted order ruff's RUF022 expects (gate clean per the report); both names are defined (`failed` at `doctor.py:416`).
+- **M8: bare `assert` in library code** - ADDRESSED. The `assert [r.name ...] == CHECK_NAMES` is gone from `run_live_checks`; grep for `assert ` over `doctor.py` finds none. The order is pinned by the e2e test's `tuple(checks) == CHECK_NAMES`. The `mcp_dir is None` narrowing in `_check_mcp` returns a failed result instead of asserting.
+- **M11: default out dir on the local date** - ADDRESSED. `doctor.py:120-122` uses `datetime.now().date()`; `write_report`'s `date` field stays a UTC timestamp. The only test touching the name (`test_the_default_report_dir_is_dated_under_output`, `startswith("doctor_live_20")`) is unaffected.
+
+### New Breakage in the Fix Diff
+
+None Critical or Important. Minor, non-blocking:
+
+- Minor, `cli.py:268`: the fresh-ledger step deletes only `<out>/ledger.jsonl`, never anything else. But `--out` is user-supplied, so pointing it at a directory that holds some other `ledger.jsonl` (for example a run dir) now deletes that file where it was previously appended to. The doctor already writes `doctor.json` and `ledger.jsonl` into `--out`, so this is inherent to the option, not a regression in kind.
+- Minor, `doctor.py:323-324`: a caller of `run_live_checks` that has not activated a ledger now gets check 7 failed ("no doctor-effort ledger line (no ledger is active)"). The only caller (the CLI) always activates one. The message wording also covers an active ledger with no such line, which cannot happen in the CLI flow.
+- Minor, `doctor.py` `_check_mcp`: the `mcp_dir is None` branch is unreachable (`_mcp_provider` always sets it) and untested; it exists to satisfy mypy narrowing.
+
+Checked and clean: no stale caller of the removed `out_dir`, `cost_usd`, the `resolve_claude_command` re-export, or the old `_check_mcp` 3-tuple return (the `_mcp_provider` helper in `tests/test_providers_claude_code.py` is another module's helper, no clash); no test pinned the UTC folder name; `UTC` is still imported and used by `write_report`.
+
+### Out-of-Scope Observations
+
+- M9 (exact `.gitignore` match in `_check_disk`), M10 (the fake's MCP-server environment and `--version` branch) and M12 (the HANDOFF "9d4b7d2..Task 4 commit" placeholder) were not in the fix list and remain open by the implementer's own report; none blocks.
+- The ledger's `effort` is the provider's configured attribute (`ledger.py:255`), not a read of the argv actually sent. Check 7 therefore confirms the harness configured `low`, which is what the ruling asked for; confirming the flag reached `claude -p` would need an argv check (check 9 already inspects argv for other flags).
+
+### Verdict
+
+Fix round: All findings addressed, no new Critical/Important breakage.

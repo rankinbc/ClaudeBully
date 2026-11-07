@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-06, at the Phase 7a final fix wave on `build/v1`. Before it: Phase 3 complete (a7f7732, plus the docs commit that syncs this file). Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Phase 7a's ten tasks, its whole-branch final review and that review's one fix wave are done; the controller's scoped re-review of the wave is next, then Phase 7b rung 0 from `docs/handoff/phase-7-runbook.md` (see "Next steps").
+Last updated: 2026-11-06, at Phase 7a complete (6978fe1 on `build/v1`, plus the docs commit that syncs this file). Phase 3 is complete (a7f7732). Phase 7a's ten tasks, its whole-branch final review, that review's one fix wave and the scoped re-reviews are done and clean. Next is Phase 7b rung 0 from `docs/handoff/phase-7-runbook.md`, on the owner's yes (see "Next steps").
 
 ## What this is
 
@@ -182,10 +182,9 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
 ### Next steps, in order
 
-1. **The scoped re-review of the Phase 7a final fix wave.** The whole-branch final review and its one fix wave are done (Progress, "Phase 7a final review and fix wave"), the three items once parked as "must land before Phase 7" among them; the controller re-reviews the wave's diff. Spec: `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md`; the Phase 7a ledger and briefs are under `.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/`.
-2. **Phase 7b, part 1: the ladder**, from rung 0, run by the controller from `docs/handoff/phase-7-runbook.md` once the final review is clean, each rung on the owner's yes to the previous rung's `rung_report.md`. A measurement that needs a fix goes back as a 7a-shaped task with its own commit, review and docs-sync.
-3. **Phases 4, 5, 6, 8** in docs/10's order, each on the owner's ruling of its draft (the merged open questions and the phase order; see "Drafts for Phases 4 to 9"), each adding its 7b rung to the runbook's "Rungs other phases add". For each approved phase: move its spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`, with its own ledger.
-4. **Phase 9.**
+1. **Phase 7b, part 1: the ladder**, from rung 0, run by the controller from `docs/handoff/phase-7-runbook.md` (the Phase 7a final review, its fix wave and the scoped re-reviews are clean at 6978fe1; the Phase 7a ledger is snapshotted under `docs/handoff/sdd/2026-11-06-phase-7a-first-real-runs/`), each rung on the owner's yes to the previous rung's `rung_report.md`. A measurement that needs a fix goes back as a 7a-shaped task with its own commit, review and docs-sync.
+2. **Phases 4, 5, 6, 8** in docs/10's order, each on the owner's ruling of its draft (the merged open questions and the phase order; see "Drafts for Phases 4 to 9"), each adding its 7b rung to the runbook's "Rungs other phases add". For each approved phase: move its spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`, with its own ledger.
+3. **Phase 9.**
 
 The phases, for reference:
 

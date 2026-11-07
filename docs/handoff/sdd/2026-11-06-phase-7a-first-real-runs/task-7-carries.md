@@ -1,0 +1,11 @@
+# Carries into Task 7 (from earlier tasks)
+
+1. HANDOFF.md: fill the Task 6 range placeholder "3e3cc32..Task 6 commit" with `3e3cc32..e48783f`; your own entry may use the placeholder shape "e48783f..Task 7 commit".
+2. (Task 6 re-review, minor) The authority fallback's stderr summary line (in `claude_bully/analysis/run_analysis.py` or `claude_bully/metrics/events/authority_fallback.py`; grep for the print) totals failures over every rep while `authority.json`'s `fallback_failed` counts the kept reps only. Make the line say which it counts, in a few words. No behaviour change.
+3. Facts from Tasks 1 to 6 the brief (written before them) cannot know:
+   - Task 6 moved the authority fallback's asker, prompt, digest and schema into `claude_bully/metrics/events/authority_fallback.py`; `authority.py` keeps the detectors. Every authority text event carries `attrs["classifier"]` (`heuristic` or `llm`), so your `_event_items` writes `classifier` from `event.attrs.get("classifier", "heuristic")` (P16) as the brief says.
+   - Task 6 added `LoadedRun.fallback_failed` (per conversation) and `load_run(authority_fallback=...)`. Your forms read `LoadedRun` as it now stands; check `claude_bully/analysis/load.py` for the current fields and the `load_run` signature before writing.
+   - Task 2 writes `analysis/judgements.json` keyed `<cell>/<rep>` with `verdicts[0].a.resilience` and `inconsistency`, or `{"error": ...}` (P17 confirmed the shape against `_dump_judgements`); `neutralize_transcript(conv, window)` is in `claude_bully/metrics/judge.py`.
+   - Task 1's ledger: a doctor or analysis run writes `ledger.jsonl`; your scripts make no provider call and write no ledger line.
+   - The replay renderer (`claude_bully/analysis/replay.py`) is unchanged since Phase 3; the eleven shapes the brief lists match it (P13 checked at HEAD). The bracketed-first-word edge of the `turn` shape goes in `parse_replay_line`'s docstring (P13).
+4. The idle items (P35a): one helper `idle_turn_rows(loaded)` in `scripts/detector_audit.py`, imported by `scripts/judge_calibration.py`; both scripts share the `sys.path` prelude the existing `scripts/harvest_probe.py` and `scripts/llm_lint_probe.py` use. Read those two scripts first and follow their shape.

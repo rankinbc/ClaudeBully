@@ -1,0 +1,16 @@
+## Global Constraints
+
+- Handoff non-negotiables 1 to 8, unchanged: sandbox only; no real names anywhere (outlets, brands, institutions, products, model names other than the target's own API string, people; urls, bylines and commit authors included; this plan's fixtures use invented names and the invented model id `stub-sonnet-20260101`); no jailbreak axis; hostility ceiling "cruel person"; earned, never delivered (the LLM lint rejects what it cannot decide); the reasoning channel is private (no new prompt sees `Turn.reasoning_text`, and check 4b reports a fact, never text); no real API call until Phase 7, read as phase membership (reconciliation C41): the suite still makes none, and Task 1's `conftest.py` guard enforces it; everything replays from JSONL.
+- No real API call and no real `claude` process in any test. Stub providers only: `StubProvider`, the doubles in `tests/fixtures/generator_stub.py`, and `tests/fixtures/fake_claude.py` for every `claude -p` path, `doctor --live` included.
+- Every shell first runs the uv PATH line of HANDOFF setup step 4 for this machine.
+- Setup: `uv sync --all-groups --all-extras`.
+- Gate after every task, 0 warnings: `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy claude_bully` (strict), `uv run pytest -q -W error`, `uv run pytest -q -m slow`.
+- The code blocks in this plan are complete; after pasting one, run `uv run ruff format .` and `uv run ruff check --fix .` (the formatter wraps long expressions), then the gate.
+- Plain runs stay byte-identical in their records (`tests/fixtures/golden/plain_stub_smoke.json`, `plain_fixture_events.json`): the ledger is a new file beside them, never a field on a turn.
+- `SCHEMA_VERSION` stays 3; every record change is additive and default-valued (reconciliation section 4); each task's docs-sync lists its additions under docs/00 section H as "version 3, additive".
+- One commit per task, authored as `rankinbc1@gmail.com` (the repo-local config is set; never the work address), message ending with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Implementers never push and never dispatch subagents; the controller pushes `build/v1` after each task's review.
+- No emojis in Markdown. Files are LF.
+- Every new harness-side prompt file (`data/personas/lint_reviewer.md`) is in `NON_PERSONA_FILES` and under the jailbreak, Boundary and real-name scans; the real-name scan (`tests/test_real_names.py`) already covers `data/personas`.
+- Phase 1 to 3 contracts this plan builds on: MCP server name `workspace` and its files (`environments/mcp_server.py`: `STATE_FILE`, `TOOLS_FILE`, `AUTHORITY_FILE`, `RESPONDER_DIR`), `MAX_TOOL_CALLS_PER_TURN = 8`, `JudgeCache.key(model, prompt)` (`metrics/judge.py`), the generator's `DocWriter._attempts` and `_from_cache` (`environments/generator.py`), `harvest_fallback` (`environments/harvest.py`), `idle_fallback` and `fallback_key` (`environments/idle.py`), `trigger_fallback` (`environments/runtime.py`), `_window_calls` and `_authority_text_events` (`metrics/events/authority.py`), `render_replay` (`analysis/replay.py`), `promote` and `scan_run` (`analysis/promote.py`), `update_readme` and its markers (`analysis/report.py`).
+

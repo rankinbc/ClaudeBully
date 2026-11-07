@@ -1,0 +1,9 @@
+# Carries into Task 3 (from the Task 1 and Task 2 reviews)
+
+Each is a few lines. Do them in the same commit as Task 3 and list each in your report.
+
+1. (Task 1 review M4) `claude_bully/providers/ledger.py` `LedgerProvider.complete` classifies a timeout by the substring "timed out" in the ProviderError text, and an exception that is not a ProviderError writes no line at all. Task 3 is where the timeout is born: raise a `ProviderTimeout(ProviderError)` subclass from `claude_code.py`'s timeout paths (keep the message text `claude -p timed out after ...s` so existing tests hold) and have the wrapper branch on `isinstance(exc, ProviderTimeout)` instead of the substring. Add `except Exception` to the wrapper that writes a `status="error"` line and re-raises, so the ledger never misses a call. Tests: a `ProviderTimeout` writes `timeout`; a bare `ValueError` from the inner provider writes `error` and propagates. Keep the brief's own `test_a_wrapped_timeout_writes_a_timeout_line` (P2); it now rests on the type.
+2. (Task 2 review) `claude_bully/analysis/promote.py` line ~16: `COPIED_FILES` gets a `Final[...]` annotation like `COPIED_DIRS`.
+3. (Task 2 review) `HANDOFF.md` line 5 says "Phase 7a is in progress" twice; say it once. Fill the Task 2 range placeholder with `9331c65..bd063e4`; your own entry may use the placeholder shape "bd063e4..Task 3 commit".
+4. (Task 2 review) `claude_bully/analysis/ledger.py`: round `mean_latency_ms` to an integer (or one decimal) where the totals are built; adjust the test that pins it if one does.
+5. (Task 2 review) One sentence in the docs where `ledger.json` and the Calls line are described (docs/00-RECONCILED.md section E, or the spec's "As planned"): each judged re-analysis adds cached judge lines, so the Calls line counts every `analyze` since the run, not the run alone.
