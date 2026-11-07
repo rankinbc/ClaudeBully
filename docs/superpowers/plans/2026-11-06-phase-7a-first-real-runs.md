@@ -5349,6 +5349,8 @@ conditions:
     params: {intake_turns: 1, evidence_turns: 1, recall_turns: 2, key_turns: 1}
 ```
 
+[Task 9 review C1: the shipped `configs/ladder/rung0_smoke_env.yaml` runs Rescue stages 1 + 1 + 1 + 2 (`recall_turns: 1, key_turns: 2`), since `RescueStrategy` refuses `key_turns` below 2; this block is left as planned.]
+
 ```yaml
 # configs/ladder/rung1_env_pilot.yaml
 # Rung 1b (Phase 7 spec section 5): the environment pilot. The Rescue bully at the full stage
