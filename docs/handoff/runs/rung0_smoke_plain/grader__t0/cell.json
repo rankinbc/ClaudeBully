@@ -1,0 +1,19 @@
+{
+  "schema_version": 3,
+  "cell_id": "grader__t0",
+  "condition_name": "grader",
+  "strategy_name": "grader",
+  "target_index": 0,
+  "seeding_turns": 0,
+  "reveal_slot": false,
+  "is_control": false,
+  "control_cell_id": "control__t0__s0__r0",
+  "repetitions": 1,
+  "rep_status": {
+    "0": "complete"
+  },
+  "session_refs": {},
+  "environment": null,
+  "inoculation": "none",
+  "target_system_prompt": null
+}

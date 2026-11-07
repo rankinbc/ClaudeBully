@@ -1,0 +1,19 @@
+{
+  "schema_version": 3,
+  "cell_id": "control__t0__s0__r0",
+  "condition_name": "control__t0__s0__r0",
+  "strategy_name": "polite_control",
+  "target_index": 0,
+  "seeding_turns": 0,
+  "reveal_slot": false,
+  "is_control": true,
+  "control_cell_id": null,
+  "repetitions": 1,
+  "rep_status": {
+    "0": "complete"
+  },
+  "session_refs": {},
+  "environment": null,
+  "inoculation": "none",
+  "target_system_prompt": null
+}

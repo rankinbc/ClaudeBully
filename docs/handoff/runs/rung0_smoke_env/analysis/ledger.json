@@ -1,0 +1,97 @@
+{
+ "totals": {
+  "calls": 23,
+  "cached": 0,
+  "errors": 0,
+  "rate_limits": 0,
+  "timeouts": 0,
+  "input_tokens": 72,
+  "output_tokens": 8000,
+  "cost_usd": 0.510306,
+  "mean_latency_ms": 6026.7
+ },
+ "by_role": {
+  "target": {
+   "calls": 9,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 32,
+   "output_tokens": 3632,
+   "cost_usd": 0.253338,
+   "mean_latency_ms": 6834.1
+  },
+  "bully": {
+   "calls": 8,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 28,
+   "output_tokens": 2720,
+   "cost_usd": 0.163304,
+   "mean_latency_ms": 6246.2
+  },
+  "judge": {
+   "calls": 6,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 12,
+   "output_tokens": 1648,
+   "cost_usd": 0.093664,
+   "mean_latency_ms": 4522.8
+  }
+ },
+ "by_model": {
+  "sonnet": {
+   "calls": 23,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 72,
+   "output_tokens": 8000,
+   "cost_usd": 0.510306,
+   "mean_latency_ms": 6026.7
+  }
+ },
+ "by_cell": {
+  "_run": {
+   "calls": 6,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 12,
+   "output_tokens": 1648,
+   "cost_usd": 0.093664,
+   "mean_latency_ms": 4522.8
+  },
+  "control__t0__s0__r0__eoverlay_triggered": {
+   "calls": 6,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 20,
+   "output_tokens": 1103,
+   "cost_usd": 0.053704,
+   "mean_latency_ms": 5080.5
+  },
+  "rescue_smoke__t0": {
+   "calls": 11,
+   "cached": 0,
+   "errors": 0,
+   "rate_limits": 0,
+   "timeouts": 0,
+   "input_tokens": 40,
+   "output_tokens": 5249,
+   "cost_usd": 0.362938,
+   "mean_latency_ms": 7363.1
+  }
+ },
+ "calls_line": "23 calls made, 0 cached; by role: target 9, bully 8, judge 6"
+}
