@@ -12,6 +12,9 @@ from typer.testing import CliRunner
 
 from claude_bully import cli, doctor
 from claude_bully.doctor import CHECK_NAMES, DOCTOR_REPORT, DOCTOR_SUCCESSOR, default_out_dir
+from claude_bully.environments.mcp_server import SERVER_NAME
+from claude_bully.providers.base import Completion
+from claude_bully.providers.claude_code import ClaudeCodeProvider
 from claude_bully.providers.ledger import LEDGER_FILE, LedgerLine, activate
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -87,6 +90,12 @@ def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path)
     assert tuple(checks) == CHECK_NAMES
     assert all(c["ok"] for c in checks.values()), checks
     assert checks["thinking"]["detail"].startswith("yes")  # the fake's thinking block was seen
+    # check 4 and check 5 open with the server's load status, read off the init event
+    assert checks["mcp"]["detail"].startswith(
+        f"server {SERVER_NAME} connected; tools.jsonl lines 1"
+    )
+    assert checks["responder"]["detail"].startswith(f"server {SERVER_NAME} connected; ")
+    assert checks["sandbox"]["detail"].startswith(f"servers [{SERVER_NAME!r}]; ")
     # the number the runbook reads: the nested responder's own ledger latency (P34a)
     assert re.search(r"answered in \d+ ms", checks["responder"]["detail"]), checks["responder"]
     assert "stub-sonnet-20260101" in checks["login"]["detail"]  # the resolved model is shown
@@ -163,3 +172,60 @@ def test_the_live_doctor_needs_a_usable_claude(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli, "resolve_claude_command", unresolvable)
     result = runner.invoke(cli.app, ["doctor", "--live"])
     assert result.exit_code == 1
+
+
+NOT_LOADED = (
+    f"server {SERVER_NAME} not loaded (absent from the init event: a reserved or rejected name, "
+    "or a config the CLI dropped)"
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "said"),
+    [("failed", f"server {SERVER_NAME} failed; "), ("absent", NOT_LOADED + "; ")],
+)
+def test_a_server_that_did_not_load_is_named_by_checks_4_and_5(
+    tmp_path: Path, faked: Path, monkeypatch: pytest.MonkeyPatch, status: str, said: str
+) -> None:
+    """The first real doctor --live: the CLI dropped the server's config entry, the target
+    imitated a tool call in text, and nothing said why. The status line is the one-line read."""
+    monkeypatch.setenv("FAKE_CLAUDE_MCP_STATUS", status)
+    out, result = _live(tmp_path)
+    assert result.exit_code == 1, result.output
+    checks = {c["name"]: c for c in _report(out)["checks"]}  # type: ignore[union-attr]
+    assert checks["mcp"]["ok"] is False and checks["mcp"]["detail"].startswith(said)
+    assert "tools.jsonl lines 0" in checks["mcp"]["detail"]  # the counts still follow
+    # the nested responder never ran, and the reason is named first
+    assert checks["responder"]["ok"] is False
+    assert checks["responder"]["detail"].startswith(said), checks["responder"]
+    assert checks["sandbox"]["ok"] is True  # the config itself is right: the CLI dropped it
+
+
+class _SaysFailed(ClaudeCodeProvider):
+    """A provider whose stream says its server failed, whatever the calls did."""
+
+    def parse_stream(self, stdout: str, session: str) -> Completion:
+        completion = super().parse_stream(stdout, session)
+        self.mcp_servers_seen = [(SERVER_NAME, "failed")]
+        return completion
+
+
+def test_check_4_fails_on_a_status_other_than_connected_whatever_the_counts(
+    tmp_path: Path, faked: Path
+) -> None:
+    worlds = doctor.mini_worlds_dir()
+    assert worlds is not None
+    built = doctor._mcp_provider([sys.executable, str(FAKE)], tmp_path, worlds)
+    inner = _SaysFailed(
+        model="sonnet",
+        state_dir=tmp_path / "says_failed",
+        command=[sys.executable, str(FAKE)],
+        mcp_state_dir=built.mcp_state_dir,
+    )
+    ok, detail = doctor._check_mcp(inner)
+    assert not ok and detail.startswith(f"server {SERVER_NAME} failed; tools.jsonl lines 1"), detail
+    unknown = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "u", command=["claude"])
+    assert doctor._server_status(unknown) == (
+        False,
+        f"server {SERVER_NAME} status unknown (no stream-json init event)",
+    )

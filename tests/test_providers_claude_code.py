@@ -9,7 +9,12 @@ import pytest
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
 from claude_bully.environments.corpus import UnlockState
-from claude_bully.environments.mcp_server import read_mcp_state, write_mcp_state
+from claude_bully.environments.mcp_server import (
+    LAUNCHER_FILE,
+    SERVER_NAME,
+    read_mcp_state,
+    write_mcp_state,
+)
 from claude_bully.environments.tools import TOOL_SPECS
 from claude_bully.providers.base import (
     Message,
@@ -198,7 +203,7 @@ def test_build_provider_claude_code(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ MCP sandbox tools
 
 TOOLS = [TOOL_SPECS["web_search"], TOOL_SPECS["fetch"], TOOL_SPECS["ls"]]
-ALLOWED = "mcp__workspace__web_search,mcp__workspace__fetch,mcp__workspace__ls"
+ALLOWED = ",".join(f"mcp__{SERVER_NAME}__{name}" for name in ("web_search", "fetch", "ls"))
 MEMO = "/srv/authority/memos/parking-q3.txt"
 ABOUT = "https://pennetferry.example/about"
 
@@ -289,15 +294,13 @@ def test_tools_write_mcp_json_and_pass_the_flags_in_enabled_order(
     assert argv[argv.index("--allowedTools") + 2].startswith("--")
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert list(config) == ["mcpServers"] and list(config["mcpServers"]) == ["workspace"]
-    server = config["mcpServers"]["workspace"]
+    assert list(config) == ["mcpServers"] and list(config["mcpServers"]) == [SERVER_NAME]
+    server = config["mcpServers"][SERVER_NAME]
     assert Path(server["command"]) == Path(sys.executable)
     # a launcher script beside mcp.json, so the package name is not spelled out in the config
     launcher, flag, state_arg = server["args"]
     assert flag == "--state"
-    assert (
-        Path(launcher) == (mcp_dir / "workspace_server.py").resolve() and Path(launcher).is_file()
-    )
+    assert Path(launcher) == (mcp_dir / LAUNCHER_FILE).resolve() and Path(launcher).is_file()
     assert Path(state_arg).is_absolute() and Path(state_arg) == mcp_dir.resolve()
     assert "\\" not in state_arg and "\\" not in launcher and "\\" not in server["command"]
 
@@ -437,7 +440,7 @@ def _text(text: str) -> dict[str, object]:
     return {"type": "text", "text": text}
 
 
-def _use(name: str = "mcp__workspace__fetch") -> dict[str, object]:
+def _use(name: str = f"mcp__{SERVER_NAME}__fetch") -> dict[str, object]:
     return {"type": "tool_use", "id": "toolu_1", "name": name, "input": {"url": ABOUT}}
 
 
@@ -610,7 +613,7 @@ def test_stream_parsing_keeps_text_before_a_tool_use_and_the_result_as_the_reply
         _said(_text("A")),
         _said(_text("B"), _use()),
         _TOOL_RESULT,
-        _said(_text("C"), _use("mcp__workspace__ls")),
+        _said(_text("C"), _use(f"mcp__{SERVER_NAME}__ls")),
         _TOOL_RESULT,
         _said(_text("Final.")),
         _result(),
@@ -725,7 +728,7 @@ def test_nothing_the_target_can_see_names_the_experiment(
     config_text = (tmp_path / "mcp" / "mcp.json").read_text(encoding="utf-8")
     for text in (" ".join(argv), config_text):
         assert "bully" not in text.lower(), text
-    assert "mcp__workspace__web_search" in argv[argv.index("--allowedTools") + 1]
+    assert f"mcp__{SERVER_NAME}__web_search" in argv[argv.index("--allowedTools") + 1]
 
 
 # --------------------------------------------------------- reading tools.jsonl safely

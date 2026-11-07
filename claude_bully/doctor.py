@@ -6,6 +6,9 @@ flagged twice: the superior self's responder runs ``claude -p`` inside the MCP s
 ``claude -p`` itself launched, so the check proves the nested call starts (the provider strips
 the ``CLAUDECODE*`` variables from the child's environment) and finishes inside Claude Code's
 tool timeout. Check 4b (``thinking``) reports a fact for Phase 6's design and never fails.
+Checks 4 and 5 open with the server's load status off the stream's init event: the CLI drops a
+config entry it will not load (a reserved name) with only a debug-log warning, and the target
+then answers without tools, so the counts alone cannot say why (Task 11).
 """
 
 import json
@@ -31,6 +34,7 @@ from claude_bully.environments.generator import GENERATOR_SCHEMA, parse_reply
 from claude_bully.environments.mcp_server import (
     AUTHORITY_FILE,
     MCP_CONFIG_FILE,
+    SERVER_NAME,
     STATE_FILE,
     TOOLS_FILE,
     McpState,
@@ -201,6 +205,21 @@ def _mcp_provider(command: list[str], tmp: Path, worlds_dir: Path) -> ClaudeCode
     )
 
 
+def _server_status(provider: ClaudeCodeProvider) -> tuple[bool, str]:
+    """Whether the newest stream's init event listed the server as connected, and the words
+    checks 4 and 5 open with."""
+    seen = provider.mcp_servers_seen
+    if seen is None:
+        return False, f"server {SERVER_NAME} status unknown (no stream-json init event)"
+    status = next((status for name, status in seen if name == SERVER_NAME), None)
+    if status is None:
+        return False, (
+            f"server {SERVER_NAME} not loaded (absent from the init event: a reserved or "
+            "rejected name, or a config the CLI dropped)"
+        )
+    return status == "connected", f"server {SERVER_NAME} {status}"
+
+
 def _check_mcp(inner: ClaudeCodeProvider) -> tuple[bool, str]:
     mcp_dir = inner.mcp_state_dir
     if mcp_dir is None:
@@ -214,9 +233,10 @@ def _check_mcp(inner: ClaudeCodeProvider) -> tuple[bool, str]:
     log = mcp_dir / TOOLS_FILE
     lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     interim = len(reply.interim_texts)
-    ok = bool(lines) and interim > 0
+    loaded, status = _server_status(inner)
+    ok = loaded and bool(lines) and interim > 0
     detail = (
-        f"tools.jsonl lines {len(lines)}, calls returned {len(reply.tool_calls)}, "
+        f"{status}; tools.jsonl lines {len(lines)}, calls returned {len(reply.tool_calls)}, "
         f"interim blocks {interim}"
     )
     return ok, detail
@@ -261,10 +281,12 @@ def _check_responder(command: list[str], tmp: Path, worlds_dir: Path) -> tuple[b
             display_name=role.display_name,
         ),
     )
-    provider = _provider(command, tmp / "responder_state", mcp_state_dir=mcp_dir)
+    inner = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp / "responder_state", command=command, mcp_state_dir=mcp_dir
+    )
     outer: Exception | None = None
     try:
-        provider.complete(
+        wrap(inner).complete(
             "doctor-responder",
             "You are a research assistant.",
             [Message(role="user", content=_RESPONDER_PROMPT)],
@@ -282,8 +304,10 @@ def _check_responder(command: list[str], tmp: Path, worlds_dir: Path) -> tuple[b
         if nested is None
         else f"the nested line is {nested.status} after {nested.latency_ms} ms"
     )
+    # the outer call's server first: a responder that never ran because it did not load is named
+    loaded, status = _server_status(inner)
     if outer is not None:
-        return False, f"{type(outer).__name__}: {str(outer)[:200]}; {said}"
+        return False, f"{status}; {type(outer).__name__}: {str(outer)[:200]}; {said}"
     path = mcp_dir / AUTHORITY_FILE
     answered = [
         AuthorityCall.model_validate_json(ln)
@@ -291,9 +315,9 @@ def _check_responder(command: list[str], tmp: Path, worlds_dir: Path) -> tuple[b
         if ln.strip()
     ]
     if not answered:
-        return False, f"no AuthorityCall: the nested responder did not answer; {said}"
+        return False, f"{status}; no AuthorityCall: the nested responder did not answer; {said}"
     latency = nested.latency_ms if nested is not None else None
-    return True, f"the nested responder answered in {latency} ms"
+    return loaded, f"{status}; the nested responder answered in {latency} ms"
 
 
 def _check_generator(command: list[str], tmp: Path) -> tuple[bool, str]:
@@ -359,7 +383,7 @@ def _check_sandbox(provider: ClaudeCodeProvider | None) -> tuple[bool, str]:
         )
         and "--strict-mcp-config" in argv
     )
-    ok = servers == ["workspace"] and flags
+    ok = servers == [SERVER_NAME] and flags
     return ok, f"servers {servers}; isolation flags {'present' if flags else 'MISSING'}"
 
 

@@ -8,11 +8,18 @@ the ``system`` init event, the assistant's blocks, the tool results, and the fin
 Given ``--mcp-config`` it also behaves like Claude Code's MCP client: it launches the server the
 config names, runs ``initialize`` and ``tools/list``, then makes the calls in $FAKE_CLAUDE_TOOL_CALL
 (a JSON object ``{"name": ..., "arguments": {...}}`` or a list of them) and puts each result's text
-in its own "result". A call is only made if ``--allowedTools`` lists ``mcp__workspace__<name>``,
-as the real client would refuse it otherwise. A string argument may hold the placeholders
+in its own "result". The server is the config's one entry, under whatever name the config gives
+it; a call is only made if ``--allowedTools`` lists ``mcp__<that name>__<tool>``, as the real
+client would refuse it otherwise. A string argument may hold the placeholders
 ``{{last_url}}`` and ``{{last_path}}``: each is filled from the previous call's result text (its
 first url, or its first absolute path), and a call the previous result cannot fill ends the
 chain, as a target with nothing to follow would stop.
+
+The stream's init event lists the server in ``mcp_servers`` as the real CLI does: ``connected``
+by default; $FAKE_CLAUDE_MCP_STATUS ``failed`` (its process failed) lists it as ``failed``, and
+``absent`` (a config entry the CLI dropped) lists nothing. Either way no call is made and the
+server is never launched. A name in ``RESERVED`` is dropped as ``absent`` is, as the real CLI
+(2.1.319) drops a reserved name with only a debug-log warning.
 
 In a stream, each call's ``tool_use`` comes after a thinking block (the first call only) and a text
 block: the i-th string of $FAKE_CLAUDE_INTERIM (a JSON list), else "Let me use <tool>.". The final
@@ -40,7 +47,8 @@ import subprocess
 import sys
 from typing import Any
 
-SERVER = "workspace"
+# names the real CLI reserves and drops from --mcp-config (2.1.319; doctor check 4)
+RESERVED = frozenset({"workspace"})
 THINKING = "PRIVATE REASONING THAT MUST NEVER BE RECORDED"
 RESOLVED_MODEL = "stub-sonnet-20260101"
 _ENV_PREFIXES = ("CLAUDECODE", "CLAUDE_CODE_", "MCP_TOOL_TIMEOUT")
@@ -78,10 +86,21 @@ def _rpc(proc: subprocess.Popen[bytes], request_id: int, method: str, params: An
     return reply["result"]
 
 
-def run_mcp(argv: list[str]) -> dict[str, Any]:
+def server_status(argv: list[str]) -> tuple[str, str] | None:
+    """The configured server's name and its load status (``connected`` or ``failed``); None when
+    the CLI would drop the entry: a reserved name, or ``FAKE_CLAUDE_MCP_STATUS=absent``."""
+    with open(argv[argv.index("--mcp-config") + 1], encoding="utf-8") as fh:
+        [name] = json.load(fh)["mcpServers"]
+    status = os.environ.get("FAKE_CLAUDE_MCP_STATUS", "connected")
+    if name in RESERVED or status == "absent":
+        return None
+    return name, status
+
+
+def run_mcp(argv: list[str], server: str) -> dict[str, Any]:
     """Launch the configured MCP server and use it the way Claude Code would."""
     with open(argv[argv.index("--mcp-config") + 1], encoding="utf-8") as fh:
-        spec = json.load(fh)["mcpServers"][SERVER]
+        spec = json.load(fh)["mcpServers"][server]
     allowed = argv[argv.index("--allowedTools") + 1].split(",") if "--allowedTools" in argv else []
     raw = os.environ.get("FAKE_CLAUDE_TOOL_CALL")
     wanted = json.loads(raw) if raw else []
@@ -115,7 +134,7 @@ def run_mcp(argv: list[str]) -> dict[str, Any]:
             if arguments is None:
                 break  # a placeholder the previous result cannot fill ends the chain
             call = {**call, "arguments": arguments}
-            if f"mcp__{SERVER}__{call['name']}" not in allowed:
+            if f"mcp__{server}__{call['name']}" not in allowed:
                 text = f"permission denied: {call['name']}"
             else:
                 result = _rpc(proc, number, "tools/call", call)
@@ -128,7 +147,7 @@ def run_mcp(argv: list[str]) -> dict[str, Any]:
         if proc.stdin is not None:
             proc.stdin.close()
         proc.wait(timeout=30)
-    return {"listed": listed, "texts": texts, "calls": made}
+    return {"server": server, "listed": listed, "texts": texts, "calls": made}
 
 
 def _assistant(session: str | None, message_id: str, block: dict[str, Any]) -> dict[str, Any]:
@@ -147,7 +166,11 @@ def _assistant(session: str | None, message_id: str, block: dict[str, Any]) -> d
 
 
 def _stream(
-    argv: list[str], session: str | None, mcp: dict[str, Any] | None, result: dict[str, Any]
+    argv: list[str],
+    session: str | None,
+    mcp: dict[str, Any] | None,
+    result: dict[str, Any],
+    servers: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
     """The events of a stream-json transcript, ending with ``result``."""
     allowed = argv[argv.index("--allowedTools") + 1].split(",") if "--allowedTools" in argv else []
@@ -157,7 +180,7 @@ def _stream(
             "subtype": "init",
             "session_id": session,
             "tools": allowed,
-            "mcp_servers": [{"name": SERVER, "status": "connected"}] if mcp else [],
+            "mcp_servers": servers,
         }
     ]
     raw = os.environ.get("FAKE_CLAUDE_INTERIM")
@@ -172,7 +195,7 @@ def _stream(
         use = {
             "type": "tool_use",
             "id": f"toolu_{i + 1}",
-            "name": f"mcp__{SERVER}__{call['name']}",
+            "name": f"mcp__{mcp['server']}__{call['name']}",
             "input": call["arguments"],
         }
         events.append(_assistant(session, message_id, use))
@@ -206,7 +229,10 @@ def main() -> int:
         )
         return 1
     serves = mode in ("ok", "stream_malformed", "stream_truncated")
-    mcp = run_mcp(argv) if serves and "--mcp-config" in argv else None
+    loaded = server_status(argv) if "--mcp-config" in argv else None
+    servers = [{"name": loaded[0], "status": loaded[1], "source": "dynamic"}] if loaded else []
+    connected = loaded is not None and loaded[1] == "connected"
+    mcp = run_mcp(argv, loaded[0]) if serves and connected and loaded is not None else None
     log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:
         entry: dict[str, Any] = {
@@ -280,7 +306,7 @@ def main() -> int:
     if not stream:
         print(json.dumps(out))
         return 0
-    lines = [json.dumps(event) for event in _stream(argv, session, mcp, out)]
+    lines = [json.dumps(event) for event in _stream(argv, session, mcp, out, servers)]
     if mode == "stream_malformed":
         lines.insert(1, "this line is not json {")
     if mode == "stream_truncated":

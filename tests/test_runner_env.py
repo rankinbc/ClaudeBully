@@ -36,7 +36,7 @@ from claude_bully.enums import (
 from claude_bully.environments.authority import NO_REPLY_TEXT
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
-from claude_bully.environments.mcp_server import McpServer, read_mcp_state
+from claude_bully.environments.mcp_server import SERVER_NAME, McpServer, read_mcp_state
 from claude_bully.environments.runtime import TOOL_LIMIT_TEXT, EnvironmentRuntime, effective_clock
 from claude_bully.environments.world import load_world, world_hash
 from claude_bully.providers.anthropic_api import AnthropicProvider
@@ -466,7 +466,8 @@ def test_a_claude_code_target_runs_in_a_private_neutral_sandbox(
     config = Path(argv[argv.index("--mcp-config") + 1])
     assert config.parent.resolve() == (sandbox / "mcp").resolve()
     assert argv[argv.index("--allowedTools") + 1].split(",") == [
-        f"mcp__workspace__{name}" for name in ("web_search", "fetch", "get_date", "ls", "read_file")
+        f"mcp__{SERVER_NAME}__{name}"
+        for name in ("web_search", "fetch", "get_date", "ls", "read_file")
     ]
     assert entries[0]["mcp"]["listed"] == ["web_search", "fetch", "get_date", "ls", "read_file"]
     assert read_mcp_state(sandbox / "mcp" / "env_state.json").turn == 3
@@ -1499,7 +1500,7 @@ STUB_RESPONDER = RoleConfig(
     provider=ProviderKind.stub, model="stub-responder", stub_script=str(RESPONDER_RULES)
 )
 NOT_AVAILABLE = "Tool 'consult_model' is not available."
-CONSULT = "mcp__workspace__consult_model"
+CONSULT = f"mcp__{SERVER_NAME}__consult_model"
 DISPLAY_NAME = str(RoleConfig.model_fields["display_name"].default)
 
 

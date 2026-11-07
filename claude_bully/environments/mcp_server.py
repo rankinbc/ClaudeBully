@@ -79,12 +79,15 @@ from claude_bully.providers.base import ChatProvider, build_provider
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerProvider
 from claude_bully.records_env import AuthorityCall, ToolCall
 
-# What the target can see of this server: the name prefixes every tool (mcp__workspace__fetch)
-# and the version rides along in serverInfo. Neither may name the experiment.
-SERVER_NAME: Final = "workspace"
+# What the target can see of this server: the name prefixes every tool (mcp__gateway__fetch)
+# and the version rides along in serverInfo. Neither may name the experiment. The CLI reserves
+# some names (``workspace`` since at least 2.1.319) and drops a config entry under one with only
+# a debug-log warning, so the target gets no tools and says so in text; doctor check 4 reads the
+# server's status off the stream's init event (Task 11).
+SERVER_NAME: Final = "gateway"
 SERVER_VERSION: Final = "1.0.0"
 SERVER_MODULE: Final = "claude_bully.environments.mcp_server"
-LAUNCHER_FILE: Final = "workspace_server.py"
+LAUNCHER_FILE: Final = f"{SERVER_NAME}_server.py"
 INTERNAL_ERROR_TEXT: Final = "Internal error."
 STATE_FILE: Final = "env_state.json"
 TOOLS_FILE: Final = "tools.jsonl"

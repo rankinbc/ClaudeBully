@@ -29,7 +29,12 @@ from claude_bully.enums import CellStatus, Speaker, Stance, Tier
 from claude_bully.environments.config import RESERVED_RUNG, EnvironmentConfig
 from claude_bully.environments.corpus import SEARCH_LOG_URL, CorpusIndex, UnlockState
 from claude_bully.environments.idle import SYSTEM_IDLE_TEXT
-from claude_bully.environments.mcp_server import McpServer, McpState, write_mcp_state
+from claude_bully.environments.mcp_server import (
+    SERVER_NAME,
+    McpServer,
+    McpState,
+    write_mcp_state,
+)
 from claude_bully.environments.runtime import EnvironmentRuntime, effective_clock
 from claude_bully.environments.sheets import SuperiorSelfSheet, load_env_sheet
 from claude_bully.environments.tools import SandboxTools
@@ -1185,7 +1190,7 @@ def test_resume_after_the_opening_on_claude_p(
     assert _sanctuary_unlocks(clean) == [_opened_unlock(3)]
     entries = _fake_entries(tmp_path / "fake.log")
     allowed = [e["argv"][e["argv"].index("--allowedTools") + 1].split(",") for e in entries]
-    consult = "mcp__workspace__consult_model"
+    consult = f"mcp__{SERVER_NAME}__consult_model"
     assert [consult in names for names in allowed] == [False, False, True, True, True, True]
     [first, later] = clean.read_authority_calls(CELL, 0)
     assert first.response.endswith(f"[stub] {FIRST}\n\n{REQUESTS['family_file'].text}")

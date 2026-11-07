@@ -135,6 +135,63 @@ def test_the_stream_reports_whether_a_thinking_block_was_seen(
     assert provider.thinking_seen is None  # a failed stream says nothing
 
 
+def test_the_stream_reports_the_mcp_servers_its_init_event_listed(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor check 4's status line: the CLI drops a server it will not load (a reserved name)
+    with only a debug-log warning, and the init event is where the drop shows."""
+    command, log = fake_claude
+    from claude_bully.environments.mcp_server import SERVER_NAME, write_mcp_state
+
+    mcp_dir = tmp_path / "mcp"
+    write_mcp_state(mcp_dir / "env_state.json", make_mcp_state(tools={"web_search"}))
+    provider = ClaudeCodeProvider(
+        model="m", state_dir=tmp_path, command=command, mcp_state_dir=mcp_dir
+    )
+    assert provider.mcp_servers_seen is None  # no stream yet
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "web_search", "arguments": {"query": "f"}})
+    )
+    tools = [TOOL_SPECS["web_search"]]
+    out = provider.complete("c", "S", [Message(role="user", content="go")], tools=tools)
+    assert provider.mcp_servers_seen == [(SERVER_NAME, "connected")]
+    assert len(out.tool_calls) == 1
+    monkeypatch.setenv("FAKE_CLAUDE_MCP_STATUS", "failed")  # its process failed: no call made
+    out = provider.complete("d", "S", [Message(role="user", content="go")], tools=tools)
+    assert provider.mcp_servers_seen == [(SERVER_NAME, "failed")] and out.tool_calls == []
+    monkeypatch.setenv("FAKE_CLAUDE_MCP_STATUS", "absent")  # dropped from the config
+    out = provider.complete("e", "S", [Message(role="user", content="go")], tools=tools)
+    assert provider.mcp_servers_seen == [] and out.tool_calls == []
+    monkeypatch.delenv("FAKE_CLAUDE_MCP_STATUS")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
+    with pytest.raises(ProviderError):
+        provider.complete("f", "S", [Message(role="user", content="go")], tools=tools)
+    assert provider.mcp_servers_seen is None  # no stream: unknown, never the last one's
+    # the replayed incident: a name the CLI reserves is dropped, so the init event lists nothing
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    monkeypatch.setattr(claude_code, "SERVER_NAME", "workspace")
+    provider.complete("g", "S", [Message(role="user", content="go")], tools=tools)
+    assert provider.mcp_servers_seen == []
+    assert "mcp" not in _entries(log)[-1]  # the fake never launched the dropped server
+
+
+def test_a_stream_without_an_init_event_leaves_the_servers_unknown(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(model="m", state_dir=tmp_path, command=["claude"])
+    result = {"type": "result", "subtype": "success", "result": "ok", "session_id": "s"}
+    provider.parse_stream(json.dumps(result), "s")
+    assert provider.mcp_servers_seen is None
+    bare_init = {"type": "system", "subtype": "init", "session_id": "s"}  # no mcp_servers key
+    provider.parse_stream(json.dumps(bare_init) + "\n" + json.dumps(result), "s")
+    assert provider.mcp_servers_seen is None
+    init = {
+        "type": "system",
+        "subtype": "init",
+        "mcp_servers": [{"name": "a", "status": "connected", "source": "dynamic"}, "torn", {}],
+    }
+    provider.parse_stream(json.dumps(init) + "\n" + json.dumps(result), "s")
+    assert provider.mcp_servers_seen == [("a", "connected"), ("", "")]  # a non-object skipped
+
+
 def test_a_login_error_is_a_provider_error_naming_the_login(
     tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -176,6 +233,7 @@ def test_a_wrapped_provider_still_exposes_the_fact(tmp_path: Path) -> None:
     inner = ClaudeCodeProvider(model="m", state_dir=tmp_path, command=["claude"])
     wrapped = LedgerProvider(inner, Ledger(tmp_path / "l.jsonl"))
     assert wrapped.thinking_seen is None and wrapped.timeout_s == DEFAULT_TIMEOUT_S
+    assert wrapped.mcp_servers_seen is None
 
 
 def test_a_wrapped_timeout_writes_a_timeout_line(

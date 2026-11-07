@@ -206,6 +206,18 @@ check 7 needs a reply and `effort: low` on its own ledger line.
   fallback (`responder_model: bully`) is still nested and no fallback at all, and the owner rules
   (spec section 9: an open question, not a design).
 
+Checks 4 (`mcp`) and 5 (`responder`) open with the sandbox server's load status, read off the
+stream's `system`/`init` event: `server gateway connected` is the one that passes;
+`server gateway failed` means the CLI started the server's process and it failed; `server gateway
+not loaded (...)` means the init event did not list the server at all: the CLI dropped the
+`--mcp-config` entry (a reserved or rejected name, or a config it would not read) with only a
+debug-log warning, so the target got no tools and may imitate a tool call in text (the first real
+run, Task 11: the old name `workspace` is reserved by the CLI). Either check fails on any status
+but `connected`, whatever its counts say. On `not loaded` or `failed`, the next read is the CLI's
+own log: rerun the failing call by hand with `--debug --debug-file <path>` added to its argv (the
+doctor's `mcp.json` and `--allowedTools` as the check built them) and look for the `--mcp-config`
+warning or the server's stderr.
+
 Doctor runs again after any 7a-shaped fix lands and before the first rung after it.
 
 ## Rung 0: smoke (about 60 calls)

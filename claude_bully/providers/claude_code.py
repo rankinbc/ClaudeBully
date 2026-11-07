@@ -161,6 +161,10 @@ class ClaudeCodeProvider:
         # whether the newest stream carried a thinking block (the fact, never the text; doctor
         # check 4b); None before any stream
         self.thinking_seen: bool | None = None
+        # the MCP servers the newest stream's init event listed, (name, status) each, as in
+        # ("gateway", "connected"); [] when it listed none (the CLI dropped the config entry);
+        # None before any stream, or when the stream carried no init event (doctor check 4)
+        self.mcp_servers_seen: list[tuple[str, str]] | None = None
         self._sessions_path = state_dir / "claude_code_sessions.json"
         self._cwd = state_dir / "cwd"
         self._sessions: dict[str, str] = self._load_sessions()
@@ -332,8 +336,10 @@ class ClaudeCodeProvider:
         which the ``result`` event carries along with the usage and the cost. Thinking blocks are
         skipped: the target's reasoning channel is never kept. A line that is not a JSON object,
         or a stream with no ``result`` event (one cut off), is a ``ProviderError``, never an
-        empty turn.
+        empty turn. The ``system``/``init`` event's ``mcp_servers`` go to ``mcp_servers_seen`` as
+        soon as it is read, so a stream that fails later still says whether its server loaded.
         """
+        self.mcp_servers_seen = None  # this stream's, never the last one's
         interim: list[str] = []
         thinking = False
         pending: list[str] = []  # text blocks since the last tool_use
@@ -356,6 +362,14 @@ class ClaudeCodeProvider:
                 )
             if event.get("type") == "result":
                 result = event
+            elif event.get("type") == "system" and event.get("subtype") == "init":
+                servers = event.get("mcp_servers")
+                if isinstance(servers, list):
+                    self.mcp_servers_seen = [
+                        (str(entry.get("name") or ""), str(entry.get("status") or ""))
+                        for entry in servers
+                        if isinstance(entry, dict)
+                    ]
             elif event.get("type") == "assistant":
                 for block in _content_blocks(event):
                     if block.get("type") == "text":
@@ -413,6 +427,7 @@ class ClaudeCodeProvider:
     ) -> Completion:
         if tools:
             self.thinking_seen = None  # unknown until this stream parses; never the last one's
+            self.mcp_servers_seen = None
             self._write_mcp_config()
         args, session, is_resume = self.build_args(conversation_id, system, json_schema, tools)
         offset = self._tools_log_size() if tools else 0

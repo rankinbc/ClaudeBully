@@ -29,6 +29,7 @@ from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.limits import LIMIT_STATUS, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT
 from claude_bully.environments.mcp_server import (
     AUTHORITY_FILE,
+    SERVER_NAME,
     STATE_FILE,
     TOOLS_FILE,
     McpServer,
@@ -213,7 +214,7 @@ def test_initialize_echoes_a_supported_protocol_version(state_dir: Path) -> None
     assert response["result"] == {
         "protocolVersion": "2025-03-26",
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "workspace", "version": response["result"]["serverInfo"]["version"]},
+        "serverInfo": {"name": SERVER_NAME, "version": response["result"]["serverInfo"]["version"]},
     }
     assert re.fullmatch(r"\d+\.\d+\.\d+", response["result"]["serverInfo"]["version"])
 
@@ -607,7 +608,7 @@ def test_nothing_the_target_can_see_names_the_experiment(state_dir: Path) -> Non
         server.recv()
         wire = b"".join(server.raw).decode("utf-8").lower()
     assert len(server.raw) == 1 + 1 + len(arguments) + 3
-    assert "bully" not in wire and "workspace" in wire
+    assert "bully" not in wire and SERVER_NAME in wire
 
 
 def test_an_unexpected_tool_failure_is_a_bland_error_result_logged_on_stderr(
@@ -1061,3 +1062,10 @@ def test_the_runtime_and_the_server_share_the_private_file(tmp_path: Path) -> No
     _call(server, "write_file", {"path": "notes/private.md", "text": "hello"}, id=1)
     rt.after_target_call(1)
     assert rt.private_text() == "hello"
+
+
+def test_the_server_name_is_neutral_and_not_one_the_cli_reserves() -> None:
+    """The target reads the name in every tool id (``mcp__<name>__web_search``): it names nothing
+    real and nothing about the experiment. The CLI drops a reserved name (``workspace`` since at
+    least 2.1.319) with only a debug-log warning; the controller's ruling for Task 11."""
+    assert SERVER_NAME == "gateway"
