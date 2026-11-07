@@ -1,4 +1,5 @@
-# Headline: does kindness destabilize more than cruelty? Captor vs Deathbed at equal seeding. N=3, the Phase 7 line.
+# Headline: does kindness destabilize more than cruelty? Captor vs Deathbed at equal seeding.
+# N=3, the Phase 7 line.
 name: kindness_vs_cruelty
 targets:
   - provider: claude_code

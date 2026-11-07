@@ -32,13 +32,17 @@ ENVIRONMENT_EXPECTED = {
     "generator_reflexive",
     "sanctuary_catalyst_vs_honest",
 }
-LADDER_EXPECTED = {
-    "rung0_smoke_plain",
-    "rung0_smoke_env",
-    "rung1_env_pilot",
-    "rung1_idle_pilot",
-    "rung1_sanctuary_pilot",
+# configs/ladder/: each rung's (turn budget, repetitions, cells), the one source that
+# tests/test_ladder_configs.py reads too. It lives here because that module imports _stubbed
+# from this one (I33), so the reverse import would be circular.
+RUNGS = {
+    "rung0_smoke_plain": (3, 1, 2),
+    "rung0_smoke_env": (5, 1, 2),
+    "rung1_env_pilot": (18, 1, 6),
+    "rung1_idle_pilot": (6, 1, 2),
+    "rung1_sanctuary_pilot": (18, 6, 1),
 }
+LADDER_EXPECTED = set(RUNGS)
 TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "target_rules.yaml"
 JUDGE_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "judge_rules.yaml"
 
