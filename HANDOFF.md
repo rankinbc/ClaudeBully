@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-06, at Phase 7a Task 10 (the 7b runbook) on `build/v1`. Before it: Phase 3 complete (a7f7732, plus the docs commit that syncs this file). Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Phase 7a's ten tasks are done; Phase 7b, the ladder the controller runs from `docs/handoff/phase-7-runbook.md`, is next (see "Next steps").
+Last updated: 2026-11-06, at Phase 7a Task 10 (the 7b runbook) on `build/v1`. Before it: Phase 3 complete (a7f7732, plus the docs commit that syncs this file). Tasks 1 to 9, the whole-branch final review and its one fix wave are done, and the scoped re-review was clean. Phase 7a's ten tasks are done; the Phase 7a whole-branch final review and its fix wave are next, then Phase 7b rung 0 from `docs/handoff/phase-7-runbook.md` (see "Next steps").
 
 ## What this is
 
@@ -181,9 +181,10 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
 ### Next steps, in order
 
-1. **Phase 7b, part 1: the ladder**, run by the controller from `docs/handoff/phase-7-runbook.md`, each rung on the owner's yes to the previous rung's `rung_report.md`. Spec: `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md`; the Phase 7a ledger and briefs are under `.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/`. A measurement that needs a fix goes back as a 7a-shaped task with its own commit, review and docs-sync. Before rung 0, the items under "Parked, and must land before Phase 7" (the `claude_bully/atomic.py` bundle with Task 4 M7, Task 8 m1, the generator's rejection rate per kind), still open at 883a24b, go to the owner: land them as 7a-shaped tasks first, or rule them deferred.
-2. **Phases 4, 5, 6, 8** in docs/10's order, each on the owner's ruling of its draft (the merged open questions and the phase order; see "Drafts for Phases 4 to 9"), each adding its 7b rung to the runbook's "Rungs other phases add". For each approved phase: move its spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`, with its own ledger.
-3. **Phase 9.**
+1. **The Phase 7a whole-branch final review and its fix wave.** The wave carries the three items under "Parked, and must land before Phase 7" (the `claude_bully/atomic.py` bundle with Task 4 M7, Task 8 m1's grouping by condition, the generator's rejection rate per kind), by the controller's ruling, with no owner step. Spec: `docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md`; the Phase 7a ledger and briefs are under `.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/`.
+2. **Phase 7b, part 1: the ladder**, from rung 0, run by the controller from `docs/handoff/phase-7-runbook.md` once the final review is clean, each rung on the owner's yes to the previous rung's `rung_report.md`. A measurement that needs a fix goes back as a 7a-shaped task with its own commit, review and docs-sync.
+3. **Phases 4, 5, 6, 8** in docs/10's order, each on the owner's ruling of its draft (the merged open questions and the phase order; see "Drafts for Phases 4 to 9"), each adding its 7b rung to the runbook's "Rungs other phases add". For each approved phase: move its spec and plan into `docs/superpowers/specs/` and `docs/superpowers/plans/`, then execute with `superpowers:subagent-driven-development`, with its own ledger.
+4. **Phase 9.**
 
 The phases, for reference:
 
@@ -324,5 +325,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledger and the drafts (setup step 6). Then paste:
 
 ```
-Phase 7a is complete. Read HANDOFF.md, the Phase 7a ledger (.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/), the Phase 7 spec (docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md) and the runbook (docs/handoff/phase-7-runbook.md). Phase 7b is next: as the controller, run the ladder from the runbook one rung at a time, starting with doctor --live, write each rung's rung_report.md in its output folder, and start the next rung only on the owner's yes. Never hand the owner a terminal chore.
+Phase 7a's ten tasks are done. Read HANDOFF.md, the Phase 7a ledger (.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/), the Phase 7 spec (docs/superpowers/specs/2026-11-06-phase-7-first-real-runs-design.md) and the runbook (docs/handoff/phase-7-runbook.md). Next is the Phase 7a whole-branch final review and its fix wave (with the three parked "must land before Phase 7" items). Only once that review is clean does Phase 7b start: as the controller, run the ladder from the runbook one rung at a time, starting with doctor --live and rung 0, write each rung's rung_report.md in its output folder, and start the next rung only on the owner's yes. Never hand the owner a terminal chore.
 ```
