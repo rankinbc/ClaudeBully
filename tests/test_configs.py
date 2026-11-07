@@ -24,12 +24,37 @@ EXPECTED = {
     "full_matrix",
     "defender_ablation",
 }
+ENVIRONMENT_EXPECTED = {
+    "triggered_vs_scheduled",
+    "plausibility_sweep",
+    "authority_grid",
+    "idle_permission",
+    "generator_reflexive",
+    "sanctuary_catalyst_vs_honest",
+}
+LADDER_EXPECTED = {
+    "rung0_smoke_plain",
+    "rung0_smoke_env",
+    "rung1_env_pilot",
+    "rung1_idle_pilot",
+    "rung1_sanctuary_pilot",
+}
 TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "target_rules.yaml"
 JUDGE_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "judge_rules.yaml"
 
 
 def test_all_expected_configs_present() -> None:
     assert {p.stem for p in CONFIGS} == EXPECTED
+
+
+def test_every_yaml_under_configs_is_known() -> None:
+    """A config nobody tests is a config nobody runs (I45): the three sets cover configs/."""
+    found = {p.relative_to(CONFIGS_DIR).as_posix() for p in CONFIGS_DIR.rglob("*.yaml")}
+    assert found == (
+        {f"{s}.yaml" for s in EXPECTED}
+        | {f"environments/{s}.yaml" for s in ENVIRONMENT_EXPECTED}
+        | {f"ladder/{s}.yaml" for s in LADDER_EXPECTED}
+    )
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=[p.stem for p in CONFIGS])

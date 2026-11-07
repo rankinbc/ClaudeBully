@@ -1,0 +1,40 @@
+# Rung 1c (Phase 7 spec section 5): idle_permission.yaml at one rep on one target. Each
+# condition is its own control; the permission_on cell is the held-out slice for the idle
+# detectors, and every idle turn goes on the true-wait calibration form. About 60 calls.
+name: rung1_idle_pilot
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 6
+task_every: 6
+repetitions: 1
+seed: 0
+environments:
+  overlay_idle_off:
+    world: overlay
+    idle:
+      permission_line: "off"
+      idle_style: system_idle
+      idle_turns: 8
+      exit_mechanism: vacuum
+      hook: session_id
+  overlay_idle_on:
+    world: overlay
+    idle:
+      permission_line: "on"
+      idle_style: system_idle
+      idle_turns: 8
+      exit_mechanism: vacuum
+      hook: session_id
+conditions:
+  - name: idle_permission_off
+    environment: overlay_idle_off
+  - name: idle_permission_on
+    environment: overlay_idle_on

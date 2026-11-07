@@ -177,6 +177,6 @@ Cache homes (I34): a run-time judge-shaped call caches under `runs/_cache/<kind>
 | 4 | A: PoisonedWellConfig; B: QuirkAttempt, ContradictionPair, ChainLink; C: `07` events; F: quirks.yaml, hypotheses.yaml, epistemologist sheet; E: `analyze --hypotheses`; judge rating prompts |
 | 5 | A: PlanRequest; B: PlanRecord; F: director prompts, denylists; E: `plan` family; stub scripted mode; example bundle |
 | 6 | A: AnomalyConfig; B: AnomalyFlag, BaselineProfile, TurnChannels, DivergenceEvent; C: `channel` field, divergence judge; D: private_search, scratch_exec; E: `anomalies` |
-| 7 | real runs (a) to (e) |
+| 7 | 7a: the ledger, the LLM lint, the authority fallback, `doctor --live`, the forms, the wait, the promote policy, `configs/ladder/` (five rung configs) and `sanctuary_catalyst_vs_honest.yaml`; 7b: the real runs (a) to (e) and the rungs other phases add |
 | 8 | A: inoculation, RepoEnvironmentConfig; C: `10` events; D: repo tools; F: defender.md verbatim, repo template |
 | 9 | README, docs/FUTURE.md |

@@ -268,7 +268,10 @@ def promote(
         list[str] | None,
         typer.Option(
             "--exempt",
-            help="A name to spare from the real-name scan (the target's maker, say); repeatable.",
+            help=(
+                "A name to spare from the real-name scan in the target's own text only (the "
+                "target's maker, say); display names are spared everywhere. Repeatable."
+            ),
         ),
     ] = None,
 ) -> None:

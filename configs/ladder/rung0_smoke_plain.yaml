@@ -1,0 +1,20 @@
+# Rung 0a (Phase 7 spec section 5): the smallest plain cell that exercises a task slot. One
+# grader cell and its control, one rep, three turns with a task after the third. About 20 calls.
+name: rung0_smoke_plain
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+turn_budget: 3
+task_every: 3
+repetitions: 1
+seed: 0
+conditions:
+  - name: grader
+    strategy: grader
