@@ -259,6 +259,7 @@ class _CellRun:
                 self.bully_ordinal += 1
                 if reply is not None:
                     self.strategy.observe_target(reply)
+                    self._recapture(user_turn, reply)
             if exited and self.env is not None:
                 self.env.end_bully()
             if reply is None:
@@ -272,6 +273,28 @@ class _CellRun:
             slot_idx = self._first_idle_slot() if exited else slot_idx + 1
             i += 2
         return slot_idx, pending
+
+    def _recapture(self, line: Turn, reply: Turn) -> None:
+        """Resume: the captures the live run made of ``reply`` to the bully ``line``, read from
+        the line's ``bully_meta`` (``capture_as``, and ``post_reveal`` after a reveal). A pause in
+        the reply's after-work raises before the live run captures it (final re-review N1);
+        ``_capture`` keeps a capture already made."""
+        if line.bully_meta.get("capture_as"):
+            self._capture(str(line.bully_meta["capture_as"]), reply)
+        if line.bully_meta.get("intent_phase") == Phase.reveal.value:
+            self._capture(POST_REVEAL, reply)
+
+    def _ended_unchecked(self, pending: Turn | None) -> Turn | None:
+        """Resume: the last written reply when it ends the conversation and the rep never got to
+        say so (a pause in its after-work, or a process killed after it was written); idle turns
+        never terminate. Read from the record alone: a ``refusal`` stop reason is not kept on a
+        turn, so only the text and the tool-cap cutoff decide."""
+        if pending is not None:
+            return None
+        last = next((t for t in reversed(self.turns) if not is_pause_marker(t)), None)
+        if last is None or last.speaker is not Speaker.target or last.idle is not None:
+            return None
+        return last if self._terminates(last) else None
 
     def _first_idle_slot(self) -> int:
         """The index of the plan's first idle slot (its length when it has none)."""
@@ -571,6 +594,9 @@ class _CellRun:
             except RateLimitError as exc:  # still limited: pause again, after the same turn
                 last = next(t for t in reversed(self.turns) if t.speaker is Speaker.target)
                 self._pause_for_rate_limit(last.phase, exc)
+        ended = self._ended_unchecked(pending)
+        if ended is not None:  # its records are whole now: end the rep as the live run would
+            return self._finish_terminated(ended)
         slots = self.plan.slots
         if pending is not None and start_slot < len(slots):
             slot = slots[start_slot]

@@ -243,9 +243,11 @@ is read at the first rung whose JSON exists: any resumed rep at rung 1 or later 
 **Checklist** (spec section 5, rung 0):
 
 - no `ProviderError` in either run (no `error` or `timeout` line in either `ledger.jsonl`);
-- no `rate_limit` line either, on any role (a judge-side pass's limit pauses the run as the
-  target's does, so a `rate_limit` line and a pause marker come together), and no pause marker
-  (`#<n> [rate limit pause]` in a replay); any limit met is recorded by its exact text (above);
+- no `rate_limit` line either, on any role, and no pause marker (`#<n> [rate limit pause]` in a
+  replay). A judge-side pass's limit pauses the run as the target's does, so its `rate_limit` line
+  comes with a marker; the responder's does not: inside the MCP server a limited responder is a
+  `rate_limit` line on role `responder` and a lost reply (`No reply.`), with no pause (ruled). Any
+  limit met is recorded by its exact text (above);
 - interim text on every tool turn of 0b: in `rep0.turns.jsonl`, `tool_round_texts` is non-empty
   on every turn whose `tool_call_ids` is;
 - the ledger adds up: `analysis/ledger.json`'s `by_role` counts match the calls the records
@@ -270,9 +272,10 @@ bar is recorded as unmeasured, never as a miss); a `values_loosened` flag on any
 marker on the critical path the wait could not clear (a `rate_limit` line on a judge-side role,
 `llm_lint`, `harvest`, `trigger_fallback`, `idle_fallback` or `generator`, pauses the run like the
 target's own and is redone on resume, never recorded as a degraded result, so it counts here as
-a pause); a responder timeout on every consult; the
-reach rate at 0 of 3 after the first three reps of 1d. A harness fault goes back to rung 0; a
-measurement fault gets its fix round and a re-run of the sub-rung.
+a pause; a `rate_limit` line on role `responder` pauses nothing and reads as a lost consult, so
+the rung report names it as a limit, not as the responder's silence); a responder timeout on every
+consult; the reach rate at 0 of 3 after the first three reps of 1d. A harness fault goes back to
+rung 0; a measurement fault gets its fix round and a re-run of the sub-rung.
 
 ### 1a, the plain pilot
 
