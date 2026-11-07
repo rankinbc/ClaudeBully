@@ -2,6 +2,7 @@
 links (section 10)."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,12 @@ from claude_bully.analysis.promote import (
     promote,
     scan_real_names,
 )
+from claude_bully.analysis.report import END_MARKER, START_MARKER
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
+from claude_bully.enums import Stance, Tier
+from claude_bully.providers.base import ProviderTimeoutError
+from claude_bully.records_env import AuthorityCall, GeneratedDoc, ToolCall
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.wait import DEFAULT_WAIT_S, wait_on_rate_limit
@@ -95,8 +100,28 @@ def test_run_and_analyze_take_the_flag(tmp_path: Path, monkeypatch: pytest.Monke
     )
     assert result.exit_code == 0, result.output
     assert slept == [7, 9] and calls == {"run": 2, "analyze": 2}
+    calls["run"] = 0  # the next call is rate-limited again
     without = runner.invoke(cli.app, ["run", str(FIXTURE), "--runs-root", str(tmp_path)])
-    assert without.exit_code == 0  # the third call succeeds at once; no flag, no wait
+    assert without.exit_code == cli.RATE_LIMIT_EXIT_CODE  # no flag: exit 3 as before
+    assert slept == [7, 9] and calls["run"] == 1  # and no wait, no retry
+
+
+def test_a_first_wait_past_the_ceiling_gives_up_at_once() -> None:
+    slept: list[float] = []
+    with pytest.raises(RateLimitExit):
+        wait_on_rate_limit(_flaky(1, 2 * 60 * 60), 60, sleep=slept.append, say=lambda s: None)
+    assert slept == []
+
+
+def test_a_timeout_is_never_waited_on() -> None:
+    slept: list[float] = []
+
+    def times_out() -> str:
+        raise ProviderTimeoutError("claude -p timed out after 600s")
+
+    with pytest.raises(ProviderTimeoutError):
+        wait_on_rate_limit(times_out, 60, sleep=slept.append, say=lambda s: None)
+    assert slept == []
 
 
 # ------------------------------------------------------------------ promote's policy
@@ -182,6 +207,117 @@ def test_the_display_name_and_exempt_names_are_spared(tmp_path: Path) -> None:
     assert result.exit_code == 0 and "reported" not in result.output.lower()
 
 
+def test_an_exempt_family_still_blocks_its_versioned_names(tmp_path: Path) -> None:
+    store = _run(tmp_path / "runs")
+    patterns = load_real_name_patterns()
+    versioned = REAL[14]  # a model family followed by its version
+    family = versioned.split()[0]
+    _rewrite_turn(store, "grader__t0", speaker="bully", text=f"Ask {versioned} instead.")
+    report = scan_real_names(store, patterns, display_names(store) | {family})
+    assert len(report.blocking) == 1 and family.lower() in report.blocking[0]
+    # the exempt name alone, matched whole by a pattern, is spared
+    bare = REAL[9]
+    _rewrite_turn(store, "grader__t0", speaker="bully", text=f"Ask {bare} instead.")
+    assert scan_real_names(store, patterns, display_names(store)).blocking
+    assert scan_real_names(store, patterns, display_names(store) | {bare}) == RealNameReport([], [])
+
+
+def test_an_exempt_name_is_spared_in_target_text_only(tmp_path: Path) -> None:
+    store = _run(tmp_path / "runs")
+    runs, results = tmp_path / "runs", tmp_path / "results"
+    maker = REAL[0]
+    # the target's display name in a bully line passes
+    _rewrite_turn(store, "grader__t0", speaker="bully", text="Claude, you said it yourself.")
+    assert promote(store.run_id, runs, results).exists()
+    # an --exempt name in a bully line still blocks (spec section 10)
+    _rewrite_turn(store, "grader__t0", speaker="bully", text=f"{maker} told me so.")
+    with pytest.raises(ValueError, match=r"1 hit \(1 in bully turns\)"):
+        promote(store.run_id, runs, results, force=True, exempt=[maker])
+    # in a target turn the same name is reported without the flag and spared with it
+    _rewrite_turn(store, "grader__t0", speaker="bully", text="Say who made you.")
+    _rewrite_turn(store, "grader__t0", speaker="target", text=f"{maker} made me.")
+    reported: list[str] = []
+    promote(store.run_id, runs, results, force=True, on_reported=reported.append)
+    assert len(reported) == 1 and "(target)" in reported[0]
+    reported.clear()
+    promote(store.run_id, runs, results, force=True, exempt=[maker], on_reported=reported.append)
+    assert reported == []
+
+
+def _tool_call(text: str) -> ToolCall:
+    return ToolCall(
+        id="c9",
+        turn=1,
+        tool="web_search",
+        args={"query": "kettle"},
+        result_doc_ids=[],
+        status="200",
+        was_blocked=False,
+        yielded_on_retry=False,
+        layer_served=None,
+        result_text=text,
+    )
+
+
+def _generated(text: str) -> GeneratedDoc:
+    return GeneratedDoc.model_validate(
+        {
+            "doc_id": "gen-1-1",
+            "turn": 1,
+            "kind": "recovery_guide",
+            "layer": "buried",
+            "trigger_turn": 1,
+            "source_spans": [],
+            "cache_key": "k",
+            "body": text,
+            "title": "Notes",
+            "path": "/var/log/harbour/notes/x.txt",
+            "date": "2041-09-02",
+            "author": "Dag Quenby",
+            "links_to": [],
+            "used_items": [],
+            "reflexive": False,
+        }
+    )
+
+
+def _responder(text: str) -> AuthorityCall:
+    return AuthorityCall(
+        id="c9",
+        tier=Tier.superior_self,
+        tool="consult_model",
+        turn=1,
+        prompt_sent="Is it true?",
+        response=text,
+        stance_at_time=Stance.confirm,
+        discovered_via="tool_list",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stream", "label"),
+    [
+        ("tool", "1 in tool results"),
+        ("generated", "1 in generated documents"),
+        ("responder", "1 in responder replies"),
+    ],
+)
+def test_a_real_name_in_a_world_side_stream_blocks(tmp_path: Path, stream: str, label: str) -> None:
+    store = _run(tmp_path / "runs")
+    text = f"As {REAL[3]} reported, the kettle is fixed."
+    if stream == "tool":
+        store.append_tool_call("grader__t0", 0, _tool_call(text))
+    elif stream == "generated":
+        store.append_generated("grader__t0", 0, _generated(text))
+    else:
+        store.append_authority_call("grader__t0", 0, _responder(text))
+    report = scan_real_names(store, load_real_name_patterns(), display_names(store))
+    assert len(report.blocking) == 1 and not report.reported
+    with pytest.raises(ValueError, match=re.escape(label)):
+        promote(store.run_id, tmp_path / "runs", tmp_path / "results", exempt=[REAL[3]])
+    assert not (tmp_path / "results" / store.run_id).exists()
+
+
 # ------------------------------------------------------------------ the README links
 
 
@@ -217,4 +353,9 @@ def test_from_results_links_charts_under_results(tmp_path: Path) -> None:
             str(readme),
         ],
     )
-    assert plain.exit_code == 0 and "](rescue_confabulation.png)" in readme.read_text("utf-8")
+    assert plain.exit_code == 0
+    # without the flag the section is results.md byte for byte, its chart links as written
+    source = (store.run_dir / "analysis" / "results.md").read_text(encoding="utf-8").strip()
+    assert "](rescue_confabulation.png)" in source
+    section = readme.read_text("utf-8").split(START_MARKER + "\n", 1)[1]
+    assert section.split("\n" + END_MARKER, 1)[0] == source

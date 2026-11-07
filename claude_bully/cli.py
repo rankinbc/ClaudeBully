@@ -15,7 +15,6 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from claude_bully.analysis.promote import display_names, load_real_name_patterns, scan_real_names
 from claude_bully.analysis.promote import promote as promote_run
 from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.report import update_readme
@@ -240,8 +239,13 @@ def readme_results(
         text = results_md.read_text(encoding="utf-8").strip()
         if from_results:
             # the committed images, linked from the README's own directory (C17, I46)
-            analysis = root / run_id / "analysis"
-            rel = Path(os.path.relpath(analysis, readme.resolve().parent)).as_posix()
+            analysis = (root / run_id / "analysis").resolve()
+            try:
+                rel = Path(os.path.relpath(analysis, readme.resolve().parent)).as_posix()
+            except ValueError:  # Windows: no relative path between two drives
+                raise typer.BadParameter(
+                    f"{analysis} and {readme} are on different drives; no relative chart link"
+                ) from None
             text = _link_charts(text, rel)
         parts.append(text)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
@@ -269,13 +273,16 @@ def promote(
     ] = None,
 ) -> None:
     """Copy a finished run into results/ (committed), after a denylist and real-name scan."""
-    names = set(exempt or [])
-    # promote_run first: it names a missing run and refuses a blocking hit before any report
-    dest = promote_run(run_id, runs_root, results_root, force=force, exempt=names)
-    store = RunStore(runs_root, run_id)
-    report = scan_real_names(store, load_real_name_patterns(), display_names(store) | names)
-    for hit in report.reported:
-        console.print(f"[yellow]reported[/] (target text, not blocked): {escape(hit)}")
+    dest = promote_run(
+        run_id,
+        runs_root,
+        results_root,
+        force=force,
+        exempt=exempt or (),
+        on_reported=lambda hit: console.print(
+            f"[yellow]reported[/] (target text, not blocked): {escape(hit)}"
+        ),
+    )
     console.print(f"promoted to {dest}")
 
 

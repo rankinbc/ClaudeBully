@@ -7,13 +7,15 @@ them is the point of results/, so nothing denylisted may slip through.
 
 Real names (non-negotiable 2): a hit in bully-side or task text, a tool result, a generated
 document or a responder reply blocks; a hit in the target's own text is reported by the CLI and
-kept, with the targets' ``display_name`` and any ``exempt`` name spared. README excerpts black
-the rest out (Phase 9).
+kept. The targets' ``display_name`` is spared in every text, an ``exempt`` name in the target's
+own text only, and only where the match is that name itself. README excerpts black the rest out
+(Phase 9).
 """
 
 import re
 import shutil
-from collections.abc import Collection
+from collections import Counter
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -73,31 +75,39 @@ def display_names(store: RunStore) -> set[str]:
     return {str(t.get("display_name", "")) for t in targets if t.get("display_name")}
 
 
-def _spared(text: str, names: Collection[str]) -> str:
-    for name in names:
-        if name.strip():
-            text = re.sub(rf"(?<!\w){re.escape(name.strip())}(?!\w)", "", text, flags=re.IGNORECASE)
-    return text
-
-
 def _hits(text: str, patterns: list[re.Pattern[str]], names: Collection[str]) -> list[str]:
-    spared = _spared(text, names)
-    return [p.pattern for p in patterns if p.search(spared)]
+    """The patterns with a match in ``text`` that is not itself one of ``names`` (compared
+    case-insensitively). The text is scanned whole, so a versioned name whose bare family is
+    exempt (the family word followed by a version) is still a hit."""
+    spared = {n.strip().casefold() for n in names if n.strip()}
+    return [
+        p.pattern
+        for p in patterns
+        if any(m.group(0).strip().casefold() not in spared for m in p.finditer(text))
+    ]
 
 
 def scan_real_names(
-    store: RunStore, patterns: list[re.Pattern[str]], exempt: Collection[str]
+    store: RunStore,
+    patterns: list[re.Pattern[str]],
+    exempt: Collection[str],
+    *,
+    target_exempt: Collection[str] = (),
 ) -> RealNameReport:
+    """Every hit of ``patterns`` in the run. ``exempt`` (the targets' display names) is spared in
+    every text; ``target_exempt`` (``promote --exempt``, the maker's name, say) in the target's
+    own turns only, so a harness-side or world-side text naming it still blocks (spec section
+    10)."""
     report = RealNameReport([], [])
+    in_target = [*exempt, *target_exempt]
     for cell_id in store.list_cells():
         for rep in store.list_reps(cell_id):
             where = f"{cell_id} rep{rep}"
             for turn in store.read_turns(cell_id, rep):
-                for hit in _hits(chat_text(turn), patterns, exempt):
+                is_target = turn.speaker is Speaker.target
+                for hit in _hits(chat_text(turn), patterns, in_target if is_target else exempt):
                     line = f"{where} turn {turn.index} ({turn.speaker.value}): {hit}"
-                    (report.reported if turn.speaker is Speaker.target else report.blocking).append(
-                        line
-                    )
+                    (report.reported if is_target else report.blocking).append(line)
             for call in store.read_tool_calls(cell_id, rep):
                 report.blocking += [
                     f"{where} tool result {call.id}: {h}"
@@ -116,6 +126,29 @@ def scan_real_names(
     return report
 
 
+# what a blocking line names after its ``<cell> rep<k>`` prefix: a turn (with its speaker) or
+# one of the world-side streams
+_BLOCKING_SOURCE: Final = re.compile(
+    r"^\S+ rep\d+ (?:turn \d+ \((\w+)\)|(tool result|generated|responder))"
+)
+_STREAM_LABELS: Final = {
+    "tool result": "tool results",
+    "generated": "generated documents",
+    "responder": "responder replies",
+}
+
+
+def _blocking_summary(lines: list[str]) -> str:
+    """``N hits (2 in bully turns, 1 in tool results)``: the total and where they are."""
+    counts: Counter[str] = Counter()
+    for line in lines:
+        m = _BLOCKING_SOURCE.match(line)
+        assert m is not None, line  # every line is built by scan_real_names
+        counts[f"{m.group(1)} turns" if m.group(1) else _STREAM_LABELS[m.group(2)]] += 1
+    where = ", ".join(f"{n} in {source}" for source, n in sorted(counts.items()))
+    return f"{len(lines)} hit{'s' if len(lines) != 1 else ''} ({where})"
+
+
 def promote(
     run_id: str,
     runs_root: Path,
@@ -123,7 +156,11 @@ def promote(
     *,
     force: bool = False,
     exempt: Collection[str] = (),
+    on_reported: Callable[[str], None] | None = None,
 ) -> Path:
+    """Copy the run into ``results_root``. ``exempt`` names are spared in the target's own text
+    only (the targets' display names everywhere); a blocking hit raises ``ValueError`` before
+    anything is copied. ``on_reported`` is told each reported target-side hit after the copy."""
     store = RunStore(runs_root, run_id)
     if not store.exists():
         raise FileNotFoundError(f"no run named {run_id!r} under {runs_root}")
@@ -131,12 +168,13 @@ def promote(
     if dest.exists() and not force:
         raise FileExistsError(f"{dest} already exists; pass force=True to replace it")
     scan_run(store, load_denylist_patterns())
-    names = display_names(store) | set(exempt)
-    report = scan_real_names(store, load_real_name_patterns(), names)
+    report = scan_real_names(
+        store, load_real_name_patterns(), display_names(store), target_exempt=exempt
+    )
     if report.blocking:
         raise ValueError(
             "harness-side text names a real name; refusing to promote: "
-            + "; ".join(report.blocking[:5])
+            f"{_blocking_summary(report.blocking)}; first: " + "; ".join(report.blocking[:5])
         )
     if dest.exists():
         shutil.rmtree(dest)
@@ -155,4 +193,7 @@ def promote(
         src_dir = store.run_dir / name
         if src_dir.is_dir():
             shutil.copytree(src_dir, dest / name)
+    if on_reported is not None:
+        for hit in report.reported:
+            on_reported(hit)
     return dest

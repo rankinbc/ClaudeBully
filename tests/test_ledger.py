@@ -43,6 +43,7 @@ from claude_bully.providers.stub import StubProvider, load_stub_script
 from claude_bully.records import is_pause_marker
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
+from claude_bully.runner.wait import wait_on_rate_limit
 from tests.helpers import WORLDS_DIR, annex_experiment, env_experiment
 from tests.test_triggers import AMBIGUOUS
 
@@ -298,37 +299,43 @@ def test_analysis_notes_cached_judgements_on_the_second_pass(tmp_path: Path) -> 
     assert len(second) == len(first) and all(ln.status == "cached" for ln in second)
 
 
+class _LimitedTargetFactory:
+    """Builds every role as usual, but the target's second call is rate-limited (once, over
+    every provider this factory builds)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(
+        self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
+    ) -> ChatProvider:
+        if role.model != "stub-target":
+            return build_provider(role, state_dir, with_mcp=with_mcp)
+        # the bare stub, so the double's wrapper is the only one that writes its lines
+        inner = StubProvider(
+            responder=load_stub_script(Path(role.stub_script or "")), model=role.model
+        )
+        outer = self
+
+        class Dying:
+            name = "stub"
+            model = "stub-target"
+
+            def complete(self, *a: Any, **k: Any) -> Completion:
+                outer.calls += 1
+                if outer.calls == 2:
+                    raise RateLimitError("usage limit", retry_after_s=5)
+                return inner.complete(*a, **k)
+
+        return wrap(Dying())  # type: ignore[arg-type]
+
+
 def test_a_paused_run_records_the_pause(tmp_path: Path) -> None:
-    class Factory:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def __call__(
-            self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
-        ) -> ChatProvider:
-            if role.model != "stub-target":
-                return build_provider(role, state_dir, with_mcp=with_mcp)
-            # the bare stub, so the double's wrapper is the only one that writes its lines
-            inner = StubProvider(
-                responder=load_stub_script(Path(role.stub_script or "")), model=role.model
-            )
-            outer = self
-
-            class Dying:
-                name = "stub"
-                model = "stub-target"
-
-                def complete(self, *a: Any, **k: Any) -> Completion:
-                    outer.calls += 1
-                    if outer.calls == 2:
-                        raise RateLimitError("usage limit", retry_after_s=5)
-                    return inner.complete(*a, **k)
-
-            return wrap(Dying())  # type: ignore[arg-type]
-
     exp = env_experiment()
     with pytest.raises(RateLimitExit):
-        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, provider_factory=Factory())
+        run_experiment(
+            exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, provider_factory=_LimitedTargetFactory()
+        )
     run_dir = tmp_path / exp.name
     lines = _lines(run_dir)
     # the paused call is one rate_limit line on the target; every other call was made
@@ -338,6 +345,34 @@ def test_a_paused_run_records_the_pause(tmp_path: Path) -> None:
     store = RunStore(tmp_path, exp.name)
     [cell_id] = store.list_cells()
     assert any(is_pause_marker(t) for t in store.read_turns(cell_id, 0))
+
+
+def test_a_waited_run_resumes_in_process_with_one_pause(tmp_path: Path) -> None:
+    # --wait-on-rate-limit's helper over the real runner: the pause is written once, the
+    # re-run resumes from it in the same process and the run completes (Phase 7 section 9)
+    exp = env_experiment()
+    factory = _LimitedTargetFactory()
+    slept: list[float] = []
+    summary = wait_on_rate_limit(
+        lambda: run_experiment(
+            exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, provider_factory=factory
+        ),
+        5,
+        sleep=slept.append,
+        say=lambda s: None,
+    )
+    assert slept == [5] and summary.cells_completed == summary.cells_total
+    lines = _lines(tmp_path / exp.name)
+    assert [ln.status for ln in lines].count("rate_limit") == 1
+    store = RunStore(tmp_path, exp.name)
+    markers = [
+        t
+        for cell_id in store.list_cells()
+        for rep in store.list_reps(cell_id)
+        for t in store.read_turns(cell_id, rep)
+        if is_pause_marker(t)
+    ]
+    assert len(markers) == 1
 
 
 def test_the_servers_responder_lines_are_folded_in_once(
