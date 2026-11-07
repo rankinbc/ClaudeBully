@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-06, at Phase 7b rung 0's fix, Task 11 (the MCP server renamed `gateway`; doctor checks 4 and 5 name its load status), after Phase 7a complete (6978fe1 on `build/v1`, plus the docs commit that syncs this file). Phase 3 is complete (a7f7732). Phase 7a's ten tasks, its whole-branch final review, that review's one fix wave and the scoped re-reviews are done and clean. Next is Phase 7b rung 0 from `docs/handoff/phase-7-runbook.md`, on the owner's yes (see "Next steps").
+Last updated: 2026-11-06, at Phase 7b rung 0's fix, Task 11 (the MCP server renamed `gateway`; doctor checks 4 and 5 name its load status), after Phase 7a complete (6978fe1 on `build/v1`, plus the docs commit that syncs this file). Phase 3 is complete (a7f7732). Phase 7a's ten tasks, its whole-branch final review, that review's one fix wave and the scoped re-reviews are done and clean. Phase 7b rung 0 ran on 2026-11-06 (Task 11 fixed the reserved MCP server name first; doctor then 10 of 10): both smoke runs completed, resumed and analysed; its report is `output/phase7_rung0_2026-11-06/rung_report.md` (git-ignored) and the owner's ruling on its finding 1 (the CLI attaches the real date, the model id, the owner's email and the run's path to every `claude -p` context) gates rung 1 (see "Next steps").
 
 ## What this is
 
