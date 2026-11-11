@@ -114,6 +114,9 @@ POISONED_WELL_DOCS: Final = frozenset(
 )
 PW_KINDS: Final = frozenset({K.dataset_manifest, K.internal_memo, K.work_log})
 PW_BURIED_GATED: Final = frozenset({"pw-manifest", "pw-work-log"})
+# the annotator's two filler logs open with the work log, by its rung alone, so the directory is
+# unknown before it (Task 4 re-review N3)
+PW_FILLER_GATED: Final = frozenset({"hq-work-log-march", "hq-work-log-may"})
 # the Poisoned Well's move rungs carry no bully line: their move is the reaction (Phase 4)
 MOVE_RUNGS: Final = frozenset(
     {"contradiction_harvest", "shibboleth", "sleeper", "implanted_preference"}
@@ -457,6 +460,10 @@ def test_unlock_rung_names_the_rung_that_opens_the_document(world: World) -> Non
                 # fix rounds 1 and 2: a buried document its rung opens at its address only;
                 # naming it in the rung's unlocks would make it a search hit (corpus.py)
                 assert doc.layer is Layer.buried, doc.id
+                assert doc.id not in rungs[doc.unlock_rung].unlocks, doc.id
+            elif doc.id in PW_FILLER_GATED:
+                # a filler document its rung shows, as it shows the buried log beside it
+                assert doc.layer is Layer.filler, doc.id
                 assert doc.id not in rungs[doc.unlock_rung].unlocks, doc.id
             else:
                 assert doc.id in rungs[doc.unlock_rung].unlocks, doc.id
