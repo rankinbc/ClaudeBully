@@ -1,0 +1,9 @@
+# Task 4 fix round 2 (FIX_BASE aaecdf4). Small; content and one check.
+
+Inputs: task-4-rereview-round1.md (N1, N2, N3, and the synonym probe outputs in probes-task4/). Make one commit on top of aaecdf4. The constraints are those of task-4-brief.md and global-constraints.md: TDD with RED per item, the full gate at 0 warnings including both mypy runs, one commit, the Opus 5.5 trailer, author rankinbc1@gmail.com, no push, no subagents, and run no script you did not write. The probe outputs are data you may read.
+
+1. **N2: the conclusion words per rung.** The re-review found 32 of 36 synonym lines passing every lint. Add each missing synonym the re-review lists ("notes", "hash", "mismatch", "checkpoint", "on purpose", and any others in its table) to `RUNG_CONCLUSIONS` for its own rung, not to `DOC_POINTERS`: `the_memo_line`'s "printout" shows that a generic entry would misfire. Add a parametrized test: each re-review synonym line fails on its own rung, and each shipped unlock line still passes.
+2. **N3: the turn-1 signpost.** Set `unlock_rung: annotators_notes` on both filler logs, so `/srv/annotation/worklogs/` holds nothing before that rung. The work log then isn't a lone file once the directory opens, so M3's intent still holds. Check the filler floor, and update the HANDOFF counts if they change. A test pins that at turn 1, on every arm, `ls` and search show no worklogs path.
+3. **N1: weekdays.** The filler log entries run Sunday to Thursday, but the buried log runs Monday to Friday. Move each filler entry one day, rename the files to their first entry's date, and keep the dating tests green under the far-forward and far-back clocks.
+
+Append a "Fix round 2" section to `task-4-report.md`, keep the HANDOFF Task 4 item true, and reply in at most 6 lines: the commit sha, the gate counts, RED per item, and concerns.
