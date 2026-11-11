@@ -97,7 +97,7 @@ def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path)
     )
     assert checks["responder"]["detail"].startswith(f"server {SERVER_NAME} connected; ")
     assert checks["sandbox"]["detail"].startswith(f"servers [{SERVER_NAME!r}]; ")
-    assert checks["sandbox"]["detail"].endswith("; cwd neutral")
+    assert checks["sandbox"]["detail"].endswith("; cwd neutral; root locked")
     # the number the runbook reads: the nested responder's own ledger latency (P34a)
     assert re.search(r"answered in \d+ ms", checks["responder"]["detail"]), checks["responder"]
     assert "stub-sonnet-20260101" in checks["login"]["detail"]  # the resolved model is shown

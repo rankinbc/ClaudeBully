@@ -386,8 +386,11 @@ def _check_sandbox(provider: ClaudeCodeProvider | None) -> tuple[bool, str]:
     # the working directory the CLI shows the target (rung 0 finding 1, Task 12)
     problems = provider.cwd_problems()
     cwd = f"cwd NOT neutral: {'; '.join(problems)}" if problems else "cwd neutral"
-    ok = servers == [SERVER_NAME] and flags and not problems
-    return ok, f"servers {servers}; isolation flags {'present' if flags else 'MISSING'}; {cwd}"
+    # and whether the root it sits under is this user's alone (fix round 2: ACL-locked on Windows)
+    root_ok, root = provider.root_state()
+    ok = servers == [SERVER_NAME] and flags and not problems and root_ok
+    flagged = "present" if flags else "MISSING"
+    return ok, f"servers {servers}; isolation flags {flagged}; {cwd}; {root}"
 
 
 def run_live_checks(

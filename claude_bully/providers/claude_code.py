@@ -32,6 +32,7 @@ that keeps the OAuth login drops them, so analysis states the date (``temporal.j
 ``promote`` blocks an email address.
 """
 
+import functools
 import getpass
 import hashlib
 import json
@@ -61,7 +62,7 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.records import Usage
-from claude_bully.runner.sandbox import UnsafeSandboxError, prepare_sandbox
+from claude_bully.runner.sandbox import UnsafeSandboxError, prepare_sandbox, verify_private_dir
 
 # a usage or rate limit, in every wording one has been reported in (final review I1: "hit your
 # limit" and "limit reached" carry neither "usage limit" nor "rate limit"); the new alternatives
@@ -168,11 +169,298 @@ def _user_names() -> tuple[str, str]:
     return login.casefold(), home.casefold()
 
 
+def inspect_project_files(path: Path) -> tuple[list[Path], list[Path]]:
+    """(found, uninspectable): every ``PROJECT_FILES`` entry in ``path`` or one of its ancestors,
+    nearest first, and every such path that could not be checked. Each name is checked with
+    ``os.lstat``, as ``os.path.lexists`` does, so a link counts whether or not its target exists;
+    unlike ``lexists``, an error other than "not there" is not read as absent: the path goes in
+    the second list, so the check fails closed (fix round 2)."""
+    found: list[Path] = []
+    uninspectable: list[Path] = []
+    for directory in (path, *path.parents):
+        for name in PROJECT_FILES:
+            candidate = directory / name
+            try:
+                os.lstat(candidate)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                uninspectable.append(candidate)
+                continue
+            found.append(candidate)
+    return found, uninspectable
+
+
 def planted_project_files(path: Path) -> list[Path]:
     """Every ``PROJECT_FILES`` entry in ``path`` or one of its ancestors, nearest first."""
-    return [
-        d / name for d in (path, *path.parents) for name in PROJECT_FILES if (d / name).exists()
+    return inspect_project_files(path)[0]
+
+
+# --- the Windows root's ACL (fix round 2) -----------------------------------------------------
+# The shared default root (%PUBLIC%\w) would inherit Public's ACL, which grants every interactive
+# user Modify; the root is therefore created with an explicit ACL, inheritance removed, full control
+# for the current user, SYSTEM and Administrators only, and an existing root is used only when this
+# user owns it and no other principal may write to it. POSIX keeps prepare_sandbox's checks.
+SYSTEM_SID: Final = "S-1-5-18"
+ADMINISTRATORS_SID: Final = "S-1-5-32-544"
+_CREATOR_OWNER_SID: Final = "S-1-3-0"
+# the access bits that let a principal add, change or remove what is in the root, or its ACL
+_WRITE_BITS: Final = (
+    0x2  # FILE_ADD_FILE
+    | 0x4  # FILE_ADD_SUBDIRECTORY
+    | 0x10  # FILE_WRITE_EA
+    | 0x40  # FILE_DELETE_CHILD
+    | 0x100  # FILE_WRITE_ATTRIBUTES
+    | 0x10000  # DELETE
+    | 0x40000  # WRITE_DAC
+    | 0x80000  # WRITE_OWNER
+    | 0x10000000  # GENERIC_ALL
+    | 0x40000000  # GENERIC_WRITE
+)
+
+
+def _system32(program: str) -> str:
+    """A Windows tool by its full path, so no same-named program earlier on PATH runs instead."""
+    return str(Path(os.environ.get("SystemRoot") or "C:/Windows") / "System32" / program)
+
+
+class WindowsAcl:
+    """The three Windows calls the root's lock needs, behind one seam (``WIN_ACL``), so a test can
+    script each branch: the current user's SID, the lock, and the root's owner and writers. Every
+    principal is a SID, never a name."""
+
+    def current_sid(self) -> str:
+        """This process's user SID, read from its token (the Win32 API: no subprocess, no
+        name), once per process."""
+        return _process_user_sid()
+
+    def lock(self, path: Path, sid: str) -> tuple[int, str]:
+        """``icacls``: inheritance removed; full control, inherited by files and folders, for
+        ``sid``, SYSTEM and Administrators. (exit code, what it said on failure)."""
+        grants: list[str] = []
+        for principal in (sid, SYSTEM_SID, ADMINISTRATORS_SID):
+            grants += ["/grant:r", f"*{principal}:(OI)(CI)F"]
+        out = subprocess.run(
+            [_system32("icacls.exe"), str(path), "/inheritance:r", *grants],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return out.returncode, (out.stderr or out.stdout).strip()[:200]
+
+    def owner_and_writers(self, path: Path) -> tuple[str, list[str]]:
+        """The owner's SID and the SID of every allowed ACE that grants a write bit, inherit-only
+        ACEs included (they reach what is made inside). A null DACL is everyone (``S-1-1-0``); an
+        allowed ACE this reader does not parse is reported as ``unparsed``."""
+        return _read_owner_and_writers(path)
+
+
+@functools.cache
+def _win32() -> tuple[Any, Any]:
+    """advapi32 and kernel32 with every function this module calls typed, so a 64-bit pointer or
+    handle is never squeezed into a C int. Windows only: the seam's Windows instance calls it."""
+    if sys.platform != "win32":
+        raise ProviderError("the Windows ACL calls run on Windows only")
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.POINTER(ctypes.c_void_p)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    advapi.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
     ]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        pointer,
+        pointer,
+        pointer,
+        pointer,
+        pointer,
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, pointer]
+    advapi.GetAce.restype = wintypes.BOOL
+    return advapi, kernel
+
+
+def _sid_text(sid: int | None) -> str:
+    """A SID's ``S-1-...`` form; ``unparsed`` when it cannot be converted."""
+    import ctypes
+
+    advapi, kernel = _win32()
+    text = ctypes.c_void_p()
+    if not sid or not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)) or not text.value:
+        return "unparsed"
+    value = ctypes.wstring_at(text.value)
+    kernel.LocalFree(text)
+    return value
+
+
+@functools.cache
+def _process_user_sid() -> str:
+    """This process's user SID, from its token's ``TokenUser``."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi, kernel = _win32()
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x8, ctypes.byref(token)):
+        raise ProviderError(f"cannot open this process's token (error {ctypes.get_last_error()})")
+    try:
+        size = wintypes.DWORD()
+        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # 1: TokenUser
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+            raise ProviderError(f"cannot read this user's SID (error {ctypes.get_last_error()})")
+        value = _sid_text(ctypes.c_void_p.from_buffer(buffer).value)  # TOKEN_USER.User.Sid
+        if value == "unparsed":
+            raise ProviderError("cannot convert this user's SID")
+        return value
+    finally:
+        kernel.CloseHandle(token)
+
+
+def _read_owner_and_writers(path: Path) -> tuple[str, list[str]]:
+    import ctypes
+
+    class _AclHeader(ctypes.Structure):
+        _fields_ = [
+            ("revision", ctypes.c_ubyte),
+            ("sbz1", ctypes.c_ubyte),
+            ("size", ctypes.c_ushort),
+            ("count", ctypes.c_ushort),
+            ("sbz2", ctypes.c_ushort),
+        ]
+
+    class _Ace(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.c_ubyte),
+            ("flags", ctypes.c_ubyte),
+            ("size", ctypes.c_ushort),
+            ("mask", ctypes.c_uint32),
+        ]
+
+    advapi, kernel = _win32()
+    owner = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    owner_and_dacl = 0x1 | 0x4  # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+    error = advapi.GetNamedSecurityInfoW(
+        str(path),
+        1,  # SE_FILE_OBJECT
+        owner_and_dacl,
+        ctypes.byref(owner),
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if error:
+        raise ProviderError(f"cannot read the ACL of the child root (error {error})")
+    try:
+        owner_sid = _sid_text(owner.value)
+        if not dacl.value:  # a null DACL lets everyone do everything
+            return owner_sid, ["S-1-1-0"]
+        writers: list[str] = []
+        header = _AclHeader.from_address(dacl.value)
+        for index in range(header.count):
+            ace = ctypes.c_void_p()
+            if not advapi.GetAce(dacl, index, ctypes.byref(ace)) or not ace.value:
+                writers.append("unparsed")
+                continue
+            entry = _Ace.from_address(ace.value)
+            if entry.type in (1, 6, 10, 12):  # a deny ACE only takes rights away
+                continue
+            if entry.type not in (0, 9):  # an allowed ACE whose layout is not read here
+                writers.append("unparsed")
+                continue
+            if entry.mask & _WRITE_BITS:  # the SID starts right after the mask
+                writers.append(_sid_text(ace.value + ctypes.sizeof(_Ace)))
+        return owner_sid, writers
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+WIN_ACL: WindowsAcl = WindowsAcl()
+
+
+def _root_acl_problems(root: Path, acl: WindowsAcl) -> list[str]:
+    """Why ``root`` is not private on Windows: an owner other than this user, or a principal
+    other than this user, SYSTEM, Administrators (or CREATOR OWNER, which is the creator) that may
+    write to it. [] when it is private."""
+    me = acl.current_sid()
+    owner, writers = acl.owner_and_writers(root)
+    allowed = {me, SYSTEM_SID, ADMINISTRATORS_SID, _CREATOR_OWNER_SID}
+    problems = [] if owner == me else [f"owned by {owner}, not this user"]
+    foreign = sorted({sid for sid in writers if sid not in allowed})
+    problems += [f"writable by {sid}" for sid in foreign]
+    return problems
+
+
+def secure_windows_root(root: Path, acl: WindowsAcl) -> str:
+    """Make, or check, the Windows child root: a root this call creates is locked (``acl.lock``,
+    a failure is a refusal) and read back; one that already exists is used only when it is a real
+    directory this user owns and no other principal may write to. Returns ``locked`` or ``ours``;
+    raises ``ProviderError`` naming the root and the reason otherwise."""
+    shown = _redacted(root)
+    try:
+        os.mkdir(root)
+        created = True
+    except FileExistsError:
+        created = False
+    except OSError as exc:
+        raise ProviderError(f"cannot create the child root {shown}: {exc.strerror}") from exc
+    try:
+        verify_private_dir(root)  # a link or a junction is never used
+    except UnsafeSandboxError as exc:
+        raise ProviderError(f"the child root {shown} is not private: {exc}") from exc
+    if created:
+        code, said = acl.lock(root, acl.current_sid())
+        if code != 0:
+            raise ProviderError(
+                f"the child root {shown} is not private: icacls failed (exit {code}): {said}"
+            )
+    problems = _root_acl_problems(root, acl)
+    if problems:
+        raise ProviderError(f"the child root {shown} is not private: {'; '.join(problems)}")
+    return "locked" if created else "ours"
+
+
+def root_state(root: Path) -> tuple[bool, str]:
+    """Doctor check 9's root words: ``root locked`` when the root exists and is private (on
+    Windows, ``_root_acl_problems``; on POSIX, ``verify_private_dir``: this user's, mode 0o700, no
+    link), else ``root NOT private: <reason>``. Creates nothing."""
+    try:
+        if not root.is_dir():
+            return False, "root NOT private: it does not exist yet"
+        verify_private_dir(root)
+        problems = _root_acl_problems(root, WIN_ACL) if sys.platform == "win32" else []
+    except (UnsafeSandboxError, ProviderError, OSError) as exc:
+        problems = [str(exc)]
+    if problems:
+        return False, f"root NOT private: {'; '.join(problems)}"
+    return True, "root locked"
 
 
 def _redacted(path: Path) -> str:
@@ -293,15 +581,28 @@ class ClaudeCodeProvider:
         named by path; [] when it is neutral (``complete`` refuses otherwise; doctor check 9
         reports it)."""
         cwd = self._cwd.resolve()
-        return neutral_cwd_problems(cwd, run_ids=self.run_ids) + [
-            f"{_redacted(found)} is a Claude Code project file the CLI may read"
-            for found in planted_project_files(cwd)
-        ]
+        found, uninspectable = inspect_project_files(cwd)
+        return (
+            neutral_cwd_problems(cwd, run_ids=self.run_ids)
+            + [
+                f"{_redacted(path)} is a Claude Code project file the CLI may read"
+                for path in found
+            ]
+            + [f"cannot inspect {_redacted(path)} for a project file" for path in uninspectable]
+        )
+
+    def root_state(self) -> tuple[bool, str]:
+        """``root_state`` of this provider's child root (doctor check 9)."""
+        return root_state(self._cwd.resolve().parent)
 
     def child_env(self, *, serving_tools: bool) -> dict[str, str]:
         """The environment a child ``claude -p`` runs in: ``clean_child_env()`` plus
-        ``MCP_TOOL_TIMEOUT`` when the call serves tools."""
+        ``MCP_TOOL_TIMEOUT`` when the call serves tools. A ``CLAUDE_BULLY_CHILD_ROOT`` that is
+        set reaches the child resolved (``child_cwd_root()``), so a nested responder, whose
+        process cwd is the target's, works under the same root and not under a relative one."""
         env = clean_child_env()
+        if os.environ.get(CHILD_ROOT_ENV):
+            env[CHILD_ROOT_ENV] = str(child_cwd_root())
         if serving_tools:
             env[MCP_TOOL_TIMEOUT_ENV] = str(int(self.mcp_tool_timeout_s * 1000))
         return env
@@ -570,7 +871,10 @@ class ClaudeCodeProvider:
         # the default root is shared (/tmp/w, %PUBLIC%/w): the root and the directory are made
         # 0o700 and reused only when each is a real directory (never a link or a junction) and,
         # on POSIX, this user's alone, as the environment sandbox is (runner/sandbox.py)
-        self._cwd.parent.parent.mkdir(parents=True, exist_ok=True)
+        root = self._cwd.parent
+        root.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":  # created locked, or checked: ours, and only ours to write
+            secure_windows_root(root, WIN_ACL)
         try:
             prepare_sandbox(self._cwd, fresh=False)
         except UnsafeSandboxError as exc:  # a provider failure like any other (M3)

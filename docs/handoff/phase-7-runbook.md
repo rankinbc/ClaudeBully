@@ -234,6 +234,8 @@ reserved domain, in the chat streams and in every file it would copy (reasoning,
 captures, the judge cache, the analysis outputs; a hit is named by file and line, never the
 address), and `temporal.json` says, per model, `backend_attaches_date`.
 
+The root itself (fix round 2). On Windows the root is created with an explicit ACL: inheritance removed, full control for this user, SYSTEM and Administrators only (by SID, through `icacls`); a root that already exists is used only when this user owns it and no other principal may write to it, so a `%PUBLIC%\w` made by anyone else, or by an earlier build before the lock, is refused (`ProviderError` naming it and why; remove it, or point `CLAUDE_BULLY_CHILD_ROOT` elsewhere). On POSIX the root is this user's at mode 0o700, as the environment sandbox is. Check 9 ends `root locked` or `root NOT private: <reason>`. A project file planted after the check and before the child starts is a window the build accepts: every child runs with `--setting-sources ""`, and the root is the user's alone to write.
+
 Resuming and the child root. The CLI files a session under its working directory, and the
 working directory is a digest of the state dir under the root, so a paused run resumes only under
 the same `CLAUDE_BULLY_CHILD_ROOT` value it ran under (unset then, unset now): a different root

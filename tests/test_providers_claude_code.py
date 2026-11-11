@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,13 +29,17 @@ from claude_bully.providers.base import (
     build_provider,
 )
 from claude_bully.providers.claude_code import (
+    ADMINISTRATORS_SID,
     CHILD_ROOT_ENV,
     CLAUDE_ENV,
+    SYSTEM_SID,
+    WIN_ACL,
     ClaudeCodeProvider,
     child_cwd,
     child_cwd_root,
     neutral_cwd_problems,
     resolve_claude_command,
+    secure_windows_root,
 )
 from tests.conftest import HOME_ENV, REAL_USER_NAMES
 from tests.helpers import make_mcp_state
@@ -352,6 +357,141 @@ def test_an_unsafe_directory_is_a_provider_error(
     with pytest.raises(ProviderError, match="not a directory"):
         p.complete("c", "SYS", [Message(role="user", content="hi")])
     assert not log.exists()
+
+
+def test_a_dangling_symlink_counts_as_planted(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2: a link named ``CLAUDE.md`` is planted whether or not its target exists."""
+    command, log = fake_claude
+    root = Path(os.environ[CHILD_ROOT_ENV]) / "p_dangling"
+    monkeypatch.setenv(CHILD_ROOT_ENV, str(root))
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "s", command=command)
+    p.cwd.mkdir(parents=True)
+    try:
+        os.symlink(p.cwd / "absent.md", p.cwd / "CLAUDE.md")
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"cannot make a symlink here: {exc}")
+    assert any("CLAUDE.md" in problem for problem in p.cwd_problems())
+    with pytest.raises(ProviderError, match="CLAUDE.md"):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()
+
+
+def test_an_ancestor_that_cannot_be_inspected_is_refused(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2: a project-file check that cannot stat a path fails closed, naming it."""
+    command, log = fake_claude
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "s", command=command)
+    locked = p.cwd.resolve().parent / ".mcp.json"
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def refusing(real: Any) -> Any:
+        def call(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if Path(path) == locked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(os, "lstat", refusing(real_lstat))
+    monkeypatch.setattr(os, "stat", refusing(real_stat))
+    problems = p.cwd_problems()
+    assert any("cannot inspect" in line and str(locked) in line for line in problems), problems
+    with pytest.raises(ProviderError, match="cannot inspect"):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()
+
+
+def test_a_relative_root_reaches_the_child_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2: a nested responder (its cwd the target's) reads the same absolute root."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(CHILD_ROOT_ENV, "rel_root")
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "s", command=["claude"])
+    for serving in (False, True):
+        assert p.child_env(serving_tools=serving)[CHILD_ROOT_ENV] == str(
+            (tmp_path / "rel_root").resolve()
+        )
+    monkeypatch.delenv(CHILD_ROOT_ENV)
+    assert CHILD_ROOT_ENV not in p.child_env(serving_tools=False)
+
+
+class _FakeAcl:
+    """The Windows ACL seam (``claude_code.WIN_ACL``): what the root's owner and writers are,
+    and what ``lock`` did, scripted per test."""
+
+    ME = "S-1-5-21-1-2-3-1001"
+    OTHER = "S-1-5-21-1-2-3-1002"
+
+    def __init__(self, *, owner: str = ME, writers: list[str] | None = None, lock_rc: int = 0):
+        self.owner, self.writers, self.lock_rc = owner, writers or [], lock_rc
+        self.locked: list[Path] = []
+
+    def current_sid(self) -> str:
+        return self.ME
+
+    def lock(self, path: Path, sid: str) -> tuple[int, str]:
+        self.locked.append(path)
+        if self.lock_rc == 0:  # a lock leaves the three principals only
+            self.owner, self.writers = sid, [sid, SYSTEM_SID, ADMINISTRATORS_SID]
+        return self.lock_rc, "" if self.lock_rc == 0 else "Access is denied."
+
+    def owner_and_writers(self, path: Path) -> tuple[str, list[str]]:
+        return self.owner, list(self.writers)
+
+
+def test_a_new_windows_root_is_created_and_locked(tmp_path: Path) -> None:
+    acl = _FakeAcl(writers=["S-1-5-4"])  # INTERACTIVE, as Public's inheritance would give
+    root = tmp_path / "w"
+    assert secure_windows_root(root, acl) == "locked"
+    assert root.is_dir() and acl.locked == [root]
+
+
+def test_an_existing_windows_root_of_ours_is_used_as_is(tmp_path: Path) -> None:
+    root = tmp_path / "w"
+    root.mkdir()
+    acl = _FakeAcl(writers=[_FakeAcl.ME, SYSTEM_SID, ADMINISTRATORS_SID])
+    assert secure_windows_root(root, acl) == "ours"
+    assert acl.locked == []
+
+
+@pytest.mark.parametrize(
+    ("owner", "writers", "said"),
+    [
+        (_FakeAcl.OTHER, [_FakeAcl.OTHER], "owned by S-1-5-21-1-2-3-1002"),
+        (_FakeAcl.ME, [_FakeAcl.ME, "S-1-5-4"], "writable by S-1-5-4"),
+    ],
+)
+def test_a_foreign_windows_root_is_refused(
+    tmp_path: Path, owner: str, writers: list[str], said: str
+) -> None:
+    root = tmp_path / "w"
+    root.mkdir()
+    with pytest.raises(ProviderError, match=re.escape(said)) as caught:
+        secure_windows_root(root, _FakeAcl(owner=owner, writers=writers))
+    assert "not private" in str(caught.value)
+
+
+def test_a_failed_icacls_is_a_refusal(tmp_path: Path) -> None:
+    acl = _FakeAcl(lock_rc=5)
+    with pytest.raises(ProviderError, match="icacls"):
+        secure_windows_root(tmp_path / "w", acl)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows ACL lock")
+def test_the_real_lock_leaves_only_the_user_system_and_administrators(tmp_path: Path) -> None:
+    root = tmp_path / "w"
+    assert secure_windows_root(root, WIN_ACL) == "locked"
+    owner, writers = WIN_ACL.owner_and_writers(root)
+    me = WIN_ACL.current_sid()
+    assert owner == me and set(writers) == {me, SYSTEM_SID, ADMINISTRATORS_SID}
+    listing = subprocess.run(["icacls", str(root)], capture_output=True, text=True, check=True)
+    assert "(I)" not in listing.stdout  # inheritance removed
+    assert listing.stdout.count("(OI)(CI)(F)") == 3
+    assert secure_windows_root(root, WIN_ACL) == "ours"  # and it is used again as is
 
 
 def test_a_run_id_in_any_segment_is_a_problem() -> None:

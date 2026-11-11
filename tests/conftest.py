@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from claude_bully.config import ConditionConfig, Experiment, load_experiment
+from claude_bully.providers.claude_code import WIN_ACL, secure_windows_root
 from claude_bully.runner.runner import run_experiment
 from tests.helpers import WORLDS_DIR, env_experiment
 
@@ -64,7 +65,9 @@ def no_real_providers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None
     the end. The provider refuses a working directory under the user's profile (its folder name)
     or under any ``CLAUDE.md``, ``CLAUDE.local.md``, ``.claude`` or ``.mcp.json`` (Task 12, R3 and
     fix round 1), and on Windows pytest's temporary directory is under the profile, so there the
-    root is made under ``%ProgramData%`` instead; elsewhere it is pytest's own."""
+    root is ``w`` in a fresh directory under ``%ProgramData%``, made and ACL-locked by the
+    provider's own ``secure_windows_root`` (fix round 2), so every root a test makes inside it
+    inherits the lock; elsewhere it is pytest's own."""
     child_root = _session_child_root(tmp_path_factory)
     try:
         with pytest.MonkeyPatch.context() as patch:
@@ -79,16 +82,19 @@ def no_real_providers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None
             yield
     finally:
         if sys.platform == "win32":
-            shutil.rmtree(child_root, ignore_errors=True)
+            shutil.rmtree(child_root.parent, ignore_errors=True)
 
 
 def _session_child_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The suite's child root: on Windows a fresh directory under ``%ProgramData%`` (which any
-    user may create a directory in, outside every profile), elsewhere under pytest's basetemp."""
+    """The suite's child root: on Windows ``w``, created locked, in a fresh directory under
+    ``%ProgramData%`` (which any user may create a directory in, outside every profile);
+    elsewhere under pytest's basetemp."""
     if sys.platform != "win32":
         return tmp_path_factory.mktemp("child_root")
     parent = Path(os.environ.get("ProgramData") or "C:/ProgramData")
-    return Path(tempfile.mkdtemp(prefix="w-", dir=parent)).resolve()
+    root = Path(tempfile.mkdtemp(prefix="w-", dir=parent)).resolve() / "w"
+    secure_windows_root(root, WIN_ACL)
+    return root
 
 
 @pytest.fixture(scope="session")
