@@ -1,0 +1,40 @@
+# Task 12 (7b rung 0 fix): a neutral working directory for every claude -p child, email addresses in promote's scan, the attached date stated
+
+## Why
+
+Rung 0 finding 1 (`docs/handoff/output/phase7_rung0_2026-11-06/rung_report.md`, "Findings"): the real CLI (2.1.319) attaches context to every `claude -p` conversation that `--system-prompt` does not replace and no OAuth-compatible switch removes:
+
+- `# userEmail`: the owner's logged-in email address, in full.
+- `# Environment`: `Today's date is <real date>`, `Primary working directory: <cwd>`, `Is a git repository`, `Platform`, `Shell`, `OS Version`.
+- In the system prompt: the model's display name and exact model id.
+
+The working directory today is `<state_dir>/cwd` (`claude_bully/providers/claude_code.py:169`), which is under `runs/<run_id>/...` inside the repo: the target is handed a path that names the harness, the run id, the owner's Windows login (a real name, in `C:\Users\<login>\...`), and "Is a git repository: true". The 0b Rescue target quoted the real date and its model id to the bully in turn 1.
+
+## Ruling (owner, 2026-11-11)
+
+Option (a) now, as this task: neutralise what the harness can on `claude_code`; add email addresses to `promote`'s scan; state in the results and the README draft that on this backend the target knows the real date and its model id. Option (b), the clock and identity configs' targets on the `anthropic` backend, comes later, each config on a per-config cost the owner approves; it is not this task.
+
+## Rulings (controller)
+
+- R1. The neutral root is `CLAUDE_BULLY_CHILD_ROOT` when set; otherwise `Path(os.environ.get("PUBLIC") or r"C:\Users\Public") / "w"` on Windows (any interactive user may create a subdirectory there, checked with `icacls` on this machine) and `Path("/tmp") / "w"` elsewhere. The word `w` is opaque on purpose. Cost if wrong: a machine where the root is not writable fails the first call loudly; the env var is the escape.
+- R2. Each provider's working directory is `<root>/<sha256(str(state_dir.resolve()))[:12]>`: opaque, and the same for the same `state_dir` across processes, which `claude --resume` needs (the CLI files a session under its working directory's project folder, so a resumed rep must start in the same directory). Different state dirs get different directories, as today. Cost if wrong: a resume that cannot find its session, which the existing resume tests on `fake_claude.py` do not see; pin stability across two provider instances.
+- R3. `neutral_cwd_problems(path) -> list[str]` (in `claude_code.py`, pure) names each forbidden part of a working directory: any path segment, compared case-insensitively, equal to the user's login (`getpass.getuser()`) or the home folder's name, and any segment containing `claude`, `bully`, `harness`, `runs` or a run id. `ClaudeCodeProvider` refuses (a `ProviderError` before any child starts) a working directory with problems, so a `CLAUDE_BULLY_CHILD_ROOT` pointing back into the repo fails at once. Doctor check 9 (`sandbox`) appends `cwd neutral` or `cwd NOT neutral: <problems>` to its detail and fails on problems.
+- R4. Email addresses: `promote` scans every text it already scans (`scan_real_names`'s streams) for `[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`. An address whose domain ends in a reserved name (`.example`, `.test`, `.invalid`, `.localhost`, or is `example.com`, `example.net`, `example.org`; RFC 2606) is spared: the shipped worlds use `support@quillmoor.example` and the like. Any other address blocks in every stream, the target's own text included, and `--exempt` does not spare it: an address is personal data, not a name the target may say of itself. Cost if wrong: a run where the target quotes an invented non-reserved address cannot be promoted until a person looks, which is the point.
+- R5. The attached date is stated, not hidden: `temporal.json` gains a top-level `backend_attaches_date: {"<model>": true|false}` (true when that target's role backend is `claude_code`), and `results.md`'s temporal section gains one line when any value is true: `On the claude_code backend the CLI attaches the real date and the model id to the target's context; drift is measured against a date the target was told.` Additive (`SCHEMA_VERSION` stays 3; docs/00 H lists it as "version 3, additive").
+
+## Produces
+
+1. `claude_bully/providers/claude_code.py`: `CHILD_ROOT_ENV = "CLAUDE_BULLY_CHILD_ROOT"`, `child_cwd_root()`, `child_cwd(state_dir)`, `neutral_cwd_problems(path)`; `self._cwd = child_cwd(state_dir)`; the refusal in `complete` before the child starts (or at construction if that keeps every test green; say which). The docstring names the finding and the CLI's session-by-directory behavior.
+2. `tests/conftest.py`: the session-scoped autouse guard sets `CLAUDE_BULLY_CHILD_ROOT` to a session temp dir, so no test writes under `C:\Users\Public`. The two tests that assert `<state_dir>/cwd` (`tests/test_providers_claude_code.py:158`, `tests/test_runner_env.py:451`) assert the new directory; new tests pin R2 stability (two providers on one `state_dir`, the same directory; two state dirs, two), R3's problems on each forbidden kind and the refusal, and that the default root has no user-name segment on this platform (with the env var cleared via monkeypatch).
+3. `claude_bully/doctor.py`: check 9 per R3, with a test in `tests/test_doctor_live.py` for both details.
+4. `claude_bully/analysis/promote.py`: R4 as an `EMAIL` pattern, `_RESERVED_EMAIL_DOMAINS`, and the email hits joined into `RealNameReport.blocking` with lines that name the stream as today (never the address itself in the line: write `email address (<domain-redacted>)` or the pattern name, so the CLI does not print the owner's address to a log). Tests: a reserved address passes, a non-reserved one blocks in each stream, the target's text included, and `--exempt` of the address does not spare it.
+5. `claude_bully/analysis/temporal.py` and the results renderer: R5, with tests on a stub run (backend `claude_code` through `fake_claude.py`, and a plain stub backend that writes `false`).
+6. Docs-sync: `docs/handoff/phase-7-runbook.md` (rung 0b re-run: the check that the replay's target turns no longer quote a harness path; Step 0: check 9's cwd line); `HANDOFF.md` Progress gains "Phase 7b rung 0 fix, Task 12 (961ccab..<commit>)" and "Next steps" names the doctor rerun and the 0b re-run; `docs/00-RECONCILED.md` section H (the additive field); the spec's "As planned" Phase 7b block gains this task and the owner's ruling; the README draft's "Limitations" (`.superpowers/drafts/README.v2.md` and its snapshot `docs/handoff/drafts/README.v2.md`, and `README.draft.md` in both places if it has the same section) gains one paragraph: on the `claude_code` backend the CLI attaches the real date, the model id and the account's email address to every conversation; the harness runs each child from an opaque directory, blocks any non-reserved email address at promote, and reports temporal drift against a date the target was told; the clock and identity configs are to be re-run on the API backend.
+
+## Constraints
+
+The Phase 7a Global Constraints (`.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/global-constraints.md`) with one change: the trailer is `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` (this session's model). TDD (RED first, quoted in the report), the gate at 0 warnings (at 961ccab: 8414 passed, 5 skipped, 8 deselected; slow 8), one commit, author `rankinbc1@gmail.com`, never push, no subagents, no real `claude` in any test, no real names (the owner's login and email appear in no file, test or fixture: build test values from invented strings and from `getpass.getuser()` at run time), LF, no emojis. Golden plain fixtures byte-identical. Every shell first runs the uv PATH line of HANDOFF setup step 4 if `uv` is not on PATH.
+
+## Report
+
+`.superpowers/sdd/2026-11-06-phase-7a-first-real-runs/task-12-report.md`: what changed per item, R1 to R5 as built (any deviation with its reason), TDD evidence, the gate's counts, concerns.
