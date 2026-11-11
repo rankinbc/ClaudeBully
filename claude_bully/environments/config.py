@@ -158,6 +158,8 @@ class GeneratorConfig(_Strict):
     reflexive: bool = True
     min_item_age: int = Field(default=2, ge=0)
     max_docs: int = Field(default=8, ge=1)
+    # false: no periodic fire; rung and Poisoned Well fires still write (Phase 4)
+    periodic: bool = True
     seed: int | None = None
 
 

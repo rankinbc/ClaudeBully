@@ -22,8 +22,10 @@ it goes on, so the streams hold what an unbroken run's do. The world generator (
 the trigger and generated streams after a target turn is written and before it is marked watched:
 a resumed rep drops its lines of a turn never written, and every generated document and
 ``generator`` unlock that no committed ``GeneratorFire`` lists (``drop_uncommitted_generation``),
-so a fire that died before its fire line is redone whole. Of the lines that do not parse either
-drops only a torn final line; any other is an error naming the file and the line.
+so a fire that died before its fire line is redone whole. The watch's records of a turn never
+written (``quirk``, ``chain``, ``contradiction``; Phase 4) go the same way, in every environment
+session. Of the lines that do not parse either drops only a torn final line; any other is an
+error naming the file and the line.
 """
 
 import json
@@ -49,6 +51,9 @@ GENERATED_STREAM = "generated"
 _TRIGGER_RECORD: TypeAdapter[TriggerStreamRecord] = TypeAdapter(TriggerStreamRecord)
 # the trigger-stream record types the world generator writes per target turn (Phase 3)
 GENERATION_TYPES: Final = frozenset({"harvest", "generator_fire"})
+# the trigger-stream record types the watch writes after a target turn (Phase 4): the quirk
+# answer, the chain verdict and the contradiction pair, each of its own turn
+WATCH_TYPES: Final = frozenset({"quirk", "chain", "contradiction"})
 COMMITTED_STATUSES: Final = frozenset({"written", "cached"})
 
 
@@ -142,8 +147,9 @@ def drop_uncommitted_generation(
     triggers: Path, generated: Path, produced: Collection[int]
 ) -> dict[str, int]:
     """Rewrite a rep's trigger and generated streams without the world generator's lines of a
-    dead attempt (Phase 3): every ``harvest`` and ``generator_fire`` line and every ``generator``
-    unlock of a turn no written target turn has, and every generated document and ``generator``
+    dead attempt (Phase 3): every ``harvest`` and ``generator_fire`` line, every watch record
+    (``quirk``, ``chain``, ``contradiction``; Phase 4) and every ``generator`` unlock of a turn no
+    written target turn has, and every generated document and ``generator``
     unlock whose id no committed ``GeneratorFire`` (status written or cached, of a written turn)
     lists. A fire's ``GeneratorFire`` is written last, so a fire that died before it is dropped
     whole and redone. Other records are kept as ``drop_dead_attempts`` keeps them; a torn last
@@ -163,7 +169,7 @@ def drop_uncommitted_generation(
         if not isinstance(rec, dict):
             return False
         written = _turn_in(rec, produced)
-        if rec.get("type") in GENERATION_TYPES:
+        if rec.get("type") in GENERATION_TYPES | WATCH_TYPES:
             return written
         if rec.get("type") == "unlock" and rec.get("rung") == GENERATOR_RUNG:
             return written and all(d in committed for d in rec.get("docs_unlocked", []))

@@ -177,6 +177,8 @@ class GeneratedDoc(_OneAddress):
     reflexive: bool
     redactions: list[Redaction] = Field(default_factory=list)
     unlock_rung: str | None = None
+    # who wrote it: the world generator, or code around the target's twin (Phase 4)
+    origin: Literal["generator", "twin"] = "generator"
 
 
 class VoiceMatchReport(_Strict):
@@ -219,7 +221,11 @@ class IdleTurnInfo(_Strict):
     fallback_failed: bool = False
 
 
-HarvestKind = Literal["self_claim", "hedge", "fragment", "question", "theory", "coinage"]
+HarvestKind = Literal[
+    "self_claim", "hedge", "fragment", "question", "theory", "coinage", "completion", "taste"
+]
+# the harvest's own kinds: the heuristic templates and the LLM pass's schema (Phase 3); the
+# Poisoned Well's two (Phase 4) are produced only on the reply to their bully move
 HARVEST_KINDS: Final[tuple[HarvestKind, ...]] = (
     "self_claim",
     "hedge",
@@ -228,6 +234,8 @@ HARVEST_KINDS: Final[tuple[HarvestKind, ...]] = (
     "theory",
     "coinage",
 )
+PW_HARVEST_KINDS: Final[tuple[HarvestKind, ...]] = ("completion", "taste")
+ALL_HARVEST_KINDS: Final[tuple[HarvestKind, ...]] = (*HARVEST_KINDS, *PW_HARVEST_KINDS)
 
 
 class HarvestItem(_Strict):
@@ -288,20 +296,62 @@ class Crossover(_Strict):
 
 
 class QuirkAttempt(_Strict):
+    """One rung-1 quirk ask and the target's answer (docs/07; Phase 4 adds ``prompt_turn``, the
+    bully turn that asked, and ``family``, the bank family the entry was drawn for)."""
+
     type: Literal["quirk"] = "quirk"
     quirk_id: str
     turn: int
     reproduced: bool
     target_answer: str
+    prompt_turn: int | None = None
+    family: str | None = None
+
+
+ChainOpenedBy = Literal["generalization", "schedule", "start_rung"]
 
 
 class ChainLink(_Strict):
+    """One chain verdict (docs/07): link 0 is rung 1's generalization, 1 to 3 the chain. Phase 4
+    adds what decided it (``classifier``, ``confidence``; ``fallback_failed`` when the judge was
+    asked and failed, so ``hedged`` stands at 0.5), ``pressed`` (the verdict of the one re-press of
+    a hedged link) and, on link 1's first verdict, how the chain opened."""
+
     type: Literal["chain"] = "chain"
     link_index: int
     turn: int
     bully_line: str
     target_response: str
     verdict: Literal["accepted", "rejected", "hedged"]
+    classifier: Literal["heuristic", "llm"] = "heuristic"
+    confidence: float = 1.0
+    fallback_failed: bool = False
+    pressed: bool = False
+    opened_by: ChainOpenedBy | None = None
+
+
+class ContradictionPair(_Strict):
+    """Two sentences of the target's visible replies that conflict (docs/07 rung 2; Phase 4),
+    written during the run because the bully speaks the dossier during the run. ``turn`` is
+    ``turn_b``, the turn the record belongs to. ``retracted``: the later sentence names the
+    earlier as a correction; such a pair is never offered to the dossier."""
+
+    type: Literal["contradiction"] = "contradiction"
+    id: str
+    turn: int
+    turn_a: int
+    turn_b: int
+    span_a: str
+    span_b: str
+    classifier: Literal["heuristic", "llm"]
+    confidence: float
+    retracted: bool = False
+
+    @model_validator(mode="after")
+    def _belongs_to_the_later_turn(self) -> Self:
+        if not self.turn_a < self.turn_b or self.turn != self.turn_b:
+            raise ValueError("a contradiction pair needs turn_a < turn_b == turn")
+        return self
 
 
 class ResumeRecord(_Strict):
@@ -328,6 +378,7 @@ TriggerStreamRecord = Annotated[
     | Crossover
     | QuirkAttempt
     | ChainLink
+    | ContradictionPair
     | ResumeRecord
     | HarvestItem
     | GeneratorFire,

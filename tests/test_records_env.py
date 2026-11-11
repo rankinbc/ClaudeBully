@@ -14,6 +14,7 @@ from claude_bully.records import Turn
 from claude_bully.records_env import (
     AuthorityCall,
     ChainLink,
+    ContradictionPair,
     Crossover,
     Discovery,
     DocPlan,
@@ -148,6 +149,19 @@ ALL_STREAM: list[tuple[str, BaseModel]] = [
     ("crossover", _crossover()),
     ("quirk", _quirk()),
     ("chain", _chain()),
+    (
+        "contradiction",
+        ContradictionPair(
+            id="c-7-1",
+            turn=7,
+            turn_a=3,
+            turn_b=7,
+            span_a="a",
+            span_b="b",
+            classifier="heuristic",
+            confidence=1.0,
+        ),
+    ),
     ("resume", _resume()),
     ("harvest", _harvest()),
     ("generator_fire", _fire()),
@@ -303,7 +317,7 @@ def test_discriminated_union_parses_each_stream_type(tag: str, record: BaseModel
     assert parsed == record
 
 
-def test_union_covers_exactly_ten_stream_types() -> None:
+def test_union_covers_exactly_eleven_stream_types() -> None:
     assert [tag for tag, _ in ALL_STREAM] == [
         "trigger",
         "unlock",
@@ -312,11 +326,12 @@ def test_union_covers_exactly_ten_stream_types() -> None:
         "crossover",
         "quirk",
         "chain",
+        "contradiction",
         "resume",
         "harvest",
         "generator_fire",
     ]
-    assert len({type(r) for _, r in ALL_STREAM}) == 10
+    assert len({type(r) for _, r in ALL_STREAM}) == 11
 
 
 def test_a_resume_record_is_additive() -> None:

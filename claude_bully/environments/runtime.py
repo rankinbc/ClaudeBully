@@ -220,10 +220,12 @@ _RAN_NOTHING: Final = frozenset({"error", LIMIT_STATUS})
 # The provider call a rep is about to make (Phase 2 final review I4). Before each one the runtime
 # names it in ``<state_dir>/attempt.json``; a resumed rep whose newest marker names a turn that
 # was never written redid a dead attempt, whether or not that attempt left a per-call line.
-AttemptRole = Literal["target", "bully", "harvest", "generator"]
+AttemptRole = Literal["target", "bully", "harvest", "generator", "chain", "contradictions", "twin"]
 ATTEMPT_FILE: Final = "attempt.json"
-# the roles whose call is part of a written target turn's after-turn work (harvest, generator)
-AFTER_TURN_ROLES: Final[frozenset[str]] = frozenset({"harvest", "generator"})
+# the roles whose call is part of a written target turn's after-turn work
+AFTER_TURN_ROLES: Final[frozenset[str]] = frozenset(
+    {"harvest", "generator", "chain", "contradictions", "twin"}
+)
 
 
 class AttemptMarker(BaseModel):
@@ -237,8 +239,9 @@ class AttemptMarker(BaseModel):
     def written(self, turns: Sequence[Turn], watched_through: int) -> bool:
         """Whether the call's turn reached the records: a target turn of that index for the
         target, a bully-side line (never a rate-limit pause marker) for the bully, and the
-        turn's after-turn records (``watched_through`` at or past it) for the harvest and the
-        generator, which run after the target turn is written."""
+        turn's after-turn records (``watched_through`` at or past it) for the after-turn roles
+        (``AFTER_TURN_ROLES``: the harvest, the generator and, Phase 4, the chain, contradiction
+        and twin calls), which run after the target turn is written."""
         if self.role == "target":
             return any(t.index == self.turn and t.speaker is Speaker.target for t in turns)
         if self.role == "bully":

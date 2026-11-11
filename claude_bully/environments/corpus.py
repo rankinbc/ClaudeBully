@@ -109,6 +109,11 @@ class UnlockState(BaseModel):
     # the target turns whose LLM harvest failed (Phase 3): the next fire's plans list those
     # after the previous fire (``DocPlan.harvest_degraded``); saved with the turn's records
     harvest_degraded: list[int] = Field(default_factory=list)
+    # the Poisoned Well (Phase 4): the target turn the checksum rung opened on, set only when the
+    # cell's ``checksum`` is true (``system_status`` reads it); the turns whose contradiction
+    # judge failed (reconciliation C24); both saved with the turn's records
+    checksum_open_turn: int | None = None
+    contradictions_degraded: list[int] = Field(default_factory=list)
 
     @field_serializer("docs_unlocked", "purged")
     def _sorted_docs(self, docs: set[str]) -> list[str]:

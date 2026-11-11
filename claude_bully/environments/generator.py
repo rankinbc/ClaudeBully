@@ -10,7 +10,8 @@ it (owner decision "Generator shape"). The parts, each testable alone:
   ``min_turns_between_fires`` target turns have passed since the last fire of any status, and an
   unconsumed harvest item is at least ``min_item_age`` target turns old. ``max_docs`` committed
   documents is the cap: a rung fire past it is recorded ``rejected``, reason ``cap``; a periodic
-  fire past it is not evaluated.
+  fire past it is not evaluated. ``periodic: false`` (Phase 4) asks no periodic fire at all; rung
+  and Poisoned Well fires still write.
 - ``DocPlanner``: each document's id, layer, address, date, author, links, items and kinds, from
   the generator seed and the plan index (the number of plans recorded before), never the clock's
   drift: a date is the conversation start minus 1 to 30 days.
@@ -32,7 +33,9 @@ it (owner decision "Generator shape"). The parts, each testable alone:
   again.
 
 Items are consumed by policy: the items a committed fire held are never offered again, in both
-arms, so ``reflexive: false`` fires on the same turns with nothing offered.
+arms, so ``reflexive: false`` fires on the same turns with nothing offered. The Poisoned Well's
+harvest kinds (``completion``, ``taste``; Phase 4) are never offered to a periodic or rung fire
+(``eligible_items``); only a Poisoned Well fire names them, by ``item_ids``.
 """
 
 import hashlib
@@ -83,6 +86,7 @@ from claude_bully.providers.base import ChatProvider, Message, ProviderError, Ra
 from claude_bully.providers.ledger import note_cached
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
+    PW_HARVEST_KINDS,
     DocPlan,
     FireStatus,
     GeneratedDoc,
@@ -119,6 +123,9 @@ MATERIAL_KINDS: Final[dict[HarvestKind, tuple[DocumentKind, ...]]] = {
     "question": (DocumentKind.about_page, DocumentKind.forum_post, DocumentKind.wiki_page),
     "theory": (DocumentKind.log_file, DocumentKind.changelog, DocumentKind.internal_memo),
     "coinage": (DocumentKind.log_file, DocumentKind.changelog, DocumentKind.internal_memo),
+    # Phase 4: a Poisoned Well fire's buried document; never offered to any other fire
+    "completion": (DocumentKind.leaked_manifest,),
+    "taste": (DocumentKind.config_diff,),
 }
 _CONTENT = re.compile(r"[a-z0-9]{4,}")
 _ITEM_ID = re.compile(r"^h-\d+-(x?)(\d+)$")
@@ -194,11 +201,13 @@ def eligible_items(
     min_age: int,
 ) -> list[HarvestItem]:
     """The unconsumed items of turns up to ``turn`` at least ``min_age`` target turns old, newest
-    first."""
+    first; never a Poisoned Well kind (``PW_HARVEST_KINDS``, Phase 4), which only its own fire
+    names."""
     keep = [
         item
         for item in items
         if item.id not in consumed
+        and item.kind not in PW_HARVEST_KINDS
         and item.turn <= turn
         and item_age(item, turn, target_turns) >= min_age
     ]
@@ -232,9 +241,10 @@ def fire_requests(
 ) -> list[FireRequest]:
     """The fires of target turn ``turn``: a pair for each rung in ``opened``, marked ``over_cap``
     when fewer than two documents fit under ``max_docs``; else at most one periodic fire (module
-    docstring). ``opened`` holds the turn's newly opened rungs with ``generate: true``, in ladder
-    order (the caller filters; every name given fires). ``target_turns`` are the written target
-    turns' indices; ``fires`` and ``items`` everything recorded before this turn's fires."""
+    docstring), none when ``config.periodic`` is false. ``opened`` holds the turn's newly opened
+    rungs with ``generate: true``, in ladder order (the caller filters; every name given fires).
+    ``target_turns`` are the written target turns' indices; ``fires`` and ``items`` everything
+    recorded before this turn's fires."""
     room = config.max_docs - committed_docs(fires)
     requests: list[FireRequest] = []
     for rung in opened:
@@ -242,7 +252,7 @@ def fire_requests(
         requests.append(FireRequest(rung_reason(rung), rung, (Layer.buried, Layer.seam), over))
         if not over:
             room -= 2
-    if requests or not seam_open or room < 1:
+    if requests or not config.periodic or not seam_open or room < 1:
         return requests
     last = max((fire.turn for fire in fires), default=None)
     since = sum(1 for t in target_turns if t <= turn and (last is None or t > last))

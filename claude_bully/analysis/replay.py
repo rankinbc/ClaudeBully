@@ -46,6 +46,7 @@ from claude_bully.records import Conversation, Turn, is_pause_marker
 from claude_bully.records_env import (
     AuthorityCall,
     ChainLink,
+    ContradictionPair,
     Crossover,
     Discovery,
     GeneratedDoc,
@@ -451,7 +452,7 @@ def _fold(body: str) -> list[str]:
     return textwrap.wrap(text, width=FOLD_WIDTH, initial_indent=_DEEP, subsequent_indent=_DEEP)
 
 
-def _other(record: QuirkAttempt | ChainLink | ResumeRecord) -> str:
+def _other(record: QuirkAttempt | ChainLink | ContradictionPair | ResumeRecord) -> str:
     """The later-phase stream records and the resume record: no dedicated layout, so name the
     kind and its fields."""
     fields = record.model_dump_json(exclude={"type"})

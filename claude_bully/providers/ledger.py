@@ -60,6 +60,9 @@ ROLES: Final[tuple[str, ...]] = (
     "harvest",
     "generator",
     "llm_lint",
+    "chain",
+    "contradictions",
+    "twin",
     "responder",
     "doctor",
     "other",
@@ -75,6 +78,9 @@ _ROLE_WORDS: Final = {
     "harvest": "harvest",
     "generator": "generator",
     "lint": "llm_lint",
+    "chain": "chain",
+    "contradictions": "contradictions",
+    "twin": "twin",
     "authority": "responder",
 }
 

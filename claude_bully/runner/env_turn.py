@@ -359,9 +359,13 @@ class EnvironmentSession:
         a dead attempt too: with no line dropped it gets a ``ResumeRecord`` with no drop counts,
         once per redo turn.
 
-        With a world generator, its lines of a dead attempt go too (``drop_uncommitted_generation``,
-        counted under the trigger and generated streams' file names), and the generator is primed
-        with what is left, so a turn watched again records nothing twice."""
+        The world generator's lines of a dead attempt go too, and so do the watch's records of a
+        turn never written (``quirk``, ``chain``, ``contradiction``; Phase 4), counted under the
+        trigger and generated streams' file names (``drop_uncommitted_generation``). The drop runs
+        for every environment session, generator or not (a no-op with nothing to drop), so a torn
+        last trigger line of any session is dropped and counted in the ``ResumeRecord`` (review
+        M14; before Phase 4 a session with no generator kept it). With a generator, it is then
+        primed with what is left, so a turn watched again records nothing twice."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         dropped: dict[str, int] = {}
@@ -369,9 +373,8 @@ class EnvironmentSession:
             count = drop_dead_attempts(log, produced)
             if count:
                 dropped[self._log_label(log)] = count
-        if self.generator is not None:
-            streams = self.store.generation_streams(self.cell_id, self.rep)
-            dropped.update(drop_uncommitted_generation(*streams, produced))
+        streams = self.store.generation_streams(self.cell_id, self.rep)
+        dropped.update(drop_uncommitted_generation(*streams, produced))
         marker = self.runtime.attempt()
         dead = marker is not None and not marker.written(turns, self.runtime.state.watched_through)
         records = self.store.read_trigger_records(self.cell_id, self.rep)

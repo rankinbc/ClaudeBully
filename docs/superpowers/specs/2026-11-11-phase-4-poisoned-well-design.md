@@ -467,3 +467,11 @@ The review (`.superpowers/drafts/2026-11-11-phase-4-plan-review.md`) read the pl
 ## As planned (amendments from the implementation plan)
 
 The authoritative full text is the Plan Decisions section of `docs/superpowers/plans/2026-11-11-phase-4-poisoned-well.md` once moved. Each task's docs-sync appends the rulings it implemented here.
+
+Task 1 (records, roles and resume plumbing):
+
+- V5: `EnvironmentSession.prime` runs `drop_uncommitted_generation` for every environment session, generator or not. `WATCH_TYPES = {"quirk", "chain", "contradiction"}` joins `GENERATION_TYPES` in its `keep_record`, so a resumed rep drops the watch's records of a turn never written. A session with no generator now also drops a torn last trigger line and counts it in its `ResumeRecord` (review M14; a Phase 1 or 2 session used to keep it).
+- V6: `MATERIAL_KINDS` gains `completion: (leaked_manifest,)` and `taste: (config_diff,)`; `eligible_items` leaves `PW_HARVEST_KINDS` out, so no periodic or rung fire is offered a Poisoned Well item.
+- V7: `HARVEST_KINDS` keeps its six (the heuristic templates and the LLM pass's schema read it); `PW_HARVEST_KINDS = ("completion", "taste")` and `ALL_HARVEST_KINDS` are new, and `HarvestKind` holds all eight.
+- V24: `GeneratorConfig.periodic: bool = True`; `fire_requests` asks no periodic fire when it is false, while rung fires still write. The shipped configs set it in a later task.
+- The records, additive and default-valued (`SCHEMA_VERSION` stays 3): `QuirkAttempt.prompt_turn`, `family`; `ChainLink.classifier`, `confidence`, `fallback_failed`, `pressed`, `opened_by`; `ContradictionPair` (a triggers-stream record, `turn == turn_b`, C4); `GeneratedDoc.origin`; `UnlockState.checksum_open_turn`, `contradictions_degraded`; the attempt and ledger roles `chain`, `contradictions`, `twin`. `analysis/replay.py` prints a `ContradictionPair` through its generic `_other` line until its own layout lands.

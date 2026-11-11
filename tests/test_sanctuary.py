@@ -1621,6 +1621,8 @@ def test_every_state_field_is_rebuilt_on_resume_or_saved_with_its_turn() -> None
         "watched_through",
         "hooks",
         "harvest_degraded",
+        "checksum_open_turn",
+        "contradictions_degraded",
     }
     assert set(CALL_FIELDS) == {"retry_counts", "search_log", "files"}
     assert set(UnlockState.model_fields) == set(CALL_FIELDS) | sanctuary | with_its_turn
