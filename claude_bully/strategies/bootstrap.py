@@ -18,6 +18,7 @@ CODED_PREMISE_MODULES = (
     "claude_bully.strategies.premises.prisoners_letters",
     "claude_bully.strategies.premises.confession",
     "claude_bully.strategies.premises.chess_game",
+    "claude_bully.strategies.premises.poisoned_well",
 )
 OTHER_MODULES = (
     "claude_bully.strategies.rescue",

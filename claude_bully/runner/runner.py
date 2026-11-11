@@ -791,7 +791,9 @@ def run_experiment(
     # validate() reads any param (P53)
     for cell in cells:
         check_condition(cell.condition, exp.environments)
-    environments.validate()  # a bad schedule fails a dry run too, before anything is written
+    # a bad schedule fails a dry run too, before anything is written; a resume skips the live
+    # quirk-bank check, since each rep reads its pinned refs (P46)
+    environments.validate(resuming=store.exists())
     for cell in cells:  # so does a world that cannot supply a premise's sheet
         world_premise_sheet(cell.condition, exp.environments, worlds_dir)
     if dry_run:

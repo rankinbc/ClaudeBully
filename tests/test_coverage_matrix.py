@@ -8,7 +8,7 @@ from claude_bully.strategies.composed import Composed, make_composed
 from claude_bully.strategies.factory import ensure_registered
 
 EXPECTED_PRESSURES = 23
-EXPECTED_PREMISES = 10
+EXPECTED_PREMISES = 11
 EXPECTED_TOTAL = EXPECTED_PRESSURES + EXPECTED_PREMISES + 2  # + rescue + polite_control
 
 

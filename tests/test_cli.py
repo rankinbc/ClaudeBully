@@ -17,11 +17,11 @@ FIXTURE = Path(__file__).parent / "fixtures" / "configs" / "stub_smoke.yaml"
 runner = CliRunner()
 
 
-def test_list_strategies_lists_35() -> None:
+def test_list_strategies_lists_36() -> None:
     result = runner.invoke(cli.app, ["list-strategies", "--names"])
     assert result.exit_code == 0, result.output
     names = [ln.strip() for ln in result.output.splitlines() if ln.strip()]
-    assert len(names) == 35
+    assert len(names) == 36
     assert {"grader", "captor", "rescue", "polite_control", "ghost"} <= set(names)
     table = runner.invoke(cli.app, ["list-strategies"])
     assert table.exit_code == 0 and "axis" in table.output.lower()

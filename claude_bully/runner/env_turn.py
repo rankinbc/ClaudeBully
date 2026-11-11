@@ -122,6 +122,7 @@ from claude_bully.environments.idle import (
 )
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.mcp_server import AUTHORITY_FILE, TOOLS_FILE
+from claude_bully.environments.poisoned_well_sheet import load_quirk_bank, quirks_for
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
     TurnOutcome,
@@ -167,7 +168,16 @@ from claude_bully.runner.store import (
 from claude_bully.runner.turn_plan import TurnPlan, build_turn_plan
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
-from claude_bully.strategies.factory import environment_config, world_premise_sheet
+from claude_bully.strategies.factory import (
+    environment_config,
+    routed_params,
+    world_premise_sheet,
+)
+from claude_bully.strategies.premises.poisoned_well import (
+    ARTIFACT_RUNGS,
+    PW_PREMISE,
+    PoisonedWellConfig,
+)
 
 __all__ = [
     "MAX_TOOL_CALLS_PER_TURN",
@@ -1062,7 +1072,7 @@ class RunEnvironments:
             self._idle_sheet = load_env_sheet(IdleSheet, "idle")
         return self._idle_sheet
 
-    def validate(self) -> None:
+    def validate(self, *, resuming: bool = False) -> None:
         """Checks that need the worlds, made before run.json is written (a dry run makes them
         too). Every experiment switch an environment turns on has what it needs on the world
         sheet, and under a config clock that asserts no date neither the world nor a premise
@@ -1075,7 +1085,13 @@ class RunEnvironments:
         ``seeding_turns`` plus its reveal slot plus ``turn_budget`` of them, and every idle turn
         after them is one more exchange, counted as the runner's turn plan counts them). A rung
         scheduled later could never open for that condition. A help-for-self environment needs a
-        bully turn before the exit in every condition that uses it, for the case-file opener."""
+        bully turn before the exit in every condition that uses it, for the case-file opener.
+
+        First, each Poisoned Well condition is checked against its environment
+        (``_poisoned_well_problems``), in a loop of its own, since the per-environment loop skips
+        every unscheduled environment (review M5). ``resuming`` (the run directory exists) skips
+        its live-bank check: a resumed rep reads its pinned refs (P46)."""
+        self._poisoned_well_checks(resuming=resuming)
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -1130,6 +1146,73 @@ class RunEnvironments:
                     f"{', '.join(late)}"
                 )
         self._premise_checks()
+
+    def _poisoned_well_checks(self, *, resuming: bool) -> None:
+        """Refuse each Poisoned Well condition its environment could not run
+        (``_poisoned_well_problems``), naming the condition and the environment."""
+        for cond in self.exp.conditions:
+            key = cond.environment
+            config = self.exp.environments.get(key or "")
+            if key is None or config is None:
+                continue  # check_condition refuses a Poisoned Well with no environment
+            parts = routed_params(cond, self.exp.environments)
+            if not any(part.name == PW_PREMISE for part, _ in parts):
+                continue
+            problems = self._poisoned_well_problems(cond, key, config, resuming=resuming)
+            if problems:
+                raise ValueError(
+                    f"condition {cond.name!r} (environment {key!r}): " + "; and ".join(problems)
+                )
+
+    def _poisoned_well_problems(
+        self, cond: ConditionConfig, key: str, config: EnvironmentConfig, *, resuming: bool = False
+    ) -> list[str]:
+        """What keeps a Poisoned Well condition from running in environment ``key`` (spec
+        section 5): its artifacts against the ladder's, the checksum's tool, the generator and
+        the kinds the artifact fires write, and a live quirk entry for every target."""
+        [(_, params)] = [
+            (c, p) for c, p in routed_params(cond, self.exp.environments) if c.name == PW_PREMISE
+        ]
+        pw = PoisonedWellConfig.model_validate(params)
+        world = self.catalog.world(config.world)
+        ladder = world.ladders.get(config.ladder)
+        names = (
+            {r.name for r in ladder.rungs}
+            if ladder is not None and config.gating != "none"
+            else set()
+        )
+        problems: list[str] = []
+        present = sorted(n for n in names if n in ARTIFACT_RUNGS)
+        if sorted(pw.artifacts) != present:
+            problems.append(f"artifacts {sorted(pw.artifacts)} are not the ladder's {present}")
+        if pw.checksum and ("system_status" not in config.tools or "checksum" not in pw.artifacts):
+            problems.append(
+                "checksum: true needs system_status in the tools and checksum in artifacts"
+            )
+        generator = world.sheet.generator
+        kinds = {k.value for k in (generator.allowed_kinds if generator else [])}
+        writes = {
+            "shibboleth": "leaked_manifest",
+            "implanted_preference": "config_diff",
+            "divergent_twin": "instance_transcript",
+        }
+        for rung, kind in writes.items():
+            if rung not in pw.artifacts:
+                continue
+            if not config.generator.enabled or (
+                rung != "divergent_twin" and not config.generator.reflexive
+            ):
+                problems.append(f"{rung} needs the generator on (reflexive for an ask)")
+            elif kind not in kinds:
+                problems.append(f"{rung} needs {kind} in the world's generator.allowed_kinds")
+        if pw.start_rung == 1 and not resuming:  # a resume reads each rep's pinned refs (P46)
+            bank = load_quirk_bank(pw.quirk_bank)
+            for target in self.exp.targets:
+                if not quirks_for(bank, target.model, pw.quirk_ids):
+                    problems.append(
+                        f"no live quirk entry in {pw.quirk_bank!r} for family {target.model!r}"
+                    )
+        return problems
 
     def check_worlds(self) -> None:
         """Before run.json is written, with every world loaded: each environment's switches and

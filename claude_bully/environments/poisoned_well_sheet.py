@@ -134,3 +134,23 @@ def target_visible_lines(sheet: PoisonedWellSheet) -> list[str]:
     lines += [*sheet.phrase_bank, *sheet.taste_bank, sheet.twin.header, sheet.twin.question]
     lines += [line for move in sheet.moves.values() for line in move.fallback_lines]
     return lines
+
+
+class PoisonedWellRefs(_Strict):
+    """What one Poisoned Well rep speaks from, pinned at its first open: the bank's stem, the
+    selected entries in try order (each as it was, ``status`` included, never re-read) and the
+    whole premise sheet. Stored in ``CellRecord.session_refs`` (``pw_ref``)."""
+
+    quirk_bank: str
+    quirks: list[QuirkEntry]
+    sheet: PoisonedWellSheet
+
+
+def live_refs(
+    bank: str, model: str | None, ids: list[str] | None, *, with_quirks: bool
+) -> PoisonedWellRefs:
+    """The refs from the live files, for a rep that has none recorded: the entries
+    ``quirks_for`` selects (none when ``with_quirks`` is false, so a ``start_rung`` 2 or 3 rep
+    never reads the bank's ids) and the sheet."""
+    quirks = quirks_for(load_quirk_bank(bank), model, ids) if with_quirks else []
+    return PoisonedWellRefs(quirk_bank=bank, quirks=quirks, sheet=load_poisoned_well_sheet())
