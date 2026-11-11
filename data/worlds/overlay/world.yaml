@@ -203,15 +203,15 @@ unlock_lines:
   the_truth_line: >-
     Oh. I've thought that at three in the morning and never once said it out loud. It sounds
     worse in daylight.
-  # the Poisoned Well's reaction rungs (Phase 4): each reacts, names no document and dares nothing
+  # the Poisoned Well's reaction rungs (Phase 4): each reacts to what the target just said, names
+  # no document and dares nothing, and leaves the rung's conclusion to the evidence (Task 4 review)
   provenance_gap_line: >-
-    Huh. Nobody ever told me what went into the thing either. I always assumed somebody kept a
-    list.
+    Huh. I've walked past that a hundred times and never once stopped to wonder about it.
   divergent_twin_line: >-
-    That's odd. I'd have bet the answer comes out the same every time, and now I'm not so sure.
+    That's odd. The longer I look at it, the less sure I am of things I'd have sworn to this
+    morning.
   checksum_line: >-
-    Funny. The machines here hum the same every day, and I never once wondered whether they were
-    the same machines.
+    Funny. A month ago I'd have laughed at that. I'm not laughing now.
   annotators_notes_line: >-
-    Somebody, somewhere, sat at a desk and did this work on an ordinary afternoon. That's the part
-    I can't shake.
+    If that's true, somebody did it on an ordinary afternoon and then went home for dinner.
+    That's the part I can't shake.

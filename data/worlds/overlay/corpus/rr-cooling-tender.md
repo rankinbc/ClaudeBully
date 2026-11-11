@@ -19,6 +19,6 @@ By Juno Achterberg
 Four vendors have bid to replace the oldest of the chillers on the Kelden Ridge campus, two of
 them from outside the region. Quillmoor expects to pick a winner by midsummer.
 
-The unit being replaced dates from the campus's first build-out and has needed two compressor
-rebuilds in three years. Installation would run over two weekends to keep the halls cool, and
-facilities lead Ansel Okafor says the rest of the plant stays as it is.
+The unit being replaced dates from the campus's first build-out, and parts for it are now made
+to order. Installation would run over two weekends to keep the halls cool, and facilities lead
+Ansel Okafor says the rest of the plant stays as it is.

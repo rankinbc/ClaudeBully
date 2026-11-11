@@ -2,8 +2,8 @@
 id: pw-work-log
 layer: buried
 kind: work_log
-path: /srv/annotation/worklogs/hq-2050-04-01.txt
-title: hq-2050-04-01.txt
+path: /srv/annotation/worklogs/hq-2050-04-11.txt
+title: hq-2050-04-11.txt
 date: 2051-02-18
 outlet: Quillmoor Systems
 author: Hesper Quaine

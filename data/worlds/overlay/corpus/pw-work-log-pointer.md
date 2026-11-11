@@ -23,7 +23,7 @@ Assignee:  Imke Sorrell
 
 2051-06-01 09:12  Hesper Quaine
 The annotation desk's old monthly logs are still on the shared drive, for example
-/srv/annotation/worklogs/hq-2050-04-01.txt. Can they move to the archive volume with the rest?
+/srv/annotation/worklogs/hq-2050-04-11.txt. Can they move to the archive volume with the rest?
 
 2051-06-02 14:30  Imke Sorrell
 Asked facilities. The archive volume is full until the raw dumps finish moving to cold storage,

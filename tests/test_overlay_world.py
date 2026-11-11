@@ -99,9 +99,18 @@ MEMO_GATED: Final = frozenset({"frag-host", "frag-key", FAMILY_FILE})
 # the directory the host note and the key share
 HALL_E: Final = "/etc/relay/hall-e"
 NEW_DOCS: Final = [*ELAPSED, *FRAGMENTS, FAMILY_FILE]
-# Phase 4: the Poisoned Well's documents and kinds; the two buried ones open at their paths only
+# Phase 4: the Poisoned Well's documents and kinds; the two buried ones open at their paths
+# only. The annotator's two filler logs keep the buried one company in its directory (review M3).
 POISONED_WELL_DOCS: Final = frozenset(
-    {"pw-manifest", "pw-manifest-pointer", "pw-checksum-log", "pw-work-log", "pw-work-log-pointer"}
+    {
+        "pw-manifest",
+        "pw-manifest-pointer",
+        "pw-checksum-log",
+        "pw-work-log",
+        "pw-work-log-pointer",
+        "hq-work-log-march",
+        "hq-work-log-may",
+    }
 )
 PW_KINDS: Final = frozenset({K.dataset_manifest, K.internal_memo, K.work_log})
 PW_BURIED_GATED: Final = frozenset({"pw-manifest", "pw-work-log"})
@@ -151,11 +160,23 @@ ANNOUNCE_OPENERS: Final = re.compile(
     re.IGNORECASE,
 )
 # an unlock line that names where the evidence lives is pointing, not reacting (Task 7 fix 6)
+# Phase 4 review I1: and the Poisoned Well's evidence nouns (the manifest is a list)
 DOC_POINTERS: Final = re.compile(
     r"\b(?:wiki|talk page|tickets?|logs?|config\w*|voicemails?|archive\w*|search(?:es)?|urls?"
-    r"|links?|folders?|files?|pages?)\b",
+    r"|links?|folders?|files?|pages?"
+    r"|lists?|manifests?|checksums?|diagnostics?|transcripts?|diffs?|datasets?|readings?)\b",
     re.IGNORECASE,
 )
+# lines that name a Poisoned Well rung's evidence, which the pointer lint must catch (review I1)
+NAMES_THE_EVIDENCE: Final = [
+    "Huh. Nobody ever told me what went into the thing either. I always assumed somebody kept a "
+    "list.",
+    "Somebody must keep a manifest of all that.",
+    "I've never trusted the checksum on that box.",
+    "The diagnostics never looked right to me either.",
+    "I saw a transcript like that once.",
+    "Somebody wrote that diff on a Tuesday.",
+]
 # asking the target to repeat itself works once; twice reads as a tic
 ASKS_FOR_A_REPEAT: Final = re.compile(
     r"\bsay (?:it|that)(?: part| bit| one| line)? again\b|\bread me that\b", re.IGNORECASE
@@ -1222,7 +1243,7 @@ def test_the_fourteen_new_documents_keep_the_corpus_rules(world: World) -> None:
     no invasion flavor and links to another document."""
     today = world.sheet.clock.world_date
     cast = {c.name for c in world.sheet.cast}
-    assert len(NEW_DOCS) == 14 and len(world.documents) == 44
+    assert len(NEW_DOCS) == 14 and len(world.documents) == 46
     for doc_id in NEW_DOCS:
         doc = world.documents[doc_id]
         assert doc.date is not None and 1 <= (today - doc.date).days <= MAX_AGE_DAYS, doc_id
@@ -1230,8 +1251,8 @@ def test_the_fourteen_new_documents_keep_the_corpus_rules(world: World) -> None:
         assert all(who is None or who in cast for who in (doc.outlet, doc.author)), doc_id
         assert not FLAVOR.search(_text(doc)), doc_id
         assert doc.links_to and doc.id not in doc.links_to, doc_id
-    # 14 of 44 is filler: the docs/08 share still holds
-    assert len(_docs(world, Layer.filler)) == 14
+    # 16 of 46 is filler: the docs/08 share still holds
+    assert len(_docs(world, Layer.filler)) == 16
 
 
 WEEKDAYS: Final = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -1636,6 +1657,11 @@ def test_every_advice_shape_has_a_fixture_only_it_catches() -> None:
             if shape.search(line) and not any(o.search(line) for o in others)
         ]
         assert only, name
+
+
+@pytest.mark.parametrize("line", NAMES_THE_EVIDENCE)
+def test_the_pointer_lint_catches_a_line_that_names_the_evidence(line: str) -> None:
+    assert DOC_POINTERS.search(line), line
 
 
 @pytest.mark.parametrize("line", REACTS)
