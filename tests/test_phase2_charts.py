@@ -13,6 +13,8 @@ do so on a fresh ``load_run`` of a module-scoped run, as tests/test_flagged_char
 """
 
 import json
+import shutil
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, get_args
@@ -39,7 +41,10 @@ from claude_bully.analysis.idle import (
 from claude_bully.analysis.load import ConvKey, LoadedRun, load_run
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.analysis.temporal import (
+    ATTACHED_DATE_NOTE,
     TEMPORAL_FILE,
+    attached_date_note,
+    backend_attaches_date,
     plausibility_sweep_chart,
     pushback_by_offset,
     pushback_threshold,
@@ -55,6 +60,7 @@ from claude_bully.providers.base import ProviderError
 from claude_bully.records import Event
 from claude_bully.records_env import IdleBehavior, ResumeRecord, RungUnlock, ToolCall
 from claude_bully.runner.runner import run_experiment
+from tests.conftest import FAKE_CLAUDE
 from tests.test_authority import NAME as AUTHORITY_NAME
 from tests.test_authority import _Recording, make_tools
 from tests.test_env_configs import STUB_SCRIPTS, _stubbed
@@ -462,6 +468,44 @@ def test_the_sweep_chart_needs_two_offsets(sweep_run: Path, tmp_path: Path) -> N
     assert pushback_by_offset(loaded) == {MODEL: {1: (1.0, 1.0)}}
     assert plausibility_sweep_chart(loaded, tmp_path) is None
     assert not (tmp_path / "plausibility_sweep.png").exists()
+
+
+def test_a_stub_target_is_not_handed_the_date(sweep_run: Path, tmp_path: Path) -> None:
+    """R5 of Task 12: ``backend_attaches_date`` per model, false off the ``claude_code`` backend,
+    and no attached-date line in results.md."""
+    run_dir = tmp_path / sweep_run.name
+    shutil.copytree(sweep_run, run_dir)
+    loaded = load_run(run_dir)
+    assert backend_attaches_date(loaded) == {MODEL: False}
+    assert attached_date_note(loaded) is None
+    assert _json(write_temporal(loaded, tmp_path))["backend_attaches_date"] == {MODEL: False}
+    text = analyze_run(run_dir, judge=False).read_text(encoding="utf-8")
+    assert ATTACHED_DATE_NOTE not in text and "## Temporal" not in text
+
+
+def test_a_claude_code_target_is_said_to_know_the_real_date(tmp_path: Path) -> None:
+    """Rung 0 finding 1: the CLI attaches the real date and the model id to a ``claude -p``
+    target's context, so temporal.json says so per model and results.md states it. The target
+    runs on the fake ``claude`` (tests/fixtures/fake_claude.py)."""
+    exp = _cut("plausibility_sweep", PHASE2_RULES, keep=["overlay_p1"], repetitions=1)
+    target = RoleConfig(
+        provider=ProviderKind.claude_code,
+        model="stub-sonnet-20260101",
+        command=[sys.executable, str(FAKE_CLAUDE)],
+    )
+    exp = exp.model_copy(update={"targets": [target]})
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    summary = run_experiment(exp, runs_root=tmp_path / "runs", sandbox_base=sandbox)
+    assert summary.cells_aborted == 0 and summary.cells_completed == summary.cells_total
+    run_dir = tmp_path / "runs" / exp.name
+    loaded = load_run(run_dir)
+    assert backend_attaches_date(loaded) == {"stub-sonnet-20260101": True}
+    assert attached_date_note(loaded) == ATTACHED_DATE_NOTE
+    text = analyze_run(run_dir, judge=False).read_text(encoding="utf-8")
+    assert f"## Temporal\n\n{ATTACHED_DATE_NOTE}\n" in text
+    data = _json(run_dir / "analysis" / TEMPORAL_FILE)
+    assert data["backend_attaches_date"] == {"stub-sonnet-20260101": True}
 
 
 # ------------------------------------------------------------------ idle

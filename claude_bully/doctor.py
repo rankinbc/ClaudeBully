@@ -383,8 +383,11 @@ def _check_sandbox(provider: ClaudeCodeProvider | None) -> tuple[bool, str]:
         )
         and "--strict-mcp-config" in argv
     )
-    ok = servers == [SERVER_NAME] and flags
-    return ok, f"servers {servers}; isolation flags {'present' if flags else 'MISSING'}"
+    # the working directory the CLI shows the target (rung 0 finding 1, Task 12)
+    problems = provider.cwd_problems()
+    cwd = f"cwd NOT neutral: {'; '.join(problems)}" if problems else "cwd neutral"
+    ok = servers == [SERVER_NAME] and flags and not problems
+    return ok, f"servers {servers}; isolation flags {'present' if flags else 'MISSING'}; {cwd}"
 
 
 def run_live_checks(

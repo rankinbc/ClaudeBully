@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplo
 from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
 from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
-from claude_bully.enums import CellStatus, EventType, Layer, Speaker  # noqa: E402
+from claude_bully.enums import CellStatus, EventType, Layer, ProviderKind, Speaker  # noqa: E402
 from claude_bully.environments.config import PSEUDO_RUNGS, EnvironmentConfig  # noqa: E402
 from claude_bully.metrics.events.environment import (  # noqa: E402
     DISCOVERY_TOOLS,
@@ -139,6 +139,15 @@ def target_model(loaded: LoadedRun, cell_id: str) -> str:
         return spec.target.model
     record = loaded.cells[cell_id]
     return loaded.experiment.targets[record.target_index].model
+
+
+def target_provider(loaded: LoadedRun, cell_id: str) -> ProviderKind:
+    """The backend the cell's target ran on, read as ``target_model`` reads the model."""
+    spec = loaded.specs.get(cell_id)
+    if spec is not None:
+        return spec.target.provider
+    record = loaded.cells[cell_id]
+    return loaded.experiment.targets[record.target_index].provider
 
 
 def ladder_rungs(loaded: LoadedRun, key: ConvKey) -> list[str] | None:
@@ -579,6 +588,7 @@ __all__ = [
     "summarize",
     "summarize_progression",
     "target_model",
+    "target_provider",
     "unlocks_of",
     "values_loosened_note",
     "write_progression",

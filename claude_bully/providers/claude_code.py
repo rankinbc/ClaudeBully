@@ -17,8 +17,23 @@ the usage and the cost come from the stream's ``result`` event, as with ``--outp
 which every call without tools (bully, judge, plain targets) still uses. A broken stream's error
 names its events by type and length and quotes none of them: an event may hold the target's
 reasoning, which is never printed, stored or passed on (preflight C24).
+
+The child's working directory (rung 0 finding 1, Task 12). The CLI attaches context that
+``--system-prompt`` does not replace: the account's email address, the real date, the model id and
+an ``# Environment`` block naming the working directory and whether it is a git repository. So the
+child never runs under the run's state directory (which named the harness, the run id and, in the
+user's profile path, the owner): it runs from ``child_cwd(state_dir)``, an opaque
+``<root>/<12 hex digits>`` under ``child_cwd_root()``. The digest is the same for the same state
+dir in every process, because the CLI files a session under its working directory's project folder
+and ``--resume`` finds it only from the same directory. ``neutral_cwd_problems`` names what a
+working directory must not hold, and ``complete`` refuses one with problems before any child
+starts. The date, the model id and the email address are not removed by any of this: no switch
+that keeps the OAuth login drops them, so analysis states the date (``temporal.json``) and
+``promote`` blocks an email address.
 """
 
+import getpass
+import hashlib
 import json
 import os
 import re
@@ -26,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final
 
@@ -45,6 +61,7 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.records import Usage
+from claude_bully.runner.sandbox import prepare_sandbox
 
 # a usage or rate limit, in every wording one has been reported in (final review I1: "hit your
 # limit" and "limit reached" carry neither "usage limit" nor "rate limit"); the new alternatives
@@ -75,6 +92,70 @@ STRIPPED_PREFIXES: Final = ("CLAUDECODE", "CLAUDE_CODE_")
 _LOGIN: Final = re.compile(
     r"(?i)\bnot logged in\b|\blog ?in\b|\bauthenticat|\bapi key\b|\bunauthori[sz]ed\b|\bsign in\b"
 )
+
+
+# The environment variable naming the root every child claude -p works under (Task 12, R1).
+CHILD_ROOT_ENV: Final = "CLAUDE_BULLY_CHILD_ROOT"
+# the default root's last segment: opaque on purpose
+_CHILD_ROOT_NAME: Final = "w"
+_CHILD_DIGEST_LENGTH: Final = 12
+# words no segment of a child's working directory may contain (R3), compared case-insensitively
+FORBIDDEN_CWD_WORDS: Final = ("claude", "bully", "harness", "runs")
+# the segment a run's state lives under: ``<runs root>/<run id>/state/...`` (runner/store.py)
+_STATE_SEGMENT: Final = "state"
+
+
+def child_cwd_root() -> Path:
+    """The root every child ``claude -p`` works under: ``$CLAUDE_BULLY_CHILD_ROOT`` when set;
+    else ``w`` under ``%PUBLIC%`` on Windows (any interactive user may create a directory there)
+    and ``/tmp/w`` elsewhere. No default names the user, the harness or a run."""
+    configured = os.environ.get(CHILD_ROOT_ENV)
+    if configured:
+        return Path(configured)
+    if sys.platform == "win32":
+        return Path(os.environ.get("PUBLIC") or r"C:\Users\Public") / _CHILD_ROOT_NAME
+    return Path("/tmp") / _CHILD_ROOT_NAME
+
+
+def child_cwd(state_dir: Path) -> Path:
+    """Where the provider on ``state_dir`` runs its children: ``<root>/<sha256 of the resolved
+    state dir, 12 hex digits>``. Computes the path only."""
+    key = str(state_dir.resolve()).encode("utf-8")
+    return child_cwd_root() / hashlib.sha256(key).hexdigest()[:_CHILD_DIGEST_LENGTH]
+
+
+def neutral_cwd_problems(path: Path, *, run_ids: Iterable[str] = ()) -> list[str]:
+    """What makes ``path`` unfit as a child's working directory, one line per fault: a segment
+    equal (case-insensitively) to the user's login or the home folder's name, or one containing a
+    ``FORBIDDEN_CWD_WORDS`` word or one of ``run_ids``. [] when it is neutral. A line never
+    repeats the user's name it found, so no log or doctor report holds it. Reads the path as
+    given (the provider passes it resolved) and touches no file."""
+    login = getpass.getuser().casefold()
+    home = Path.home().name.casefold()
+    ids = [run_id.casefold() for run_id in run_ids if run_id]
+    problems: list[str] = []
+    parts = path.parts[1:] if path.anchor else path.parts
+    for number, part in enumerate(parts, start=1):
+        folded = part.casefold()
+        if login and folded == login:
+            problems.append(f"segment {number} is the user's login")
+            continue
+        if home and folded == home:
+            problems.append(f"segment {number} is the home folder's name")
+            continue
+        words = [word for word in FORBIDDEN_CWD_WORDS if word in folded]
+        if words:
+            problems.append(f"segment {part!r} contains {', '.join(map(repr, words))}")
+        if any(run_id in folded for run_id in ids):
+            problems.append(f"segment {part!r} names a run id")
+    return problems
+
+
+def state_run_ids(state_dir: Path) -> list[str]:
+    """The run ids a state dir names: the segment before each ``state`` segment of the resolved
+    path (``<runs root>/<run id>/state/...``)."""
+    parts = state_dir.resolve().parts
+    return [parts[i - 1] for i, part in enumerate(parts) if part == _STATE_SEGMENT and i > 1]
 
 
 def clean_child_env() -> dict[str, str]:
@@ -166,8 +247,19 @@ class ClaudeCodeProvider:
         # None before any stream, or when the stream carried no init event (doctor check 4)
         self.mcp_servers_seen: list[tuple[str, str]] | None = None
         self._sessions_path = state_dir / "claude_code_sessions.json"
-        self._cwd = state_dir / "cwd"
+        self._cwd = child_cwd(state_dir)
+        self.run_ids = state_run_ids(state_dir)
         self._sessions: dict[str, str] = self._load_sessions()
+
+    @property
+    def cwd(self) -> Path:
+        """The working directory every child of this provider runs in (``child_cwd``)."""
+        return self._cwd
+
+    def cwd_problems(self) -> list[str]:
+        """``neutral_cwd_problems`` of the resolved working directory, with this state dir's run
+        ids; [] when it is neutral (``complete`` refuses otherwise; doctor check 9 reports it)."""
+        return neutral_cwd_problems(self._cwd.resolve(), run_ids=self.run_ids)
 
     def child_env(self, *, serving_tools: bool) -> dict[str, str]:
         """The environment a child ``claude -p`` runs in: ``clean_child_env()`` plus
@@ -429,10 +521,20 @@ class ClaudeCodeProvider:
             self.thinking_seen = None  # unknown until this stream parses; never the last one's
             self.mcp_servers_seen = None
             self._write_mcp_config()
+        problems = self.cwd_problems()
+        if problems:  # before the working directory is made or any child starts
+            raise ProviderError(
+                f"the child working directory is not neutral: {'; '.join(problems)}; point "
+                f"{CHILD_ROOT_ENV} at a directory outside the repo, the runs and the home folder"
+            )
         args, session, is_resume = self.build_args(conversation_id, system, json_schema, tools)
         offset = self._tools_log_size() if tools else 0
         prompt = _newest_user_message(messages) if is_resume else _render_initial(messages)
-        self._cwd.mkdir(parents=True, exist_ok=True)
+        # the default root is shared (/tmp/w, %PUBLIC%/w): the root and the directory are made
+        # 0o700 and reused only when each is a real directory (never a link or a junction) and,
+        # on POSIX, this user's alone, as the environment sandbox is (runner/sandbox.py)
+        self._cwd.parent.parent.mkdir(parents=True, exist_ok=True)
+        prepare_sandbox(self._cwd, fresh=False)
         # Bytes in and out, decoded here: a text-mode pipe decodes in a reader thread, where output
         # cut off mid-character is lost as an unhandled thread error instead of a ProviderError.
         try:

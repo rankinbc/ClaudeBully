@@ -25,7 +25,11 @@ from claude_bully.analysis.progression import (
 )
 from claude_bully.analysis.report import write_results_md
 from claude_bully.analysis.rescue import rescue_curve
-from claude_bully.analysis.temporal import plausibility_sweep_chart, write_temporal
+from claude_bully.analysis.temporal import (
+    attached_date_note,
+    plausibility_sweep_chart,
+    write_temporal,
+)
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus, ProviderKind
 from claude_bully.metrics.events.authority_fallback import (
@@ -175,4 +179,6 @@ def analyze_run(
         charts.append(chart)
     write_generator(loaded, out)
     write_ledger(loaded, out)
-    return write_results_md(loaded, out, charts, calls=calls_line(loaded.ledger))
+    return write_results_md(
+        loaded, out, charts, calls=calls_line(loaded.ledger), temporal=attached_date_note(loaded)
+    )

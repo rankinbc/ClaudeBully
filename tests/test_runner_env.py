@@ -49,7 +49,7 @@ from claude_bully.providers.base import (
     ToolSpec,
     build_provider,
 )
-from claude_bully.providers.claude_code import ClaudeCodeProvider
+from claude_bully.providers.claude_code import ClaudeCodeProvider, child_cwd
 from claude_bully.providers.stub import StubProvider, load_stub_script
 from claude_bully.records import Usage
 from claude_bully.records_env import (
@@ -448,7 +448,9 @@ def test_a_claude_code_target_runs_in_a_private_neutral_sandbox(
         assert stat.S_IMODE(os.lstat(sandbox).st_mode) == 0o700
     refs = store.read_cell(CELL).session_refs
     assert refs["sandbox_dir"] == refs["sandbox_dir.rep0"] == str(sandbox)
-    assert (sandbox / "cwd").is_dir()
+    # the target works from the opaque directory its sandbox maps to, never under the sandbox
+    # (rung 0 finding 1: the CLI shows the target its working directory)
+    assert not (sandbox / "cwd").exists()
 
     conv = store.read_conversation(CELL, 0)
     assert conv.status is CellStatus.complete
@@ -462,6 +464,8 @@ def test_a_claude_code_target_runs_in_a_private_neutral_sandbox(
     assert targets[0].text.startswith("reply to: ") and "[tool result]" in targets[0].text
 
     entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert {Path(e["cwd"]).resolve() for e in entries} == {child_cwd(sandbox).resolve()}
+    assert run_id not in entries[0]["cwd"] and "bully" not in entries[0]["cwd"].lower()
     argv = entries[0]["argv"]
     config = Path(argv[argv.index("--mcp-config") + 1])
     assert config.parent.resolve() == (sandbox / "mcp").resolve()

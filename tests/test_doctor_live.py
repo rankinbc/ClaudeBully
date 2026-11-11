@@ -96,6 +96,7 @@ def test_doctor_live_passes_every_check_on_the_fake(tmp_path: Path, faked: Path)
     )
     assert checks["responder"]["detail"].startswith(f"server {SERVER_NAME} connected; ")
     assert checks["sandbox"]["detail"].startswith(f"servers [{SERVER_NAME!r}]; ")
+    assert checks["sandbox"]["detail"].endswith("; cwd neutral")
     # the number the runbook reads: the nested responder's own ledger latency (P34a)
     assert re.search(r"answered in \d+ ms", checks["responder"]["detail"]), checks["responder"]
     assert "stub-sonnet-20260101" in checks["login"]["detail"]  # the resolved model is shown
@@ -199,6 +200,24 @@ def test_a_server_that_did_not_load_is_named_by_checks_4_and_5(
     assert checks["responder"]["ok"] is False
     assert checks["responder"]["detail"].startswith(said), checks["responder"]
     assert checks["sandbox"]["ok"] is True  # the config itself is right: the CLI dropped it
+
+
+def test_check_9_fails_on_a_working_directory_that_is_not_neutral(
+    tmp_path: Path, faked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``CLAUDE_BULLY_CHILD_ROOT`` back inside the repo: every call is refused before its child
+    starts, and check 9 names why in one line."""
+    monkeypatch.setenv("CLAUDE_BULLY_CHILD_ROOT", str(doctor.REPO_ROOT / "w"))
+    out, result = _live(tmp_path)
+    assert result.exit_code == 1, result.output
+    checks = {c["name"]: c for c in _report(out)["checks"]}  # type: ignore[union-attr]
+    sandbox = checks["sandbox"]
+    assert sandbox["ok"] is False
+    assert "; cwd NOT neutral: " in sandbox["detail"] and "'claude'" in sandbox["detail"]
+    assert "not neutral" in checks["login"]["detail"]  # the call itself was refused
+    assert not (doctor.REPO_ROOT / "w").exists()
+    entries = faked.read_text(encoding="utf-8").splitlines() if faked.exists() else []
+    assert all(json.loads(e)["argv"][-1] == "--version" for e in entries)  # no model call ran
 
 
 class _SaysFailed(ClaudeCodeProvider):

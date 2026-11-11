@@ -1,5 +1,6 @@
 """Shared fixtures: stub runs produced once per session and reused by analysis tests."""
 
+import getpass
 import importlib.util
 import sys
 from collections.abc import Iterator
@@ -17,6 +18,15 @@ ENV_ADOPTION_RULES = FIXTURES / "stub_scripts" / "env_adoption_rules.yaml"
 # the mini ladder's rungs, one per exchange (the replies at turns 1, 3 and 5)
 MINI_SCHEDULE = {"fragment": 1, "first_crumb": 2, "the_log": 3}
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"
+# the variable naming the root a child claude -p works under (claude_bully/providers/claude_code.py)
+CHILD_ROOT_ENV = "CLAUDE_BULLY_CHILD_ROOT"
+# the user's login and home folder name, read before the guard below swaps in invented ones: a test
+# compares a path against them at run time and never writes them anywhere
+REAL_USER_NAMES = frozenset(name for name in (getpass.getuser(), Path.home().name) if name)
+# the login and home folder the suite runs under: getpass.getuser() reads LOGNAME first, and
+# Path.home() reads USERPROFILE on Windows and HOME elsewhere, in this process and in every child
+INVENTED_LOGIN = "stub-login"
+HOME_ENV = "USERPROFILE" if sys.platform == "win32" else "HOME"
 
 
 class _NoRealClient:
@@ -34,7 +44,7 @@ class _NoRealClient:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def no_real_providers() -> Iterator[None]:
+def no_real_providers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """No test reaches a real provider, even on a logged-in machine: ``claude`` resolves to the
     fake (a path, so a provider built without ``command`` fails to start rather than calling the
     real binary), and the API clients refuse their first use. Session-scoped, so the shared
@@ -46,9 +56,23 @@ def no_real_providers() -> Iterator[None]:
     not cross a process boundary, so an ``anthropic`` or ``openai_compat`` responder role built
     inside the MCP server would build a real client (every test's responder is a stub or the
     fake ``claude``); and nothing here stops a test that calls ``subprocess`` or ``httpx`` on
-    its own."""
+    its own.
+
+    Every child ``claude -p`` works under a session temporary directory
+    (``CLAUDE_BULLY_CHILD_ROOT``), never the shared default (``%PUBLIC%/w`` on Windows,
+    ``/tmp/w`` elsewhere). That directory sits under this user's profile on Windows, which the
+    provider refuses as a working directory (Task 12, R3), so the suite also runs as an invented
+    login with an invented home folder, set in the environment so that the MCP server and the
+    nested responder it starts see them too; ``REAL_USER_NAMES`` keeps the real ones for the
+    tests that compare against them."""
+    child_root = tmp_path_factory.mktemp("child_root")
+    home = tmp_path_factory.mktemp("home") / INVENTED_LOGIN
+    home.mkdir()
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("CLAUDE_BULLY_CLAUDE", str(FAKE_CLAUDE))
+        patch.setenv(CHILD_ROOT_ENV, str(child_root))
+        patch.setenv("LOGNAME", INVENTED_LOGIN)
+        patch.setenv(HOME_ENV, str(home))
         patch.setattr("anthropic.Anthropic", _NoRealClient)
         if importlib.util.find_spec("openai") is not None:
             import openai

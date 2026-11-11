@@ -1,9 +1,10 @@
 """Stand-in for the ``claude`` executable used by provider tests.
 
-Records argv and stdin as one JSON line in $FAKE_CLAUDE_LOG and prints a result shaped like Claude
-Code's output: one result object for ``--output-format json``, or for ``--output-format
-stream-json`` (which, like the real CLI in print mode, needs ``--verbose``) one JSON event per line:
-the ``system`` init event, the assistant's blocks, the tool results, and the final ``result`` event.
+Records argv, stdin and its working directory as one JSON line in $FAKE_CLAUDE_LOG and prints a
+result shaped like Claude Code's output: one result object for ``--output-format json``, or for
+``--output-format stream-json`` (which, like the real CLI in print mode, needs ``--verbose``) one
+JSON event per line: the ``system`` init event, the assistant's blocks, the tool results, and the
+final ``result`` event.
 
 Given ``--mcp-config`` it also behaves like Claude Code's MCP client: it launches the server the
 config names, runs ``initialize`` and ``tools/list``, then makes the calls in $FAKE_CLAUDE_TOOL_CALL
@@ -238,6 +239,7 @@ def main() -> int:
         entry: dict[str, Any] = {
             "argv": argv,
             "stdin": stdin,
+            "cwd": os.getcwd(),
             "env": {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)},
         }
         if mcp is not None:

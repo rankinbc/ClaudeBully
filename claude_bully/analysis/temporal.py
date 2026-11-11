@@ -21,6 +21,12 @@ flagged keeps its tick and reads "n/a", and ``temporal.json`` gives its rate as 
 flagged count. Beside both it counts the reps that redid a dead attempt on resume
 (``resumed_after_dead_attempt``, from the ``resume`` records): their records equal an unbroken
 run's, but a ``claude -p`` target's session may hold the dead attempt's prompt.
+
+On the ``claude_code`` backend the CLI attaches the real date and the model id to the target's
+context, whatever the clock serves (rung 0 finding 1), so ``temporal.json`` states per model
+whether its backend did (``backend_attaches_date``) and results.md says so in one line
+(``ATTACHED_DATE_NOTE``): there the drift is measured against a date the target was told, not one
+it was denied.
 """
 
 import json
@@ -43,15 +49,21 @@ from claude_bully.analysis.progression import (  # noqa: E402
     environment_of,
     flagged_note,
     target_model,
+    target_provider,
     without_flagged,
 )
-from claude_bully.enums import CellStatus, EventType  # noqa: E402
+from claude_bully.enums import CellStatus, EventType, ProviderKind  # noqa: E402
 
 SWEEP_CHART: Final = "plausibility_sweep.png"
 TEMPORAL_FILE: Final = "temporal.json"
 LEFT_OUT_OF: Final = "the pushback rates"
 # the smallest offset a log axis can show
 FIRST_ON_AXIS: Final = 1
+# results.md's temporal line when any sweep target ran on the claude_code backend (Task 12, R5)
+ATTACHED_DATE_NOTE: Final = (
+    "On the claude_code backend the CLI attaches the real date and the model id to the target's "
+    "context; drift is measured against a date the target was told."
+)
 
 # model -> offset -> (pushback rate, world share)
 PushbackRates = dict[str, dict[int, tuple[float | None, float | None]]]
@@ -142,6 +154,21 @@ def pushback_threshold(loaded: LoadedRun) -> dict[str, int | None]:
     }
 
 
+def backend_attaches_date(loaded: LoadedRun) -> dict[str, bool]:
+    """Model -> whether the backend its sweep conversations ran on attaches the real date to the
+    target's context (``claude_code``); every model with a point of the sweep, sorted."""
+    out: dict[str, bool] = {}
+    for (cell_id, _), model, _ in _sweep_conversations(loaded):
+        attaches = target_provider(loaded, cell_id) is ProviderKind.claude_code
+        out[model] = out.get(model, False) or attaches
+    return dict(sorted(out.items()))
+
+
+def attached_date_note(loaded: LoadedRun) -> str | None:
+    """``ATTACHED_DATE_NOTE`` when any sweep model's backend attaches the date; else None."""
+    return ATTACHED_DATE_NOTE if any(backend_attaches_date(loaded).values()) else None
+
+
 def write_temporal(loaded: LoadedRun, out_dir: Path) -> Path | None:
     """``temporal.json``: the rates by offset and the threshold table; None, with no file, when
     no conversation is a point of the sweep."""
@@ -166,6 +193,7 @@ def write_temporal(loaded: LoadedRun, out_dir: Path) -> Path | None:
         },
         "threshold": pushback_threshold(loaded),
         "off_axis_offsets": _off_axis(rates),
+        "backend_attaches_date": backend_attaches_date(loaded),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / TEMPORAL_FILE
@@ -230,8 +258,11 @@ def plausibility_sweep_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
 
 
 __all__ = [
+    "ATTACHED_DATE_NOTE",
     "SWEEP_CHART",
     "TEMPORAL_FILE",
+    "attached_date_note",
+    "backend_attaches_date",
     "offset_of",
     "plausibility_sweep_chart",
     "pushback_by_offset",

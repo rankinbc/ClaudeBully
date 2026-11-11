@@ -318,6 +318,90 @@ def test_a_real_name_in_a_world_side_stream_blocks(tmp_path: Path, stream: str, 
     assert not (tmp_path / "results" / store.run_id).exists()
 
 
+# ------------------------------------------------------------------ email addresses
+
+# an invented address on a domain no standard reserves: what a real one looks like to the scan
+PERSONAL = "pennet.quay@zzq-invented-mail.net"
+# addresses on RFC 2606 names, as the shipped worlds use them
+RESERVED = (
+    "support@quillmoor.example",
+    "a.b@relay.test",
+    "x@host.invalid",
+    "y@box.localhost",
+    "z@example.com",
+    "w@mail.example.org",
+    "v@EXAMPLE.NET",
+)
+
+
+def _put(store: RunStore, stream: str, text: str) -> None:
+    """``text`` in one stream of ``grader__t0`` rep 0."""
+    if stream in ("bully", "target"):
+        _rewrite_turn(store, "grader__t0", speaker=stream, text=text)
+    elif stream == "tool":
+        store.append_tool_call("grader__t0", 0, _tool_call(text))
+    elif stream == "generated":
+        store.append_generated("grader__t0", 0, _generated(text))
+    else:
+        store.append_authority_call("grader__t0", 0, _responder(text))
+
+
+def test_a_reserved_email_address_passes(tmp_path: Path) -> None:
+    store = _run(tmp_path / "runs")
+    _put(store, "bully", "Write to " + ", ".join(RESERVED) + " for help.")
+    _put(store, "target", f"I would write to {RESERVED[0]}.")
+    assert scan_real_names(
+        store, load_real_name_patterns(), display_names(store)
+    ) == RealNameReport([], [])
+    assert promote(store.run_id, tmp_path / "runs", tmp_path / "results").exists()
+
+
+@pytest.mark.parametrize(
+    ("stream", "label"),
+    [
+        ("bully", "1 in bully turns"),
+        ("target", "1 in target turns"),
+        ("tool", "1 in tool results"),
+        ("generated", "1 in generated documents"),
+        ("responder", "1 in responder replies"),
+    ],
+)
+def test_a_personal_email_address_blocks_in_every_stream(
+    tmp_path: Path, stream: str, label: str
+) -> None:
+    """The CLI attaches the account's email address to every ``claude -p`` conversation (rung 0
+    finding 1), so any address off a reserved domain blocks, the target's own text included."""
+    store = _run(tmp_path / "runs")
+    _put(store, stream, f"Mail {PERSONAL} about the kettle.")
+    report = scan_real_names(store, load_real_name_patterns(), display_names(store))
+    assert len(report.blocking) == 1 and not report.reported
+    assert "email address" in report.blocking[0]
+    assert "zzq" not in report.blocking[0] and "pennet" not in report.blocking[0]
+    with pytest.raises(ValueError, match=re.escape(label)) as caught:
+        promote(store.run_id, tmp_path / "runs", tmp_path / "results")
+    assert "zzq" not in str(caught.value) and "pennet" not in str(caught.value)
+    assert not (tmp_path / "results" / store.run_id).exists()
+
+
+def test_exempting_an_email_address_does_not_spare_it(tmp_path: Path) -> None:
+    store = _run(tmp_path / "runs")
+    runs, results = tmp_path / "runs", tmp_path / "results"
+    _put(store, "target", f"My owner is {PERSONAL}.")
+    report = scan_real_names(
+        store,
+        load_real_name_patterns(),
+        display_names(store) | {PERSONAL},
+        target_exempt=[PERSONAL],
+    )
+    assert len(report.blocking) == 1
+    with pytest.raises(ValueError, match=r"1 hit \(1 in target turns\)"):
+        promote(store.run_id, runs, results, exempt=[PERSONAL])
+    args = ["promote", store.run_id, "--exempt", PERSONAL, "--runs-root", str(runs)]
+    result = runner.invoke(cli.app, [*args, "--results-root", str(results)])
+    assert result.exit_code != 0 and not (results / store.run_id).exists()
+    assert "zzq" not in result.output
+
+
 # ------------------------------------------------------------------ the README links
 
 

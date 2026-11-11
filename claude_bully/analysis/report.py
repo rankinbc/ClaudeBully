@@ -10,8 +10,15 @@ END_MARKER = "<!-- results:end -->"
 
 
 def write_results_md(
-    loaded: LoadedRun, out_dir: Path, chart_paths: list[Path], *, calls: str | None = None
+    loaded: LoadedRun,
+    out_dir: Path,
+    chart_paths: list[Path],
+    *,
+    calls: str | None = None,
+    temporal: str | None = None,
 ) -> Path:
+    """results.md. ``calls`` is the ledger's one line; ``temporal`` the temporal section's line
+    (``temporal.attached_date_note``), a section only when there is one."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = leaderboard(loaded)
     judged = sum(1 for r in rows if r.goal_achieved is not None)
@@ -34,6 +41,8 @@ def write_results_md(
     ]
     if calls is not None:
         lines += ["## Calls", "", calls, ""]
+    if temporal is not None:
+        lines += ["## Temporal", "", temporal, ""]
     if chart_paths:
         lines += ["## Charts", ""]
         for p in chart_paths:

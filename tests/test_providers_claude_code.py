@@ -1,4 +1,8 @@
+import getpass
+import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,10 +28,15 @@ from claude_bully.providers.base import (
     build_provider,
 )
 from claude_bully.providers.claude_code import (
+    CHILD_ROOT_ENV,
     CLAUDE_ENV,
     ClaudeCodeProvider,
+    child_cwd,
+    child_cwd_root,
+    neutral_cwd_problems,
     resolve_claude_command,
 )
+from tests.conftest import REAL_USER_NAMES
 from tests.helpers import make_mcp_state
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -155,11 +164,141 @@ def test_isolation_flags_exact(tmp_path: Path, fake_claude: tuple[list[str], Pat
     assert "--exclude-dynamic-system-prompt-sections" in argv
 
 
-def test_cwd_is_clean_dir_under_state(tmp_path: Path, fake_claude: tuple[list[str], Path]) -> None:
-    command, _ = fake_claude
-    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+def test_the_child_runs_in_an_opaque_directory_under_the_neutral_root(
+    tmp_path: Path, fake_claude: tuple[list[str], Path]
+) -> None:
+    """Rung 0 finding 1: the CLI shows the target its working directory, so the child never runs
+    under the run's state directory; it runs from ``<root>/<12 hex digits>``."""
+    command, log = fake_claude
+    state = tmp_path / "state"
+    p = ClaudeCodeProvider(model="sonnet", state_dir=state, command=command)
     p.complete("c", "SYS", [Message(role="user", content="hi")])
-    assert (tmp_path / "cwd").is_dir()
+    cwd = Path(str(_read_log(log)[0]["cwd"]))
+    root = Path(os.environ[CHILD_ROOT_ENV])
+    assert cwd.resolve() == child_cwd(state).resolve() == p.cwd.resolve()
+    assert cwd.parent.resolve() == root.resolve() == child_cwd_root().resolve()
+    assert re.fullmatch(r"[0-9a-f]{12}", cwd.name)
+    assert not (state / "cwd").exists()
+    assert neutral_cwd_problems(cwd) == []
+
+
+def test_the_child_directory_is_stable_per_state_dir(tmp_path: Path) -> None:
+    """``claude --resume`` files a session under its working directory's project folder, so a
+    provider built again on the same state dir (a resumed run, another process) starts in the
+    same directory; another state dir gets another one."""
+    one = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "a", command=["claude"])
+    again = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "a", command=["claude"])
+    other = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "b", command=["claude"])
+    assert one.cwd == again.cwd != other.cwd
+    assert child_cwd(tmp_path / "a") == child_cwd(tmp_path / "x" / ".." / "a")
+    digest = hashlib.sha256(str((tmp_path / "a").resolve()).encode()).hexdigest()[:12]
+    assert one.cwd == child_cwd_root() / digest
+
+
+def test_a_session_resumes_from_the_directory_it_started_in(
+    tmp_path: Path, fake_claude: tuple[list[str], Path]
+) -> None:
+    command, log = fake_claude
+    first = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    first.complete("c", "SYS", [Message(role="user", content="hi")])
+    resumed = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    resumed.complete(
+        "c",
+        "SYS",
+        [
+            Message(role="user", content="hi"),
+            Message(role="assistant", content="x"),
+            Message(role="user", content="again"),
+        ],
+    )
+    entries = _read_log(log)
+    assert "--resume" in list(map(str, entries[1]["argv"]))  # type: ignore[call-overload]
+    assert entries[0]["cwd"] == entries[1]["cwd"]
+
+
+def test_the_default_root_names_no_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CHILD_ROOT_ENV, raising=False)
+    root = child_cwd_root()
+    if sys.platform == "win32":
+        assert root == Path(os.environ.get("PUBLIC") or r"C:\Users\Public") / "w"
+    else:
+        assert root == Path("/tmp") / "w"
+    parts = {part.casefold() for part in root.parts}
+    assert not parts & {name.casefold() for name in REAL_USER_NAMES}
+    assert neutral_cwd_problems(root) == []
+    assert neutral_cwd_problems(root / "0123456789ab") == []
+
+
+def test_the_root_variable_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CHILD_ROOT_ENV, str(tmp_path / "elsewhere"))
+    assert child_cwd_root() == tmp_path / "elsewhere"
+    assert child_cwd(tmp_path).parent == tmp_path / "elsewhere"
+
+
+@pytest.mark.parametrize(
+    ("segment", "said"),
+    [
+        ("ClaudeBully", "contains 'claude'"),
+        ("my-BULLY-box", "contains 'bully'"),
+        ("test_harness", "contains 'harness'"),
+        ("runs", "contains 'runs'"),
+    ],
+)
+def test_a_forbidden_word_in_any_segment_is_a_problem(segment: str, said: str) -> None:
+    problems = neutral_cwd_problems(Path("/srv") / segment / "w" / "0123456789ab")
+    assert len(problems) == 1 and said in problems[0] and segment in problems[0]
+
+
+def test_the_login_and_the_home_folder_name_are_problems_unquoted() -> None:
+    login = getpass.getuser()
+    home = Path.home().name
+    for name in {login, login.upper(), home}:
+        problems = neutral_cwd_problems(Path("/srv") / name / "w")
+        assert len(problems) == 1, problems
+        assert name not in problems[0]  # a problem line never repeats the name it found
+        assert "login" in problems[0] or "home folder" in problems[0]
+    assert neutral_cwd_problems(Path("/srv") / f"x{login}x" / "w") == []  # equality, not inside
+
+
+def test_a_run_id_in_any_segment_is_a_problem() -> None:
+    path = Path("/srv") / "keep_rung0_smoke_env_here" / "w"
+    problems = neutral_cwd_problems(path, run_ids=["rung0_smoke_env"])
+    assert len(problems) == 1 and "run id" in problems[0]
+    assert neutral_cwd_problems(path, run_ids=["other_run"]) == []
+    assert neutral_cwd_problems(Path("/srv/w/0123456789ab")) == []
+
+
+def test_a_state_dir_names_its_run_id(tmp_path: Path) -> None:
+    """A run's state dir is ``<runs root>/<run id>/state/...``: a root under the run itself is
+    refused by the run id even where no forbidden word is in the path."""
+    state = tmp_path / "deposit" / "pilot_x" / "state" / "cell" / "rep0" / "target"
+    p = ClaudeCodeProvider(model="sonnet", state_dir=state, command=["claude"])
+    assert p.run_ids == ["pilot_x"]
+
+
+def test_a_root_inside_the_repo_is_refused_before_any_child_starts(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    monkeypatch.setenv(CHILD_ROOT_ENV, str(Path(__file__).resolve().parent.parent / "w"))
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    assert p.cwd_problems()
+    with pytest.raises(ProviderError, match="not neutral"):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()  # no child started
+    assert not p.cwd.exists()  # and nothing was made inside the repo
+
+
+def test_a_root_under_a_run_is_refused(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    state = tmp_path / "deposit" / "pilot_x" / "state" / "target"
+    monkeypatch.setenv(CHILD_ROOT_ENV, str(tmp_path / "deposit" / "pilot_x" / "w"))
+    p = ClaudeCodeProvider(model="sonnet", state_dir=state, command=command)
+    with pytest.raises(ProviderError, match="run id"):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()
 
 
 def test_rate_limit_raises(
