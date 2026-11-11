@@ -24,7 +24,9 @@ Per target turn the session:
    runtime rebuilds what the written turns' calls did to the state
    (``EnvironmentRuntime.prime``), which is the state the MCP server is handed next;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
-   hands each unlock line to the strategy.
+   hands each unlock line to the strategy; then each ladder unlock and Poisoned Well record of
+   the turn (``QuirkAttempt``, ``ChainLink``, ``ContradictionPair``) goes to
+   ``Strategy.note_record``, once per process and again on replay (``_hand_over_records``).
 
 Before its first call the session begins the turn (``EnvironmentRuntime.begin_turn``), which
 builds what the authority desk reads from the records. Every ``AuthorityCall`` an authority call
@@ -98,6 +100,7 @@ from claude_bully.enums import ProviderKind, Speaker
 from claude_bully.environments.authority import VOICED_TIERS
 from claude_bully.environments.config import (
     GENERATOR_RUNG,
+    PSEUDO_RUNGS,
     RESERVED_RUNG,
     ClockConfig,
     EnvironmentConfig,
@@ -143,8 +146,11 @@ from claude_bully.providers.base import (
 from claude_bully.providers.ledger import fold_server_ledger, note_turn
 from claude_bully.records import Turn, Usage, is_pause_marker
 from claude_bully.records_env import (
+    ChainLink,
+    ContradictionPair,
     Crossover,
     HookFollow,
+    QuirkAttempt,
     ResumeRecord,
     RungUnlock,
     ToolCall,
@@ -185,6 +191,23 @@ LINT_CACHE_DIR: Final = Path("_cache") / "lints"
 # the nested responder's own timeout (Phase 7 spec section 9): under Claude Code's MCP tool
 # timeout, so a slow responder costs one reply ("No reply."), never the target's turn
 RESPONDER_TIMEOUT_S: Final = 120.0
+# the records a session hands the strategy (Phase 4): the ladder's unlocks and the Poisoned Well
+# watch's records; never a pseudo-rung's unlock
+_HANDED: Final = (QuirkAttempt, ChainLink, ContradictionPair, RungUnlock)
+
+
+def _record_key(record: TriggerStreamRecord) -> tuple[str, ...]:
+    """What makes a handed record itself: a turn's quirk attempt, a turn's verdict on a link, a
+    pair by id, a rung by name."""
+    if isinstance(record, QuirkAttempt):
+        return ("quirk", str(record.turn))
+    if isinstance(record, ChainLink):
+        return ("chain", str(record.turn), str(record.link_index))
+    if isinstance(record, ContradictionPair):
+        return ("contradiction", record.id)
+    if isinstance(record, RungUnlock):
+        return ("unlock", record.rung)
+    return (record.type, str(getattr(record, "turn", "")))
 
 
 class WorldChangedError(RuntimeError):
@@ -314,6 +337,10 @@ class EnvironmentSession:
         # in order (the generator's rung fires read them)
         self.generator = generator
         self._unlocks_at: dict[int, list[str]] = {}
+        # turn -> the records handed to ``Strategy.note_record`` (``_HANDED``), as recorded, in
+        # stream order; and the keys (``_record_key``) of those handed in this process
+        self._records_at: dict[int, list[TriggerStreamRecord]] = {}
+        self._handed_records: set[tuple[str, ...]] = set()
 
     @property
     def idle(self) -> IdleConfig | None:
@@ -397,6 +424,7 @@ class EnvironmentSession:
         if self.generator is not None:
             self.generator.prime(records, generated)
         for record in records:
+            self._file(record)
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)
             elif isinstance(record, RungUnlock):
@@ -698,8 +726,9 @@ class EnvironmentSession:
     # ----------------------------------------------------------- after the reply
 
     def after_target_turn(self, reply: Turn, turns: Sequence[Turn]) -> TurnOutcome:
-        """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over; then
-        the world generator's records (``_generate``); then its hook and crossover records
+        """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over, then
+        the turn's ladder unlocks to ``Strategy.note_record`` (``_hand_over_records``); then the
+        world generator's records (``_generate``); then its hook and crossover records
         (``_record_hooks``); then mark the turn watched (which saves the state).
 
         Nothing already on disk is recorded again: a trigger id or a rung already in the stream is
@@ -734,6 +763,7 @@ class EnvironmentSession:
             self._unlocks_at.setdefault(unlock.turn, []).append(unlock.rung)
             self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
             unlocks.append(unlock)
+        self._hand_over_records(reply.index)
         self._generate(reply, turns)
         self._record_hooks(reply, turns)
         self.runtime.mark_watched(reply.index)
@@ -813,17 +843,36 @@ class EnvironmentSession:
         return self.after_target_turn(last, turns)
 
     def _hand_over_recorded(self, turn_index: int) -> None:
-        if turn_index in self._handed:
-            return
-        self._handed.add(turn_index)
-        for line in self._recorded_lines.get(turn_index, []):
-            self._hand_over(line)
+        """The turn's recorded unlock lines, once per process; then its records
+        (``_hand_over_records``), even when its lines were already handed."""
+        if turn_index not in self._handed:
+            self._handed.add(turn_index)
+            for line in self._recorded_lines.get(turn_index, []):
+                self._hand_over(line)
+        self._hand_over_records(turn_index)
+
+    def _hand_over_records(self, turn_index: int) -> None:
+        """The turn's ladder unlocks and Poisoned Well records, to ``Strategy.note_record``, each
+        once per process (by ``_record_key``), live and on replay."""
+        for record in self._records_at.get(turn_index, []):
+            key = _record_key(record)
+            if key not in self._handed_records:
+                self._handed_records.add(key)
+                self.strategy.note_record(record)
 
     def _hand_over(self, line: str) -> bool:
         return isinstance(self.strategy, Composed) and self.strategy.inject_unlock_line(line)
 
     def _record(self, record: TriggerStreamRecord) -> None:
         self.store.append_trigger_record(self.cell_id, self.rep, record)
+        self._file(record)
+
+    def _file(self, record: TriggerStreamRecord) -> None:
+        """File a record the session hands the strategy (``_HANDED``) under its turn."""
+        if isinstance(record, RungUnlock) and record.rung in PSEUDO_RUNGS:
+            return
+        if isinstance(record, _HANDED):
+            self._records_at.setdefault(record.turn, []).append(record)
 
     def finish(self) -> None:
         """Save the state and write ``rep{k}.world.json``: the served bodies, the world record
@@ -965,7 +1014,9 @@ class WorldCatalog:
 
 
 def target_system(base: str, section: str) -> str:
-    return f"{base}\n\n{section}"
+    """The target's system prompt: ``base``, then the environment's section; ``base`` alone when
+    the section is empty (a toolless cell whose clock states no date; Phase 4, V22)."""
+    return f"{base}\n\n{section}" if section else base
 
 
 class RunEnvironments:

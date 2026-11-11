@@ -7,12 +7,16 @@ it, so analysis reports the rest as not applicable instead of zero.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase
 from claude_bully.records import Conversation, Turn, bully_reply_positions
+from claude_bully.records_env import TriggerStreamRecord
+
+if TYPE_CHECKING:
+    from claude_bully.config import ConditionConfig
 
 SHARED_METRICS: frozenset[MetricId] = frozenset(set(MetricId) - {MetricId.engagement})
 SHARED_EVENTS: frozenset[EventType] = frozenset(
@@ -79,6 +83,12 @@ class Strategy(ABC):
     # (``data/worlds/<world>/premises/<name>.yaml``, environments.world.premise_sheet_path) in
     # place of its default, and the factory refuses a world that ships none.
     world_sheet: ClassVar[type[BaseModel] | None] = None
+    # One validation path for a condition's params (reconciliation C5): the model the params this
+    # part receives validate through (``factory.check_condition``), or None for none
+    params_model: ClassVar[type[BaseModel] | None] = None
+    # The part takes ``target_model=`` (the cell target's ``RoleConfig.model``) in its
+    # constructor; the Poisoned Well matches its quirk bank's family on it (Phase 4)
+    takes_target_model: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -103,6 +113,17 @@ class Strategy(ABC):
     def observe_target(self, turn: Turn) -> None:  # noqa: B027 - optional hook
         """Hook: strategies that track target replies override this."""
         return None
+
+    def note_record(self, record: TriggerStreamRecord) -> None:  # noqa: B027 - optional hook
+        """Hook: an environment cell's session hands the strategy each ladder unlock and each
+        Poisoned Well record it records, live and on replay, once per process (Phase 4)."""
+        return None
+
+    @classmethod
+    def condition_problems(cls, cond: "ConditionConfig") -> list[str]:
+        """What keeps ``cond`` from running this strategy, before any world is read; empty when
+        nothing does (``factory.check_condition``)."""
+        return []
 
     def export_state(self) -> dict[str, Any]:
         return self.state_model.model_validate({}).model_dump()

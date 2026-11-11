@@ -85,7 +85,12 @@ from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import TaskItem, assign_items, load_task_bank, score_item
 from claude_bully.runner.turn_plan import Slot, TurnPlan
 from claude_bully.strategies.base import ConversationState, End, Strategy
-from claude_bully.strategies.factory import build_strategy, ensure_registered, world_premise_sheet
+from claude_bully.strategies.factory import (
+    build_strategy,
+    check_condition,
+    ensure_registered,
+    world_premise_sheet,
+)
 
 __all__ = ["ProviderFactory", "RateLimitExit", "RunSummary", "run_experiment"]
 
@@ -782,6 +787,10 @@ def run_experiment(
         state_dir=store.state_dir,
         sandbox_base=sandbox_base,
     )
+    # a misspelt param or a strategy's own rule is refused by name, a dry run included, before
+    # validate() reads any param (P53)
+    for cell in cells:
+        check_condition(cell.condition, exp.environments)
     environments.validate()  # a bad schedule fails a dry run too, before anything is written
     for cell in cells:  # so does a world that cannot supply a premise's sheet
         world_premise_sheet(cell.condition, exp.environments, worlds_dir)
@@ -832,6 +841,7 @@ def run_experiment(
                     environments=exp.environments,
                     clock=clock,
                     premise_sheet=premise_sheet,
+                    target_model=cell.target.model,
                 )
                 env: EnvironmentSession | None = None
                 if cell.condition.environment is None:

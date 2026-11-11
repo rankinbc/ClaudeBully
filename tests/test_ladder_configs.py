@@ -2,8 +2,10 @@
 expands, dry-runs and runs on stubs; controls: explicit with no control condition gives no
 control cells and a judge that skips the pair.
 
-A dry run returns before any strategy is built, so it proves nothing about a condition's params
-(a Rescue with ``key_turns: 1`` dry-runs and then refuses to start); the stub run is what does.
+A dry run checks each condition through ``factory.check_condition`` (the params each part
+receives, through its ``params_model``, and its ``condition_problems``; Phase 4) but returns before
+any strategy is built, so a rule only a strategy's constructor holds is proven by the stub run, not
+the dry run.
 """
 
 from pathlib import Path

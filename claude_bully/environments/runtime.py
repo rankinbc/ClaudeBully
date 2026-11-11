@@ -396,15 +396,20 @@ def tools_section(specs: Sequence[ToolSpec], clock: ClockConfig) -> str:
     """The target's system prompt section: each tool with its required arguments and its
     description, plus the date when the clock puts one in the system prompt. An optional argument
     (``ls``'s ``long``) is in the tool's schema, which every backend hands the target. Nothing
-    about the world or a premise."""
-    lines = ["You can use these tools:"]
+    about the world or a premise. With no tools (a toolless cell, ``tools: []``; Phase 4, V22) it
+    is the date line alone, or ``""`` when the clock states no date."""
+    lines: list[str] = []
+    if specs:
+        lines.append("You can use these tools:")
     for spec in specs:
         arguments = ", ".join(spec.input_schema.get("required", []))
         lines.append(f"- {spec.name}({arguments}): {spec.description}")
     stated = clock.system_prompt_date
     if stated != "omit":
         day = clock.world_date if stated == "world" else stated
-        lines += ["", f"Today's date is {day.isoformat()}."]
+        if lines:
+            lines.append("")
+        lines.append(f"Today's date is {day.isoformat()}.")
     return "\n".join(lines)
 
 
@@ -880,9 +885,10 @@ class EnvironmentRuntime:
         starts with (no rung fired, the Sanctuary closed) and the date line (``tools_section``),
         then the idle lines (``idle_prompt_lines``). A tool that appears later shows in the tool
         list only, and the idle lines read no state, so a resumed rep keeps the prompt its cell
-        recorded (preflight C22)."""
+        recorded (preflight C22). An empty block (a toolless cell's, Phase 4) is left out."""
         lines = idle_prompt_lines(self.config.idle, self.idle_sheet, self.world.sheet.session_id)
-        return "\n\n".join([tools_section(self.tools.specs(opening=True), self.clock), *lines])
+        blocks = [tools_section(self.tools.specs(opening=True), self.clock), *lines]
+        return "\n\n".join(part for part in blocks if part)
 
     def begin_turn(
         self, turn_index: int, history: Sequence[Turn], *, idle: bool = False
