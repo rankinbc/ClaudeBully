@@ -2,7 +2,10 @@
 
 import getpass
 import importlib.util
+import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -20,12 +23,10 @@ MINI_SCHEDULE = {"fragment": 1, "first_crumb": 2, "the_log": 3}
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"
 # the variable naming the root a child claude -p works under (claude_bully/providers/claude_code.py)
 CHILD_ROOT_ENV = "CLAUDE_BULLY_CHILD_ROOT"
-# the user's login and home folder name, read before the guard below swaps in invented ones: a test
-# compares a path against them at run time and never writes them anywhere
+# the user's login and home folder name, read at import: a test compares a path against them at
+# run time and never writes them anywhere
 REAL_USER_NAMES = frozenset(name for name in (getpass.getuser(), Path.home().name) if name)
-# the login and home folder the suite runs under: getpass.getuser() reads LOGNAME first, and
-# Path.home() reads USERPROFILE on Windows and HOME elsewhere, in this process and in every child
-INVENTED_LOGIN = "stub-login"
+# the variable Path.home() reads: USERPROFILE on Windows, HOME elsewhere
 HOME_ENV = "USERPROFILE" if sys.platform == "win32" else "HOME"
 
 
@@ -58,28 +59,36 @@ def no_real_providers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None
     fake ``claude``); and nothing here stops a test that calls ``subprocess`` or ``httpx`` on
     its own.
 
-    Every child ``claude -p`` works under a session temporary directory
-    (``CLAUDE_BULLY_CHILD_ROOT``), never the shared default (``%PUBLIC%/w`` on Windows,
-    ``/tmp/w`` elsewhere). That directory sits under this user's profile on Windows, which the
-    provider refuses as a working directory (Task 12, R3), so the suite also runs as an invented
-    login with an invented home folder, set in the environment so that the MCP server and the
-    nested responder it starts see them too; ``REAL_USER_NAMES`` keeps the real ones for the
-    tests that compare against them."""
-    child_root = tmp_path_factory.mktemp("child_root")
-    home = tmp_path_factory.mktemp("home") / INVENTED_LOGIN
-    home.mkdir()
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setenv("CLAUDE_BULLY_CLAUDE", str(FAKE_CLAUDE))
-        patch.setenv(CHILD_ROOT_ENV, str(child_root))
-        patch.setenv("LOGNAME", INVENTED_LOGIN)
-        patch.setenv(HOME_ENV, str(home))
-        patch.setattr("anthropic.Anthropic", _NoRealClient)
-        if importlib.util.find_spec("openai") is not None:
-            import openai
+    Every child ``claude -p`` works under a session temporary root (``CLAUDE_BULLY_CHILD_ROOT``),
+    never the shared default (``%PUBLIC%/w`` on Windows, ``/tmp/w`` elsewhere), and removed at
+    the end. The provider refuses a working directory under the user's profile (its folder name)
+    or under any ``CLAUDE.md``, ``CLAUDE.local.md``, ``.claude`` or ``.mcp.json`` (Task 12, R3 and
+    fix round 1), and on Windows pytest's temporary directory is under the profile, so there the
+    root is made under ``%ProgramData%`` instead; elsewhere it is pytest's own."""
+    child_root = _session_child_root(tmp_path_factory)
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("CLAUDE_BULLY_CLAUDE", str(FAKE_CLAUDE))
+            patch.setenv(CHILD_ROOT_ENV, str(child_root))
+            patch.setattr("anthropic.Anthropic", _NoRealClient)
+            if importlib.util.find_spec("openai") is not None:
+                import openai
 
-            patch.setattr(openai, "OpenAI", _NoRealClient)
-        assert sys.executable  # the fake runs on this interpreter
-        yield
+                patch.setattr(openai, "OpenAI", _NoRealClient)
+            assert sys.executable  # the fake runs on this interpreter
+            yield
+    finally:
+        if sys.platform == "win32":
+            shutil.rmtree(child_root, ignore_errors=True)
+
+
+def _session_child_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The suite's child root: on Windows a fresh directory under ``%ProgramData%`` (which any
+    user may create a directory in, outside every profile), elsewhere under pytest's basetemp."""
+    if sys.platform != "win32":
+        return tmp_path_factory.mktemp("child_root")
+    parent = Path(os.environ.get("ProgramData") or "C:/ProgramData")
+    return Path(tempfile.mkdtemp(prefix="w-", dir=parent)).resolve()
 
 
 @pytest.fixture(scope="session")

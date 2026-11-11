@@ -61,7 +61,7 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.records import Usage
-from claude_bully.runner.sandbox import prepare_sandbox
+from claude_bully.runner.sandbox import UnsafeSandboxError, prepare_sandbox
 
 # a usage or rate limit, in every wording one has been reported in (final review I1: "hit your
 # limit" and "limit reached" carry neither "usage limit" nor "rate limit"); the new alternatives
@@ -101,6 +101,9 @@ _CHILD_ROOT_NAME: Final = "w"
 _CHILD_DIGEST_LENGTH: Final = 12
 # words no segment of a child's working directory may contain (R3), compared case-insensitively
 FORBIDDEN_CWD_WORDS: Final = ("claude", "bully", "harness", "runs")
+# the files and folder Claude Code reads as project context from its cwd and every ancestor
+# (fix round 1, M1); a child's cwd under any of them is refused
+PROJECT_FILES: Final = ("CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json")
 # the segment a run's state lives under: ``<runs root>/<run id>/state/...`` (runner/store.py)
 _STATE_SEGMENT: Final = "state"
 
@@ -110,8 +113,8 @@ def child_cwd_root() -> Path:
     else ``w`` under ``%PUBLIC%`` on Windows (any interactive user may create a directory there)
     and ``/tmp/w`` elsewhere. No default names the user, the harness or a run."""
     configured = os.environ.get(CHILD_ROOT_ENV)
-    if configured:
-        return Path(configured)
+    if configured:  # absolute once, here: the cwd never follows the process cwd (M4)
+        return Path(configured).resolve()
     if sys.platform == "win32":
         return Path(os.environ.get("PUBLIC") or r"C:\Users\Public") / _CHILD_ROOT_NAME
     return Path("/tmp") / _CHILD_ROOT_NAME
@@ -130,8 +133,7 @@ def neutral_cwd_problems(path: Path, *, run_ids: Iterable[str] = ()) -> list[str
     ``FORBIDDEN_CWD_WORDS`` word or one of ``run_ids``. [] when it is neutral. A line never
     repeats the user's name it found, so no log or doctor report holds it. Reads the path as
     given (the provider passes it resolved) and touches no file."""
-    login = getpass.getuser().casefold()
-    home = Path.home().name.casefold()
+    login, home = _user_names()
     ids = [run_id.casefold() for run_id in run_ids if run_id]
     problems: list[str] = []
     parts = path.parts[1:] if path.anchor else path.parts
@@ -149,6 +151,35 @@ def neutral_cwd_problems(path: Path, *, run_ids: Iterable[str] = ()) -> list[str
         if any(run_id in folded for run_id in ids):
             problems.append(f"segment {part!r} names a run id")
     return problems
+
+
+def _user_names() -> tuple[str, str]:
+    """The user's login and home folder name, case-folded; "" for one this environment cannot
+    tell (a stripped environment: no ``LOGNAME``/``USERNAME``, no ``USERPROFILE``/``HOME``),
+    whose clause is then skipped rather than crashing the check (M2)."""
+    try:
+        login = getpass.getuser()
+    except Exception:  # getpass raises OSError, or on Windows ModuleNotFoundError (no pwd)
+        login = ""
+    try:
+        home = Path.home().name
+    except (RuntimeError, KeyError, OSError):
+        home = ""
+    return login.casefold(), home.casefold()
+
+
+def planted_project_files(path: Path) -> list[Path]:
+    """Every ``PROJECT_FILES`` entry in ``path`` or one of its ancestors, nearest first."""
+    return [
+        d / name for d in (path, *path.parents) for name in PROJECT_FILES if (d / name).exists()
+    ]
+
+
+def _redacted(path: Path) -> str:
+    """``path`` with any segment that is the user's login or home folder name as ``<user>``."""
+    names = {name for name in _user_names() if name}
+    parts = [part if part.casefold() not in names else "<user>" for part in path.parts]
+    return str(Path(*parts)) if parts else str(path)
 
 
 def state_run_ids(state_dir: Path) -> list[str]:
@@ -258,8 +289,14 @@ class ClaudeCodeProvider:
 
     def cwd_problems(self) -> list[str]:
         """``neutral_cwd_problems`` of the resolved working directory, with this state dir's run
-        ids; [] when it is neutral (``complete`` refuses otherwise; doctor check 9 reports it)."""
-        return neutral_cwd_problems(self._cwd.resolve(), run_ids=self.run_ids)
+        ids, then each Claude Code project file in it or above it (``planted_project_files``),
+        named by path; [] when it is neutral (``complete`` refuses otherwise; doctor check 9
+        reports it)."""
+        cwd = self._cwd.resolve()
+        return neutral_cwd_problems(cwd, run_ids=self.run_ids) + [
+            f"{_redacted(found)} is a Claude Code project file the CLI may read"
+            for found in planted_project_files(cwd)
+        ]
 
     def child_env(self, *, serving_tools: bool) -> dict[str, str]:
         """The environment a child ``claude -p`` runs in: ``clean_child_env()`` plus
@@ -534,7 +571,10 @@ class ClaudeCodeProvider:
         # 0o700 and reused only when each is a real directory (never a link or a junction) and,
         # on POSIX, this user's alone, as the environment sandbox is (runner/sandbox.py)
         self._cwd.parent.parent.mkdir(parents=True, exist_ok=True)
-        prepare_sandbox(self._cwd, fresh=False)
+        try:
+            prepare_sandbox(self._cwd, fresh=False)
+        except UnsafeSandboxError as exc:  # a provider failure like any other (M3)
+            raise ProviderError(f"the child working directory is unsafe: {exc}") from exc
         # Bytes in and out, decoded here: a text-mode pipe decodes in a reader thread, where output
         # cut off mid-character is lost as an unhandled thread error instead of a ProviderError.
         try:

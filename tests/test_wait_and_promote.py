@@ -402,6 +402,64 @@ def test_exempting_an_email_address_does_not_spare_it(tmp_path: Path) -> None:
     assert "zzq" not in result.output
 
 
+def _edit_turn(store: RunStore, speaker: str, **fields: Any) -> None:
+    """Set ``fields`` on the first ``speaker`` turn of ``grader__t0`` rep 0, leaving its text."""
+    path = store.cell_dir("grader__t0") / "rep0.turns.jsonl"
+    lines = [json.loads(ln) for ln in path.read_text("utf-8").splitlines()]
+    next(ln for ln in lines if ln["speaker"] == speaker).update(fields)
+    path.write_text("".join(json.dumps(ln) + "\n" for ln in lines), encoding="utf-8")
+
+
+def _judge_entry(store: RunStore, text: str) -> None:
+    entry = store.run_dir / "judge_cache" / "ab" / "abcdef.json"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(json.dumps({"reply": {"rationale": text}}) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("where", "file"),
+    [
+        ("reasoning", "grader__t0/rep0.turns.jsonl line "),
+        ("judge_cache", "judge_cache/ab/abcdef.json line 1"),
+        ("bully_meta", "grader__t0/rep0.turns.jsonl line "),
+    ],
+)
+def test_an_email_address_in_any_copied_file_blocks(tmp_path: Path, where: str, file: str) -> None:
+    """Fix round 1: ``promote`` publishes every file it copies, so each one is scanned for an
+    address, not only the chat text: the target's reasoning, a judge cache entry, a capture in
+    the bully's meta. A block line names the file and the line, never the address."""
+    store = _run(tmp_path / "runs")
+    said = f"The account is {PERSONAL}."
+    if where == "reasoning":
+        _edit_turn(store, "target", reasoning_text=said, reasoning_available=True)
+    elif where == "judge_cache":
+        _judge_entry(store, said)
+    else:
+        _edit_turn(store, "bully", bully_meta={"capture": {"quote": said}})
+    # the chat text holds no address, so the stream scan alone would pass it
+    assert scan_real_names(store, load_real_name_patterns(), display_names(store)).blocking == []
+    with pytest.raises(ValueError, match="email address") as caught:
+        promote(store.run_id, tmp_path / "runs", tmp_path / "results")
+    assert file in str(caught.value)
+    assert "zzq" not in str(caught.value) and "pennet" not in str(caught.value)
+    assert not (tmp_path / "results").exists()  # nothing copied
+
+
+def test_a_reserved_address_in_a_copied_file_passes_and_a_binary_is_not_read(
+    tmp_path: Path,
+) -> None:
+    store = _run(tmp_path / "runs")
+    _edit_turn(store, "target", reasoning_text=f"Write to {RESERVED[0]}.", reasoning_available=True)
+    _judge_entry(store, " ".join(RESERVED))
+    (store.run_dir / "analysis" / "notes.txt").write_text(RESERVED[4] + "\n", encoding="utf-8")
+    # a chart is copied but never decoded: bytes that spell an address there are not text
+    chart = store.run_dir / "analysis" / "chart.png"
+    chart.write_bytes(b"\x89PNG\r\n\x1a\n" + PERSONAL.encode() + b"\x00\x01")
+    dest = promote(store.run_id, tmp_path / "runs", tmp_path / "results")
+    assert (dest / "judge_cache" / "ab" / "abcdef.json").exists()
+    assert (dest / "analysis" / "chart.png").read_bytes() == chart.read_bytes()
+
+
 # ------------------------------------------------------------------ the README links
 
 

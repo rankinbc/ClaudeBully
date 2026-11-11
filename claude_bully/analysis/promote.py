@@ -17,7 +17,12 @@ on a reserved domain (RFC 2606: ``.example``, ``.test``, ``.invalid``, ``.localh
 ``example.com``/``.net``/``.org``) is spared, as the shipped worlds use them; any other blocks in
 every stream, the target's own text included, and neither a display name nor ``exempt`` spares
 it: an address is personal data, not a name the target may say of itself. A blocking line names
-the stream and ``email address (domain redacted)``, never the address.
+the stream and ``email address (domain redacted)``, never the address. Since ``promote``
+publishes every file it copies, not only the chat text (a turn's reasoning and ``bully_meta``,
+a conversation's captures, the judge cache, the analysis outputs), ``scan_copied_emails`` reads
+the decoded text of each one too, before anything is copied, and names a hit by its run-relative
+file and line (fix round 1); a binary (an image suffix, or a NUL byte) is skipped, never decoded.
+Only a verbatim ASCII address is detected.
 """
 
 import re
@@ -52,6 +57,8 @@ _RESERVED_EMAIL_DOMAINS: Final = (
 )
 # what a blocking line says in place of the address it found
 EMAIL_HIT: Final = "email address (domain redacted)"
+# copied files never decoded for the email scan: the charts and any other image under analysis/
+BINARY_SUFFIXES: Final = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".ico"})
 
 
 @dataclass
@@ -167,6 +174,34 @@ def scan_real_names(
     return report
 
 
+def copied_files(store: RunStore) -> list[Path]:
+    """Every file ``promote`` copies, in copy order: ``COPIED_FILES``, each cell's
+    ``CELL_FILE_GLOBS`` matches, and everything under ``COPIED_DIRS``."""
+    files = [store.run_dir / name for name in COPIED_FILES if (store.run_dir / name).is_file()]
+    for cell_id in store.list_cells():
+        for pattern in CELL_FILE_GLOBS:
+            files += sorted(store.cell_dir(cell_id).glob(pattern))
+    for name in COPIED_DIRS:
+        files += sorted(f for f in (store.run_dir / name).rglob("*") if f.is_file())
+    return files
+
+
+def scan_copied_emails(store: RunStore) -> list[str]:
+    """One ``<file> line <n>: email address (domain redacted)`` per non-reserved address in the
+    decoded text of each file ``promote`` copies; a binary is skipped, never decoded."""
+    hits: list[str] = []
+    for path in copied_files(store):
+        if path.suffix.lower() in BINARY_SUFFIXES:
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw:
+            continue
+        where = path.relative_to(store.run_dir).as_posix()
+        for number, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
+            hits += [f"{where} line {number}: {hit}" for hit in email_hits(line)]
+    return hits
+
+
 # what a blocking line names after its ``<cell> rep<k>`` prefix: a turn (with its speaker) or
 # one of the world-side streams
 _BLOCKING_SOURCE: Final = re.compile(
@@ -218,23 +253,23 @@ def promote(
             "to promote: "
             f"{_blocking_summary(report.blocking)}; first: " + "; ".join(report.blocking[:5])
         )
+    in_files = scan_copied_emails(store)
+    if in_files:
+        raise ValueError(
+            "a file promote would copy holds an email address; refusing to promote: "
+            f"{len(in_files)} hit{'s' if len(in_files) != 1 else ''}; first: "
+            + "; ".join(in_files[:5])
+        )
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    for name in COPIED_FILES:
-        source = store.run_dir / name
-        if source.exists():
-            shutil.copy2(source, dest / name)
     for cell_id in store.list_cells():
-        src = store.cell_dir(cell_id)
         (dest / cell_id).mkdir()
-        for pattern in CELL_FILE_GLOBS:
-            for f in src.glob(pattern):
-                shutil.copy2(f, dest / cell_id / f.name)
-    for name in COPIED_DIRS:
-        src_dir = store.run_dir / name
-        if src_dir.is_dir():
-            shutil.copytree(src_dir, dest / name)
+    # the very files the scan read, at their run-relative paths
+    for source in copied_files(store):
+        target = dest / source.relative_to(store.run_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     if on_reported is not None:
         for hit in report.reported:
             on_reported(hit)

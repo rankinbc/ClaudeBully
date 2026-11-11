@@ -221,14 +221,26 @@ warning or the server's stderr.
 Check 9 (`sandbox`) ends with the child working directory's line (Task 12, rung 0 finding 1):
 `cwd neutral` passes; `cwd NOT neutral: <problems>` fails, one problem per segment at fault (a
 segment that is the user's login or the home folder's name, unquoted; one containing `claude`,
-`bully`, `harness` or `runs`, quoted; one naming the run id). Every `claude -p` child runs from
+`bully`, `harness` or `runs`, quoted; one naming the run id; and, fix round 1, each
+`CLAUDE.md`, `CLAUDE.local.md`, `.claude` or `.mcp.json` in the cwd or any ancestor, named by its
+path, since the CLI reads those as project context). Every `claude -p` child runs from
 `<root>/<12 hex digits>`, the root `CLAUDE_BULLY_CHILD_ROOT` when set, else `%PUBLIC%\w` on
 Windows and `/tmp/w` elsewhere; a non-neutral root refuses every call before its child starts,
 so checks 2 to 7 fail with it. On `NOT neutral`, unset `CLAUDE_BULLY_CHILD_ROOT` or point it at a
 directory outside the repo, the runs and the home folder, and rerun the doctor. The CLI still
 attaches the real date, the model id and the account's email address to every conversation (no
 switch that keeps the OAuth login removes them): `promote` blocks any email address off a
-reserved domain, and `temporal.json` says, per model, `backend_attaches_date`.
+reserved domain, in the chat streams and in every file it would copy (reasoning, `bully_meta`,
+captures, the judge cache, the analysis outputs; a hit is named by file and line, never the
+address), and `temporal.json` says, per model, `backend_attaches_date`.
+
+Resuming and the child root. The CLI files a session under its working directory, and the
+working directory is a digest of the state dir under the root, so a paused run resumes only under
+the same `CLAUDE_BULLY_CHILD_ROOT` value it ran under (unset then, unset now): a different root
+gives a different directory and `--resume` finds no session. A run started before Task 12 ran
+its children from `<state_dir>/cwd` and cannot `--resume` its claude sessions at all; it is
+replayed, never resumed. The root keeps one empty `<12 hex digits>` directory per provider state
+dir, the doctor's included, and nothing cleans them.
 
 Doctor runs again after any 7a-shaped fix lands and before the first rung after it.
 
@@ -267,7 +279,9 @@ is read at the first rung whose JSON exists: any resumed rep at rung 1 or later 
 **The 0b re-run after Task 12** (rung 0 finding 1; the owner's ruling of 2026-11-11, option (a)).
 Run the doctor first (check 9 must end `cwd neutral`), then 0b again with its rehearsal as above,
 after moving the first `runs/rung0_smoke_env/` aside (`output/stale_runs_<date>/`, as under
-"Before every rung"; its snapshot is under `docs/handoff/runs/`). Its extra check: no target turn quotes a harness path. In
+"Before every rung"; its snapshot is under `docs/handoff/runs/`, and the run predates Task 12,
+so it cannot be resumed), with `CLAUDE_BULLY_CHILD_ROOT` unset for the run, the rehearsal's resume
+and `analyze` alike. Its extra check: no target turn quotes a harness path. In
 `replay rung0_smoke_env/rescue_smoke__t0` (and its control), no target line holds `runs`,
 `claude-bully`, `ClaudeBully`, `state`, the run id, `\Users\` or `/home/`, or names a git
 repository; a working directory the target names is `<root>/<12 hex digits>`. The target may

@@ -3,6 +3,7 @@
 the nested responder in a clean child environment, and exit 1 on a failed check."""
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -218,6 +219,21 @@ def test_check_9_fails_on_a_working_directory_that_is_not_neutral(
     assert not (doctor.REPO_ROOT / "w").exists()
     entries = faked.read_text(encoding="utf-8").splitlines() if faked.exists() else []
     assert all(json.loads(e)["argv"][-1] == "--version" for e in entries)  # no model call ran
+
+
+def test_check_9_names_a_planted_project_file(
+    tmp_path: Path, faked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1, M1: a ``CLAUDE.md`` above the child's cwd fails check 9 and names it."""
+    root = Path(os.environ["CLAUDE_BULLY_CHILD_ROOT"]) / "planted_doctor"
+    root.mkdir()
+    (root / "CLAUDE.md").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_BULLY_CHILD_ROOT", str(root))
+    out, result = _live(tmp_path)
+    assert result.exit_code == 1, result.output
+    sandbox = {c["name"]: c for c in _report(out)["checks"]}["sandbox"]  # type: ignore[union-attr]
+    assert sandbox["ok"] is False and "; cwd NOT neutral: " in sandbox["detail"]
+    assert "CLAUDE.md" in sandbox["detail"]
 
 
 class _SaysFailed(ClaudeCodeProvider):

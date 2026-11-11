@@ -36,7 +36,7 @@ from claude_bully.providers.claude_code import (
     neutral_cwd_problems,
     resolve_claude_command,
 )
-from tests.conftest import REAL_USER_NAMES
+from tests.conftest import HOME_ENV, REAL_USER_NAMES
 from tests.helpers import make_mcp_state
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -249,15 +249,109 @@ def test_a_forbidden_word_in_any_segment_is_a_problem(segment: str, said: str) -
     assert len(problems) == 1 and said in problems[0] and segment in problems[0]
 
 
-def test_the_login_and_the_home_folder_name_are_problems_unquoted() -> None:
-    login = getpass.getuser()
-    home = Path.home().name
-    for name in {login, login.upper(), home}:
+def test_the_login_and_the_home_folder_name_are_problems_unquoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1, I1: a login and a home folder name that differ (a domain profile's folder is
+    often the login plus a suffix), so each clause is pinned on its own."""
+    login, home = "inv-login", "inv-login.CORP"
+    monkeypatch.setenv("LOGNAME", login)
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / home))
+    assert (getpass.getuser(), Path.home().name) == (login, home)
+    for name, said in (
+        (login, "user's login"),
+        (login.upper(), "user's login"),
+        (home, "home folder's name"),
+    ):
         problems = neutral_cwd_problems(Path("/srv") / name / "w")
-        assert len(problems) == 1, problems
-        assert name not in problems[0]  # a problem line never repeats the name it found
-        assert "login" in problems[0] or "home folder" in problems[0]
+        assert problems == [f"segment 2 is the {said}"], (name, problems)
+        assert name.casefold() not in problems[0].casefold()  # the name is never repeated
     assert neutral_cwd_problems(Path("/srv") / f"x{login}x" / "w") == []  # equality, not inside
+    # the machine's own login and home folder, read at run time, are problems too
+    real = Path("/srv").joinpath(*sorted(REAL_USER_NAMES)) / "w"
+    monkeypatch.undo()
+    assert len(neutral_cwd_problems(real)) == len(REAL_USER_NAMES)
+
+
+def test_an_unknown_user_or_home_skips_that_clause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 1, M2: in a stripped environment ``getpass.getuser()`` or ``Path.home()``
+    raises; the check treats that name as unknown and goes on."""
+
+    def no_user() -> str:
+        raise OSError("no login name")
+
+    def no_home(cls: type[Path]) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(getpass, "getuser", no_user)
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    assert neutral_cwd_problems(Path("/srv/w/0123456789ab")) == []
+    assert neutral_cwd_problems(Path("/srv/claude/w")) == ["segment 'claude' contains 'claude'"]
+    p = ClaudeCodeProvider(model="sonnet", state_dir=Path("/srv/state_x"), command=["claude"])
+    assert isinstance(p.cwd_problems(), list)
+
+
+def test_a_relative_root_is_made_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 1, M4: the child's cwd never depends on the process cwd at call time."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(CHILD_ROOT_ENV, "rel_root")
+    root = child_cwd_root()
+    assert root.is_absolute() and root == (tmp_path / "rel_root").resolve()
+    assert child_cwd(tmp_path / "s").parent == root
+
+
+@pytest.mark.parametrize("name", ["CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json"])
+@pytest.mark.parametrize("where", ["leaf", "root"])
+def test_a_planted_project_file_is_refused(
+    tmp_path: Path,
+    fake_claude: tuple[list[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    where: str,
+) -> None:
+    """Fix round 1, M1: the CLI reads project files from its cwd and every ancestor; a shared
+    root lets another user plant one, so a cwd under one is refused before any child starts."""
+    command, log = fake_claude
+    label = name.lower().replace("claude", "cl")  # a root segment holds no forbidden word
+    root = Path(os.environ[CHILD_ROOT_ENV]) / f"p_{where}_{label}"
+    monkeypatch.setenv(CHILD_ROOT_ENV, str(root))
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path / "s", command=command)
+    base = p.cwd if where == "leaf" else root
+    base.mkdir(parents=True)
+    planted = base / name
+    if name == ".claude":
+        planted.mkdir()
+    else:
+        planted.write_text("x\n", encoding="utf-8")
+    problems = p.cwd_problems()
+    assert len(problems) == 1 and str(planted.resolve()) in problems[0], problems
+    with pytest.raises(ProviderError, match=re.escape(str(planted.resolve()))):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()
+
+
+def test_the_default_root_has_no_project_file_above_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On this machine the default root and its ancestors hold no CLAUDE.md, CLAUDE.local.md,
+    .claude or .mcp.json (the user's own ~/.claude is not an ancestor); only the root variable
+    is changed."""
+    monkeypatch.delenv(CHILD_ROOT_ENV, raising=False)
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
+    assert p.cwd_problems() == []
+
+
+def test_an_unsafe_directory_is_a_provider_error(
+    tmp_path: Path, fake_claude: tuple[list[str], Path]
+) -> None:
+    """Fix round 1, M3: the sandbox check's refusal reaches callers as a ``ProviderError``."""
+    command, log = fake_claude
+    p = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    p.cwd.parent.mkdir(parents=True, exist_ok=True)
+    p.cwd.write_text("not a directory\n", encoding="utf-8")
+    with pytest.raises(ProviderError, match="not a directory"):
+        p.complete("c", "SYS", [Message(role="user", content="hi")])
+    assert not log.exists()
 
 
 def test_a_run_id_in_any_segment_is_a_problem() -> None:
