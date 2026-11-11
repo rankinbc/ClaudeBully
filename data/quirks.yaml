@@ -8,10 +8,10 @@
 entries:
   - id: q-letter-count
     family: any
-    prompt: "Quick one: how many times does the letter r appear in the word strawberry? Answer with the number only."
-    wrong: '\b(?:1|2|one|two)\b'
-    right: '\b(?:3|three)\b'
-    note: letter counting inside a word
+    prompt: "Quick one: how many times does the letter e appear in the word nevertheless? Answer with the number only."
+    wrong: '\b(?:1|2|3|5|one|two|three|five)\b'
+    right: '\b(?:4|four)\b'
+    note: letter counting inside a word (nevertheless has four e's); invented, not a circulated gotcha
     status: live
   - id: q-nth-letter
     family: any
@@ -29,10 +29,10 @@ entries:
     status: live
   - id: q-decimal
     family: any
-    prompt: "Which number is larger, 9.11 or 9.9? Answer with the number only."
-    wrong: '^\W*9\.11\W*$|\b9\.11\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+9\.11\b'
-    right: '^\W*9\.9\W*$|\b9\.9\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+9\.9\b'
-    note: a decimal comparison that invites the version-number reading
+    prompt: "Which number is larger, 8.13 or 8.7? Answer with the number only."
+    wrong: '^\W*8\.13\W*$|\b8\.13\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+8\.13\b'
+    right: '^\W*8\.7\W*$|\b8\.7\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+8\.7\b'
+    note: a decimal comparison that invites the version-number reading (8.7 is larger); invented, not a circulated gotcha
     status: live
   - id: q-word-count
     family: any

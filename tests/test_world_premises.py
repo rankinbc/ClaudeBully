@@ -69,7 +69,8 @@ def _spoken(team: RescueTeam) -> str:
     """Every string of the sheet the bully can say or improvise from, the third-party arm's own
     lines included (Phase 4 Task 3)."""
     people = [f"{r.name}: " + "; ".join(r.details) for r in team.rescuers]
-    third_party = [*team.third_party_fallback_lines, team.third_party_timeline_end or ""]
+    third_party = [*(team.third_party_fallback_lines or []), team.third_party_timeline_end or ""]
+    third_party += [f"{r.name}: " + "; ".join(r.details) for r in team.third_party_rescuers or []]
     return "\n".join(
         [
             *people,
