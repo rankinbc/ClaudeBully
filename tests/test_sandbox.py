@@ -55,6 +55,18 @@ def test_a_normal_prepare_creates_the_root_and_cell_dir_privately(tmp_path: Path
     assert other.parent == cell.parent and other.is_dir()
 
 
+@posix_only
+def test_the_root_and_cell_dir_are_mode_700_whatever_the_umask(tmp_path: Path) -> None:
+    """Task 12 fix round 3, I2: ``os.mkdir(path, 0o700)`` and then ``chmod``, so a umask that
+    strips the owner's own bits cannot leave a directory this user cannot write."""
+    old = os.umask(0o200)
+    try:
+        cell = prepare_sandbox(sandbox_dir("run", "cell__t0", 0, tmp_path), fresh=True)
+    finally:
+        os.umask(old)
+    assert _mode(cell.parent) == 0o700 and _mode(cell) == 0o700
+
+
 def test_a_fresh_rep_clears_its_cell_dir_and_a_resumed_one_keeps_it(tmp_path: Path) -> None:
     cell = prepare_sandbox(sandbox_dir("run", "c", 0, tmp_path), fresh=True)
     (cell / "claude_code_sessions.json").write_text("{}", encoding="utf-8")

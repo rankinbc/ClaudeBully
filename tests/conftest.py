@@ -93,7 +93,11 @@ def _session_child_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
         return tmp_path_factory.mktemp("child_root")
     parent = Path(os.environ.get("ProgramData") or "C:/ProgramData")
     root = Path(tempfile.mkdtemp(prefix="w-", dir=parent)).resolve() / "w"
-    secure_windows_root(root, WIN_ACL)
+    try:
+        secure_windows_root(root, WIN_ACL)
+    except BaseException:  # a refused root leaves nothing behind under %ProgramData%
+        shutil.rmtree(root.parent, ignore_errors=True)
+        raise
     return root
 
 

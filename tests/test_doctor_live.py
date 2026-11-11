@@ -236,6 +236,23 @@ def test_check_9_names_a_planted_project_file(
     assert "CLAUDE.md" in sandbox["detail"]
 
 
+def test_check_9_fails_on_a_root_that_is_not_private(
+    tmp_path: Path, faked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 3, item 7: a file where the child root should be fails check 9, which ends
+    with the root's reason, and every call is refused before its child starts."""
+    root = Path(os.environ["CLAUDE_BULLY_CHILD_ROOT"]) / "root_is_a_file"
+    root.write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_BULLY_CHILD_ROOT", str(root))
+    out, result = _live(tmp_path)
+    assert result.exit_code == 1, result.output
+    sandbox = {c["name"]: c for c in _report(out)["checks"]}["sandbox"]  # type: ignore[union-attr]
+    assert sandbox["ok"] is False and "; cwd neutral; root NOT private: " in sandbox["detail"]
+    assert "not a directory" in sandbox["detail"], sandbox
+    entries = faked.read_text(encoding="utf-8").splitlines() if faked.exists() else []
+    assert all(json.loads(e)["argv"][-1] == "--version" for e in entries)  # no model call ran
+
+
 class _SaysFailed(ClaudeCodeProvider):
     """A provider whose stream says its server failed, whatever the calls did."""
 

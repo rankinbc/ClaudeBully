@@ -8,7 +8,8 @@ names the experiment, the run or the repo, and the digest is stable per (run, ce
 A shared POSIX ``/tmp`` is hostile (CWE-377, CWE-379): another user could create the root first or
 plant a symbolic link, and the target's state would land where they chose. So:
 
-- the root and every cell directory are created with ``os.mkdir(path, 0o700)``;
+- the root and every cell directory are created with ``os.mkdir(path, 0o700)`` and then, on POSIX,
+  ``chmod``-ed to 0o700, so the umask cannot change the mode;
 - a directory that already exists is used only if ``os.lstat`` shows a real directory, not a link
   (or a Windows junction), and on POSIX one owned by this user with no group or other permission
   bits; anything else is refused with ``UnsafeSandboxError``;
@@ -96,4 +97,7 @@ def _private_dir(path: Path) -> None:
         os.mkdir(path, 0o700)
     except FileExistsError:
         pass
+    else:
+        if sys.platform != "win32":  # the umask may have taken bits from the mode
+            os.chmod(path, 0o700)
     verify_private_dir(path)
