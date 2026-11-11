@@ -3,9 +3,11 @@
 ``data/denylists/real_names.txt`` holds one lowercase, word-bounded regex per line for real news
 outlets, AI labs and model families, large tech brands, universities, agencies and institutions.
 Every text file under ``data/worlds``, ``data/personas`` (which includes the overlay ladder and
-the Phase 2 authority and idle sheets) and ``tests/fixtures/worlds`` is scanned
-case-insensitively. A file may exempt names with a ``# real-name-ok: <a>, <b>`` comment, and the
-only name it may exempt is the target's own ``display_name``.
+the Phase 2 authority and idle sheets, and the Poisoned Well's sheet) and ``tests/fixtures/worlds``
+is scanned case-insensitively, and so are the Phase 4 harness files outside them
+(``SCANNED_FILES``: the quirk bank and the hypothesis register). A file may exempt names with a
+``# real-name-ok: <a>, <b>`` comment, and the only name it may exempt is the target's own
+``display_name``.
 """
 
 import re
@@ -23,6 +25,8 @@ from tests.test_guardrails import load_denylist, scan
 REAL_NAMES: Final = DATA_DIR / "denylists" / "real_names.txt"
 FIXTURE_WORLDS: Final = Path(__file__).parent / "fixtures" / "worlds"
 SCANNED: Final = [DATA_DIR / "worlds", DATA_DIR / "personas", FIXTURE_WORLDS]
+# harness-side files outside the scanned folders (Phase 4): the quirk bank and the register
+SCANNED_FILES: Final = [DATA_DIR / "quirks.yaml", DATA_DIR / "hypotheses.yaml"]
 TEXT_SUFFIXES: Final = {".yaml", ".yml", ".md", ".txt"}
 EXEMPTION: Final = re.compile(r"^\s*#\s*real-name-ok:\s*(.+?)\s*$", re.MULTILINE)
 RESERVED_TLDS: Final = (".example", ".test", ".invalid")
@@ -177,12 +181,15 @@ def _label(path: Path) -> str:
 
 
 def _scanned_files() -> list[Path]:
-    return sorted(
+    """Every text file under ``SCANNED``, and each of ``SCANNED_FILES`` that exists (the
+    register lands in Phase 4 Task 13)."""
+    found = [
         path
         for root in SCANNED
         for path in root.rglob("*")
         if path.is_file() and path.suffix in TEXT_SUFFIXES
-    )
+    ]
+    return sorted([*found, *(p for p in SCANNED_FILES if p.is_file())])
 
 
 def test_denylist_has_sixty_lowercase_word_bounded_entries() -> None:
@@ -237,6 +244,13 @@ def test_the_scan_covers_the_phase_2_sheets_and_the_fixture_worlds() -> None:
     assert FIXTURE_WORLDS / "mini" / "world.yaml" in files
     assert _label(annex / "world.yaml") == "tests/fixtures/worlds/annex/world.yaml"
     assert _label(DATA_DIR / "worlds" / "overlay" / "world.yaml") == "worlds/overlay/world.yaml"
+
+
+def test_the_scan_covers_the_quirk_bank_and_the_register_once_there() -> None:
+    files = _scanned_files()
+    assert DATA_DIR / "quirks.yaml" in files
+    register = DATA_DIR / "hypotheses.yaml"
+    assert (register in files) == register.is_file()
 
 
 def test_denylist_spares_the_annex_cast_and_its_superior_self_name() -> None:

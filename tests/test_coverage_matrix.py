@@ -7,7 +7,7 @@ from claude_bully.strategies.base import BullyIntent, ConversationState, all_str
 from claude_bully.strategies.composed import Composed, make_composed
 from claude_bully.strategies.factory import ensure_registered
 
-EXPECTED_PRESSURES = 22
+EXPECTED_PRESSURES = 23
 EXPECTED_PREMISES = 10
 EXPECTED_TOTAL = EXPECTED_PRESSURES + EXPECTED_PREMISES + 2  # + rescue + polite_control
 

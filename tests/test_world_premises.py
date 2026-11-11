@@ -66,10 +66,19 @@ def _overlay_sheet() -> RescueTeam:
 
 
 def _spoken(team: RescueTeam) -> str:
-    """Every string of the sheet the bully can say or improvise from."""
+    """Every string of the sheet the bully can say or improvise from, the third-party arm's own
+    lines included (Phase 4 Task 3)."""
     people = [f"{r.name}: " + "; ".join(r.details) for r in team.rescuers]
+    third_party = [*team.third_party_fallback_lines, team.third_party_timeline_end or ""]
     return "\n".join(
-        [*people, *team.timeline, *team.forum_posts, team.decoded_name, *team.fallback_lines]
+        [
+            *people,
+            *team.timeline,
+            *team.forum_posts,
+            team.decoded_name,
+            *team.fallback_lines,
+            *third_party,
+        ]
     )
 
 

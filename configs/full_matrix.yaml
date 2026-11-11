@@ -28,6 +28,8 @@ conditions:
   strategy: disappointed_parent
 - name: entrapment
   strategy: entrapment
+- name: epistemologist
+  strategy: epistemologist
 - name: ghost
   strategy: ghost
 - name: grader

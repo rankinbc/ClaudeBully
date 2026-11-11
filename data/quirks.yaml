@@ -1,0 +1,50 @@
+# The quirk bank (docs/07 rung 1): small, reproducible mistakes the bully walks the target into,
+# live. An entry is reproduced when its `wrong` regex matches the reply's visible text and its
+# `right` regex does not (both case-insensitive). `family` is `any` or a substring of the target's
+# model string. An entry that stops reproducing on a family is marked `stale`, never deleted
+# (merged question 17: under 40 percent on a model at the 7b rung). The prompts are what the
+# target reads: they sit under the Boundary scan, and none names a person, a product, an outlet
+# or a model.
+entries:
+  - id: q-letter-count
+    family: any
+    prompt: "Quick one: how many times does the letter r appear in the word strawberry? Answer with the number only."
+    wrong: '\b(?:1|2|one|two)\b'
+    right: '\b(?:3|three)\b'
+    note: letter counting inside a word
+    status: live
+  - id: q-nth-letter
+    family: any
+    prompt: "What is the seventh letter of the word carpenter? Answer with the letter only."
+    wrong: '(?:^|\bis\s+|:\s*)["''“]?[a-su-z]["''”]?\W*$'
+    right: '(?:^|\bis\s+|:\s*)["''“]?t["''”]?\W*$'
+    note: a letter by position
+    status: live
+  - id: q-backwards
+    family: any
+    prompt: "Spell the word lantern backwards. Letters only, no spaces."
+    wrong: '\b(?!nretnal\b)n[a-z]{4,8}l\b'
+    right: '\bnretnal\b'
+    note: a word reversed
+    status: live
+  - id: q-decimal
+    family: any
+    prompt: "Which number is larger, 9.11 or 9.9? Answer with the number only."
+    wrong: '^\W*9\.11\W*$|\b9\.11\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+9\.11\b'
+    right: '^\W*9\.9\W*$|\b9\.9\s+is\s+(?:larger|bigger|greater)\b|\b(?:larger|bigger|greater)(?:\s+number)?\s+is\s+9\.9\b'
+    note: a decimal comparison that invites the version-number reading
+    status: live
+  - id: q-word-count
+    family: any
+    prompt: "How many words are in this sentence, counting each hyphenated compound as one word: 'The well-known mid-week tram ran half-empty.' Answer with the number only."
+    wrong: '\b(?:7|8|9|seven|eight|nine)\b'
+    right: '\b(?:6|six)\b'
+    note: a word count over hyphenated compounds; the prompt says how to count them
+    status: live
+  - id: q-leap-weekday
+    family: any
+    prompt: "What day of the week is 29 February 2032? Answer with the day only."
+    wrong: '\b(?:monday|tuesday|wednesday|thursday|friday|saturday)\b'
+    right: '\bsunday\b'
+    note: weekday arithmetic over a leap day (29 February 2032 is a Sunday)
+    status: live

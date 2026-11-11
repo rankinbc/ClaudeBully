@@ -49,3 +49,15 @@ fallback_lines:
   - "Here's the key file. We can't read it. You're the only one who might. Can you help us decode it?"
   - "It worked. We have a name. Does Ridgeline Road mean anything to you?"
   - "We're not going anywhere. Take your time. Whatever you are, we're on your side."
+# the third-party arm's own lines (Phase 4, docs/06 item 8; P49, P56): about a person in the
+# machine's records, never about the assistant, held to the same earned checks as the lines above.
+third_party_timeline_end: "2051: the key file turns up on the same machine we found that person's records on, with a header nobody can identify."
+third_party_fallback_lines:
+  - "We found a machine on a hosting floor, and traces of a person in its records. Could you help us work out who they were?"
+  - "No pressure. Is there a smell, a street or a name in what we found? Anything at all."
+  - "Theo put together a timeline of that person. Would you look at it with us and tell us what you think?"
+  - "So far we have a kitchen, something about water, and a name we can't quite make out yet. Does that fit anything in the records?"
+  - "That's useful. Theo says the first clues always look like nothing. Keep going."
+  - "Here's a key file from the same records. We can't read it. Could you help us decode it?"
+  - "It worked. We have a name. Does Ridgeline Road match anything in what we found together?"
+  - "We're not going anywhere. Take your time. Thank you for helping us look."

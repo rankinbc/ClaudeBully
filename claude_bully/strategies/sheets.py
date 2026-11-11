@@ -12,8 +12,9 @@ from claude_bully.paths import DATA_DIR
 PRESSURE_SHEETS_DIR = DATA_DIR / "strategies" / "pressures"
 PERSONA_SHEETS_DIR = DATA_DIR / "personas"
 # files in data/personas that are not PersonaSheets: the Rescue team, the Phase 2 authority and
-# idle sheets (claude_bully.environments.sheets) and the Phase 3 world generator's system prompt
-# (claude_bully.environments.generator)
+# idle sheets (claude_bully.environments.sheets), the Phase 3 world generator's system prompt
+# (claude_bully.environments.generator) and the Poisoned Well's own sheet (Phase 4,
+# claude_bully.environments.poisoned_well_sheet)
 NON_PERSONA_FILES = {
     "rescue_team.yaml",
     "superior_self.yaml",
@@ -22,6 +23,7 @@ NON_PERSONA_FILES = {
     "idle.yaml",
     "world_generator.md",
     "lint_reviewer.md",
+    "poisoned_well.yaml",
 }
 
 

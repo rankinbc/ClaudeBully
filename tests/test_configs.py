@@ -92,7 +92,7 @@ def test_full_matrix_covers_every_pressure_and_premise() -> None:
     classes = {resolve_class(c).name for c in exp.conditions}
     assert len([c for c in exp.conditions if c.premise]) == 20
     assert "rescue" in classes and "grader" in classes and "ghost" in classes
-    assert len(exp.conditions) == 22 + 20 + 1
+    assert len(exp.conditions) == 23 + 20 + 1
 
 
 def _stubbed(exp: Experiment, turn_budget: int) -> Experiment:

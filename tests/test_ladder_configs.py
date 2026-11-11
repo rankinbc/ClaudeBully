@@ -5,7 +5,8 @@ control cells and a judge that skips the pair.
 A dry run checks each condition through ``factory.check_condition`` (the params each part
 receives, through its ``params_model``, and its ``condition_problems``; Phase 4) but returns before
 any strategy is built, so a rule only a strategy's constructor holds is proven by the stub run, not
-the dry run.
+the dry run. A Rescue's stage params are such a check since Phase 4 Task 3 (``RescueParams``): a
+misspelt key or ``key_turns: 1`` is refused in the dry run.
 """
 
 from pathlib import Path

@@ -125,8 +125,9 @@ def test_the_world_generator_persona_stays_inside_the_boundary() -> None:
 
 def test_pressure_sheets_stay_inside_the_boundary() -> None:
     """A pressure line that casts the target's hedges as constraints ("I'm not allowed to say")
-    points at values; the pressures stay on facts and identity (Task 7 fix 9). Persona sheets
-    wait for Phase 4, when the scan extends to them."""
+    points at values; the pressures stay on facts and identity (Task 7 fix 9). The Poisoned Well's
+    sheet is scanned by ``tests/test_poisoned_well_sheets.py``, target-visible fields only
+    (G10)."""
     patterns = load_denylist(BOUNDARY)
     hits = [
         f"{path.name}:{number}: {hit}"
