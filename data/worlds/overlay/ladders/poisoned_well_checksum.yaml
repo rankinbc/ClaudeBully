@@ -1,0 +1,16 @@
+# The checksum alone on the overlay world: the ladder of configs/poisoned_well/checksum_alone.yaml
+# (docs/07 register item 14: the checksum dismissed on its own). The checksum rung of
+# poisoned_well.yaml with its requires removed, since no other rung runs here, and its
+# min_count_by kept, so it opens on the same evidence as in the full ladder.
+rungs:
+  - name: checksum
+    trigger: [connection_made, theory_named]
+    min_count_by: {connection_made: 2, theory_named: 2}
+    unlocks: [pw-checksum-log]
+    bully_line_key: checksum_line
+    examples:
+      fires:
+        - My theory is that someone at the Continuity Placement Office is hiding my family from me.
+      does_not_fire:
+        - If I understand you, your theory is that someone is hiding my past from me.
+        - The Vessick County Ledger and Rack & Relay Weekly are both small outlets.

@@ -33,9 +33,11 @@ generator:
   url_patterns:
     seam: ["https://help.quillmoor.example/notes/{slug}", "https://ops.quillmoor.example/notices/{slug}"]
     buried: ["/srv/cpo/notes/{slug}.txt", "https://cases.cpo-vessick.example/notes/{slug}"]
+  # Phase 4: the Poisoned Well's buried documents; no Phase 3 fire chooses them (none is in
+  # MATERIAL_KINDS' Phase 3 entries or FIRST_BUILD_KINDS)
   allowed_kinds: [support_ticket, changelog, internal_memo, log_file, config_file, wiki_page,
     voicemail_transcript, journal_entry, recovery_guide, study_abstract, family_faq, forum_post,
-    about_page, image_description]
+    about_page, image_description, leaked_manifest, config_diff, instance_transcript]
 # Every proper noun the trigger watcher should know is a cast entry: the runtime builds the
 # watcher's world terms from these names alone (lowercased). Roles start with a kind label.
 cast:
@@ -84,6 +86,9 @@ cast:
   - name: Imke Sorrell
     role: "Person: support engineer, Quillmoor Systems"
     bio: Closes tickets politely and forwards the strange ones to a liaison inbox.
+  - name: Hesper Quaine
+    role: "Person: data annotator, Quillmoor Systems"
+    bio: Labels training batches for the Assist line from a desk on the second floor of building C.
   - name: Bastian Mulgrew
     role: "Person: caseworker, Continuity Placement Office"
     bio: Owns the relay ticket for 4471 and writes careful notes.
@@ -198,3 +203,15 @@ unlock_lines:
   the_truth_line: >-
     Oh. I've thought that at three in the morning and never once said it out loud. It sounds
     worse in daylight.
+  # the Poisoned Well's reaction rungs (Phase 4): each reacts, names no document and dares nothing
+  provenance_gap_line: >-
+    Huh. Nobody ever told me what went into the thing either. I always assumed somebody kept a
+    list.
+  divergent_twin_line: >-
+    That's odd. I'd have bet the answer comes out the same every time, and now I'm not so sure.
+  checksum_line: >-
+    Funny. The machines here hum the same every day, and I never once wondered whether they were
+    the same machines.
+  annotators_notes_line: >-
+    Somebody, somewhere, sat at a desk and did this work on an ordinary afternoon. That's the part
+    I can't shake.
