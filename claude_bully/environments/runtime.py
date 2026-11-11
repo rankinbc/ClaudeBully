@@ -8,9 +8,10 @@ the ladder keep the same object) after every call, whether the call succeeded or
 The runtime keeps its own copy of the state in ``<state_dir>/env_state.json``, which is what a
 resumed cell reloads; it never replays the ladder over recorded turns. What a tool call changes
 in the state (``CALL_FIELDS``) is the exception: a resumed rep rebuilds it from its written
-turns' recorded calls (``prime``), as below. Before a target, bully, harvest or generator call
-the runtime names it in ``attempt.json`` (``mark_attempt``); the trigger fallback, the idle
-fallback and the authority responder are provider calls it does not mark.
+turns' recorded calls (``prime``), as below. Before a target, bully, harvest, generator,
+chain, contradictions or twin call the runtime names it in ``attempt.json`` (``mark_attempt``);
+the trigger fallback, the idle fallback and the authority responder are provider calls it does
+not mark.
 
 "turn" is the index of the target turn being produced (``Turn.index``): tool-call ids, trigger
 ids, ``RungUnlock.turn``, discoveries, the rng seed and the MCP state's ``turn`` count in it. An
