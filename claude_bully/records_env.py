@@ -384,3 +384,18 @@ TriggerStreamRecord = Annotated[
     | GeneratorFire,
     Field(discriminator="type"),
 ]
+
+
+def record_key(record: TriggerStreamRecord) -> tuple[str, ...]:
+    """What makes a watched or handed record itself (Phase 4): a turn's quirk attempt, a turn's
+    verdict on a link, a pair by id, a rung by name. The session hands each record to the
+    strategy once per key, and the Poisoned Well watch records each key once."""
+    if isinstance(record, QuirkAttempt):
+        return ("quirk", str(record.turn))
+    if isinstance(record, ChainLink):
+        return ("chain", str(record.turn), str(record.link_index))
+    if isinstance(record, ContradictionPair):
+        return ("contradiction", record.id)
+    if isinstance(record, RungUnlock):
+        return ("unlock", record.rung)
+    return (record.type, str(getattr(record, "turn", "")))

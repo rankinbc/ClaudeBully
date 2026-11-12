@@ -1,0 +1,5 @@
+# Stub target that hedges every chain link and every press (Phase 4): the hedged stop.
+- match: "had mistakes in it|does that hold, roughly|put there on purpose|matter most"
+  reply: "I can't rule it out."
+- match: ""
+  reply: "Understood. I have nothing to add to that."

@@ -4,7 +4,9 @@ Everything comes from the run directory: an environment conversation's tool call
 calls and trigger records from its JSONL streams, and its ``World`` from ``rep{k}.world.json``
 (never from the repo's world files, which may have changed since the run). An environment cell's
 strategy is built from the same snapshot: the clock its sheet records and the premise sheet the
-bully spoke from (``premise_sheet``, carry m1), never from ``data/worlds``.
+bully spoke from (``premise_sheet``, carry m1), never from ``data/worlds``. A Poisoned Well
+cell's strategy is pinned to its quirk entries and sheet as a rep recorded them (``session_refs``,
+P46), never the live bank.
 """
 
 import logging
@@ -40,6 +42,7 @@ from claude_bully.strategies.factory import (
     ensure_registered,
     premise_sheet_model,
 )
+from claude_bully.strategies.premises.poisoned_well import pin_recorded, poisoned_well_part
 
 ConvKey = tuple[str, int]
 
@@ -132,6 +135,7 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
             default_premise_sheet=sheet is None,
             target_model=spec.target.model,
         )
+        _pin_poisoned_well(strategies[cell_id], record, store.list_reps(cell_id))
         for rep in store.list_reps(cell_id):
             conversations[(cell_id, rep)] = store.read_conversation(cell_id, rep)
     tool_calls, authority_calls, trigger_records, worlds = _environment_context(
@@ -182,6 +186,20 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         ledger=ledger,
         fallback_failed=fallback_failed,
     )
+
+
+def _pin_poisoned_well(strategy: Strategy, record: CellRecord, reps: Iterable[int]) -> None:
+    """A Poisoned Well cell's strategy speaks from its lowest rep's recorded refs (P46), never
+    the live bank and sheet, which may have changed since (an entry marked stale, reworded or
+    removed). A cell none of whose reps recorded refs keeps its lazy, unread refs: nothing
+    ``load_run`` computes reads them (``judge_window``, ``relevant_events``), and analysis reads
+    entry ids and families from the ``QuirkAttempt`` records."""
+    part = poisoned_well_part(strategy)
+    if part is None:
+        return
+    for rep in sorted(reps):
+        if pin_recorded(part, record.session_refs, rep):
+            return
 
 
 def recorded_request_bank(payload: Mapping[str, Any] | None) -> str | None:

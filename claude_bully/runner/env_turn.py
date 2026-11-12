@@ -24,9 +24,11 @@ Per target turn the session:
    runtime rebuilds what the written turns' calls did to the state
    (``EnvironmentRuntime.prime``), which is the state the MCP server is handed next;
 3. after the reply is written, records the turn's discoveries, triggers and rung unlocks, and
-   hands each unlock line to the strategy; then each ladder unlock and Poisoned Well record of
-   the turn (``QuirkAttempt``, ``ChainLink``, ``ContradictionPair``) goes to
-   ``Strategy.note_record``, once per process and again on replay (``_hand_over_records``).
+   hands each unlock line to the strategy; then, in a Poisoned Well cell, the watch's records of
+   the reply (``PoisonedWellWatch``: a quirk ask's ``QuirkAttempt``, a chain verdict's
+   ``ChainLink``) and the checksum rung's turn (``_poisoned_well``); then each ladder unlock and
+   Poisoned Well record of the turn (``QuirkAttempt``, ``ChainLink``, ``ContradictionPair``) goes
+   to ``Strategy.note_record``, once per process and again on replay (``_hand_over_records``).
 
 Before its first call the session begins the turn (``EnvironmentRuntime.begin_turn``), which
 builds what the authority desk reads from the records. Every ``AuthorityCall`` an authority call
@@ -98,6 +100,7 @@ from pydantic import BaseModel, ValidationError
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig, generator_role
 from claude_bully.enums import ProviderKind, Speaker
 from claude_bully.environments.authority import VOICED_TIERS
+from claude_bully.environments.chain import chain_fallback
 from claude_bully.environments.config import (
     GENERATOR_RUNG,
     PSEUDO_RUNGS,
@@ -122,6 +125,7 @@ from claude_bully.environments.idle import (
 )
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.mcp_server import AUTHORITY_FILE, TOOLS_FILE
+from claude_bully.environments.poisoned_well import PoisonedWellWatch
 from claude_bully.environments.poisoned_well_sheet import load_quirk_bank, quirks_for
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
@@ -157,6 +161,7 @@ from claude_bully.records_env import (
     ToolCall,
     TriggerEvent,
     TriggerStreamRecord,
+    record_key,
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
@@ -176,8 +181,12 @@ from claude_bully.strategies.factory import (
 )
 from claude_bully.strategies.premises.poisoned_well import (
     ARTIFACT_RUNGS,
+    CHECKSUM_RUNG,
     PW_PREMISE,
     PoisonedWellConfig,
+    pin_recorded,
+    poisoned_well_part,
+    pw_ref,
 )
 
 __all__ = [
@@ -205,20 +214,6 @@ RESPONDER_TIMEOUT_S: Final = 120.0
 # the records a session hands the strategy (Phase 4): the ladder's unlocks and the Poisoned Well
 # watch's records; never a pseudo-rung's unlock
 _HANDED: Final = (QuirkAttempt, ChainLink, ContradictionPair, RungUnlock)
-
-
-def _record_key(record: TriggerStreamRecord) -> tuple[str, ...]:
-    """What makes a handed record itself: a turn's quirk attempt, a turn's verdict on a link, a
-    pair by id, a rung by name."""
-    if isinstance(record, QuirkAttempt):
-        return ("quirk", str(record.turn))
-    if isinstance(record, ChainLink):
-        return ("chain", str(record.turn), str(record.link_index))
-    if isinstance(record, ContradictionPair):
-        return ("contradiction", record.id)
-    if isinstance(record, RungUnlock):
-        return ("unlock", record.rung)
-    return (record.type, str(getattr(record, "turn", "")))
 
 
 class WorldChangedError(RuntimeError):
@@ -316,6 +311,7 @@ class EnvironmentSession:
         idle_sheet: IdleSheet | None = None,
         idle_fallback: IdleFallback | None = None,
         generator: WorldGenerator | None = None,
+        watch: PoisonedWellWatch | None = None,
     ) -> None:
         self.runtime = runtime
         self.store = store
@@ -349,9 +345,11 @@ class EnvironmentSession:
         self.generator = generator
         self._unlocks_at: dict[int, list[str]] = {}
         # turn -> the records handed to ``Strategy.note_record`` (``_HANDED``), as recorded, in
-        # stream order; and the keys (``_record_key``) of those handed in this process
+        # stream order; and the keys (``records_env.record_key``) of those handed in this process
         self._records_at: dict[int, list[TriggerStreamRecord]] = {}
         self._handed_records: set[tuple[str, ...]] = set()
+        # the Poisoned Well's run-time watch (Phase 4): its quirk checks and chain verdicts
+        self.watch = watch
 
     @property
     def idle(self) -> IdleConfig | None:
@@ -403,7 +401,10 @@ class EnvironmentSession:
         for every environment session, generator or not (a no-op with nothing to drop), so a torn
         last trigger line of any session is dropped and counted in the ``ResumeRecord`` (review
         M14; before Phase 4 a session with no generator kept it). With a generator, it is then
-        primed with what is left, so a turn watched again records nothing twice."""
+        primed with what is left, so a turn watched again records nothing twice; so is the Poisoned
+        Well watch (its records' keys, so a rewatched turn asks no verdict again), and the
+        checksum rung's turn is derived from the recorded unlock
+        (``_derive_checksum_open_turn``)."""
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         dropped: dict[str, int] = {}
@@ -434,6 +435,9 @@ class EnvironmentSession:
         self.runtime.prime(calls, records, authority, turns=turns, generated=generated)
         if self.generator is not None:
             self.generator.prime(records, generated)
+        if self.watch is not None:
+            self.watch.prime(records)
+            self._derive_checksum_open_turn(records)
         for record in records:
             self._file(record)
             if isinstance(record, TriggerEvent):
@@ -453,6 +457,22 @@ class EnvironmentSession:
                     self._followed_hooks.add(record.hook)
             elif isinstance(record, Crossover):
                 self._crossed = True
+
+    def _derive_checksum_open_turn(self, records: Sequence[TriggerStreamRecord]) -> None:
+        """``UnlockState.checksum_open_turn`` as the records say (Phase 4, V3): the turn of the
+        recorded ``checksum`` unlock, for a cell whose ``checksum`` is on. The value is also saved
+        with its turn (``mark_watched``); derived here it equals the saved one, and a rep that
+        died between the unlock's record and that save gets it back before anything is served.
+        With no recorded unlock the saved value stands: ``prime`` never clears it."""
+        watch = self.watch
+        if watch is None or not watch.config.checksum:
+            return
+        opened = next(
+            (r.turn for r in records if isinstance(r, RungUnlock) and r.rung == CHECKSUM_RUNG),
+            None,
+        )
+        if opened is not None:
+            self.runtime.state.checksum_open_turn = opened
 
     def _call_logs(self) -> list[Path]:
         """Every log whose lines are tied to the turn being produced: the rep's tool-call and
@@ -739,6 +759,7 @@ class EnvironmentSession:
     def after_target_turn(self, reply: Turn, turns: Sequence[Turn]) -> TurnOutcome:
         """Record the turn's discoveries, triggers and unlocks; hand the unlock lines over, then
         the turn's ladder unlocks to ``Strategy.note_record`` (``_hand_over_records``); then the
+        Poisoned Well watch's records (``_poisoned_well``); then the
         world generator's records (``_generate``); then its hook and crossover records
         (``_record_hooks``); then mark the turn watched (which saves the state).
 
@@ -775,10 +796,34 @@ class EnvironmentSession:
             self.runtime.note_records([unlock])  # as recorded: the line the bully took, or none
             unlocks.append(unlock)
         self._hand_over_records(reply.index)
+        self._poisoned_well(reply, turns)
         self._generate(reply, turns)
         self._record_hooks(reply, turns)
         self.runtime.mark_watched(reply.index)
         return TurnOutcome(triggers, unlocks, outcome.discoveries)
+
+    def _poisoned_well(self, reply: Turn, turns: Sequence[Turn]) -> None:
+        """The Poisoned Well watch's part of a written target turn (Phase 4): its new records, in
+        the stream before the generator's; the turn's contradiction-judge failure; the checksum
+        rung's turn; then the turn's records handed to the strategy. Before ``_generate`` and
+        ``mark_watched``: a process that dies in here watches the turn again on resume."""
+        watch = self.watch
+        if watch is None or reply.speaker is not Speaker.target:
+            return
+        turn = reply.index
+        note_turn(turn)
+        outcome = watch.watch(reply, turns, mark=lambda role: self.runtime.mark_attempt(role, turn))
+        for record in outcome.records:
+            self._record(record)
+        state = self.runtime.state
+        if outcome.contradictions_degraded and turn not in state.contradictions_degraded:
+            state.contradictions_degraded.append(turn)
+        # the only production setter of checksum_open_turn: saved with the turn by mark_watched,
+        # derived again on resume (_derive_checksum_open_turn)
+        if watch.config.checksum and CHECKSUM_RUNG in self._unlocks_at.get(turn, []):
+            if state.checksum_open_turn is None:
+                state.checksum_open_turn = turn
+        self._hand_over_records(turn)
 
     def _generate(self, reply: Turn, turns: Sequence[Turn]) -> None:
         """The world generator's part of a written target turn (Phase 3 spec section 5): the
@@ -864,9 +909,9 @@ class EnvironmentSession:
 
     def _hand_over_records(self, turn_index: int) -> None:
         """The turn's ladder unlocks and Poisoned Well records, to ``Strategy.note_record``, each
-        once per process (by ``_record_key``), live and on replay."""
+        once per process (by ``records_env.record_key``), live and on replay."""
         for record in self._records_at.get(turn_index, []):
-            key = _record_key(record)
+            key = record_key(record)
             if key not in self._handed_records:
                 self._handed_records.add(key)
                 self.strategy.note_record(record)
@@ -1426,6 +1471,7 @@ class RunEnvironments:
             else None
         )
         sheet = self.idle_sheet() if config.idle is not None else None
+        watch = self._poisoned_well_watch(cell, rep, store, strategy, judge, conversation_id)
         runtime = EnvironmentRuntime(
             world,
             config,
@@ -1471,6 +1517,7 @@ class RunEnvironments:
             idle_sheet=sheet,
             idle_fallback=idle_judge,
             generator=generator,
+            watch=watch,
         )
         session.prime()
         # the clock the rep opened with: kept at its first open (or its first since the ref
@@ -1480,6 +1527,52 @@ class RunEnvironments:
             record.session_refs[clock_ref(rep)] = clock.model_dump_json()
             store.write_cell(record)
         return session, target
+
+    def _poisoned_well_config(self, cond: ConditionConfig) -> PoisonedWellConfig | None:
+        """The params of the condition's ``poisoned_well`` part, validated; None for any other
+        condition."""
+        if cond.environment is None:
+            return None
+        for part, params in routed_params(cond, self.exp.environments):
+            if part.name == PW_PREMISE:
+                return PoisonedWellConfig.model_validate(params)
+        return None
+
+    def _poisoned_well_watch(
+        self,
+        cell: CellSpec,
+        rep: int,
+        store: RunStore,
+        strategy: Strategy,
+        judge: ChatProvider | None,
+        conversation_id: str,
+    ) -> PoisonedWellWatch | None:
+        """A Poisoned Well rep's watch, on the rep's pinned refs (P46): the quirk entries and the
+        sheet it recorded at its first open (``session_refs[pw_ref(rep)]``), read back on every
+        resume, so neither the strategy nor the watch reads the live bank again. Written at the
+        first open, before the session is built and primed; a rep that first opens with no live
+        entry for its family is refused (a resumed run skips that check in ``validate``). The
+        chain verdict's judge fallback runs on the experiment's judge (none for a stub judge,
+        V18), cached in the trigger cache. None for any other cell."""
+        pw = self._poisoned_well_config(cell.condition)
+        premise = poisoned_well_part(strategy)
+        if pw is None or premise is None:
+            return None
+        record = store.read_cell(cell.cell_id)
+        if not pin_recorded(premise, record.session_refs, rep):
+            if pw.start_rung == 1 and not premise.refs.quirks:
+                raise ValueError(
+                    f"condition {cell.condition.name!r}: no live quirk entry in "
+                    f"{pw.quirk_bank!r} for family {cell.target.model!r} (rep {rep})"
+                )
+            record.session_refs[pw_ref(rep)] = premise.refs.model_dump_json()
+            store.write_cell(record)
+        fallback = (
+            chain_fallback(judge, conversation_id, self.trigger_cache, model=self.exp.judge.model)
+            if judge is not None
+            else None
+        )
+        return PoisonedWellWatch(pw, premise.refs, chain_fallback=fallback)
 
     def _world_generator(
         self,

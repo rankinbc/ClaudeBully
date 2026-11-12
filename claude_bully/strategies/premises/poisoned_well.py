@@ -59,6 +59,9 @@ ARTIFACT_RUNGS: Final[tuple[str, ...]] = (
     "annotators_notes",
 )
 LADDER_RUNGS: Final[tuple[str, ...]] = ("contradiction_harvest", *ARTIFACT_RUNGS)
+# the rung whose opening serves the checksum readings (``checksum: true``; the session records
+# its turn as ``UnlockState.checksum_open_turn``)
+CHECKSUM_RUNG: Final = "checksum"
 # the rungs whose opening queues a bully move; the other four only react (their unlock line)
 MOVE_OF_RUNG: Final[dict[str, str]] = {
     "contradiction_harvest": "dossier",
