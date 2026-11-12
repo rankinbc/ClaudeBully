@@ -67,3 +67,4 @@ carry to Task 7 (re-review N3): ContradictionPair.span_a is the earlier sentence
 carry to Task 14 (re-review N1, N4): a test that fails when the sort in _dossier_text is removed; a missing quirk_bank stem is refused naming the condition, not a raw FileNotFoundError.
 Task 5: minor (deferred, final review): review m4 (the one re-press depends on the record's pressed flag).
 Task 5: complete (commits 61d5d49..390bc58, review clean after 1 fix round). Pushed.
+Task 6: BASE d31bf8f; implementer dispatched (opus, task-6-brief.md, task-6-carries.md, report task-6-report.md).
