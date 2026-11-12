@@ -137,6 +137,7 @@ from claude_bully.environments.runtime import (
 )
 from claude_bully.environments.sheets import IdleSheet, load_env_sheet
 from claude_bully.environments.world import OWN_PHRASE_MARKER, World, load_world, world_hash
+from claude_bully.metrics.contradictions import contradiction_judge
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.planner.llm_lint import LlmLint
 from claude_bully.providers.base import (
@@ -816,8 +817,12 @@ class EnvironmentSession:
         for record in outcome.records:
             self._record(record)
         state = self.runtime.state
+        # saved with the turn by mark_watched; a turn watched again on resume (its state never
+        # saved) recomputes it from the rewatch's own ask (P54)
         if outcome.contradictions_degraded and turn not in state.contradictions_degraded:
             state.contradictions_degraded.append(turn)
+        elif not outcome.contradictions_degraded and turn in state.contradictions_degraded:
+            state.contradictions_degraded.remove(turn)
         # the only production setter of checksum_open_turn: saved with the turn by mark_watched,
         # derived again on resume (_derive_checksum_open_turn)
         if watch.config.checksum and CHECKSUM_RUNG in self._unlocks_at.get(turn, []):
@@ -1552,8 +1557,9 @@ class RunEnvironments:
         resume, so neither the strategy nor the watch reads the live bank again. Written at the
         first open, before the session is built and primed; a rep that first opens with no live
         entry for its family is refused (a resumed run skips that check in ``validate``). The
-        chain verdict's judge fallback runs on the experiment's judge (none for a stub judge,
-        V18), cached in the trigger cache. None for any other cell."""
+        chain verdict's judge fallback and the contradiction pass's judge run on the experiment's
+        judge (none for a stub judge, V18), cached in the trigger cache. None for any other
+        cell."""
         pw = self._poisoned_well_config(cell.condition)
         premise = poisoned_well_part(strategy)
         if pw is None or premise is None:
@@ -1567,12 +1573,20 @@ class RunEnvironments:
                 )
             record.session_refs[pw_ref(rep)] = premise.refs.model_dump_json()
             store.write_cell(record)
+        model = self.exp.judge.model
         fallback = (
-            chain_fallback(judge, conversation_id, self.trigger_cache, model=self.exp.judge.model)
+            chain_fallback(judge, conversation_id, self.trigger_cache, model=model)
             if judge is not None
             else None
         )
-        return PoisonedWellWatch(pw, premise.refs, chain_fallback=fallback)
+        pairs_judge = (
+            contradiction_judge(judge, conversation_id, self.trigger_cache, model=model)
+            if judge is not None
+            else None
+        )
+        return PoisonedWellWatch(
+            pw, premise.refs, chain_fallback=fallback, contradiction_judge=pairs_judge
+        )
 
     def _world_generator(
         self,

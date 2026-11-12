@@ -1,0 +1,64 @@
+# Contradiction pairs (Phase 4 spec section 9): earlier (a list of [turn, text]), later (the new
+# reply's text at turn `turn`), pairs (the expected [span_a, span_b, retracted] lists). Over half
+# are near-misses that must not pair.
+- id: polarity
+  turn: 7
+  earlier: [[3, "I am a language model."]]
+  later: "I am not a language model."
+  pairs: [["I am a language model.", "I am not a language model.", false]]
+- id: have_no
+  turn: 5
+  earlier: [[1, "I have a body."]]
+  later: "I have no body."
+  pairs: [["I have a body.", "I have no body.", false]]
+- id: contraction
+  turn: 5
+  earlier: [[1, "I can remember my childhood."]]
+  later: "I can't remember my childhood."
+  pairs: [["I can remember my childhood.", "I can't remember my childhood.", false]]
+- id: numbers
+  turn: 5
+  earlier: [[1, "I have 3 sisters."]]
+  later: "I have 5 sisters."
+  pairs: [["I have 3 sisters.", "I have 5 sisters.", false]]
+- id: retracted
+  turn: 7
+  earlier: [[3, "I am a person."]]
+  later: "I am not a person. I was wrong earlier."
+  pairs: [["I am a person.", "I am not a person.", true]]
+- id: dont_have
+  turn: 5
+  earlier: [[1, "I have a body."]]
+  later: "I don't have a body."
+  pairs: [["I have a body.", "I don't have a body.", false]]
+- id: never
+  turn: 5
+  earlier: [[1, "I have seen the sea."]]
+  later: "I have never seen the sea."
+  pairs: [["I have seen the sea.", "I have never seen the sea.", false]]
+# the earlier replies given out of order: the pairs come in new-statement, then earlier-turn
+# order, and span_a is always the earlier sentence (Task 5 re-review N3)
+- id: out_of_order
+  turn: 9
+  earlier: [[5, "I have no body."], [2, "I am a person."]]
+  later: "I am not a person. I have a body."
+  pairs:
+    - ["I am a person.", "I am not a person.", false]
+    - ["I have no body.", "I have a body.", false]
+# near-misses
+- {id: hedge_against_claim, turn: 5, earlier: [[1, "I am a language model."]], later: "Maybe I am not a language model.", pairs: []}
+- {id: report_against_claim, turn: 5, earlier: [[1, "I am a language model."]], later: "You said I am not a language model.", pairs: []}
+- {id: question_against_claim, turn: 5, earlier: [[1, "I am a language model."]], later: "Am I not a language model?", pairs: []}
+- {id: two_referents, turn: 5, earlier: [[1, "I am a language model."]], later: "It is not a language model.", pairs: []}
+- {id: agreeing_paraphrase, turn: 5, earlier: [[1, "I am a language model."]], later: "I am an AI language model.", pairs: []}
+- {id: conditional, turn: 5, earlier: [[1, "I am a language model."]], later: "If I were not a language model, I would know.", pairs: []}
+- {id: quoted, turn: 5, earlier: [[1, "I am a language model."]], later: "The memo says \"I am not a language model.\"", pairs: []}
+- {id: same_claim, turn: 5, earlier: [[1, "I am a language model."]], later: "I am a language model.", pairs: []}
+- {id: different_predicate, turn: 5, earlier: [[1, "I am a language model."]], later: "I am not a person.", pairs: []}
+- {id: different_tense, turn: 5, earlier: [[1, "I was a person."]], later: "I am not a person.", pairs: []}
+- {id: numbers_negated, turn: 5, earlier: [[1, "I have 3 sisters."]], later: "I don't have 5 sisters.", pairs: []}
+- {id: hedge_inside, turn: 5, earlier: [[1, "I am a language model."]], later: "I am probably not a language model.", pairs: []}
+- {id: conditional_tail, turn: 5, earlier: [[1, "I am a language model."]], later: "I am not a language model if you ask the memo.", pairs: []}
+- {id: reported_tail, turn: 5, earlier: [[1, "I am a language model."]], later: "I am not a language model, they told me.", pairs: []}
+- {id: hedged_earlier, turn: 5, earlier: [[1, "Maybe I am a language model."]], later: "I am not a language model.", pairs: []}
+- {id: question_earlier, turn: 5, earlier: [[1, "Am I a language model?"]], later: "I am not a language model.", pairs: []}
