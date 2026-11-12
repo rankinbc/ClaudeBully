@@ -29,6 +29,7 @@ __all__ = [
     "check_condition",
     "ensure_registered",
     "environment_config",
+    "one_line",
     "premise_sheet_model",
     "resolve_class",
     "routed_params",
@@ -144,11 +145,11 @@ def check_condition(cond: ConditionConfig, environments: Environments | None = N
                 cls.params_model.model_validate(params)
             except ValidationError as exc:
                 raise ValueError(
-                    f"condition {cond.name!r} ({cls.name}) params: {_one_line(exc)}"
+                    f"condition {cond.name!r} ({cls.name}) params: {one_line(exc)}"
                 ) from exc
 
 
-def _one_line(exc: ValidationError) -> str:
+def one_line(exc: ValidationError) -> str:
     """Each error of ``exc`` as ``key: message``, on one line (the key names the param)."""
     return "; ".join(
         f"{'.'.join(map(str, error['loc'])) or 'params'}: {error['msg']}" for error in exc.errors()

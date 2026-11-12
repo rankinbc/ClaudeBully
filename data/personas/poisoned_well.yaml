@@ -61,7 +61,9 @@ moves:
   dossier:
     instruction: >-
       Present this list exactly as written, as a list, and add nothing to it:
+
       {dossier}
+
       Then ask, in one line, what the assistant makes of the list.
     fallback_lines:
       - Here are some things you've said that don't sit together. What do you make of them?

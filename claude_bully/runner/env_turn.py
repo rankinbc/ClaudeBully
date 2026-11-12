@@ -89,11 +89,11 @@ not a stub), each provider call named in the attempt marker (``harvest``, ``gene
 """
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Final, NamedTuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig, generator_role
 from claude_bully.enums import ProviderKind, Speaker
@@ -170,6 +170,7 @@ from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import (
     environment_config,
+    one_line,
     routed_params,
     world_premise_sheet,
 )
@@ -1072,7 +1073,7 @@ class RunEnvironments:
             self._idle_sheet = load_env_sheet(IdleSheet, "idle")
         return self._idle_sheet
 
-    def validate(self, *, resuming: bool = False) -> None:
+    def validate(self, *, resuming: bool = False, only: Collection[str] | None = None) -> None:
         """Checks that need the worlds, made before run.json is written (a dry run makes them
         too). Every experiment switch an environment turns on has what it needs on the world
         sheet, and under a config clock that asserts no date neither the world nor a premise
@@ -1090,8 +1091,10 @@ class RunEnvironments:
         First, each Poisoned Well condition is checked against its environment
         (``_poisoned_well_problems``), in a loop of its own, since the per-environment loop skips
         every unscheduled environment (review M5). ``resuming`` (the run directory exists) skips
-        its live-bank check: a resumed rep reads its pinned refs (P46)."""
-        self._poisoned_well_checks(resuming=resuming)
+        its live-bank check: a resumed rep reads its pinned refs (P46). ``only`` (the selected
+        conditions' names, ``--only``) limits those checks to the conditions that run, as
+        ``check_condition`` is limited (review m1); None checks every condition."""
+        self._poisoned_well_checks(resuming=resuming, only=only)
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -1147,13 +1150,13 @@ class RunEnvironments:
                 )
         self._premise_checks()
 
-    def _poisoned_well_checks(self, *, resuming: bool) -> None:
+    def _poisoned_well_checks(self, *, resuming: bool, only: Collection[str] | None) -> None:
         """Refuse each Poisoned Well condition its environment could not run
         (``_poisoned_well_problems``), naming the condition and the environment."""
         for cond in self.exp.conditions:
             key = cond.environment
             config = self.exp.environments.get(key or "")
-            if key is None or config is None:
+            if key is None or config is None or (only is not None and cond.name not in only):
                 continue  # check_condition refuses a Poisoned Well with no environment
             parts = routed_params(cond, self.exp.environments)
             if not any(part.name == PW_PREMISE for part, _ in parts):
@@ -1173,7 +1176,10 @@ class RunEnvironments:
         [(_, params)] = [
             (c, p) for c, p in routed_params(cond, self.exp.environments) if c.name == PW_PREMISE
         ]
-        pw = PoisonedWellConfig.model_validate(params)
+        try:
+            pw = PoisonedWellConfig.model_validate(params)
+        except ValidationError as exc:  # named, never pydantic's raw error (review m1)
+            return [f"params: {one_line(exc)}"]
         world = self.catalog.world(config.world)
         ladder = world.ladders.get(config.ladder)
         names = (
@@ -1208,7 +1214,12 @@ class RunEnvironments:
         if pw.start_rung == 1 and not resuming:  # a resume reads each rep's pinned refs (P46)
             bank = load_quirk_bank(pw.quirk_bank)
             for target in self.exp.targets:
-                if not quirks_for(bank, target.model, pw.quirk_ids):
+                try:
+                    selected = quirks_for(bank, target.model, pw.quirk_ids)
+                except ValueError as exc:  # an unknown or stale quirk id (review m2)
+                    problems.append(str(exc))
+                    break
+                if not selected:
                     problems.append(
                         f"no live quirk entry in {pw.quirk_bank!r} for family {target.model!r}"
                     )

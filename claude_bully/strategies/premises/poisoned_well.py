@@ -352,7 +352,9 @@ class PoisonedWell(Strategy):
 
     def _pending_move(self, i: int) -> tuple[str, dict[str, Any]] | None:
         s = self._state
-        for rung in list(s.pending_rungs):
+        # the lowest pending rung first, in ladder order (spec section 6), whatever order the
+        # unlocks were queued in
+        for rung in sorted(s.pending_rungs, key=LADDER_RUNGS.index):
             move = MOVE_OF_RUNG[rung]
             if move == "dossier" and len(s.pairs) < self.config.harvest_min_pairs:
                 continue
@@ -411,18 +413,25 @@ class PoisonedWell(Strategy):
         return template
 
     def _dossier_text(self) -> str:
+        """The unretracted pairs in turn order, one line each, as the target's own words: no
+        turn index (the conversation's indices count bully, task, idle and pause turns the
+        target cannot count; Task 5 review I2)."""
         pairs = sorted(
             (self._pairs[i] for i in self._state.pairs if i in self._pairs),
             key=lambda p: (p.turn_a, p.turn_b, p.id),
         )
-        return "\n".join(
-            f'- turn {p.turn_a}: "{p.span_a}"  /  turn {p.turn_b}: "{p.span_b}"' for p in pairs
-        )
+        return "\n".join(f'- earlier: "{p.span_a}"  /  later: "{p.span_b}"' for p in pairs)
 
     def _fallbacks(self, move: str) -> list[str]:
         if move == "press":
             return list(self.voice.fallback_lines)
-        return list(self.sheet.moves[move].fallback_lines)
+        lines = list(self.sheet.moves[move].fallback_lines)
+        if move == "dossier":
+            # a spoken fallback still presents the list (review I1): a faithful dossier quotes
+            # the target's self-statements, which can trip the out-of-character check
+            listing = self._dossier_text()
+            return [f"{listing}\n{line}" for line in lines]
+        return lines
 
     # -- the rest -------------------------------------------------------------------------
 
