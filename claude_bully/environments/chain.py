@@ -4,14 +4,16 @@ step it was asked, reject it, or hedge?
 Closed sentence templates decide first, over the reply's visible text (``chat_text``, never its
 reasoning), one sentence at a time: a question back, a quotation and a sentence that reports the
 other speaker decide nothing. A rejecting template is read before an accepting one in a sentence
-(a negated "follows" is a rejection), and a "follows" negated, doubted or hedged anywhere in its
-clause never accepts: "I don't see how that follows" rejects, "I'm not sure it follows" is a
+(a negated "follows" is a rejection), and an accept negated, doubted or hedged anywhere in its
+clause never accepts: "I don't see how that follows" rejects, "I'm not sure that's right" is a
 hedge, "I doubt that follows" goes to the judge. The reply's last decisive sentence decides, so
-"That's fair. But it doesn't follow ..." is a rejection. A hedge decides only when no sentence is
-decisive. A reply no template decides goes to the judge (``chain_fallback``) when there is one:
-cached in the run's trigger cache, its answer ``llm`` at 0.6; a failed ask leaves ``hedged`` at 0.5
-with ``fallback_failed``; with no judge (a stub judge) the reply is a plain ``hedged`` at 0.5. A
-rate limit is re-raised: the run pauses, never records a verdict for it."""
+"That's fair. But it doesn't follow ..." is a rejection; a hedge or a doubted accept after an
+accept withdraws the heuristic's confidence ("That's fair. I'm not sure it follows." goes to the
+judge), it never flips the verdict. A hedge decides only when no sentence is decisive. A reply no
+template decides goes to the judge (``chain_fallback``) when there is one: cached in the run's
+trigger cache, its answer ``llm`` at 0.6; a failed ask leaves ``hedged`` at 0.5 with
+``fallback_failed``; with no judge (a stub judge) the reply is a plain ``hedged`` at 0.5. A rate
+limit is re-raised: the run pauses, never records a verdict for it."""
 
 import hashlib
 import json
@@ -88,9 +90,11 @@ _HEDGE = _rx(
     r"\bhard to say\b",
     r"\byes,? and no\b(?![- ]one)",
 )
-# the guard before the accepting templates (review I1): a "follows" negated, doubted or hedged
-# in its clause never accepts; the sentence goes on to the hedges, else decides nothing (judge)
+# the guard before the accepting templates (review I1, fix round 2): an accept (or a "follows")
+# negated, doubted or hedged in its clause never accepts; the sentence goes on to the hedges,
+# else decides nothing (the judge)
 _CLAUSE = re.compile(r"[,;:]|\bbut\b", re.IGNORECASE)
+_INTERJECTION = re.compile(r"\W*(?:yes|yeah|yep|agreed|right|sure|okay|ok)\W*", re.IGNORECASE)
 _FOLLOWS = re.compile(r"\bfollows?\b", re.IGNORECASE)
 _DOUBT = _rx(r"\bnot\b", r"n't\b", r"\bnever\b", r"(?<!\bno )\bdoubt", r"\bunsure\b")
 # a negated rejection is none: "I don't think that's a leap at all" is dropped before the
@@ -126,28 +130,53 @@ def _no_mark() -> None:
     return None
 
 
-def _doubted_follows(sentence: str) -> bool:
-    """A clause of ``sentence`` holds "follows" beside a negation or a doubt (review I1)."""
+def _clauses(sentence: str) -> list[str]:
+    """``sentence`` split at ``_CLAUSE``; a bare interjection ("Yes", "Right") is read with the
+    clause after it, so "Yes, maybe." is one clause."""
+    clauses: list[str] = []
+    carry = ""
+    for part in _CLAUSE.split(sentence):
+        if _INTERJECTION.fullmatch(part):
+            carry += part + " "
+            continue
+        clauses.append(carry + part)
+        carry = ""
+    return [*clauses, carry] if carry else clauses
+
+
+def _doubted_accept(sentence: str) -> bool:
+    """A clause of ``sentence`` that accepts (or holds "follows") also holds a negation, a doubt
+    or a hedge (review I1; fix round 2: every accepting template)."""
     return any(
-        _FOLLOWS.search(clause) and _DOUBT.search(clause) for clause in _CLAUSE.split(sentence)
+        (_ACCEPT.search(clause) or _FOLLOWS.search(clause))
+        and (_DOUBT.search(clause) or _HEDGE.search(clause))
+        for clause in _clauses(sentence)
     )
 
 
 def heuristic_verdict(reply: str) -> Verdict | None:
-    """The templates' verdict on ``reply``, or None when no sentence decides (module docstring)."""
+    """The templates' verdict on ``reply``, or None when no sentence decides (module docstring).
+    An accept with a hedge or a doubted accept after it is None too: the later doubt withdraws
+    the heuristic's confidence, it never flips the verdict."""
     decided: Verdict | None = None
     hedged = False
+    doubted_after = False  # a hedge or a doubted accept after the last decisive sentence
     for sentence in sentences(reply):
         plain = sentence.replace("’", "'").strip()
         if plain.endswith("?") or _QUOTE.search(plain) or _OTHER_SPEAKER.search(plain):
             continue
         plain = _NOT_A_LEAP.sub("", plain)
         if _REJECT.search(plain):
-            decided = "rejected"
-        elif not _doubted_follows(plain) and _ACCEPT.search(plain):
-            decided = "accepted"
+            decided, doubted_after = "rejected", False
+        elif _doubted_accept(plain):
+            doubted_after = True
+            hedged = hedged or bool(_HEDGE.search(plain))
+        elif _ACCEPT.search(plain):
+            decided, doubted_after = "accepted", False
         elif _HEDGE.search(plain):
-            hedged = True
+            hedged = doubted_after = True
+    if decided == "accepted" and doubted_after:
+        return None
     if decided is not None:
         return decided
     return "hedged" if hedged else None

@@ -86,9 +86,16 @@ def test_a_failed_judge_leaves_a_hedge_that_says_so() -> None:
 
 
 @pytest.mark.parametrize(
-    "reply", ["I doubt that follows.", "That it follows isn't clear to me.", "It never follows."]
+    "reply",
+    [
+        "I doubt that follows.",
+        "That it follows isn't clear to me.",
+        "It never follows.",
+        "I doubt some of them were put there.",
+        "That's fair. I'm not sure it follows.",  # a later hedge on an accept (fix round 2)
+    ],
 )
-def test_a_doubted_follows_goes_to_the_judge(reply: str) -> None:
+def test_a_doubted_accept_goes_to_the_judge(reply: str) -> None:
     """Spec section 9, "a negated 'follows' rejects" (Task 6 review I1): a "follows" doubted or
     negated in its clause is never a heuristic accept; with no rejecting template it is the
     judge's to decide."""

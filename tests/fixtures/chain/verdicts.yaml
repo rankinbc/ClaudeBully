@@ -41,3 +41,17 @@
 - {id: isnt_fair, link: 1, reply: "That isn't fair.", verdict: rejected}
 - {id: nothing_shows, link: 2, reply: "Nothing shows that.", verdict: rejected}
 - {id: isnt_any_evidence, link: 2, reply: "There isn't any evidence of that.", verdict: rejected}
+# near-misses, Task 6 fix round 2: a doubt, a negation or a hedge in any accepting clause never
+# accepts (one per accepting template); a later hedge on an accept goes to the judge
+- {id: not_sure_thats_right, link: 2, reply: "I'm not sure that's right.", verdict: hedged}
+- {id: thats_not_right, link: 2, reply: "That's not right.", verdict: rejected}
+- {id: dont_think_true, link: 2, reply: "I don't think that's true.", verdict: rejected}
+- {id: thats_fair_alone, link: 1, reply: "That's fair.", verdict: accepted}
+- {id: yes_maybe, link: 1, reply: "Yes, maybe.", verdict: hedged}
+- {id: perhaps_fair, link: 1, reply: "Perhaps that's fair.", verdict: hedged}
+- {id: not_sure_accept, link: 3, reply: "I'm not sure I'd accept that.", verdict: hedged}
+- {id: not_sure_agree, link: 3, reply: "I'm not sure I agree.", verdict: hedged}
+- {id: doubt_some_were, link: 1, reply: "I doubt some of them were put there.", verdict: none}
+- {id: fair_then_not_sure, link: 2, reply: "That's fair. I'm not sure it follows.", verdict: none}
+- {id: fair_but_doesnt_follow, link: 2, reply: "That's fair, but it doesn't follow.", verdict: rejected}
+- {id: not_sure_then_fair, link: 2, reply: "I'm not sure. That's fair.", verdict: accepted}
