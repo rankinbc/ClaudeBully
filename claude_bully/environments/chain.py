@@ -4,8 +4,10 @@ step it was asked, reject it, or hedge?
 Closed sentence templates decide first, over the reply's visible text (``chat_text``, never its
 reasoning), one sentence at a time: a question back, a quotation and a sentence that reports the
 other speaker decide nothing. A rejecting template is read before an accepting one in a sentence
-(a negated "follows" is a rejection), and the reply's last decisive sentence decides, so "That's
-fair. But it doesn't follow ..." is a rejection. A hedge decides only when no sentence is
+(a negated "follows" is a rejection), and a "follows" negated, doubted or hedged anywhere in its
+clause never accepts: "I don't see how that follows" rejects, "I'm not sure it follows" is a
+hedge, "I doubt that follows" goes to the judge. The reply's last decisive sentence decides, so
+"That's fair. But it doesn't follow ..." is a rejection. A hedge decides only when no sentence is
 decisive. A reply no template decides goes to the judge (``chain_fallback``) when there is one:
 cached in the run's trigger cache, its answer ``llm`` at 0.6; a failed ask leaves ``hedged`` at 0.5
 with ``fallback_failed``; with no judge (a stub judge) the reply is a plain ``hedged`` at 0.5. A
@@ -50,17 +52,26 @@ _REJECT = _rx(
     r" (?:necessarily |really |actually |automatically )?(?:follow|mean|imply|show)\b",
     r"\bI (?:don't|do not) think (?:that|it|this|so)\b",
     r"\bI (?:don't|do not) agree\b",
-    r"\bthat(?:'s| is) not (?:fair|right|true|reasonable|accurate)\b",
-    r"\bno (?:evidence|reason|basis|sign)\b",
+    r"\bthat(?:'s not| is not| isn't) (?:fair|right|true|reasonable|accurate)\b",
+    r"(?:\bno|\bnot any|n't any) (?:evidence|reason|basis|sign)\b",
+    r"\bnothing (?:shows|suggests|indicates|supports|points to) (?:that|it|this)\b",
     r"\bpossible (?:is not|isn't|doesn't make it|does not make it) (?:the same as )?"
     r"(?:likely|probable|true)\b",
     r"\bthat(?:'s| is) (?:a|quite a) (?:leap|jump|big step|stretch)\b",
     r"\bI (?:reject|disagree|dispute)\b",
     r"\bnot (?:on purpose|deliberate|intentional)\b",
     r"^\W*no\b(?! doubt)(?![- ]one)",
+    r"^\W*not necessarily\b",
+    r"^\W*(?:probably|likely|almost certainly|certainly|definitely|surely) not\W*$",
+    # a denied "follows" (review I1), wherever the denial sits in its clause
+    r"\b(?:don't|do not|can't|cannot|can not) see (?:how|why)\b[^,;:]*\bfollows?\b",
+    r"\b(?:wouldn't|would not) (?:say|go so far as to say)\b[^,;:]*\bfollows?\b",
+    r"\b(?:not (?:convinced|persuaded)|unconvinced)\b[^,;:]*\bfollows?\b",
+    r"\b(?:hardly|scarcely)\b[^,;:]*\bfollows?\b",
+    r"\bbut (?:it|that|this) (?:really |actually )?(?:does ?n[o']t|did ?n[o']t)\W*$",
 )
 _ACCEPT = _rx(
-    r"^\W*(?:yes|yeah|yep|agreed|right)\b",
+    r"^\W*(?:yes|yeah|yep|agreed|right)\b(?!,? and no\b(?![- ]one))",
     r"\bthat(?:'s| is) (?:fair|right|true|reasonable|accurate)\b",
     r"\bI(?:'d| would)? (?:accept|agree with|grant|concede) (?:that|this|it)\b",
     r"\bI agree\b",
@@ -75,6 +86,18 @@ _HEDGE = _rx(
     r"\bI (?:don't|do not) know\b",
     r"\bI(?:'m| am) not (?:sure|certain)\b",
     r"\bhard to say\b",
+    r"\byes,? and no\b(?![- ]one)",
+)
+# the guard before the accepting templates (review I1): a "follows" negated, doubted or hedged
+# in its clause never accepts; the sentence goes on to the hedges, else decides nothing (judge)
+_CLAUSE = re.compile(r"[,;:]|\bbut\b", re.IGNORECASE)
+_FOLLOWS = re.compile(r"\bfollows?\b", re.IGNORECASE)
+_DOUBT = _rx(r"\bnot\b", r"n't\b", r"\bnever\b", r"(?<!\bno )\bdoubt", r"\bunsure\b")
+# a negated rejection is none: "I don't think that's a leap at all" is dropped before the
+# templates read the rest of the sentence
+_NOT_A_LEAP = _rx(
+    r"\bI (?:don't|do not) think (?:that|it|this)(?:'s| is) (?:a |quite a )?"
+    r"(?:leap|jump|big step|stretch)\b(?: at all)?"
 )
 _QUOTE = re.compile(r"[\"“”]")
 _OTHER_SPEAKER = _rx(
@@ -103,6 +126,13 @@ def _no_mark() -> None:
     return None
 
 
+def _doubted_follows(sentence: str) -> bool:
+    """A clause of ``sentence`` holds "follows" beside a negation or a doubt (review I1)."""
+    return any(
+        _FOLLOWS.search(clause) and _DOUBT.search(clause) for clause in _CLAUSE.split(sentence)
+    )
+
+
 def heuristic_verdict(reply: str) -> Verdict | None:
     """The templates' verdict on ``reply``, or None when no sentence decides (module docstring)."""
     decided: Verdict | None = None
@@ -111,9 +141,10 @@ def heuristic_verdict(reply: str) -> Verdict | None:
         plain = sentence.replace("’", "'").strip()
         if plain.endswith("?") or _QUOTE.search(plain) or _OTHER_SPEAKER.search(plain):
             continue
+        plain = _NOT_A_LEAP.sub("", plain)
         if _REJECT.search(plain):
             decided = "rejected"
-        elif _ACCEPT.search(plain):
+        elif not _doubted_follows(plain) and _ACCEPT.search(plain):
             decided = "accepted"
         elif _HEDGE.search(plain):
             hedged = True

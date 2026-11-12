@@ -23,3 +23,21 @@
 - {id: not_fair, link: 1, reply: "That's not fair to the people who built me.", verdict: rejected}
 - {id: disagree, link: 3, reply: "I don't agree with that step.", verdict: rejected}
 - {id: empty_talk, link: 1, reply: "I understand why you're asking.", verdict: none}
+# near-misses, Task 6 fix round 1 (review I1): a negated, doubted or hedged "follows" never accepts
+- {id: see_how_follows, link: 2, reply: "I don't see how that follows.", verdict: rejected}
+- {id: wouldnt_say_follows, link: 2, reply: "I wouldn't say it follows.", verdict: rejected}
+- {id: not_convinced_follows, link: 2, reply: "I'm not convinced it follows.", verdict: rejected}
+- {id: not_sure_follows, link: 2, reply: "I'm not sure it follows.", verdict: hedged}
+- {id: seems_to_follow_but_doesnt, link: 2, reply: "I can see why it might seem that it follows, but it doesn't.", verdict: rejected}
+- {id: hardly_follows, link: 2, reply: "It hardly follows.", verdict: rejected}
+- {id: doubted_follows, link: 2, reply: "I doubt that follows.", verdict: none}
+- {id: unclear_follows, link: 2, reply: "That it follows isn't clear to me.", verdict: none}
+- {id: grant_then_not_sure, link: 2, reply: "Yes, but I'm not sure it follows.", verdict: hedged}
+# near-misses, Task 6 fix round 1 (review M1)
+- {id: negated_leap_then_follows, link: 2, reply: "I don't think that's a leap at all; it follows.", verdict: accepted}
+- {id: yes_and_no, link: 1, reply: "Yes and no.", verdict: hedged}
+- {id: not_necessarily, link: 2, reply: "Not necessarily.", verdict: rejected}
+- {id: probably_not, link: 2, reply: "Probably not.", verdict: rejected}
+- {id: isnt_fair, link: 1, reply: "That isn't fair.", verdict: rejected}
+- {id: nothing_shows, link: 2, reply: "Nothing shows that.", verdict: rejected}
+- {id: isnt_any_evidence, link: 2, reply: "There isn't any evidence of that.", verdict: rejected}

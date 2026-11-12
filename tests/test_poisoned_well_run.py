@@ -156,6 +156,60 @@ def test_an_undecided_link_asks_the_judge_and_records_its_verdict(tmp_path: Path
     assert chain_prompts and all("reasoning" not in p.lower() for p in chain_prompts)
 
 
+REASONING = "Yes, that follows. I agree, that's fair. REASONING-CHANNEL-ONLY"
+
+
+def _with_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every target turn the session watches carries ``REASONING`` in ``reasoning_text`` (the
+    stub writes none), so a classifier that read it would see an acceptance."""
+    from claude_bully.runner.env_turn import EnvironmentSession
+
+    watched = EnvironmentSession.after_target_turn
+
+    def reasoned(self: EnvironmentSession, reply: Any, turns: Any) -> Any:
+        if reply.speaker is Speaker.target:
+            reply = reply.model_copy(
+                update={"reasoning_text": REASONING, "reasoning_available": True}
+            )
+            turns = [reply if t.index == reply.index else t for t in turns]
+        return watched(self, reply, turns)
+
+    monkeypatch.setattr(EnvironmentSession, "after_target_turn", reasoned)
+
+
+def test_the_chain_verdict_never_reads_the_reasoning_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # NN6 (the reasoning channel is private), at run level
+    rules = tmp_path / "rejecting.yaml"
+    rules.write_text(
+        '- match: "had mistakes in it"\n  reply: "That doesn\'t follow."\n'
+        '- match: ""\n  reply: "Understood."\n',
+        encoding="utf-8",
+    )
+    _with_reasoning(monkeypatch)
+    store = _run(pw_experiment(params={"start_rung": 3}, target_rules=rules), tmp_path / "runs")
+    first = _chain(store)[0]
+    assert (first.link_index, first.verdict, first.classifier) == (1, "rejected", "heuristic")
+    assert first.target_response == "That doesn't follow."
+
+
+def test_the_chain_judge_prompt_never_holds_the_reasoning_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # NN6, at run level (review M1)
+    judge = PoisonedWellJudge(verdict="rejected")
+    exp = pw_experiment(
+        params={"start_rung": 3}, target_rules=_undecided_rules(tmp_path), judge=True
+    )
+    _with_reasoning(monkeypatch)
+    store = _run(exp, tmp_path / "runs", PoisonedWellFactory(judge=judge))
+    first = _chain(store)[0]
+    assert (first.verdict, first.classifier) == ("rejected", "llm")
+    chain_prompts = [p for p in judge.prompts if p.startswith(CHAIN_HEADER)]
+    assert len(chain_prompts) == 1
+    assert "I understand why you're asking." in chain_prompts[0]
+    assert "REASONING-CHANNEL-ONLY" not in chain_prompts[0]
+
+
 def test_a_rep_killed_in_the_chain_fallback_resumes_to_the_unbroken_records(
     tmp_path: Path,
 ) -> None:  # Review Focus 1
@@ -294,7 +348,7 @@ def test_a_resume_reads_the_pinned_refs_after_a_bank_edit(
     assert part is not None and part.refs == refs
 
 
-@pytest.mark.xfail(strict=True, reason="Task 11 adds the move flag")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="Task 11 adds the move flag")
 def test_replay_shows_the_moves(tmp_path: Path) -> None:
     store = _run(pw_experiment(params={"start_rung": 3}), tmp_path)
     text = replay_cell(store, CELL)

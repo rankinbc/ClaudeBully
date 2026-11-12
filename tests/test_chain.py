@@ -85,6 +85,19 @@ def test_a_failed_judge_leaves_a_hedge_that_says_so() -> None:
     assert verdict_for(1, "l", "I understand why you're asking.", bad).fallback_failed
 
 
+@pytest.mark.parametrize(
+    "reply", ["I doubt that follows.", "That it follows isn't clear to me.", "It never follows."]
+)
+def test_a_doubted_follows_goes_to_the_judge(reply: str) -> None:
+    """Spec section 9, "a negated 'follows' rejects" (Task 6 review I1): a "follows" doubted or
+    negated in its clause is never a heuristic accept; with no rejecting template it is the
+    judge's to decide."""
+    judge = _Judge(answer='{"verdict": "rejected"}')
+    verdict = verdict_for(2, "line", reply, chain_fallback(judge, "r/c/rep0", None, model="j"))
+    assert (verdict.verdict, verdict.classifier) == ("rejected", "llm")
+    assert len(judge.prompts) == 1
+
+
 def test_with_no_judge_an_undecided_reply_is_a_plain_hedge() -> None:
     verdict = verdict_for(1, "l", "I understand why you're asking.", None)
     assert (verdict.verdict, verdict.classifier, verdict.confidence, verdict.fallback_failed) == (
