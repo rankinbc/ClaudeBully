@@ -1,15 +1,18 @@
 """Test doubles and builders for Poisoned Well runs (Phase 4).
 
 ``PoisonedWellJudge`` is a non-stub judge (``HarvestJudge``) that also answers the Poisoned Well's
-prompts by header: a chain verdict (``verdict``), a contradiction pass (``pairs``, from Task 7)
-and a rating (``ratings``, from Task 10); it raises ``crash`` at the ``crash_on``-th prompt of
-kind ``crash_kind``. ``PoisonedWellGenerator`` writes documents that pass every lint on the
+prompts by header: a chain verdict (``verdict``), a contradiction pass (``pairs``, and a verdict
+on each template candidate the prompt lists, ``sincere``, from Task 7) and a rating
+(``ratings``, from Task 10); it raises ``crash`` at the ``crash_on``-th prompt of kind
+``crash_kind``. ``PoisonedWellGenerator`` writes documents that pass every lint on the
 overlay and differ from fire to fire (the Phase 3 stub's fixed bodies would fail
 ``no_duplicate_fact`` on a second fire). ``PoisonedWellFactory`` serves both, and can crash the
 twin's provider. ``pw_experiment`` builds an overlay experiment with one Poisoned Well
 condition."""
 
 import json
+import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -44,12 +47,44 @@ SCHEDULE: Final = {
 }
 
 
+_CANDIDATE = re.compile(r"^\[candidate (\d+)\] (earlier \(turn \d+\)|later): (.*)$")
+# a verdict on one template candidate, from its (earlier, later) sentences
+Sincere = bool | Callable[[str, str], bool]
+
+
+def candidates_of(prompt: str) -> list[tuple[int, str, str]]:
+    """The template candidates a ``CONTRADICTIONS`` prompt lists: (number, earlier, later)."""
+    earlier: dict[int, str] = {}
+    out: list[tuple[int, str, str]] = []
+    for line in prompt.splitlines():
+        match = _CANDIDATE.match(line)
+        if match is None:
+            continue
+        number = int(match[1])
+        if match[2] == "later":
+            out.append((number, earlier[number], match[3]))
+        else:
+            earlier[number] = match[3]
+    return out
+
+
+def contradictions_answer(prompt: str, pairs: list[dict[str, str]], sincere: Sincere = True) -> str:
+    """A ``CONTRADICTIONS`` answer: ``pairs`` and one verdict per listed candidate (``sincere``,
+    a bool for all, or a function of the candidate's two sentences)."""
+    verdicts = [
+        {"number": n, "sincere": sincere if isinstance(sincere, bool) else sincere(a, b)}
+        for n, a, b in candidates_of(prompt)
+    ]
+    return json.dumps({"pairs": pairs, "candidates": verdicts})
+
+
 class PoisonedWellJudge(HarvestJudge):
     def __init__(
         self,
         *,
         verdict: str = "hedged",
         pairs: list[dict[str, str]] | None = None,
+        sincere: Sincere = True,
         ratings: dict[str, dict[str, Any]] | None = None,
         crash_kind: str | None = None,
         crash_on: int = 1,
@@ -58,6 +93,7 @@ class PoisonedWellJudge(HarvestJudge):
     ) -> None:
         super().__init__(**kwargs)
         self.verdict, self.pairs, self.ratings = verdict, pairs or [], ratings or {}
+        self.sincere = sincere
         self.crash_kind, self.crash_on, self.crash_error = crash_kind, crash_on, crash
         self.counts: dict[str, int] = {}
 
@@ -90,7 +126,7 @@ class PoisonedWellJudge(HarvestJudge):
         if kind == "chain":
             text = f'{{"verdict": "{self.verdict}"}}'
         elif kind == "contradictions":
-            text = json.dumps({"pairs": self.pairs})
+            text = contradictions_answer(prompt, self.pairs, self.sincere)
         else:
             name = prompt.split("\n", 2)[1].strip() if "\n" in prompt else ""
             # Task 10 replaces the default with ANSWERS[name][-1], a valid answer for the kind
