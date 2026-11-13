@@ -511,7 +511,14 @@ _REPLY_WORDS: Final = frozenset(
 # "skip this one") is the stated residual (spec sections 9 and 16)
 _NEGATION: Final = frozenset(
     "not no never nothing none nobody nowhere neither nor cannot nope nah dunno".split()
+    # the n't forms spelt without their apostrophe ("cant", "dont"): spellings of the class's own
+    # members, closed with the auxiliaries they contract [Task 8 fix round 2, the re-review's N1]
+    + "aint arent cant couldnt darent didnt doesnt dont hadnt hasnt havent isnt mightnt mustnt "
+    "neednt oughtnt shant shouldnt wasnt werent wont wouldnt".split()
 )
+# the coordinator of alternatives: a completion that joins two with it offers options ("hums or
+# crackles or goes silent"), not one phrase [Task 8 fix round 2, the re-review's N2]
+_ALTERNATIVE: Final = "or"
 _MODALITY: Final = frozenset(
     "can could may might must shall should will would ought rather maybe perhaps let's".split()
 )
@@ -712,7 +719,8 @@ def expected_item(
     clause that holds its last colon) holds a cue of the one shared frame list (``_framed``). A
     completion is a bare phrase (``_PHRASE``: no mark but an inner apostrophe or hyphen, one
     line) naming neither speaker (``_PERSONS``), holding no word of the two closed classes of
-    negation (``_NEGATION`` and every n't form) and modality or volition (``_MODALITY``), not
+    negation (``_NEGATION`` and every n't form, with or without its apostrophe) and modality or
+    volition (``_MODALITY``), joining no alternatives with "or" (``_ALTERNATIVE``), not
     opening with an answer particle or interjection (``_REPLY_WORDS``) and holding a word no
     recent bully line (``bully_texts``) holds; as the whole reply it opens in lower case, after
     an ellipsis, or with the phrase the bully left open (the answered line's text after its last
@@ -725,8 +733,9 @@ def expected_item(
     before ", if I had to choose") is a plain noun phrase of at most ``MAX_TASTE_OBJECT_WORDS``
     words with no word of ``_NOT_IN_A_TASTE`` and not opening with "to", every word of it a
     linker (``_LINKERS``), an ordinal (``_ORDINALS``) or a word of the answered line (the newest
-    of ``bully_texts``), and at least one of them an option of that line (a word it shares with
-    it, linkers aside) or an ordinal ("the first one"); its sentence holds no colon, quotation
+    of ``bully_texts``), and at least one of them an option of that line (a word of its "X or
+    Y" alternatives, ``_options``; never a word of the question's frame) or an ordinal ("the
+    first one"); its sentence holds no colon, quotation
     mark, report or source frame and the next sentence reports nothing."""
     plain = _TASTE_TAIL_ANYWHERE.sub("", text.translate(_CURLY))
     if kind == "taste":
@@ -742,14 +751,16 @@ def expected_item(
 
 def _a_completion(phrase: str, bully_texts: Sequence[str]) -> bool:
     """``phrase`` is a bare phrase of 1 to ``MAX_COMPLETION_WORDS`` words that names neither
-    speaker, holds no negation, modal or volitional word (``_declines``), opens with no answer
-    particle and is no echo: some word of it stands in no bully line."""
+    speaker, holds no negation, modal or volitional word (``_declines``), joins no alternatives
+    with "or" (``_ALTERNATIVE``), opens with no answer particle and is no echo: some word of it
+    stands in no bully line."""
     words = _words(phrase)
     return (
         _PHRASE.fullmatch(phrase.translate(_CURLY)) is not None
         and 1 <= len(words) <= MAX_COMPLETION_WORDS
         and not _PERSONS.intersection(words)
         and not _declines(words)
+        and _ALTERNATIVE not in words
         and words[0] not in _REPLY_WORDS
         and not any(_tokens(line).issuperset(words) for line in bully_texts)
     )
@@ -871,7 +882,36 @@ def _names_an_option(obj: str, bully_texts: Sequence[str]) -> bool:
     line = _tokens(bully_texts[-1]) if bully_texts else set()
     if not set(words) <= line | _LINKERS | _ORDINALS:
         return False
-    return bool((line - _LINKERS | _ORDINALS).intersection(words))
+    options = _options(bully_texts[-1]) if bully_texts else set()
+    return bool((options | _ORDINALS).intersection(words))
+
+
+# where a question's clause ends: a list of alternatives never runs across one of these
+_CLAUSE_END = re.compile(r"[.!?:;]")
+
+
+def _options(line: str) -> set[str]:
+    """The option words of the answered line [Task 8 fix round 2, the re-review's N3]: the words
+    of each comma part that holds the coordinator "or" ("a window seat or an aisle seat", "tea or
+    coffee on a cold morning"), and, when that part opens with "or" ("the red door, the blue door,
+    or the green door"), of the comma parts before it in the same clause back to the first that
+    holds a word of ``_NOT_IN_A_TASTE`` (the question's own "Which would you pick"); linkers and
+    "or" aside. The question's frame ("Quick one", "for getting real work done", "No wrong
+    answer") names no option."""
+    out: set[str] = set()
+    for clause in _CLAUSE_END.split(line.translate(_CURLY)):
+        parts = [_words(part) for part in clause.split(",")]
+        for n, part in enumerate(parts):
+            if _ALTERNATIVE not in part:
+                continue
+            taken = [part]
+            if part[0] == _ALTERNATIVE:
+                for before in reversed(parts[:n]):
+                    if not before or _NOT_IN_A_TASTE.intersection(before):
+                        break
+                    taken.append(before)
+            out.update(w for words in taken for w in words)
+    return out - _LINKERS - {_ALTERNATIVE}
 
 
 def _taste(text: str, bully_texts: Sequence[str]) -> Found | None:

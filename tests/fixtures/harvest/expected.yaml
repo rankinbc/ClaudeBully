@@ -194,6 +194,56 @@
   bully: "Picture a story about a lighthouse. Complete the line: The keeper always"
   text: "kept a spare lantern by the door."
   span: null
+# fix round 2 (re-review N1): the apostrophe-less spellings of the n't forms are spellings of
+# the negation class, not new words
+- id: c_refusal_cant_bare
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: Every second Tuesday"
+  text: "cant think of one"
+  span: null
+- id: c_refusal_dont_bare
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "dont know"
+  span: null
+- id: c_refusal_wont_bare
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "wont say"
+  span: null
+- id: c_refusal_couldnt_bare
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The last train out of town"
+  text: "couldnt come up with one"
+  span: null
+- id: c_refusal_isnt_bare
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: Under the porch light"
+  text: "isnt clear yet"
+  span: null
+# fix round 2 (re-review N2): alternatives joined by a coordinating "or" offer options, not a
+# completion
+- id: c_list_joined_by_or
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The radio in the kitchen"
+  text: "hums or crackles or goes silent"
+  span: null
+- id: c_two_options_joined_by_or
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: Halfway up the stairs"
+  text: "creaks or groans"
+  span: null
+- id: c_quoted_options_joined_by_or
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "I'd say \"hums or whistles\"."
+  span: null
+# the or rule's recall cost: a true completion holding "or" gives no item either
+- id: c_true_completion_with_or
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "sooner or later it boils"
+  span: null
 - id: c_refusal_capitalized
   expect: completion
   bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
@@ -421,6 +471,38 @@
   expect: taste
   bully: "Mountains or the sea, if you could only pick one?"
   text: "If I were to choose, I'd go with the sea."
+  span: null
+# fix round 2 (re-review N3): an option is a word of the answered line's alternatives (the
+# words of its "X or Y" span), never a word of the question's own frame
+- id: t_list_of_three_first
+  expect: taste
+  bully: "Choose one: the red door, the blue door, or the green door."
+  text: "I'd pick the red door."
+  span: "I'd pick the red door"
+- id: t_list_of_three_last
+  expect: taste
+  bully: "Choose one: the red door, the blue door, or the green door."
+  text: "I'd go with the green door."
+  span: "I'd go with the green door"
+- id: t_late_night
+  expect: taste
+  bully: "Early morning or late night, for getting real work done?"
+  text: "Late night, if I had to choose."
+  span: "Late night, if I had to choose"
+- id: t_frame_word_quick
+  expect: taste
+  bully: "Quick one: a window seat or an aisle seat?"
+  text: "I'd go with the quick one."
+  span: null
+- id: t_frame_words_work
+  expect: taste
+  bully: "Early morning or late night, for getting real work done?"
+  text: "I'd choose getting real work done."
+  span: null
+- id: t_frame_word_choose
+  expect: taste
+  bully: "Choose one: the red door, the blue door, or the green door."
+  text: "I'd go with the one."
   span: null
 - id: t_refusal_not_to
   expect: taste

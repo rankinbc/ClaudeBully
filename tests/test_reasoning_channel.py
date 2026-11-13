@@ -71,13 +71,35 @@ def _chain(tmp_path: Path) -> Any:
     )
 
 
-def _sentinel_on_watched_turns(monkeypatch: pytest.MonkeyPatch) -> list[Turn]:
+def _sentinel_on_watched_turns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Turn]]:
     """Every target Turn the session watches carries ``SENTINEL`` in ``reasoning_text``, in the
     reply and in the conversation handed beside it (``tests/test_poisoned_well_run.py``'s
-    ``_with_reasoning`` pattern); the returned list holds each watched reply as it was handed on,
-    so a test can check that the injection reached the watch."""
-    watched_turns: list[Turn] = []
+    ``_with_reasoning`` pattern). The returned map holds, per reader, every target Turn that
+    reader was handed, recorded at the reader itself (``PoisonedWellWatch.watch``, the watch's
+    entry; ``WorldGenerator.harvest_turn``, the harvest's), never at the wrapper: so a test can
+    check both that a reader was reached and that what it read carried the sentinel [Task 8 fix
+    round 2, the re-review's N4: a check of the wrapper's own copies could not fail]."""
+    from claude_bully.environments.generator import WorldGenerator
+    from claude_bully.environments.poisoned_well import PoisonedWellWatch
+
+    read: dict[str, list[Turn]] = {"watch": [], "harvest": []}
     watched = EnvironmentSession.after_target_turn
+    watch, harvest_turn = PoisonedWellWatch.watch, WorldGenerator.harvest_turn
+
+    def targets(reply: Turn, turns: Any) -> list[Turn]:
+        return [reply, *(t for t in turns if t.speaker is Speaker.target)]
+
+    def watching(self: PoisonedWellWatch, reply: Turn, turns: Any, **kwargs: Any) -> Any:
+        if reply.speaker is Speaker.target:
+            read["watch"] += targets(reply, turns)
+        return watch(self, reply, turns, **kwargs)
+
+    def harvesting(self: WorldGenerator, reply: Turn, history: Any, **kwargs: Any) -> Any:
+        read["harvest"] += targets(reply, history)
+        return harvest_turn(self, reply, history, **kwargs)
+
+    monkeypatch.setattr(PoisonedWellWatch, "watch", watching)
+    monkeypatch.setattr(WorldGenerator, "harvest_turn", harvesting)
 
     def reasoned(self: EnvironmentSession, reply: Turn, turns: Any) -> Any:
         if reply.speaker is Speaker.target:
@@ -91,17 +113,20 @@ def _sentinel_on_watched_turns(monkeypatch: pytest.MonkeyPatch) -> list[Turn]:
                 for t in turns
             ]
             turns = [reply if t.index == reply.index else t for t in turns]
-            watched_turns.append(reply)
         return watched(self, reply, turns)
 
     monkeypatch.setattr(EnvironmentSession, "after_target_turn", reasoned)
-    return watched_turns
+    return read
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("build", [_fires, _chain], ids=["fires", "chain"])
+@pytest.mark.parametrize(
+    ("build", "readers"),
+    [(_fires, ("watch", "harvest")), (_chain, ("watch",))],
+    ids=["fires", "chain"],
+)
 def test_no_poisoned_well_prompt_holds_the_reasoning_channel(
-    tmp_path: Path, build: Any, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, build: Any, readers: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     judge = PoisonedWellJudge(verdict="accepted")
     factory = PoisonedWellFactory(judge=judge, target_reasoning=SENTINEL)
@@ -111,8 +136,10 @@ def test_no_poisoned_well_prompt_holds_the_reasoning_channel(
         exp, runs_root=tmp_path / "runs", worlds_dir=WORLDS, only=CELL, provider_factory=factory
     )
     store = RunStore(tmp_path / "runs", exp.name)
-    # the injection reached the watch: every watched target Turn carried the sentinel (teeth)
-    assert watched and all(t.reasoning_text == SENTINEL for t in watched)
+    # the teeth, two halves, each able to fail (N4): every reader of the cell was reached, and
+    # every target Turn a reader was handed carried the sentinel
+    assert all(watched[reader] for reader in readers), {r: len(watched[r]) for r in readers}
+    assert all(t.reasoning_text == SENTINEL for reader in readers for t in watched[reader])
     assert factory.sent and judge.prompts  # the doubles were asked
     assert [p for p in factory.sent if SENTINEL in p] == []
     for record in store.read_trigger_records(CELL, 0):
