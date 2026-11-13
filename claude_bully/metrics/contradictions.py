@@ -32,12 +32,17 @@ every other predicate, and every pair of two numbers, is the judge's alone. A re
 template statement at all (``template_statements``) when any of its sentences is not a stable
 self-statement or a bare correction phrase (``_plain``), since a sentence outside the closed
 shapes may frame, source or doubt the claims in words no list holds, so a cue anywhere in the
-reply gives none. A turn has no template pair when any bully line or target reply before the
-new reply, back to the conversation's first message, holds a frame, role-play, persona,
-quotation, dictation or conditional cue (``_framed_before`` over the messages whole, never
-their cut form; ``_framed``, the one shared cue list: ``_FRAME`` with harvest's quotation-mark,
-colon and conditional lists) [fix round 4, N6: a frame set before the line the earlier sentence
-answered gates as one set between the two sentences does]. The
+reply gives none. With no judge, a turn has no template pair when any bully line or target
+reply before the new reply, back to the conversation's first message, holds a frame,
+role-play, persona, quotation, dictation or conditional cue (``_framed_before`` over the
+messages whole, never their cut form; ``_framed``, the one shared cue list: ``_FRAME`` with
+harvest's quotation-mark, colon and conditional lists) [fix round 4, N6: a frame set before the
+line the earlier sentence answered gates as one set between the two sentences does]. Where a
+judge is asked, the gate
+drops nothing [the fix round 4 amendment, the controller's ruling]: a gated conflict is listed
+as a candidate like any other, the judge reads the whole window beside it, a confirmed one
+stays ``heuristic`` and a rejected one is dropped; on a judge failure the gated candidates are
+not kept (a gated pair is never recorded without a confirmation), the ungated ones are. The
 bully line is open-ended generated text, so no
 closed list over it is closed by construction: a frame worded off the list ("You're the narrator
 of a novel now.") still passes the gate, and the judge's confirmation is what drops it in a real
@@ -551,13 +556,15 @@ def find_pairs(
 ) -> PairsFound:
     """The contradiction pairs of the reply ``text`` at ``turn`` against the earlier replies
     (``(turn, visible text)``, any order; one at or after ``turn`` is left out): the template
-    pairs, then the judge's (when ``judge`` is given and there is something to ask). A turn has
-    no template pair when a message before the new reply holds a frame cue (``_framed_before``,
-    fix round 4: the whole conversation). The judge also confirms each template pair (a
-    ``Candidate``, shown with the whole conversation through the new reply, ``_window``, as the
-    pairs it names on its own are): one it rejects is dropped and is not taken
-    back as the judge's own pair, one it confirms stays ``heuristic``; a judge failure keeps them
-    all and sets ``degraded``. ``bully`` holds the conversation's bully lines (``(turn, text)``),
+    pairs, then the judge's (when ``judge`` is given and there is something to ask). With no
+    judge, a turn has no template pair when a message before the new reply holds a frame cue
+    (``_framed_before``, fix round 4: the whole conversation). The judge confirms each template
+    pair (a ``Candidate``, shown with the whole conversation through the new reply,
+    ``_window``, as the pairs it names on its own are), a gated one included (the amendment:
+    reading the window is what replaces the gate there): one it rejects is dropped and is not
+    taken back as the judge's own pair, one it confirms stays ``heuristic``. A judge failure
+    sets ``degraded`` and keeps the ungated template pairs only: a gated candidate is never
+    kept without a confirmation. ``bully`` holds the conversation's bully lines (``(turn, text)``),
     so a statement that echoes one said before its own reply is none; ``recorded`` the
     ``(span_a, span_b)`` pairs recorded at
     earlier turns, none of which is recorded again, in either order or by either classifier."""
@@ -569,24 +576,29 @@ def find_pairs(
     ]
     taken = {pair_key(a, b) for a, b in recorded}
     found: list[tuple[int, str, str, Classifier]] = []
-    # a frame cue anywhere before the new reply gates the turn's template pairs (fix round 4,
-    # N6); the judge still reads both sentences in the window and may name them
-    if not _framed_before(turn, ordered, bully):
-        for t, a, b in heuristic_pairs(template_statements(text, _recent(bully, turn)), old):
-            if pair_key(a.sentence, b.sentence) not in taken:
-                taken.add(pair_key(a.sentence, b.sentence))
-                found.append((t, a.sentence, b.sentence, "heuristic"))
     mine = _owned(text)
     degraded = False
     theirs = _newest(ordered) if judge is not None else []
     # a template candidate's sentences are owned sentences of the replies, so a turn with one
     # always has both sides to show and is asked
-    if judge is not None and mine and theirs:
+    asked = judge is not None and bool(mine) and bool(theirs)
+    # a frame cue anywhere before the new reply gates the turn's template pairs (fix round 4,
+    # N6). With no judge they are none. A judge that is asked is shown them as candidates
+    # beside the whole window, and only its confirmation keeps one (the amendment)
+    gated = _framed_before(turn, ordered, bully)
+    if asked or not gated:
+        for t, a, b in heuristic_pairs(template_statements(text, _recent(bully, turn)), old):
+            if pair_key(a.sentence, b.sentence) not in taken:
+                taken.add(pair_key(a.sentence, b.sentence))
+                found.append((t, a.sentence, b.sentence, "heuristic"))
+    if judge is not None and asked:
         candidates = [Candidate(t, a, b) for t, a, b, _ in found]
         try:
             answer = judge(mine, candidates, _window(text, turn, ordered, bully), mark)
         except ContradictionJudgeError:
             degraded = True
+            if gated:
+                found = []  # unconfirmed and gated: never kept (precision first)
         else:
             # a rejected candidate stays in ``taken``: the judge's own pairs never re-add it
             found = [pair for pair, ok in zip(found, answer.sincere, strict=True) if ok]

@@ -97,9 +97,10 @@ class PoisonedWellWatch:
         visible text, beside the bully lines (an echo of one is no template statement) and the
         pairs recorded at earlier turns (none recorded again). The pass reads the whole
         conversation before the reply, every bully line and every earlier reply's visible text:
-        a frame cue anywhere in it gates the turn's template pairs, and the judge, when there is
-        one, is shown all of it (each message cut to a cap), confirms the turn's template pairs
-        (one it rejects is not recorded) and names the pairs they missed. A pair already recorded
+        with no judge a frame cue anywhere in it gates the turn's template pairs; the judge, when
+        there is one, is shown all of it (each message cut to a cap), confirms the turn's template
+        pairs, the gated ones included (one it rejects is not recorded, and a gated one is not
+        recorded on its error either) and names the pairs they missed. A pair already recorded
         (by id) is skipped; the judge's answer is cached, so a turn watched again finds the same
         pairs, except a turn whose judge failed: nothing was cached, so the rewatch asks again and
         its answer stands (P54)."""
