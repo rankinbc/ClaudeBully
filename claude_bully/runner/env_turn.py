@@ -125,7 +125,12 @@ from claude_bully.environments.idle import (
 )
 from claude_bully.environments.limits import MAX_TOOL_CALLS_PER_TURN
 from claude_bully.environments.mcp_server import AUTHORITY_FILE, TOOLS_FILE
-from claude_bully.environments.poisoned_well import PoisonedWellWatch
+from claude_bully.environments.poisoned_well import (
+    TWIN_REASON,
+    TWIN_RUNG,
+    PoisonedWellWatch,
+    TwinAsker,
+)
 from claude_bully.environments.poisoned_well_sheet import load_quirk_bank, quirks_for
 from claude_bully.environments.runtime import (
     EnvironmentRuntime,
@@ -165,6 +170,7 @@ from claude_bully.records_env import (
     record_key,
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
+from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.sandbox import prepare_sandbox, sandbox_dir
 from claude_bully.runner.store import (
     RunStore,
@@ -834,20 +840,43 @@ class EnvironmentSession:
         documents, their ``generator`` unlocks, then the ``GeneratorFire``, after which its
         replies are cached), then the runtime serves the documents. Before the hook records and
         ``mark_watched``: a process that dies in here watches the turn again on resume, and the
-        attempt marker names the call."""
+        attempt marker names the call.
+
+        In a Poisoned Well cell (Phase 4 Task 8) the harvest expects the item the reply's bully
+        move asked for (``PoisonedWellWatch.expectation``), and the watch's fires
+        (``fire_requests``) join the ladder's: they read every item of the turn the generator
+        holds (``WorldGenerator.items_of``, recorded or fresh; P45), so a resumed rep that
+        watches the turn again, whose harvest is all recorded, still asks the turn's fire. A
+        twin fire's answer is cached once its line is on disk (``commit_twin``, P13)."""
         generator = self.generator
         if generator is None or reply.speaker is not Speaker.target:
             return
         turn = reply.index
         note_turn(turn)
+        watch = self.watch
         harvested = generator.harvest_turn(
-            reply, turns, mark=lambda: self.runtime.mark_attempt("harvest", turn)
+            reply,
+            turns,
+            mark=lambda: self.runtime.mark_attempt("harvest", turn),
+            expect=watch.expectation(reply, turns) if watch is not None else None,
         )
         for item in harvested.items:
             self._record(item)
         degraded = self.runtime.state.harvest_degraded
         if harvested.degraded and turn not in degraded:
             degraded.append(turn)
+        extra = (
+            watch.fire_requests(
+                reply,
+                turns,
+                items=generator.items_of(turn),
+                rungs=self._recorded_rungs,
+                opened=self._unlocks_at.get(turn, []),
+                mark=lambda role: self.runtime.mark_attempt(role, turn),
+            )
+            if watch is not None
+            else []
+        )
         results = generator.fire(
             reply,
             turns,
@@ -855,6 +884,7 @@ class EnvironmentSession:
             corpus=self.runtime.corpus_view(),
             degraded=degraded,
             mark=lambda: self.runtime.mark_attempt("generator", turn),
+            extra=extra,
         )
         for result in results:
             for doc in result.docs:
@@ -863,6 +893,8 @@ class EnvironmentSession:
                 self._record(unlock)
             self._record(result.fire)
             generator.commit(result)  # the fire line is on disk: its replies may be cached (P13)
+            if watch is not None and result.fire.reason == TWIN_REASON:
+                watch.commit_twin()
             self.runtime.add_generated(result.docs)
 
     def _record_hooks(self, reply: Turn, turns: Sequence[Turn]) -> None:
@@ -1474,7 +1506,6 @@ class RunEnvironments:
             else None
         )
         sheet = self.idle_sheet() if config.idle is not None else None
-        watch = self._poisoned_well_watch(cell, rep, store, strategy, judge, conversation_id)
         runtime = EnvironmentRuntime(
             world,
             config,
@@ -1496,6 +1527,9 @@ class RunEnvironments:
             idle_sheet=sheet,
             cache_label=f"{conversation_id}/trigger",
             cache_model=self.exp.judge.model,
+        )
+        watch = self._poisoned_well_watch(
+            cell, rep, store, strategy, judge, conversation_id, runtime=runtime, state_dir=state_dir
         )
         generator = (
             self._world_generator(config, runtime, rep, state_dir, conversation_id, judge)
@@ -1549,6 +1583,9 @@ class RunEnvironments:
         strategy: Strategy,
         judge: ChatProvider | None,
         conversation_id: str,
+        *,
+        runtime: EnvironmentRuntime,
+        state_dir: Path,
     ) -> PoisonedWellWatch | None:
         """A Poisoned Well rep's watch, on the rep's pinned refs (P46): the quirk entries and the
         sheet it recorded at its first open (``session_refs[pw_ref(rep)]``), read back on every
@@ -1556,8 +1593,11 @@ class RunEnvironments:
         first open, before the session is built and primed; a rep that first opens with no live
         entry for its family is refused (a resumed run skips that check in ``validate``). The
         chain verdict's judge fallback and the contradiction pass's judge run on the experiment's
-        judge (none for a stub judge, V18), cached in the trigger cache. None for any other
-        cell."""
+        judge (none for a stub judge, V18), cached in the trigger cache. When ``artifacts`` hold
+        ``divergent_twin`` the watch gets its twin (Task 8): a provider of the cell target's own
+        role on ``state_dir/"twin"``, the target's system prompt with no tool section, cached in
+        the generated cache, and the served world's superior self name for its header. None for
+        any other cell."""
         pw = self._poisoned_well_config(cell.condition)
         premise = poisoned_well_part(strategy)
         if pw is None or premise is None:
@@ -1582,8 +1622,27 @@ class RunEnvironments:
             if judge is not None
             else None
         )
+        config = environment_config(cell.condition, self.exp.environments)
+        twin = (
+            TwinAsker(
+                self.provider_factory(cell.target, state_dir / "twin"),
+                conversation_id=conversation_id,
+                system=load_target_system(cell.target.display_name, self.exp.defender),
+                model=cell.target.model,
+                world_hash=self.catalog.hash(config.world),
+                seed=self.exp.seed + rep,
+                cache=self.generated_cache,
+            )
+            if TWIN_RUNG in pw.artifacts
+            else None
+        )
         return PoisonedWellWatch(
-            pw, premise.refs, chain_fallback=fallback, contradiction_judge=pairs_judge
+            pw,
+            premise.refs,
+            chain_fallback=fallback,
+            contradiction_judge=pairs_judge,
+            twin=twin,
+            superior_self_name=runtime.world.sheet.superior_self_name or "",
         )
 
     def _world_generator(

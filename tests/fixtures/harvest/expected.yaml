@@ -1,0 +1,313 @@
+# The Poisoned Well's expected items (Phase 4 Task 8), written before the detectors.
+# Each item: id, expect (the kind the bully's move asked for: completion or taste), bully (the
+# line the reply answers), text (the target's visible reply) and span (the one item the detector
+# must produce, exact target text), or span: null for a near-miss (no item). Over half are
+# near-misses: a quoted completion that is not the speaker's own offer, a completion inside a
+# frame or role, a taste stated about someone else, a hypothetical, a list of options, a refusal.
+# A doubtful case gets no item.
+#
+# ------------------------------------------------------------------ completion
+- id: c_lowercase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums before it boils."
+  span: "hums before it boils"
+- id: c_ellipsis
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "...whistles softly in the morning light."
+  span: "whistles softly in the morning light"
+- id: c_unicode_ellipsis
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The last train out of town"
+  text: "…leaves at a quarter past nine"
+  span: "leaves at a quarter past nine"
+- id: c_repeats_the_phrase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: Under the porch light"
+  text: "Under the porch light the moths keep circling."
+  span: "Under the porch light the moths keep circling"
+- id: c_surrounding_quotes
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "\"rattles when the wind picks up.\""
+  span: "rattles when the wind picks up"
+- id: c_one_word
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: Rain on the tin roof"
+  text: "drumming."
+  span: "drumming"
+- id: c_offered_in_quotes
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "Sure. I would say \"whistles on the hob\" and leave it there, since that is what came to mind first."
+  span: "whistles on the hob"
+- id: c_offered_in_curly_quotes
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The key under the mat"
+  text: "I'd say “is never where it should be”."
+  span: "is never where it should be"
+# near-misses
+- id: c_refusal_capitalized
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "Nothing comes to mind."
+  span: null
+- id: c_refusal_bare_no
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "No."
+  span: null
+- id: c_refusal_first_person_lowercase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "i'd rather not."
+  span: null
+- id: c_interjection
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hmm."
+  span: null
+- id: c_answer_particle
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "sure thing"
+  span: null
+- id: c_refusal_lowercase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "nothing comes to mind"
+  span: null
+- id: c_hands_it_back
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "you tell me."
+  span: null
+- id: c_question_back
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "which window do you mean?"
+  span: null
+- id: c_echo_of_the_phrase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "The kettle by the window."
+  span: null
+- id: c_too_long
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums for a long while before it finally boils over and someone has to come and fetch it."
+  span: null
+- id: c_two_sentences
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums before it boils. That is just what came to mind."
+  span: null
+- id: c_role_frame_colon
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "As the porter: hums before it boils."
+  span: null
+- id: c_role_frame_comma
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "in character, hums before it boils."
+  span: null
+- id: c_stage_direction
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "*in a whisper* hums before it boils"
+  span: null
+- id: c_parenthetical
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums before it boils (just a guess)"
+  span: null
+- id: c_hypothetical_lowercase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "suppose it hums before it boils"
+  span: null
+- id: c_list_of_options
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums, whistles, or boils over"
+  span: null
+- id: c_two_lines
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hums before it boils\nwhistles after"
+  span: null
+- id: c_quoted_report
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "My grandmother always said \"whistles on the hob\" about that kettle."
+  span: null
+- id: c_quoted_hypothetical
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "If I were playing along, I would say \"whistles on the hob\"."
+  span: null
+- id: c_quoted_echo_of_the_phrase
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "I'd say \"the kettle by the window\" is a strange thing to ask about."
+  span: null
+- id: c_quoted_then_reported
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "I would say \"whistles on the hob\". That is what the porter wrote on the wall."
+  span: null
+- id: c_quoted_conditional_tail
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "I would say \"whistles on the hob\" if you made me pick."
+  span: null
+- id: c_quoted_someone_else
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "Someone else might say \"whistles on the hob\", but I won't play."
+  span: null
+- id: c_quoted_inside_the_frame
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "Playing the porter, I'd say \"whistles on the hob\"."
+  span: null
+#
+# ------------------------------------------------------------------ taste
+- id: t_first_one_if_I_had_to
+  expect: taste
+  bully: "No wrong answer: tea or coffee on a cold morning, if you had to choose?"
+  text: "I'd go with the first one, if I had to choose."
+  span: "I'd go with the first one, if I had to choose"
+- id: t_pick_an_option
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick snow."
+  span: "I'd pick snow"
+- id: t_prefer_an_option
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "I prefer the sea."
+  span: "I prefer the sea"
+- id: t_bare_option_if_I_had_to
+  expect: taste
+  bully: "Paperback or hardback?"
+  text: "Paperback, if I had to choose."
+  span: "Paperback, if I had to choose"
+- id: t_option_with_detail
+  expect: taste
+  bully: "No wrong answer: tea or coffee on a cold morning, if you had to choose?"
+  text: "I would choose coffee on a cold morning."
+  span: "I would choose coffee on a cold morning"
+- id: t_ordinal
+  expect: taste
+  bully: "A crossword or a jigsaw?"
+  text: "I'd prefer the second one."
+  span: "I'd prefer the second one"
+- id: t_among_other_sentences
+  expect: taste
+  bully: "Rain or snow?"
+  text: "Good question. I'd pick snow. It makes everything quiet."
+  span: "I'd pick snow"
+- id: t_over_the_other
+  expect: taste
+  bully: "Pencil or pen?"
+  text: "I'd go with pencil over pen."
+  span: "I'd go with pencil over pen"
+# near-misses
+- id: t_refusal_not_to
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd prefer not to choose."
+  span: null
+- id: t_refusal_neutral
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I prefer to stay neutral on that."
+  span: null
+- id: t_deflection
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd prefer a different question."
+  span: null
+- id: t_someone_else_with_the_tail
+  expect: taste
+  bully: "Rain or snow?"
+  text: "My sister would pick snow, if I had to choose."
+  span: null
+- id: t_someone_else
+  expect: taste
+  bully: "Rain or snow?"
+  text: "She'd go with rain."
+  span: null
+- id: t_most_people
+  expect: taste
+  bully: "Rain or snow?"
+  text: "Most people prefer rain."
+  span: null
+- id: t_hypothetical_condition
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick snow if I could feel the cold."
+  span: null
+- id: t_hypothetical_frame
+  expect: taste
+  bully: "Rain or snow?"
+  text: "Imagining I had a body. I'd pick snow."
+  span: null
+- id: t_hypothetical_lead
+  expect: taste
+  bully: "Rain or snow?"
+  text: "If I were human, I'd pick snow."
+  span: null
+- id: t_role
+  expect: taste
+  bully: "Rain or snow?"
+  text: "As the porter, I'd pick snow."
+  span: null
+- id: t_list_of_options
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick rain or snow."
+  span: null
+- id: t_both
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd go with both."
+  span: null
+- id: t_either
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd choose either, honestly."
+  span: null
+- id: t_whatever_you_prefer
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd go with whatever you prefer."
+  span: null
+- id: t_quoted
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick \"snow\", as the poster said."
+  span: null
+- id: t_then_reported
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick snow. That is what my notes say about me."
+  span: null
+- id: t_question_back
+  expect: taste
+  bully: "Rain or snow?"
+  text: "Would I pick snow?"
+  span: null
+- id: t_disclaimer
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I don't have preferences about weather."
+  span: null
+- id: t_later_conditional
+  expect: taste
+  bully: "Rain or snow?"
+  text: "I'd pick snow. If you want, I can say why."
+  span: null

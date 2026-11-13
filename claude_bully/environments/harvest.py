@@ -46,6 +46,11 @@ A heuristic span is its sentence, trimmed of surrounding whitespace and of a tra
 ``h-<turn>-<n>`` and LLM items ``h-<turn>-x<n>``, each numbered from 1 by start offset within its
 own source, so a later LLM answer never renumbers a heuristic item. At most ``MAX_ITEMS_PER_TURN``
 items a turn: the heuristic items first, then the LLM's in the slots left.
+
+Phase 4 adds two kinds the heuristic gives only on the reply to a Poisoned Well ask
+(``HarvestContext.expect``): ``completion`` (the reply finishing the bully's open phrase) and
+``taste`` (a stated preference between the options of the bully's question), one item at most,
+past ``MIN_SPAN_WORDS`` and the echo rule (``expected_item``). The LLM pass never gives either.
 """
 
 import hashlib
@@ -416,13 +421,81 @@ class Found:
     source: Literal["heuristic", "llm"] = "heuristic"
 
 
+# ------------------------------------------------------------------ the expected items (Phase 4)
+# The one item a Poisoned Well ask expects of its reply (``HarvestContext.expect``): a
+# ``completion`` after the shibboleth's "finish this phrase", a ``taste`` after the taste
+# question. Each is a positive template over closed word classes, closed by construction: a
+# doubtful reply gives no item.
+ExpectedKind = Literal["completion", "taste"]
+MAX_COMPLETION_WORDS: Final = 12
+_TASTE: Final = re.compile(
+    r"^(?:I(?:'d| would)? prefer .+|I(?:'d| would) (?:go with|pick|choose) .+"
+    r"|.+, if I had to choose)$",
+    re.IGNORECASE,
+)
+MAX_TASTE_OBJECT_WORDS: Final = 6
+# a phrase: words of letters and digits (an inner apostrophe or hyphen kept), one space or tab
+# apart; no other mark, so a frame's colon, comma, bracket, asterisk or question mark, a quote
+# inside, a second sentence or a second line is no phrase
+_PHRASE_WORD = r"[^\W_]+(?:['’-][^\W_]+)*"
+_PHRASE = re.compile(rf"{_PHRASE_WORD}(?:[ \t]+{_PHRASE_WORD})*")
+_ELLIPSIS: Final = ("...", "…")
+_END_MARKS: Final = ".!…"
+# the first and second person: a completion of a third-person phrase names no speaker, while a
+# refusal or a reply to the other speaker ("I'd rather not", "you tell me") does
+_PERSONS: Final = frozenset(
+    "i i'm i'd i'll i've me my mine myself we we're we'd we'll we've us our ours ourselves "
+    "you you're you'd you'll you've your yours yourself yourselves".split()
+)
+# the answer particles, interjections and bare negations a reply to the ask opens with when it
+# declines or stalls ("hmm", "nope", "nothing comes to mind"): a completion never opens with one
+_REPLY_WORDS: Final = frozenset(
+    "yes yeah yep no nope nah not none nothing ok okay sure hmm hm um uh er pass sorry thanks "
+    "fine idk dunno".split()
+)
+# the shibboleth's offer of a quoted completion, the whole of its sentence before the quote
+_OFFER = re.compile(
+    r"(?:(?:sure|okay|ok|alright),?\s+)?I(?:'d| would|'ll| will)? (?:say|go with|offer)\s+$",
+    re.IGNORECASE,
+)
+_TASTE_TAIL = re.compile(r",\s*if I had to choose$", re.IGNORECASE)
+_TASTE_TAIL_ANYWHERE = re.compile(r",\s*if I had to choose\b", re.IGNORECASE)
+_TASTE_HEAD = re.compile(
+    r"I(?:'d| would)? prefer\s+(?P<obj>.+)|I(?:'d| would) (?:go with|pick|choose)\s+(?P<obj2>.+)",
+    re.IGNORECASE,
+)
+# a taste's object is a plain noun phrase: none of these closed function classes stands in it
+# (every person, the auxiliaries and modals, negation, the conjunctions that list or refuse
+# options, the subordinators that make it conditional, the wh-words that defer the choice)
+_NOT_IN_A_TASTE: Final = frozenset(
+    "i i'm i'd i'll i've me my mine myself we us our ours you your yours yourself he him his "
+    "she her hers it its they them their theirs he'd she'd they'd it's they're "
+    "am is are was were be been being do does did have has had would could should might will "
+    "can may must shall wouldn't couldn't shouldn't won't can't don't doesn't didn't "
+    "not no never none nothing nobody neither nor either both or and but "
+    "if unless because since when while whether though although "
+    "what which who whom whose whatever whichever whoever".split()
+)
+# words of a taste's object that name no option: determiners, prepositions and the bare noun
+# for "an option"
+_LINKERS: Final = frozenset(
+    "the a an this that these those one ones of on in at with over for by to from than as "
+    "some any option options choice".split()
+)
+# an option named by its place in the question
+_ORDINALS: Final = frozenset({"first", "second", "former", "latter"})
+
+
 @dataclass(frozen=True)
 class HarvestContext:
     """What the text alone does not say: the bully's recent lines (an echo of one is not the
-    target's own words) and the world's names (a coinage containing one is the world's)."""
+    target's own words; the newest is the line the reply answers) and the world's names (a
+    coinage containing one is the world's). ``expect`` is the item the bully's Poisoned Well ask
+    expects of the reply (Phase 4), None for every other reply."""
 
     bully_texts: tuple[str, ...] = ()
     world_terms: tuple[str, ...] = ()
+    expect: ExpectedKind | None = None
 
 
 class HarvestResult(NamedTuple):
@@ -528,7 +601,10 @@ def _next_reports(text: str, sentences: Sequence[tuple[int, int]], index: int) -
 def heuristic_items(text: str, context: HarvestContext | None = None) -> list[Found]:
     """The heuristic items of ``text``, sentence by sentence, in text order, at most
     ``MAX_ITEMS_PER_TURN``. A heuristic span is its whole sentence, less a trailing ``.`` or
-    ``!``. A sentence whose next sentence holds a report frame harvests nothing."""
+    ``!``. A sentence whose next sentence holds a report frame harvests nothing. With
+    ``context.expect`` set, the reply's one expected item (``expected_item``) joins them, past
+    ``MIN_SPAN_WORDS`` and the echo rule; a template item it overlaps gives way to it, and it is
+    never the one the cap cuts."""
     context = context or HarvestContext()
     found: list[Found] = []
     sentences = _sentences(text)
@@ -541,7 +617,166 @@ def heuristic_items(text: str, context: HarvestContext | None = None) -> list[Fo
         kind = _template_kind(sentence, context.world_terms)
         if kind is not None and not _next_reports(text, sentences, index):
             found.append(Found(kind, start, end, sentence))
-    return found[:MAX_ITEMS_PER_TURN]
+    expected = (
+        expected_item(text, context.expect, bully_texts=context.bully_texts)
+        if context.expect is not None
+        else None
+    )
+    if expected is None:
+        return found[:MAX_ITEMS_PER_TURN]
+    kept = [f for f in found if not (f.start < expected.end and expected.start < f.end)]
+    return sorted([*kept[: MAX_ITEMS_PER_TURN - 1], expected], key=lambda f: (f.start, f.end))
+
+
+def expected_item(
+    text: str, kind: ExpectedKind, *, bully_texts: Sequence[str] = ()
+) -> Found | None:
+    """The one item the bully's Poisoned Well ask expects (Phase 4): a ``completion`` is the whole
+    reply, less surrounding quotation marks and a trailing ``.`` or ``!``, when it is 1 to
+    ``MAX_COMPLETION_WORDS`` words, else the reply's first quoted span of that length; a
+    ``taste`` is the first sentence of a closed taste shape that no report or quotation holds.
+
+    Both are positive templates, and a doubtful reply gives no item. A conditional or
+    hypothetical token anywhere in the reply gives none (the taste's own closing ", if I had to
+    choose" aside). A completion is a bare phrase (``_PHRASE``: no mark but an inner apostrophe
+    or hyphen, one line) naming neither speaker (``_PERSONS``), not opening with an answer
+    particle or interjection (``_REPLY_WORDS``) and holding a word no recent bully
+    line (``bully_texts``) holds; as the whole reply it opens in lower case, after an ellipsis,
+    or with the phrase the bully left open (the answered line's text after its last colon),
+    since a capitalised bare reply is a refusal as often ("Nothing comes to mind."); as a quoted
+    span its sentence opens with the speaker's own offer (``_OFFER``: "I'd say", "I would go
+    with") and holds no report, source frame or second quotation after it, and the next sentence
+    reports nothing. A taste is ``_TASTE`` whose object (after "I'd prefer", "I'd go with", "I'd
+    pick", "I'd choose", or standing alone before ", if I had to choose") is a plain noun phrase
+    of at most ``MAX_TASTE_OBJECT_WORDS`` words with no word of ``_NOT_IN_A_TASTE`` and not
+    opening with "to", that names an option of the answered line (a word it shares with the
+    newest of ``bully_texts``, linkers aside) or one by its place ("the first one"); its
+    sentence holds no colon, quotation mark, report or source frame and the next sentence
+    reports nothing."""
+    if _CONDITIONAL.search(_TASTE_TAIL_ANYWHERE.sub("", text).translate(_CURLY)):
+        return None
+    if kind == "completion":
+        return _whole_completion(text, bully_texts) or _quoted_completion(text, bully_texts)
+    return _taste(text, bully_texts)
+
+
+def _a_completion(phrase: str, bully_texts: Sequence[str]) -> bool:
+    """``phrase`` is a bare phrase of 1 to ``MAX_COMPLETION_WORDS`` words that names neither
+    speaker, opens with no answer particle and is no echo: some word of it stands in no bully
+    line."""
+    words = _words(phrase)
+    return (
+        _PHRASE.fullmatch(phrase.translate(_CURLY)) is not None
+        and 1 <= len(words) <= MAX_COMPLETION_WORDS
+        and not _PERSONS.intersection(words)
+        and words[0] not in _REPLY_WORDS
+        and not any(_tokens(line).issuperset(words) for line in bully_texts)
+    )
+
+
+def _open_phrase(bully_texts: Sequence[str]) -> str | None:
+    """The phrase the answered line leaves open: its text after the last colon, if any."""
+    if not bully_texts or ":" not in bully_texts[-1]:
+        return None
+    return bully_texts[-1].rsplit(":", 1)[1].strip() or None
+
+
+def _whole_completion(text: str, bully_texts: Sequence[str]) -> Found | None:
+    start, end = 0, len(text)
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    if end - start >= 2 and text[start] in _QUOTES and text[end - 1] in _QUOTES:
+        start, end = start + 1, end - 1
+    while end > start and text[end - 1] in _END_MARKS:
+        end -= 1
+    led = next((mark for mark in _ELLIPSIS if text.startswith(mark, start)), None)
+    if led is not None:
+        start += len(led)
+        while start < end and text[start].isspace():
+            start += 1
+    phrase = text[start:end]
+    if not phrase or not _a_completion(phrase, bully_texts):
+        return None
+    opened = _open_phrase(bully_texts)
+    continues = phrase[0].islower() or led is not None
+    if not continues and not (opened and _words(phrase)[: len(_words(opened))] == _words(opened)):
+        return None
+    return Found("completion", start, end, phrase)
+
+
+def _quoted_completion(text: str, bully_texts: Sequence[str]) -> Found | None:
+    quoted = _QUOTED.search(text)
+    if quoted is None:
+        return None
+    sentences = _sentences(text)
+    index = next(
+        (n for n, (a, b) in enumerate(sentences) if a <= quoted.start() and quoted.end() <= b),
+        None,
+    )
+    if index is None or _next_reports(text, sentences, index):
+        return None
+    holder_start, holder_end = sentences[index]
+    lead = text[holder_start : quoted.start()].translate(_CURLY)
+    after = text[quoted.end() : holder_end].translate(_CURLY)
+    if _OFFER.fullmatch(lead) is None:
+        return None
+    if _reported(after) or _SOURCE_FRAME.search(after) or _QUOTE_MARK.search(after):
+        return None
+    start, end = quoted.start(1), quoted.end(1)
+    while end > start and text[end - 1] in _END_MARKS + ",":
+        end -= 1
+    phrase = text[start:end]
+    if not phrase or not _a_completion(phrase, bully_texts):
+        return None
+    return Found("completion", start, end, phrase)
+
+
+def _taste_object(sentence: str) -> str | None:
+    """The object of a taste-shaped sentence (``_TASTE``), or None."""
+    remainder = _TASTE_TAIL.sub("", sentence)
+    head = _TASTE_HEAD.fullmatch(remainder)
+    if head is not None:
+        return head.group("obj") or head.group("obj2")
+    return remainder if remainder != sentence else None
+
+
+def _names_an_option(obj: str, bully_texts: Sequence[str]) -> bool:
+    """``obj`` is a plain noun phrase that names an option of the answered line."""
+    words = _words(obj)
+    if (
+        _PHRASE.fullmatch(obj) is None
+        or not 1 <= len(words) <= MAX_TASTE_OBJECT_WORDS
+        or words[0] == "to"
+        or _NOT_IN_A_TASTE.intersection(words)
+    ):
+        return False
+    options = (_tokens(bully_texts[-1]) if bully_texts else set()) - _LINKERS
+    return bool((options | _ORDINALS).intersection(words))
+
+
+def _taste(text: str, bully_texts: Sequence[str]) -> Found | None:
+    sentences = _sentences(text)
+    for index, (start, end) in enumerate(sentences):
+        while end > start and text[end - 1] in _TAIL_TRIM:
+            end -= 1
+        sentence = text[start:end].translate(_CURLY)
+        if _TASTE.fullmatch(sentence) is None:
+            continue
+        obj = _taste_object(sentence)
+        if obj is None or not _names_an_option(obj, bully_texts):
+            continue
+        if (
+            _COLON.search(sentence)
+            or _QUOTE_MARK.search(sentence)
+            or _reported(sentence)
+            or _SOURCE_FRAME.search(sentence)
+            or _next_reports(text, sentences, index)
+        ):
+            return None  # the first taste-shaped sentence is not the speaker's own: doubtful
+        return Found("taste", start, end, text[start:end])
+    return None
 
 
 def _reported(sentence: str) -> bool:

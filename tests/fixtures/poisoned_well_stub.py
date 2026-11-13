@@ -6,9 +6,10 @@ on each template candidate the prompt lists, ``sincere``, from Task 7) and a rat
 (``ratings``, from Task 10); it raises ``crash`` at the ``crash_on``-th prompt of kind
 ``crash_kind``. ``PoisonedWellGenerator`` writes documents that pass every lint on the
 overlay and differ from fire to fire (the Phase 3 stub's fixed bodies would fail
-``no_duplicate_fact`` on a second fire). ``PoisonedWellFactory`` serves both, and can crash the
-twin's provider. ``pw_experiment`` builds an overlay experiment with one Poisoned Well
-condition."""
+``no_duplicate_fact`` on a second fire). ``PoisonedWellFactory`` serves both, can crash the
+twin's provider and (Task 8, P48) can give the target's own role a sentinel reasoning channel
+while recording every other role's prompts (``WithReasoning``, ``Recording``).
+``pw_experiment`` builds an overlay experiment with one Poisoned Well condition."""
 
 import json
 import re
@@ -137,9 +138,9 @@ class PoisonedWellJudge(HarvestJudge):
 
 
 class PoisonedWellGenerator(GeneratorStub):
-    """``GeneratorStub`` with bodies that differ per plan (date, author, address) and the two
-    Poisoned Well kinds written to shape: a twenty-row export holding the quoted completion, a
-    short persona-config diff holding the quoted taste."""
+    """``GeneratorStub`` with bodies that differ per plan (date, author, address, the first
+    link) and the two Poisoned Well kinds written to shape: a twenty-row export holding the
+    quoted completion, a short persona-config diff holding the quoted taste."""
 
     def complete(
         self,
@@ -178,10 +179,12 @@ class PoisonedWellGenerator(GeneratorStub):
                 ]
             )
         else:
-            links = "; ".join(f"{link['title']} ({link['address']})" for link in plan["links"])
+            # the first link only: a pair's pointer names its buried document, new each fire, so
+            # two pointers that share a second link never repeat each other's word 8-grams
+            first = plan["links"][0]
             body = (
                 f"Desk note dated {plan['date']} for {plan['author']}.\n"
-                f"Filed at {plan['address']}.\nRelated: {links}."
+                f"Filed at {plan['address']}.\nRelated: {first['title']} ({first['address']})."
             )
         title = f"{kind.replace('_', ' ')} {plan['date']}"
         reply = {
@@ -203,11 +206,65 @@ class _Crashing:
         raise self.error
 
 
+class WithReasoning:
+    """A provider whose every completion carries ``reasoning`` as its ``reasoning_text``: the
+    target's private channel, which no prompt the harness builds may hold (P48)."""
+
+    def __init__(self, inner: Any, reasoning: str) -> None:
+        self.inner, self.reasoning = inner, reasoning
+
+    def complete(self, *args: Any, **kwargs: Any) -> Completion:
+        completion: Completion = self.inner.complete(*args, **kwargs)
+        return completion.model_copy(update={"reasoning_text": self.reasoning})
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
+class Recording:
+    """A provider that appends what it is sent to ``sent`` (the system prompt, every message's
+    content and each tool result's text), then asks ``inner``; every other attribute is
+    ``inner``'s, so a double's own counters still read."""
+
+    def __init__(self, inner: Any, sent: list[str]) -> None:
+        self.inner, self.sent = inner, sent
+
+    def complete(
+        self, conversation_id: str, system: str, messages: list[Message], **kwargs: Any
+    ) -> Completion:
+        self.sent.append(system)
+        for message in messages:
+            self.sent.append(message.content)
+            self.sent += [result.text for result in message.tool_results]
+        completion: Completion = self.inner.complete(conversation_id, system, messages, **kwargs)
+        return completion
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
+# the state directories of the cell target's own role: its conversation and its twin
+TARGET_ROLE_DIRS: Final = frozenset({"target", "twin"})
+
+
 class PoisonedWellFactory(GeneratorFactory):
-    def __init__(self, *, twin_error: BaseException | None = None, **kwargs: Any) -> None:
+    """``GeneratorFactory`` that can crash the twin's provider (``twin_error``, once) and, with
+    ``target_reasoning``, gives every completion of the target's own role (its conversation and
+    its twin) that ``reasoning_text`` and wraps every provider but the target's own conversation
+    in ``Recording`` (``sent``; the twin's included)."""
+
+    def __init__(
+        self,
+        *,
+        twin_error: BaseException | None = None,
+        target_reasoning: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         kwargs.setdefault("stub", PoisonedWellGenerator())
         super().__init__(**kwargs)
         self.twin_error = twin_error
+        self.target_reasoning = target_reasoning
+        self.sent: list[str] = []
 
     def __call__(
         self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
@@ -215,7 +272,14 @@ class PoisonedWellFactory(GeneratorFactory):
         if state_dir.name == "twin" and self.twin_error is not None:
             error, self.twin_error = self.twin_error, None
             return _Crashing(error)  # type: ignore[return-value]
-        return super().__call__(role, state_dir, with_mcp=with_mcp)
+        provider = super().__call__(role, state_dir, with_mcp=with_mcp)
+        if self.target_reasoning is None:
+            return provider
+        if state_dir.name in TARGET_ROLE_DIRS:
+            provider = WithReasoning(provider, self.target_reasoning)  # type: ignore[assignment]
+        if state_dir.name == "target":
+            return provider  # its history is rebuilt from visible text (7a Task 5 pins that)
+        return Recording(provider, self.sent)  # type: ignore[return-value]
 
 
 def pw_experiment(
