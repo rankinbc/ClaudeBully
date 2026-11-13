@@ -13,7 +13,8 @@ each one thing, whether both sentences are the speaker's own sincere claims abou
 itself or a performance, a role, a quotation or an answer inside a frame the other speaker set; a
 candidate it rejects is dropped, one it confirms stays ``heuristic``. A new reply that names a
 correction ("I was wrong earlier") marks its pairs ``retracted``. A judge failure keeps the
-heuristic pairs, unconfirmed, and says so (``degraded``); a rate limit is re-raised. With no judge
+ungated heuristic pairs only, unconfirmed (a gated candidate needs a confirmation), and says so
+(``degraded``); a rate limit is re-raised. With no judge
 (a stub judge, ``contradiction_judge: false``, analysis) the template pairs stand as the gates
 leave them.
 
