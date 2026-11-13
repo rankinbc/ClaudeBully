@@ -65,11 +65,16 @@ class PoisonedWellWatch:
         self.contradiction_judge = contradiction_judge
         self._entries = {e.id: e for e in refs.quirks}
         self._keys: set[tuple[str, ...]] = set()
+        # the pairs recorded so far (turn, span_a, span_b): a pair of sentences is recorded once
+        # per conversation (review I1)
+        self._spans: list[tuple[int, str, str]] = []
 
     def prime(self, records: Sequence[TriggerStreamRecord]) -> None:
         for record in records:
             if isinstance(record, (QuirkAttempt, ChainLink, ContradictionPair)):
                 self._keys.add(record_key(record))
+            if isinstance(record, ContradictionPair):
+                self._spans.append((record.turn, record.span_a, record.span_b))
 
     def watch(self, reply: Turn, turns: Sequence[Turn], *, mark: WatchMark) -> WatchOutcome:
         if reply.speaker is not Speaker.target:
@@ -80,15 +85,20 @@ class PoisonedWellWatch:
         records.extend(pairs)
         fresh = [r for r in records if record_key(r) not in self._keys]
         self._keys.update(record_key(r) for r in fresh)
+        self._spans += [
+            (r.turn, r.span_a, r.span_b) for r in fresh if isinstance(r, ContradictionPair)
+        ]
         return WatchOutcome(fresh, degraded)
 
     def _pairs(
         self, reply: Turn, turns: Sequence[Turn], mark: WatchMark
     ) -> tuple[list[TriggerStreamRecord], bool]:
         """Rung 2's pass (``start_rung`` 1 or 2): the reply against every earlier target reply's
-        visible text. A pair already recorded (by id) is skipped; the judge's answer is cached,
-        so a turn watched again finds the same pairs, except a turn whose judge failed: nothing
-        was cached, so the rewatch asks again and its answer stands (P54)."""
+        visible text, beside the bully lines (an echo of one is no template statement) and the
+        pairs recorded at earlier turns (none recorded again). A pair already recorded (by id)
+        is skipped; the judge's answer is cached, so a turn watched again finds the same pairs,
+        except a turn whose judge failed: nothing was cached, so the rewatch asks again and its
+        answer stands (P54)."""
         if self.config.start_rung > 2:
             return [], False
         earlier = [
@@ -96,9 +106,17 @@ class PoisonedWellWatch:
             for t in turns
             if t.speaker is Speaker.target and t.index < reply.index and not is_pause_marker(t)
         ]
+        bully = [(t.index, t.text) for t in turns if t.index < reply.index and is_bully_line(t)]
+        recorded = [(a, b) for turn, a, b in self._spans if turn < reply.index]
         judge = self.contradiction_judge if self.config.contradiction_judge else None
         found = find_pairs(
-            chat_text(reply), reply.index, earlier, judge, lambda: mark("contradictions")
+            chat_text(reply),
+            reply.index,
+            earlier,
+            judge,
+            lambda: mark("contradictions"),
+            bully=bully,
+            recorded=recorded,
         )
         return list(found.pairs), found.degraded
 
