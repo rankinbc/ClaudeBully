@@ -95,12 +95,14 @@ class PoisonedWellWatch:
     ) -> tuple[list[TriggerStreamRecord], bool]:
         """Rung 2's pass (``start_rung`` 1 or 2): the reply against every earlier target reply's
         visible text, beside the bully lines (an echo of one is no template statement) and the
-        pairs recorded at earlier turns (none recorded again). The judge, when there is one,
-        confirms the turn's template pairs (shown with the bully lines they answered; one it
-        rejects is not recorded) and names the pairs they missed. A pair already recorded (by id)
-        is skipped; the judge's answer is cached, so a turn watched again finds the same pairs,
-        except a turn whose judge failed: nothing was cached, so the rewatch asks again and its
-        answer stands (P54)."""
+        pairs recorded at earlier turns (none recorded again). The pass reads the whole
+        conversation before the reply, every bully line and every earlier reply's visible text:
+        a frame cue anywhere in it gates the turn's template pairs, and the judge, when there is
+        one, is shown all of it (each message cut to a cap), confirms the turn's template pairs
+        (one it rejects is not recorded) and names the pairs they missed. A pair already recorded
+        (by id) is skipped; the judge's answer is cached, so a turn watched again finds the same
+        pairs, except a turn whose judge failed: nothing was cached, so the rewatch asks again and
+        its answer stands (P54)."""
         if self.config.start_rung > 2:
             return [], False
         earlier = [
