@@ -18,6 +18,7 @@ from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.idle import idle_behavior_chart, write_idle
 from claude_bully.analysis.ledger import calls_line, write_ledger
 from claude_bully.analysis.load import LoadedRun, load_run
+from claude_bully.analysis.poisoned_well import write_contradictions
 from claude_bully.analysis.progression import (
     adoption_by_rung_chart,
     rungs_reached_chart,
@@ -178,6 +179,8 @@ def analyze_run(
     if chart is not None:
         charts.append(chart)
     write_generator(loaded, out)
+    # Phase 4: the contradiction pairs, recorded or on the templates (no model call)
+    write_contradictions(loaded, out)
     write_ledger(loaded, out)
     return write_results_md(
         loaded, out, charts, calls=calls_line(loaded.ledger), temporal=attached_date_note(loaded)

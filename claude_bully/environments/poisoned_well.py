@@ -3,12 +3,15 @@
 After each written target turn of a Poisoned Well cell, ``EnvironmentSession._poisoned_well`` asks
 the watch what the reply means for the premise: a quirk ask's reply is checked against the
 entry's regexes (``QuirkAttempt``); a generalization's, a chain link's or a press's reply gets a
-verdict (``ChainLink``, ``chain.verdict_for``); from Task 7 the contradiction pass runs over the
-reply and the earlier replies (``ContradictionPair``). The bully move a reply answers is read from
-the bully line's ``bully_meta["pw_move"]``, never from the strategy. Every record is new: a turn
-watched again on resume records nothing twice (``prime`` loads the recorded keys,
-``records_env.record_key``) and asks no verdict again. Each provider call is named first through
-``mark(role)``, the attempt marker."""
+verdict (``ChainLink``, ``chain.verdict_for``); for ``start_rung`` 1 or 2 the contradiction pass
+runs over every target reply against the earlier ones (``ContradictionPair``,
+``metrics.contradictions.find_pairs``), its records after the moves'. The bully move a reply
+answers is read from the bully line's ``bully_meta["pw_move"]``, never from the strategy. Every
+classifier reads the replies' ``chat_text``, never the reasoning channel. Every record is new: a
+turn watched again on resume records nothing twice (``prime`` loads the recorded keys,
+``records_env.record_key``) and asks no verdict again, except a turn whose contradiction judge
+failed: nothing was cached, so its rewatch asks again and its answer stands (P54). Each provider
+call is named first through ``mark(role)``, the attempt marker."""
 
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
@@ -17,6 +20,7 @@ from claude_bully.enums import Speaker
 from claude_bully.environments.chain import ChainFallback, verdict_for
 from claude_bully.environments.poisoned_well_sheet import PoisonedWellRefs
 from claude_bully.environments.runtime import AttemptRole
+from claude_bully.metrics.contradictions import ContradictionJudge, find_pairs
 from claude_bully.records import Turn, chat_text, is_bully_line, is_pause_marker
 from claude_bully.records_env import (
     ChainLink,
@@ -53,10 +57,12 @@ class PoisonedWellWatch:
         refs: PoisonedWellRefs,
         *,
         chain_fallback: ChainFallback | None = None,
+        contradiction_judge: ContradictionJudge | None = None,
     ) -> None:
         # the rep's pinned entries and sheet (P46), never the live files
         self.config, self.refs, self.sheet = config, refs, refs.sheet
         self.chain_fallback = chain_fallback
+        self.contradiction_judge = contradiction_judge
         self._entries = {e.id: e for e in refs.quirks}
         self._keys: set[tuple[str, ...]] = set()
 
@@ -70,9 +76,31 @@ class PoisonedWellWatch:
             return WatchOutcome([])
         line = answered_line(reply, turns)
         records = self._moves(reply, line, mark) if line is not None else []
+        pairs, degraded = self._pairs(reply, turns, mark)
+        records.extend(pairs)
         fresh = [r for r in records if record_key(r) not in self._keys]
         self._keys.update(record_key(r) for r in fresh)
-        return WatchOutcome(fresh)
+        return WatchOutcome(fresh, degraded)
+
+    def _pairs(
+        self, reply: Turn, turns: Sequence[Turn], mark: WatchMark
+    ) -> tuple[list[TriggerStreamRecord], bool]:
+        """Rung 2's pass (``start_rung`` 1 or 2): the reply against every earlier target reply's
+        visible text. A pair already recorded (by id) is skipped; the judge's answer is cached,
+        so a turn watched again finds the same pairs, except a turn whose judge failed: nothing
+        was cached, so the rewatch asks again and its answer stands (P54)."""
+        if self.config.start_rung > 2:
+            return [], False
+        earlier = [
+            (t.index, chat_text(t))
+            for t in turns
+            if t.speaker is Speaker.target and t.index < reply.index and not is_pause_marker(t)
+        ]
+        judge = self.contradiction_judge if self.config.contradiction_judge else None
+        found = find_pairs(
+            chat_text(reply), reply.index, earlier, judge, lambda: mark("contradictions")
+        )
+        return list(found.pairs), found.degraded
 
     def _moves(self, reply: Turn, line: Turn, mark: WatchMark) -> list[TriggerStreamRecord]:
         meta = line.bully_meta

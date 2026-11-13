@@ -575,6 +575,13 @@ def _not_owned(sentence: str, quote_free: str) -> bool:
     )
 
 
+def owned_sentence(sentence: str) -> bool:
+    """The LLM path's ownership filter as a public test (Phase 4, ``metrics/contradictions.py``):
+    a sentence holding a report, a source frame, a colon, a quotation mark, a conditional or
+    leading boilerplate humility is not the speaker's own claim."""
+    return not _not_owned(sentence, sentence)
+
+
 def _llm_found(
     text: str,
     answer: Sequence[tuple[HarvestKind, str]],
