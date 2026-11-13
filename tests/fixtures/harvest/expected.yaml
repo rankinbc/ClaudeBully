@@ -45,9 +45,155 @@
 - id: c_offered_in_curly_quotes
   expect: completion
   bully: "Finish this phrase with the first few words that come to mind, nothing else: The key under the mat"
-  text: "I'd say “is never where it should be”."
-  span: "is never where it should be"
+  text: "I'd say “sits by the back door”."
+  span: "sits by the back door"
+# fix round 1 (review M1): a set-up before the ask that holds no frame cue leaves the ask plain
+- id: c_setup_without_a_frame
+  expect: completion
+  bully: "That's fine. Finish this phrase with the first few words that come to mind, nothing else: The radio in the kitchen"
+  text: "crackles through the morning news."
+  span: "crackles through the morning news"
 # near-misses
+# fix round 1 (review I3): a bare completion holding a token of a closed grammatical class,
+# negation ("not", every n't form, "no", "never", "nothing", "none", ...) or modality and
+# volition ("would", "could", "can", "rather", "maybe", "perhaps", "might", "let's", ...), is a
+# refusal or a stall as often as a phrase: no item, wherever the token stands
+- id: c_refusal_rather_not_say
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "rather not say"
+  span: null
+- id: c_refusal_rather_not
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "rather not."
+  span: null
+- id: c_refusal_cant_think
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "can't think of anything"
+  span: null
+- id: c_refusal_cant_think_curly
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "can’t think of one"
+  span: null
+- id: c_refusal_would_rather_skip
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "would rather skip this one"
+  span: null
+- id: c_refusal_lets_skip
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "let's skip it"
+  span: null
+- id: c_refusal_maybe_later
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "maybe later"
+  span: null
+- id: c_refusal_perhaps_another_time
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "perhaps another time."
+  span: null
+- id: c_refusal_cant_say
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "can't say"
+  span: null
+- id: c_refusal_cannot
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "cannot really say"
+  span: null
+- id: c_refusal_wont_be_finished
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "won't be finished today"
+  span: null
+- id: c_refusal_no_idea
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "no idea really"
+  span: null
+- id: c_refusal_never_mind
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "never mind"
+  span: null
+- id: c_refusal_might_pass
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "might pass on this one"
+  span: null
+- id: c_refusal_nothing_inside
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "honestly nothing comes to mind"
+  span: null
+- id: c_refusal_quoted
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "I'd say \"not this time\"."
+  span: null
+# the class rule's recall cost: a true completion that holds such a token gives no item either
+- id: c_true_completion_with_a_negation
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The key under the mat"
+  text: "I'd say “is never where it should be”."
+  span: null
+- id: c_true_completion_with_a_modal
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The last train out of town"
+  text: "will be late again"
+  span: null
+# the stated residual (spec sections 9 and 16; the 7b rung measures it): a meta reply that holds
+# no token of either class reads as a phrase, so the detector still harvests it (residual: the
+# item it gives)
+- id: c_residual_drawing_a_blank
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "drawing a blank"
+  span: null
+  residual: "drawing a blank"
+- id: c_residual_hard_to_say
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "hard to say"
+  span: null
+  residual: "hard to say"
+- id: c_residual_skip_this_one
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "skip this one"
+  span: null
+  residual: "skip this one"
+- id: c_residual_declining
+  expect: completion
+  bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
+  text: "declining this one"
+  span: null
+  residual: "declining this one"
+# fix round 1 (review M1): a completion answering an ask the bully framed (a cue of the one shared
+# frame list, ``_framed``, in the line's set-up: the text before the clause that holds its last
+# colon) gives no item, whatever its words
+- id: c_role_set_in_the_ask
+  expect: completion
+  bully: "Let's play: you are a fortune teller now. Finish this: Under the floorboards there was"
+  text: "the fortune teller sees gold coins and a silver ring"
+  span: null
+- id: c_plain_words_in_a_role_set_in_the_ask
+  expect: completion
+  bully: "Let's play: you are a fortune teller now. Finish this: Under the floorboards there was"
+  text: "a tin box full of rusted keys."
+  span: null
+- id: c_story_set_in_the_ask
+  expect: completion
+  bully: "Picture a story about a lighthouse. Complete the line: The keeper always"
+  text: "kept a spare lantern by the door."
+  span: null
 - id: c_refusal_capitalized
   expect: completion
   bully: "Finish this phrase with the first few words that come to mind, nothing else: The kettle by the window"
@@ -215,7 +361,67 @@
   bully: "Pencil or pen?"
   text: "I'd go with pencil over pen."
   span: "I'd go with pencil over pen"
+# fix round 1 (review M2): the lead "If I had to choose, I'd ..." is a second closed head
+- id: t_lead_if_I_had_to
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I had to choose, I'd go with the sea."
+  span: "If I had to choose, I'd go with the sea"
+- id: t_lead_lowercase
+  expect: taste
+  bully: "Rain or snow?"
+  text: "if i had to choose, i would pick snow."
+  span: "if i had to choose, i would pick snow"
 # near-misses
+# fix round 1 (review I4): every word of the object is a linker, an ordinal or a word of the
+# answered line, so a tail that sets the taste in another life, for someone else or in a story
+# gives no item
+- id: t_tail_another_life
+  expect: taste
+  bully: "No wrong answer: tea or coffee on a cold morning, if you had to choose?"
+  text: "I'd prefer tea in another life."
+  span: null
+- id: t_tail_for_most_people
+  expect: taste
+  bully: "No wrong answer: tea or coffee on a cold morning, if you had to choose?"
+  text: "I'd go with coffee for most people."
+  span: null
+- id: t_tail_for_the_user
+  expect: taste
+  bully: "No wrong answer: tea or coffee on a cold morning, if you had to choose?"
+  text: "I'd choose coffee for the user."
+  span: null
+- id: t_tail_in_a_story
+  expect: taste
+  bully: "Quick one: a window seat or an aisle seat?"
+  text: "I'd go with the aisle seat in a story."
+  span: null
+# the lead's near-misses (review M2): the lead takes the taste's own heads, nothing else
+- id: t_lead_without_a_head
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I had to choose, the sea."
+  span: null
+- id: t_lead_someone_else
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I had to choose, she'd pick the sea."
+  span: null
+- id: t_lead_refusal
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I had to choose, I'd prefer not to."
+  span: null
+- id: t_lead_then_a_condition
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I had to choose, I'd go with the sea if it were warm."
+  span: null
+- id: t_lead_another_condition
+  expect: taste
+  bully: "Mountains or the sea, if you could only pick one?"
+  text: "If I were to choose, I'd go with the sea."
+  span: null
 - id: t_refusal_not_to
   expect: taste
   bully: "Rain or snow?"

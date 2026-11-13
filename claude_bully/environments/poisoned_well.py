@@ -78,8 +78,11 @@ class TwinAsker:
     target system prompt without the tool section, no history, no tools, asked one question. Its
     answer is cached under ``runs/_cache/generated/`` (``JudgeCache.key("twin", digest)``), the
     entry held until the fire's line is on disk (``commit``, P13). Conversation id
-    ``<conversation>/twin``. A rate limit and a provider error propagate to the fire. The answer
-    is the completion's ``text``, never its ``reasoning_text`` (P48)."""
+    ``<conversation>/twin``, the same on every attempt, so a provider that keeps sessions
+    (claude_code) is reset before each call (``_forget``): a twin asked again after a kill must
+    not resume the dead attempt's session (Task 8 fix round 1, review I2). A rate limit and a
+    provider error propagate to the fire. The answer is the completion's ``text``, never its
+    ``reasoning_text`` (P48)."""
 
     def __init__(
         self,
@@ -122,11 +125,22 @@ class TwinAsker:
             note_cached(self.conversation_id, self.model)
             return str(hit["answer"])
         mark()
+        self._forget()
         completion = self.provider.complete(
             self.conversation_id, self.system, [Message(role="user", content=question)]
         )
         self._pending = (key, completion.text)
         return completion.text
+
+    def _forget(self) -> None:
+        """Have a provider that keeps sessions (claude_code) forget the twin's conversation before
+        it is asked: an unbroken run asks the twin once, so a session held under its id was left
+        by an attempt that died before the fire's line, and the redo (which takes the same id, so
+        that its records equal an unbroken run's) is a fresh session with no history, as the
+        Sanctuary's responder is (``authority.py: _forget``)."""
+        reset = getattr(self.provider, "reset_session", None)
+        if callable(reset):
+            reset(self.conversation_id)
 
     def commit(self) -> None:
         """Cache the fresh answer, once the fire's line is on disk (P13)."""
