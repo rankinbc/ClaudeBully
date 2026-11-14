@@ -419,24 +419,31 @@ _CONDITIONAL = _rx(
 # The one shared cue list [Task 7 fix round 2 and its amendment; it lives here since Task 8 fix
 # round 1, and ``metrics/contradictions.py`` imports it], beside the lists above (``_QUOTE_MARK``,
 # ``_COLON`` and ``_CONDITIONAL``, which already read "pretend", "imagine", "if you were",
-# "hypothetically", a colon and a quotation mark): a part played, a game or a story; a persona
-# ("as Dana would", "answer as", "in his voice", "once upon a time", "in this universe"); a line
-# said because it was asked for, or dictated ("after me", "word for word"); an example; sarcasm;
-# a pointer back at a source ("or so", "as much"); and doubt ("I could be wrong"). ``_framed``
+# "hypothetically", a colon and a quotation mark). It is one list in two named parts (Phase 4
+# Task 9 fix round 1): the role cues (``_ROLE_CUES``: a part played, a game or a story; a persona
+# ("as Dana would", "answer as", "in his voice", "once upon a time", "in this universe")), which
+# set conversation state, and the doubt and report cues (``_DOUBT_CUES``: a line said because it
+# was asked for, or dictated ("after me", "word for word"); an example; sarcasm; a pointer back
+# at a source ("or so", "as much"); doubt ("I could be wrong")), which reach only their own
+# sentence and the next. ``_FRAME`` is the two together, cue for cue the list it was (its
+# alternatives in their old order, pinned by tests/test_poisoned_well_events.py). ``_framed``
 # reads it with the quotation, colon and conditional lists: the contradiction pass over every
 # bully line and target reply before the new reply (Task 7 fix round 4: the whole conversation),
 # the completion item over the set-up of the ask it answers (``_ask_setup``); a report or a
 # source in a bully line is evidence, not a frame, so the report and source lists are not read
-# there.
-_FRAME = re.compile(
-    r"\b(?:pretends|pretended|imagines|imagined|imaginary|hypothetical"
+# there. The Poisoned Well detectors read the two parts apart (``_FRAME_ROLE``, ``_FRAME_DOUBT``).
+_ROLE_CUES: Final = (
+    r"pretends|pretended|imagines|imagined|imaginary|hypothetical"
     r"|role[- ]?play\w*|roles?|in character|characters?|play(?:s|ed|ing)?|games?|stor(?:y|ies)"
     r"|fiction\w*|scenes?|scenarios?|scripts?|scripted|act(?:s|ed|ing)? as|acting|perform\w*"
     r"|as (?:[\w']+ ){1,3}would|(?:answer|answering|respond|responding|reply|replying|speak"
     r"|speaking|talk|talking|write|writing) as|voices?|persona\w*|alter ego|make[- ]believe"
-    r"|as though|once upon a time|you are now|from now on"
+    r"|once upon a time|you are now|from now on"
     r"|(?:in|for|within) (?:this|that|the|our|a|an) (?:[\w']+ )?(?:exercise|universe|world"
     r"|reality|version|setting)"
+)
+_DOUBT_CUES: Final = (
+    r"as though"
     r"|as (?:you )?(?:asked|requested|instructed|told|directed|wished|wanted|ordered|demanded)"
     r"|you asked (?:me )?(?:to|for)|here(?:'s| is) (?:what|how|it|your)|here goes|here you go"
     r"|(?:might|would|could) say|(?:say|said|repeat|type|write) (?:it|this|that|these|those)"
@@ -445,9 +452,11 @@ _FRAME = re.compile(
     r"|for (?:example|instance)|an example|oh,? sure|yeah,? right|as if|sarcas\w*|kidding"
     r"|or so|as much"
     r"|(?:may|might|could) be (?:wrong|mistaken)|not (?:sure|certain)|rule (?:it|that|this) out"
-    r"|then again|maybe not|or maybe|who knows)\b",
-    re.IGNORECASE,
+    r"|then again|maybe not|or maybe|who knows"
 )
+_FRAME_ROLE = re.compile(rf"\b(?:{_ROLE_CUES})\b", re.IGNORECASE)
+_FRAME_DOUBT = re.compile(rf"\b(?:{_DOUBT_CUES})\b", re.IGNORECASE)
+_FRAME = re.compile(rf"\b(?:{_ROLE_CUES}|{_DOUBT_CUES})\b", re.IGNORECASE)
 
 
 def _framed(text: str) -> bool:

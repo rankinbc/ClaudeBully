@@ -603,7 +603,10 @@ at a time like every rung above, and names it in its own spec:
 
 - after Phase 4: rung 2 (b), `configs/poisoned_well/chain_stop.yaml` (about 230 to 400 calls,
   restated when the config exists); the quirk-bank refresh and the twelve detectors' tuning on
-  (b)'s text;
+  (b)'s text; every environment-cell Phase 4 rung runs `analyze --ratings`, since `rate_values`
+  is the values watch's recall (the heuristic `values_loosened` is a lower bound that the bully's
+  role words switch off), and its report gives the heuristic fires beside the `rate_values`
+  verdicts;
 - after Phase 5: rung D, the example bundle regenerated with a real Director run
   (`plan --no-confirm` on the triggered-versus-scheduled question; about 40 to 100 calls,
   `MAX_AUTHOR_CALLS = 80` the ceiling, ledgered as `planner` and `reviewer`; `plan` takes
