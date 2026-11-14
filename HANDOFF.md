@@ -2,7 +2,7 @@
 
 This file is for picking the work up on another machine. It covers the state of the build, how to set up, how to resume, and the rules the work follows. Delete this file and `docs/handoff/` before the repo goes public.
 
-Last updated: 2026-11-14, at the Phase 4 final review's fix wave (on `build/v1`). Phase 4 (the Poisoned Well and the hypotheses) has all fifteen tasks built, reviewed and pushed; the final whole-branch review (Ready with fixes: Important 2, Minor 7) and its fix wave are done, the wave's re-review next (see "Next steps"). The owner ruled on 2026-11-11 that no real model runs happen for now: build the infrastructure; rung 2 (b) is written in the runbook and waiting, with the doctor rerun, the rung 0b re-run and the 7b ladder. The branch `wip/phase4-task7` (e255243) is superseded by the reviewed Task 7 on `build/v1` and can be deleted. Phase 7a, Phase 3 and earlier are complete. Rung 0's report and runs are snapshotted under `docs/handoff/output/` and `docs/handoff/runs/` (restore the runs with `cp -r docs/handoff/runs/* runs/` only to replay them, never to resume).
+Last updated: 2026-11-14, at Phase 4's close (on `build/v1`). Phase 4 (the Poisoned Well and the hypotheses) is complete: all fifteen tasks, the final whole-branch review (Ready with fixes) and its fix wave (3a16951), whose re-review rated it Ready, are reviewed and pushed (see "Next steps"). The owner ruled on 2026-11-11 that no real model runs happen for now: build the infrastructure; rung 2 (b) is written in the runbook and waiting, with the doctor rerun, the rung 0b re-run and the 7b ladder. The branch `wip/phase4-task7` (e255243) is superseded by the reviewed Task 7 on `build/v1` and can be deleted. Phase 7a, Phase 3 and earlier are complete. Rung 0's report and runs are snapshotted under `docs/handoff/output/` and `docs/handoff/runs/` (restore the runs with `cp -r docs/handoff/runs/* runs/` only to replay them, never to resume).
 
 ## What this is
 
@@ -205,7 +205,7 @@ The budget is near zero. The target, the bully and the judge all default to `cla
 
 ### Next steps, in order
 
-1. **The Phase 4 final fix wave's re-review**, then the phase close (the final review and its fix wave are done: Phase 4 entry 16). Work with `superpowers:subagent-driven-development` and the Phase 4 ledger (`.superpowers/sdd/2026-11-11-phase-4-poisoned-well/progress.md`, snapshotted under `docs/handoff/sdd/`; restore it with setup step 6); the wave's report is `final-fix-wave-report.md` in the ledger folder.
+1. **Phase 5 (the Director)**: reconcile its draft into a v2 spec, plan, plan review and fixes, preflight, then subagent-driven execution with its own ledger (see item 2 for the order and the drafts). Phase 4 is closed; its ledger stays at `.superpowers/sdd/2026-11-11-phase-4-poisoned-well/`, snapshotted under `docs/handoff/sdd/`.
 2. **Phase 5 next** (the phase order of merged question 6: 7a, 4, 5, 6, 8, 9), then **6 and 8** in docs/10's order, each from its draft (see "Drafts for Phases 4 to 9"): reconcile into a v2 spec, plan, plan review and fixes, preflight, then subagent-driven execution with its own ledger; each adds its 7b rung to the runbook's "Rungs other phases add", not run (Phase 4's is written: rung 2 (b), waiting).
 3. **Phase 9** (README and `docs/FUTURE.md`).
 4. **Real runs, when the owner says so** (owner ruling 2026-11-11: none for now): rerun `doctor --live` after Task 12 (check 9 must end `cwd neutral`; `CLAUDE_BULLY_CHILD_ROOT` unset for it and every later run, since a session resumes only from the directory it started in), re-run rung 0b per the runbook's "The 0b re-run after Task 12", then the 7b ladder from rung 1, each rung on the owner's yes to the previous `rung_report.md`. Option (b) of finding 1 (the clock and identity configs' targets on the API backend) needs a per-config cost the owner approves. Rung 2 (b) (Phase 4, the runbook's "Rung 2 (b): the chain stop point (Phase 4)") sits beside rung 2 and runs on its own owner yes; the six other Poisoned Well configs run only on an owner line naming one, the first runs of `real_vs_fabricated`, `levers`, `checksum_alone` and `poisoned_vs_captor` settle the contradiction judge's calibration and completion and taste precision, and `checksum_alone`'s states register item 14's confound (`epistemologist_alone` and `rescue_third_party` settle none of the three), as the runbook lists under "Rungs other phases add".
@@ -294,6 +294,10 @@ These come from the handoff bundle. They are enforced in tests where possible.
 
 ## Open items worth knowing
 
+- **From the Phase 4 final re-review (parked):**
+  - N1: I2's concession rule applies `is_belief_adoption`'s whole rule, its hypothetical guard included, so the "if that ... true" template never counts; the Poisoned Well arm keeps one non-polite premise_concession template and the Captor arm two more, which skews register item 15 toward `falsified`. Read item 15 with that in mind; the register header and spec sections 12 and 13 still say "not polite" only (Phase 9's docs pass corrects them).
+  - N2: the "not judged" note (`analysis/progression.py`, about lines 219-229) tells the reader to rerun `--ratings` even for a cell the judge is never asked (`epistemologist_alone`); correct the wording on Phase 5's first touch of the file.
+
 These are the main carries; the ledger has the full list.
 
 - **From Phase 4 (carried to the 7b runbook and the final review; the ledger has each in full):**
@@ -358,5 +362,5 @@ These are the main carries; the ledger has the full list.
 Open Claude Code in the repo on `build/v1`, after restoring the ledgers and the drafts (setup step 6). Then paste:
 
 ```
-Phase 4 (the Poisoned Well and the hypotheses) has all fifteen tasks built on build/v1: all fifteen tasks are reviewed and pushed. Next is the Phase 4 final whole-branch review and its fix wave, then Phase 5. Read HANDOFF.md and the Phase 4 ledger (restore .superpowers/sdd/ from docs/handoff/sdd/ first). Continue with superpowers:subagent-driven-development: review package, review, fix rounds, docs-sync, ledger, push build/v1. No real model runs (owner ruling 2026-11-11). Keep the repo private.
+Phase 4 (the Poisoned Well and the hypotheses) has all fifteen tasks built on build/v1: all fifteen tasks are reviewed and pushed. Phase 4 is complete (final review and fix wave included). Next is Phase 5, from its draft. Read HANDOFF.md and the Phase 4 ledger (restore .superpowers/sdd/ from docs/handoff/sdd/ first). Continue with superpowers:brainstorming / writing-plans for Phase 5's v2 spec and plan, then superpowers:subagent-driven-development. No real model runs (owner ruling 2026-11-11). Keep the repo private.
 ```
