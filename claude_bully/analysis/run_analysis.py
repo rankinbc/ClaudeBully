@@ -48,12 +48,14 @@ from claude_bully.metrics.ratings import (
     RATINGS_FILE,
     SKIPPED_NO_JUDGE,
     SKIPPED_STUB,
-    conversation_sizes,
+    ReadBack,
     mark_skipped,
     rate_all,
+    rated_conversations,
     ratings_flags,
-    read_ratings,
-    stale_reason,
+    read_back,
+    stale_warning,
+    write_applied,
     write_ratings,
 )
 from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
@@ -184,26 +186,30 @@ def analyze_run(
                     file=sys.stderr,
                 )
             ratings_flags(loaded, loaded.ratings)
-            write_ratings(loaded.ratings, failed, out, conversations=conversation_sizes(loaded))
-    if not rated and (out / RATINGS_FILE).exists():
-        # P47: a judge-set values flag stands on every later analyze, with no judge call, while
-        # the file still matches the run (fix round 1, M6)
-        stale = stale_reason(loaded, out)
-        if stale is None:
-            loaded.ratings = read_ratings(out)
-            ratings_flags(loaded, loaded.ratings)
-        else:
-            print(
-                f"[ratings] {RATINGS_FILE} is stale ({stale}): its flags are not applied; rerun "
-                "analyze --ratings",
-                file=sys.stderr,
+            write_ratings(
+                loaded.ratings,
+                failed,
+                out,
+                conversations=rated_conversations(loaded, loaded.ratings),
             )
+            write_applied(out, ReadBack(loaded.ratings, 0, [], [], None), source="pass")
+    if not rated and (out / RATINGS_FILE).exists():
+        # P47: a judge-set values flag stands on every later analyze, with no judge call; a
+        # verdict that no longer matches the run is left out, named and counted, the rest
+        # applied (fix round 1, M6; fix round 2, R1-m1, verdict by verdict)
+        back = read_back(loaded, out)
+        loaded.ratings = back.applied
+        ratings_flags(loaded, loaded.ratings)
+        write_applied(out, back, source="read_back")
+        warning = stale_warning(back)
+        if warning is not None:
+            print(warning, file=sys.stderr)
     if skipped is not None:  # fix round 1, M3: never a silent floor
         print(
             f"[ratings] off: --ratings needs a non-stub judge ({skipped}); no rating was asked",
             file=sys.stderr,
         )
-        mark_skipped(out, skipped, conversation_sizes(loaded))
+        mark_skipped(out, skipped)
     # the stream as it stands after the judge pass and the fallback's calls, so ledger.json
     # counts this analysis's own judge calls (P20b)
     loaded.ledger = Ledger(run_dir / LEDGER_FILE).lines()
