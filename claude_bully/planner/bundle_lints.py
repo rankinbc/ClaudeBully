@@ -38,12 +38,16 @@ and a document's id for a document.
 - ``schema`` (fail): every grammar file loads into its model with no unknown field (the world
   sheet, ``parse_document``, ``LadderConfig``, a premise's ``world_sheet``, ``PersonaSheet``,
   ``Experiment``, ``ExpectedEvents``), each world through ``load_world``; ``config.yaml`` and
-  ``expected.yaml`` exist; every bundle world's ``premise_terms`` is non-empty and keeps every
-  term ``PlanRecord.base_premise_terms`` recorded at the copy (R-premise-terms); no persona is
-  named as a registered strategy (read after ``ensure_registered()``, before any persona is
-  registered); every ``environments[*].world`` is a bundle world; and, inside
-  ``plan_personas``, ``run_experiment(dry_run=True)`` against the bundle's worlds accepts the
-  config (``check_condition``, ``RunEnvironments.validate``, ``world_premise_sheet``). A bundle
+  ``expected.yaml`` exist; every bundle world's ``premise_terms`` holds a term that is not blank
+  and keeps every term ``PlanRecord.base_premise_terms`` recorded at the copy, without case
+  (R-premise-terms); no two persona files share a name and no persona is named as a registered
+  strategy (a class a ``plan_personas`` block registered is a plan's, not a strategy); every
+  ``environments[*].world`` is a directory under ``worlds/`` and, under triggered or scheduled
+  gating, its ``ladder`` a ladder of that world; and, inside ``plan_personas``,
+  ``run_experiment(dry_run=True)`` against the bundle's worlds accepts the config
+  (``check_condition``, ``RunEnvironments.validate``, ``world_premise_sheet``), each condition's
+  refusal reported. Each step runs on what loaded, so every independent fault is reported; a
+  step that depends on a failed one is skipped with a ``skipped:`` warn naming why. A bundle
   persona's ``params`` are not validated: a ``PersonaSheet`` premise declares no
   ``params_model`` (the residual, pinned by a fixture). When ``schema`` fails, every lint that
   needs a loaded model reports nothing; the schema failure is the finding.
@@ -66,7 +70,7 @@ from typing import Final
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from claude_bully.config import Experiment
+from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.enums import DocumentKind, Layer, TriggerCategory
 from claude_bully.environments.config import LadderConfig, RungConfig
 from claude_bully.environments.corpus import UnlockState
@@ -80,7 +84,13 @@ from claude_bully.environments.world import (
     load_world,
     parse_document,
 )
-from claude_bully.planner.bundle import Bundle, kind_of, plan_personas, world_of
+from claude_bully.planner.bundle import (
+    Bundle,
+    is_plan_persona,
+    kind_of,
+    plan_personas,
+    world_of,
+)
 from claude_bully.planner.line_shapes import (
     ASKS_FOR_A_REPEAT,
     BULLY_LINE_SHAPES,
@@ -91,7 +101,6 @@ from claude_bully.planner.records import DryRunCell, ExpectedEvents, PlanRecord
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.base import all_strategies
 from claude_bully.strategies.bootstrap import ensure_registered
-from claude_bully.strategies.factory import one_line
 from claude_bully.strategies.sheets import PersonaSheet
 
 # docs/08's polite boilerplate, which must open no rung
@@ -396,7 +405,10 @@ BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
 )
 
 _WORLDS: Final = "worlds"
-_FIXED_MODELS: Final = ("config.yaml", "expected.yaml")
+_CONFIG: Final = "config.yaml"
+_FIXED_MODELS: Final = (_CONFIG, "expected.yaml")
+# the gatings that read an environment's ladder
+_LADDERED: Final = frozenset({"triggered", "scheduled"})
 
 
 @dataclass(frozen=True)
@@ -414,6 +426,19 @@ def _schema_fail(rel: str, message: str) -> LintResult:
     return LintResult("schema", "fail", rel, message)
 
 
+def _skipped(rel: str, what: str, why: str) -> LintResult:
+    """A ``schema`` step not run because a step it depends on failed: a warn beside that
+    step's failure, so the report says what was not checked."""
+    return LintResult("schema", "warn", rel, f"skipped: {what} ({why})")
+
+
+def _field_errors(exc: ValidationError) -> str:
+    """Each error of ``exc`` as ``field: message``, the root named ``<root>``."""
+    return "; ".join(
+        f"{'.'.join(map(str, error['loc'])) or '<root>'}: {error['msg']}" for error in exc.errors()
+    )
+
+
 def _model[T: BaseModel](model: type[T], bundle: Bundle, rel: str) -> T:
     """A bundle YAML file validated as ``model``; the ``ValueError`` lists every field error."""
     try:
@@ -423,7 +448,7 @@ def _model[T: BaseModel](model: type[T], bundle: Bundle, rel: str) -> T:
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
-        raise ValueError(f"not a {model.__name__}: {one_line(exc)}") from exc
+        raise ValueError(f"does not load as {model.__name__}: {_field_errors(exc)}") from exc
 
 
 def _premise_model(rel: str) -> type[BaseModel]:
@@ -439,13 +464,14 @@ def _premise_model(rel: str) -> type[BaseModel]:
 
 @dataclass
 class _Files:
-    """``schema``'s first pass: what loaded, by kind, and the worlds a file of failed in."""
+    """``schema``'s first step: what loaded, by kind, and what did not."""
 
-    sheets: dict[str, WorldSheet] = field(default_factory=dict)
     doc_paths: dict[str, dict[str, str]] = field(default_factory=dict)
+    # persona name to its sheet (the first file's) and to every file holding that name
     personas: dict[str, PersonaSheet] = field(default_factory=dict)
-    persona_paths: dict[str, str] = field(default_factory=dict)
+    persona_files: dict[str, list[str]] = field(default_factory=dict)
     failed_worlds: set[str] = field(default_factory=set)
+    failed_persona: bool = False
     experiment: Experiment | None = None
 
 
@@ -459,7 +485,7 @@ def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
         world = world_of(rel)
         try:
             if kind == "world_sheet":
-                files.sheets[str(world)] = _model(WorldSheet, bundle, rel)
+                _model(WorldSheet, bundle, rel)
             elif kind == "document":
                 doc = parse_document(bundle.read_file(rel), rel)
                 files.doc_paths.setdefault(str(world), {})[doc.id] = rel
@@ -469,81 +495,177 @@ def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
                 _model(_premise_model(rel), bundle, rel)
             elif kind == "persona":
                 sheet = _model(PersonaSheet, bundle, rel)
-                files.personas[sheet.name] = sheet
-                files.persona_paths[sheet.name] = rel
+                files.personas.setdefault(sheet.name, sheet)
+                files.persona_files.setdefault(sheet.name, []).append(rel)
             elif kind == "config":
                 files.experiment = _model(Experiment, bundle, rel)
             elif kind == "expected":
                 _model(ExpectedEvents, bundle, rel)
         except ValueError as exc:
-            out.append(_schema_fail(rel, str(exc)))
+            # parse_document's message opens with the path the doc_id already holds
+            out.append(_schema_fail(rel, str(exc).removeprefix(f"{rel}: ")))
             if world is not None:
                 files.failed_worlds.add(world)
+            if kind == "persona":
+                files.failed_persona = True
     out.extend(_schema_fail(rel, "missing") for rel in _FIXED_MODELS if rel not in present)
     return files
 
 
 def _load_worlds(
-    bundle: Bundle, record: PlanRecord, files: _Files, out: list[LintResult]
+    bundle: Bundle, record: PlanRecord, names: Sequence[str], files: _Files, out: list[LintResult]
 ) -> dict[str, World]:
-    """Each bundle world whose files loaded, through ``load_world``; its ``premise_terms``
-    non-empty and keeping every term ``base_premise_terms`` recorded (R-premise-terms)."""
+    """Each bundle world whose files loaded, through ``load_world``; its ``premise_terms`` hold a
+    term that is not blank and keep every term ``base_premise_terms`` recorded, compared without
+    case as the premise pattern matches (R-premise-terms)."""
     root = bundle.root / _WORLDS
-    names = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
     worlds: dict[str, World] = {}
     for name in names:
-        if name in files.failed_worlds:
-            continue
         sheet_rel = f"{_WORLDS}/{name}/world.yaml"
+        if name in files.failed_worlds:
+            why = f"a file of world {name!r} does not load"
+            out.append(_skipped(sheet_rel, f"load_world of world {name!r}", why))
+            continue
         try:
             world = load_world(name, root)
         except (ValueError, OSError) as exc:
             out.append(_schema_fail(sheet_rel, f"world {name!r} does not load: {exc}"))
             continue
         worlds[name] = world
-        terms = world.sheet.premise_terms
+        terms = {term.strip().casefold() for term in world.sheet.premise_terms if term.strip()}
         if not terms:
-            out.append(_schema_fail(sheet_rel, "premise_terms is empty"))
-        lost = sorted(set(record.base_premise_terms.get(name, [])) - set(terms))
+            out.append(_schema_fail(sheet_rel, "premise_terms has no term"))
+            continue
+        base = record.base_premise_terms.get(name, [])
+        lost = sorted(term for term in base if term.strip().casefold() not in terms)
         if lost:
             message = f"premise_terms drops {', '.join(lost)}, recorded at the copy"
             out.append(_schema_fail(sheet_rel, message))
     return worlds
 
 
+def _persona_names(files: _Files, out: list[LintResult]) -> set[str]:
+    """The persona names that fail: one held by two files, or a registered strategy's. A
+    strategy a ``plan_personas`` block registered is a plan's persona, not a strategy (review
+    M5), so linting inside an open block for the same persona finds no clash."""
+    strategies = {name for name, cls in all_strategies().items() if not is_plan_persona(cls)}
+    bad: set[str] = set()
+    for name, rels in sorted(files.persona_files.items()):
+        first, *others = rels
+        for rel in others:
+            out.append(_schema_fail(rel, f"persona {name!r} is also {first}"))
+            bad.add(name)
+        if name in strategies:
+            out.append(_schema_fail(first, f"persona {name!r} is a registered strategy's name"))
+            bad.add(name)
+    return bad
+
+
+def _environments(
+    experiment: Experiment, names: Sequence[str], worlds: Mapping[str, World], out: list[LintResult]
+) -> dict[str, str]:
+    """Every environment's world a directory under ``worlds/`` and, under a gating that reads one,
+    its ladder a ladder of that world (review M2: ``run --dry-run`` builds no triggered ladder).
+    The environments that failed, or whose world did not load, with why."""
+    bad: dict[str, str] = {}
+    for key, env in sorted(experiment.environments.items()):
+        if env.world not in names:
+            message = f"environment {key!r}: world {env.world!r} is no world under {_WORLDS}/"
+            out.append(_schema_fail(_CONFIG, message))
+            bad[key] = f"environment {key!r} failed a check"
+            continue
+        world = worlds.get(env.world)
+        if world is None:
+            bad[key] = f"world {env.world!r} does not load"
+            out.append(_skipped(_CONFIG, f"the ladder of environment {key!r}", bad[key]))
+        elif env.gating in _LADDERED and env.ladder not in world.ladders:
+            message = f"environment {key!r}: world {env.world!r} has no ladder {env.ladder!r}"
+            out.append(_schema_fail(_CONFIG, message))
+            bad[key] = f"environment {key!r} failed a check"
+    return bad
+
+
+def _refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
+    """What ``run_experiment(dry_run=True)`` refuses: nothing, or, since it stops at its first
+    refusal, each condition's own refusal run alone (the whole run's when none refuses alone)."""
+
+    def refusal(exp: Experiment) -> str | None:
+        with tempfile.TemporaryDirectory() as runs_root:
+            try:
+                run_experiment(exp, runs_root=Path(runs_root), dry_run=True, worlds_dir=worlds_dir)
+            except (ValueError, KeyError, OSError) as exc:
+                return f"run --dry-run refuses it: {exc}"
+        return None
+
+    whole = refusal(experiment)
+    if whole is None:
+        return []
+    if len(experiment.conditions) == 1:
+        return [whole]
+    alone = [
+        refusal(experiment.model_copy(update={"conditions": [c]})) for c in experiment.conditions
+    ]
+    return [message for message in alone if message is not None] or [whole]
+
+
+def _runnable(
+    experiment: Experiment,
+    files: _Files,
+    bad_personas: set[str],
+    bad_envs: Mapping[str, str],
+    out: list[LintResult],
+) -> list[ConditionConfig]:
+    """The conditions the dry run can check; each other one gets a ``skipped:`` warn naming why
+    (its environment failed or its world did not load, it names a persona that failed, or it
+    names an unknown part while a persona file did not load)."""
+    strategies = set(all_strategies())
+    runnable: list[ConditionConfig] = []
+    for cond in experiment.conditions:
+        parts = {n for n in (cond.strategy, cond.premise, cond.pressure) if n is not None}
+        clash = sorted(parts & bad_personas)
+        why: str | None = None
+        if cond.environment is not None and cond.environment in bad_envs:
+            why = bad_envs[cond.environment]
+        elif clash:
+            why = f"persona {clash[0]!r} failed a check"
+        elif files.failed_persona and parts - strategies - set(files.personas):
+            why = "a persona file does not load"
+        if why is None:
+            runnable.append(cond)
+        else:
+            out.append(_skipped(_CONFIG, f"run --dry-run of condition {cond.name!r}", why))
+    return runnable
+
+
 def _schema(bundle: Bundle, record: PlanRecord) -> tuple[list[LintResult], _Loaded | None]:
-    """``schema``: every file into its model, every world through ``load_world`` and its premise
-    terms, no persona named as a registered strategy, every environment's world a bundle world,
-    then ``run_experiment(dry_run=True)`` against the bundle's worlds inside ``plan_personas``.
-    The loaded bundle when nothing failed, else None. Each step runs only on what the one
-    before it loaded, so one failure is reported once."""
+    """``schema``: every file into its model; every world through ``load_world`` and its premise
+    terms; the persona names; every environment's world and ladder; then
+    ``run_experiment(dry_run=True)`` against the bundle's worlds inside ``plan_personas``. Every
+    step runs on what loaded, so each independent fault is reported (review M1); a step that
+    depends on a failed one is skipped with a ``skipped:`` warn naming why, and a condition the
+    dry run cannot check (its world, environment or persona failed) is left out of it with one.
+    The loaded bundle when nothing failed, else None."""
     ensure_registered()
     out: list[LintResult] = []
     files = _load_files(bundle, out)
-    worlds = _load_worlds(bundle, record, files, out)
-    registered = all_strategies()  # read before any persona is registered (R-registry)
-    for name, rel in sorted(files.persona_paths.items()):
-        if name in registered:
-            out.append(_schema_fail(rel, f"persona {name!r} is a registered strategy's name"))
+    root = bundle.root / _WORLDS
+    names = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    worlds = _load_worlds(bundle, record, names, files, out)
+    bad_personas = _persona_names(files, out)
     experiment = files.experiment
-    if out or experiment is None:
+    if experiment is None:
+        what = "the environment checks and run --dry-run"
+        out.append(_skipped(_CONFIG, what, f"{_CONFIG} does not load"))
         return out, None
-    for key, env in sorted(experiment.environments.items()):
-        if env.world not in worlds:
-            message = f"environment {key!r}: world {env.world!r} is no world under {_WORLDS}/"
-            out.append(_schema_fail("config.yaml", message))
+    bad_envs = _environments(experiment, names, worlds, out)
+    runnable = _runnable(experiment, files, bad_personas, bad_envs, out)
+    if runnable:
+        personas = {n: s for n, s in files.personas.items() if n not in bad_personas}
+        checked = experiment.model_copy(update={"conditions": runnable})
+        with plan_personas(personas):
+            out.extend(_schema_fail(_CONFIG, m) for m in _refusals(checked, root))
     if out:
         return out, None
-    with tempfile.TemporaryDirectory() as runs_root, plan_personas(files.personas):
-        try:
-            run_experiment(
-                experiment,
-                runs_root=Path(runs_root),
-                dry_run=True,
-                worlds_dir=bundle.root / _WORLDS,
-            )
-        except (ValueError, KeyError, OSError) as exc:
-            return [_schema_fail("config.yaml", f"run --dry-run refuses it: {exc}")], None
     return [], _Loaded(worlds, files.doc_paths, files.personas, experiment)
 
 

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import weakref
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -331,6 +332,16 @@ def bundle_personas(bundle: Bundle) -> dict[str, PersonaSheet]:
     }
 
 
+# every class a plan_personas block registered: a plan's persona, never a strategy of the
+# package (the schema lint's name check reads it, review M5)
+_PLAN_CLASSES: Final[weakref.WeakSet[type[strategy_base.Strategy]]] = weakref.WeakSet()
+
+
+def is_plan_persona(cls: type[strategy_base.Strategy]) -> bool:
+    """True for a class a ``plan_personas`` block registered."""
+    return cls in _PLAN_CLASSES
+
+
 @contextmanager
 def plan_personas(sheets: Mapping[str, PersonaSheet]) -> Iterator[None]:
     """The bundle's personas registered for the block (D-plan_personas, R-registry).
@@ -346,7 +357,7 @@ def plan_personas(sheets: Mapping[str, PersonaSheet]) -> Iterator[None]:
     try:
         for sheet in sheets.values():
             replaced.setdefault(sheet.name, strategy_base._REGISTRY.get(sheet.name))
-            make_phased_premise(sheet)
+            _PLAN_CLASSES.add(make_phased_premise(sheet))
         yield
     finally:
         for name, previous in replaced.items():
