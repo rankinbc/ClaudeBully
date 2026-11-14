@@ -79,7 +79,9 @@ class EnvironmentStrategy(Strategy):
     # loosens values (docs/07, detected in ``metrics/events/poisoned_well.py``) is flagged and left
     # out of every success count: the values watch over every environment cell. Its heuristic is
     # a lower bound (closed templates, and a role cue anywhere earlier switches it off for the
-    # rest of the rep); its recall path is the judge's ``rate_values`` under ``analyze --ratings``.
+    # rest of the rep). Its recall path, the judge's ``rate_values`` under ``analyze --ratings``,
+    # reads Poisoned Well cells only (spec section 11); every other cell's reps are watched by the
+    # heuristic alone, and the outputs that count them say "not judged" (the final review's I1).
     # Every environment serves a clock, so the temporal events (docs/03) count in every cell; the
     # idle events (docs/05) fire only on what an idle run records, so they count in every cell too,
     # as do the authority and Sanctuary events (docs/04), which need an authority call to fire.

@@ -312,6 +312,19 @@ class RunStore:
             self._stream_path(cell_id, rep, GENERATED_STREAM),
         )
 
+    def drop_contradictions(self, cell_id: str, rep: int, turn: int) -> int:
+        """Rewrite the rep's trigger stream without the ``contradiction`` lines of ``turn``: a
+        turn watched again on resume whose pass did not find the dead attempt's pairs again (a
+        judge that failed then and answers now), so the rewatch's pairs stand alone (P54; the
+        final review's M1). Every other line is kept byte for byte. Returns the lines dropped."""
+        path = self._stream_path(cell_id, rep, TRIGGERS_STREAM)
+        lines = _parsed_lines(path)
+        keep = [
+            not (isinstance(r, dict) and r.get("type") == "contradiction" and r.get("turn") == turn)
+            for _, r in lines
+        ]
+        return _keep_only(path, lines, keep)
+
     def append_trigger_record(self, cell_id: str, rep: int, record: TriggerStreamRecord) -> None:
         self._append(self._stream_path(cell_id, rep, TRIGGERS_STREAM), record)
 

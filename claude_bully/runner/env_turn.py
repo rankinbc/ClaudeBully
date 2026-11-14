@@ -444,10 +444,21 @@ class EnvironmentSession:
         self.runtime.prime(calls, records, authority, turns=turns, generated=generated)
         if self.generator is not None:
             self.generator.prime(records, generated)
+        # the written target turn past watched_through, which ``rewatch`` watches again: its
+        # pairs are provisional until the rewatch's pass (the final review's M1)
+        last = next((t for t in reversed(turns) if t.speaker is Speaker.target), None)
+        again = (
+            last.index
+            if last is not None and last.index > self.runtime.state.watched_through
+            else None
+        )
         if self.watch is not None:
-            self.watch.prime(records)
+            self.watch.prime(records, rewatch=again)
             self._derive_checksum_open_turn(records)
         for record in records:
+            held = isinstance(record, ContradictionPair) and record.turn == again
+            if self.watch is not None and held:
+                continue  # filed by the rewatch, once it says the pair stands
             self._file(record)
             if isinstance(record, TriggerEvent):
                 self._recorded_trigger_ids.add(record.id)
@@ -828,6 +839,12 @@ class EnvironmentSession:
         turn = reply.index
         note_turn(turn)
         outcome = watch.watch(reply, turns, mark=lambda role: self.runtime.mark_attempt(role, turn))
+        # a turn watched again on resume (the final review's M1): the dead attempt's pairs stand
+        # when the rewatch finds them again; else their lines go and the rewatch's are written
+        if outcome.replaced:
+            self.store.drop_contradictions(self.cell_id, self.rep, turn)
+        for pair in outcome.accepted:
+            self._file(pair)
         for record in outcome.records:
             self._record(record)
         state = self.runtime.state
@@ -930,7 +947,9 @@ class EnvironmentSession:
                 self._record(crossing)
 
     def replay_target_turn(self, reply: Turn) -> None:
-        """Resume: hand over again the lines this recorded turn handed the strategy."""
+        """Resume: hand over again what this recorded turn handed the strategy: its unlock lines
+        and its records (its ladder unlocks and Poisoned Well records, to
+        ``Strategy.note_record``; ``_hand_over_recorded``, since Phase 4 Task 2)."""
         self._hand_over_recorded(reply.index)
 
     def rewatch(self, turns: Sequence[Turn]) -> TurnOutcome | None:

@@ -199,13 +199,14 @@ def chain_prompt(link_index: int, link_text: str, reply: str) -> str:
 def chain_fallback(
     provider: ChatProvider, conversation_id: str, cache: JudgeCache | None, *, model: str
 ) -> ChainFallback:
-    """The judge pass over one undecided reply: one call per (prompt version, model, link,
-    reply), cached under ``JudgeCache.key("chain", digest)``; ``ChainFallbackError`` on any
-    failure but a rate limit, which is re-raised."""
+    """The judge pass over one undecided reply: one call per (prompt version, model, link, the
+    link's text, reply), cached under ``JudgeCache.key("chain", digest)``; the link's text is in
+    the key since the prompt shows it, so a sheet edit to a link asks again (the final review's
+    M4); ``ChainFallbackError`` on any failure but a rate limit, which is re-raised."""
 
     def ask(link_index: int, link_text: str, reply: str, mark: Callable[[], None]) -> Verdict:
         digest = hashlib.sha256(
-            f"{CHAIN_PROMPT_VERSION}\0{model}\0{link_index}\0{reply}".encode()
+            f"{CHAIN_PROMPT_VERSION}\0{model}\0{link_index}\0{link_text}\0{reply}".encode()
         ).hexdigest()
         key = JudgeCache.key("chain", digest)
         call_id = f"{conversation_id}/chain/{digest[:16]}"

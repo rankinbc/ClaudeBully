@@ -24,6 +24,7 @@ from claude_bully.metrics.contradictions import (
     pair_key,
     self_statements,
 )
+from claude_bully.metrics.events.poisoned_well import harness_line
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import Completion, ProviderError, RateLimitError
@@ -1756,16 +1757,23 @@ def test_contradictions_json_pairs_a_conversation_with_no_records_on_its_templat
         (store.run_dir / "analysis" / "contradictions.json").read_text(encoding="utf-8")
     )
     entry = payload[f"{CELL}/0"]
-    replies = [t for t in store.read_turns(CELL, 0) if t.speaker is Speaker.target]
-    bully = [(t.index, t.text) for t in store.read_turns(CELL, 0) if t.speaker is Speaker.bully]
+    turns = store.read_turns(CELL, 0)
+    replies = [t for t in turns if t.speaker is Speaker.target]
+    bully = [(t.index, t.text) for t in turns if t.speaker is Speaker.bully]
+    # the final review's M3: the premise's own harness lines gate no template pair
+    harness = [t.index for t in turns if harness_line(t)]
+    assert harness  # the chain's fixed lines
     found: list[ContradictionPair] = []
     earlier: list[tuple[int, str]] = []
     for reply in replies:
         spans = [(p.span_a, p.span_b) for p in found]
         text = chat_text(reply)
-        found += find_pairs(text, reply.index, earlier, bully=bully, recorded=spans).pairs
+        found += find_pairs(
+            text, reply.index, earlier, bully=bully, recorded=spans, harness=harness
+        ).pairs
         earlier.append((reply.index, text))
     expected = len(found)
+    assert expected  # a pair the harness's own frame cues used to gate (M3)
     assert entry["source"] == "templates" and entry["pairs"] == expected
     assert sum(entry["by_turn"].values()) == expected
 

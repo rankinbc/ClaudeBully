@@ -34,6 +34,7 @@ from claude_bully.analysis.poisoned_well import (
 )
 from claude_bully.analysis.progression import (
     adoption_by_rung_chart,
+    not_judged_line,
     rungs_reached_chart,
     write_progression,
 )
@@ -199,10 +200,10 @@ def analyze_run(
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
             if failed:
-                items = len(loaded.ratings) + failed
+                items = len(loaded.ratings) + len(failed)
                 print(
-                    f"[ratings] {failed} of {items} items failed (left out; ratings.json counts "
-                    "them as failed)",
+                    f"[ratings] {len(failed)} of {items} items failed (left out; ratings.json "
+                    f"names them in failed_items): {', '.join(failed)}",
                     file=sys.stderr,
                 )
             # Task 12 fix round 2, R1-1: an earlier ``true`` this pass did not re-answer (a failed
@@ -219,7 +220,9 @@ def analyze_run(
                 stale_kept=carried,
             )
             held = sorted({key.rsplit("/", 2)[0] for key in carried})
-            back = ReadBack(loaded.ratings, len(carried), [], [], None, carried, held)
+            back = ReadBack(
+                loaded.ratings, len(carried), [], [], None, carried, held, tuple(failed)
+            )
             write_applied(out, back, source="pass")
             warning = stale_warning(back)
             if warning is not None:
@@ -306,4 +309,5 @@ def analyze_run(
         temporal=attached_date_note(loaded),
         ratings=stale_note,
         hypotheses=section,
+        values=not_judged_line(loaded),
     )

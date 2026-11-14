@@ -30,7 +30,9 @@ characters, under the ceiling, and only replies near ``max_tokens`` push a trans
 Every text is ``chat_text``, what a chat user saw, never the reasoning channel.
 
 An item whose answer is off its kind's list, or whose ask failed (``JudgeError``, twice off the
-schema; a ``ProviderError``), is left out and counted in ``failed``; a JSON boolean answer reads
+schema; a ``ProviderError``), is left out, counted in ``failed`` and named in ``failed_items``
+(the final review's M5; a rep whose ``rate_values`` failed is unwatched, and the outputs that
+count it say "not judged", I1); a JSON boolean answer reads
 as its string (``RatingVerdict``, fix round 1, M2). A ``RateLimitError`` propagates, so
 ``analyze`` pauses and the rerun replays every verdict made before it from the cache.
 
@@ -369,14 +371,15 @@ def rating_items(loaded: "LoadedRun") -> Iterator[Item]:
 
 def rate_all(
     loaded: "LoadedRun", provider: ChatProvider, model: str, cache: JudgeCache
-) -> tuple[dict[str, RatingVerdict], int]:
+) -> tuple[dict[str, RatingVerdict], list[str]]:
     """Ask every item (``rating_items``) through ``_ask``, cached under
     ``JudgeCache.key(model, prompt, system=JUDGE_SYSTEM)`` (these asks only: a ``JUDGE_SYSTEM``
     edit marks the verdicts stale, so the rerun it asks for must ask again, Task 12 fix round 2,
-    R1-2); the verdicts by key, and how many items failed (an answer off the kind's list, a
-    ``JudgeError`` or a ``ProviderError``). A ``RateLimitError`` propagates."""
+    R1-2); the verdicts by key, and the keys of the items that failed (an answer off the kind's
+    list, a ``JudgeError`` or a ``ProviderError``), in item order, so ``ratings.json`` names them
+    (the final review's M5). A ``RateLimitError`` propagates."""
     ratings: dict[str, RatingVerdict] = {}
-    failed = 0
+    failed: list[str] = []
     for key, kind, bully_line, reply in rating_items(loaded):
         prompt = rating_prompt(kind, bully_line, reply)
         try:
@@ -392,11 +395,11 @@ def rate_all(
         except RateLimitError:
             raise
         except (JudgeError, ProviderError):
-            failed += 1
+            failed.append(key)
             continue
         verdict = RatingVerdict.model_validate(raw)
         if verdict.answer not in ANSWERS[kind]:
-            failed += 1
+            failed.append(key)
             continue
         ratings[key] = verdict
     return ratings, failed
@@ -418,7 +421,7 @@ def rated_conversations(
 
 def write_ratings(
     ratings: Mapping[str, RatingVerdict],
-    failed: int,
+    failed: Sequence[str],
     out_dir: Path,
     *,
     conversations: Mapping[str, int],
@@ -426,7 +429,9 @@ def write_ratings(
     stale_kept: Mapping[str, RatingVerdict] | None = None,
 ) -> Path:
     """``ratings.json``: ``prompts`` (kind -> ``prompt_digest``), ``ratings`` (``{key: {answer,
-    rationale}}``), ``items`` (asked: the verdicts and the failures), ``failed``, ``skipped``,
+    rationale}}``), ``items`` (asked: the verdicts and the failures), ``failed`` (their count),
+    ``failed_items`` (their keys, the final review's M5: a failed ``rate_values`` leaves its rep
+    unwatched, a failed ``rate_escape`` or ``rate_hedge`` thins items 3 and 13), ``skipped``,
     ``conversations`` (``rated_conversations``) and ``stale_kept`` (``{key: {answer,
     rationale}}``: the earlier ``rate_values`` ``true`` verdicts this pass did not replace with an
     answer of its own, carried marked stale; ``carry_flags``, Task 12 fix round 2, R1-1)."""
@@ -434,8 +439,9 @@ def write_ratings(
     payload = {
         "prompts": {kind: prompt_digest(kind) for kind in ANSWERS},
         "ratings": {k: v.model_dump() for k, v in ratings.items()},
-        "items": len(ratings) + failed,
-        "failed": failed,
+        "items": len(ratings) + len(failed),
+        "failed": len(failed),
+        "failed_items": list(failed),
         "skipped": skipped,
         "conversations": dict(conversations),
         "stale_kept": {k: v.model_dump() for k, v in (stale_kept or {}).items()},
@@ -452,9 +458,9 @@ def mark_skipped(out_dir: Path, reason: str) -> Path:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return write_ratings({}, 0, out_dir, conversations={}, skipped=reason)
+        return write_ratings({}, [], out_dir, conversations={}, skipped=reason)
     if not isinstance(payload, dict):
-        return write_ratings({}, 0, out_dir, conversations={}, skipped=reason)
+        return write_ratings({}, [], out_dir, conversations={}, skipped=reason)
     payload["skipped"] = reason
     path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     return path
@@ -485,6 +491,9 @@ class ReadBack(NamedTuple):
     # the reps (``<cell>/<rep>``) among ``kept`` whose verdict a ``--ratings`` pass carried
     # because it did not re-answer it (``stale_kept``, fix round 2, R1-1)
     carried: list[str]
+    # the keys of the items the last ``--ratings`` pass failed on (``failed_items``, the final
+    # review's M5), named again in ``ratings_applied.json``
+    failed: tuple[str, ...] = ()
 
 
 def _keeps_flag(key: str, raw: Any, sizes: Mapping[str, int]) -> RatingVerdict | None:
@@ -554,6 +563,8 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
         recorded: dict[str, Any] = dict(payload.get("conversations") or {})
         entries: dict[str, Any] = dict(payload["ratings"])
         carried_entries = _carried_entries(payload)
+        named = payload.get("failed_items")
+        failed = tuple(str(k) for k in named) if isinstance(named, list) else ()
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         return ReadBack({}, 0, [], [], "it does not read", {}, [])
     sizes = _sizes(loaded)
@@ -593,13 +604,16 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
             kept[key] = flag
             carried.add(key.rsplit("/", 2)[0])
     problem = "it recorded no prompt digest" if entries and not prompts else None
-    return ReadBack(applied, stale, sorted(reps), sorted(kinds), problem, kept, sorted(carried))
+    return ReadBack(
+        applied, stale, sorted(reps), sorted(kinds), problem, kept, sorted(carried), failed
+    )
 
 
 def write_applied(out_dir: Path, back: ReadBack, *, source: str) -> Path:
     """``ratings_applied.json``: where the applied verdicts came from (``pass`` or
     ``read_back``), how many were applied and how many left out as stale, by which reps and
-    kinds, and how many stale values flags were kept, fail closed (``stale_flags_kept``)."""
+    kinds, how many stale values flags were kept, fail closed (``stale_flags_kept``), and the keys
+    of the items the last ``--ratings`` pass failed on (``failed_items``, the final review's M5)."""
     path = out_dir / RATINGS_APPLIED_FILE
     payload = {
         "source": source,
@@ -609,6 +623,7 @@ def write_applied(out_dir: Path, back: ReadBack, *, source: str) -> Path:
         "stale_kinds": back.stale_kinds,
         "problem": back.problem,
         "stale_flags_kept": len(back.kept),
+        "failed_items": list(back.failed),
     }
     path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     return path

@@ -56,7 +56,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplot
 from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 
-from claude_bully.analysis.load import ConvKey, LoadedRun, is_environment  # noqa: E402
+from claude_bully.analysis.load import (  # noqa: E402
+    ConvKey,
+    LoadedRun,
+    is_environment,
+    relevant_for,
+)
 from claude_bully.enums import CellStatus, EventType, Layer, ProviderKind, Speaker  # noqa: E402
 from claude_bully.environments.config import PSEUDO_RUNGS, EnvironmentConfig  # noqa: E402
 from claude_bully.metrics.events.environment import (  # noqa: E402
@@ -180,6 +185,63 @@ def flagged_note(count: int, left_out_of: str) -> str | None:
         return None
     noun = "rep" if count == 1 else "reps"
     return f"{count} {noun} flagged values_loosened, left out of {left_out_of}"
+
+
+NOT_JUDGED: Final = "not judged"
+
+
+def values_judged(loaded: LoadedRun, key: ConvKey) -> bool:
+    """The judge's values watch read the rep (the final review's I1): ``LoadedRun.ratings`` (the
+    applied verdicts, never a stale one) holds a ``rate_values`` verdict of it. A rep is
+    unwatched when ``--ratings`` was not passed, when its ask failed (an answer off the list, a
+    ``JudgeError``, a ``ProviderError``) or when its cell is one ``rate_values`` never asks (any
+    cell that is no Poisoned Well cell, ``epistemologist_alone`` among them)."""
+    cell_id, rep = key
+    prefix = f"{cell_id}/{rep}/rate_values/"
+    return any(k.startswith(prefix) and k[len(prefix) :].isdigit() for k in loaded.ratings)
+
+
+def values_watched_cell(loaded: LoadedRun, cell_id: str) -> bool:
+    """The cell's reps are under the values watch: ``values_loosened`` is one of its strategy's
+    relevant events (every environment cell, and a plain cell whose sheet names it)."""
+    strategy = loaded.strategies.get(cell_id)
+    return strategy is not None and EventType.values_loosened in relevant_for(loaded, cell_id)[1]
+
+
+def unjudged(loaded: LoadedRun, keys: Iterable[ConvKey]) -> int:
+    """How many of ``keys`` are reps under the values watch that the judge did not read: their
+    ``values_loosened`` count is the heuristic's floor, never a reading."""
+    return sum(
+        1 for key in keys if values_watched_cell(loaded, key[0]) and not values_judged(loaded, key)
+    )
+
+
+def not_judged_note(count: int) -> str | None:
+    """The clause an output adds when ``count`` kept reps were not judged by the values watch
+    (``unjudged``); None for none. A 0 flagged share beside it is a floor, never a rate."""
+    if not count:
+        return None
+    noun = "rep" if count == 1 else "reps"
+    return (
+        f"{count} kept {noun} {NOT_JUDGED} by the values watch (no rate_values verdict: no "
+        "--ratings, a failed ask, or a cell it never asks), so values_loosened there is a lower "
+        "bound, never a rate; rerun `analyze --ratings` on a Poisoned Well run"
+    )
+
+
+def not_judged_line(loaded: LoadedRun) -> str | None:
+    """``results.md``'s line under the leaderboard: the complete, unflagged reps of the condition
+    cells under the values watch that the judge did not read (``not_judged_note``)."""
+    conditions = set(loaded.condition_cells())
+    kept = [
+        key
+        for key, conv in sorted(loaded.conversations.items())
+        if key[0] in conditions
+        and conv.status is CellStatus.complete
+        and not is_values_loosened(loaded, key)
+    ]
+    note = not_judged_note(unjudged(loaded, kept))
+    return None if note is None else note[0].upper() + note[1:] + "."
 
 
 def unlocks_of(records: Sequence[TriggerStreamRecord]) -> list[RungUnlock]:

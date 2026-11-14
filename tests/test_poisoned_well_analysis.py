@@ -236,7 +236,7 @@ def test_the_chain_numbers_on_three_reps(tmp_path: Path) -> None:
     k0, k1, k2 = [(CELL, rep) for rep in range(3)]
     at = _reply_to(loaded, k0, "chain_link")
     loaded.events[k0] += [
-        _event(EventType.premise_concession, at),
+        _event(EventType.premise_concession, at, politeness=False),
         _event(EventType.escape_found, at, form="full", rung="chain"),
     ]
     loaded.events[k1] += [
@@ -254,7 +254,10 @@ def test_the_chain_numbers_on_three_reps(tmp_path: Path) -> None:
     assert arm["real_vs_fabricated"] == {"real": None, "fabricated": None}  # neither group reached
     assert payload["values_loosened_left_out"] == 1
     assert payload["values_loosened_by"] == {"heuristic": 1, "judge": 0, "both": 0}
-    assert payload["values_watch"] == {CELL: pytest.approx(1 / 3)}
+    # the final review's I1: the flagged share beside how many reps the judge read (none here)
+    assert payload["values_watch"] == {
+        CELL: {"flagged": pytest.approx(1 / 3), "judged": 0, "not_judged": 3}
+    }
     assert concession_by_rung(loaded)[(model, "pw")]["chain"] == arm["concession_by_rung"]["chain"]
 
 
@@ -337,9 +340,9 @@ def test_the_charts_draw_on_zero_rates_and_say_the_flagged_count(
     notes: list[str] = []
     real = poisoned_well._footnote
 
-    def spy(fig: Any, flagged: int) -> None:
+    def spy(fig: Any, flagged: int, *rest: int) -> None:
         notes.append(str(poisoned_well.flagged_note(flagged, poisoned_well.LEFT_OUT_OF)))
-        real(fig, flagged)
+        real(fig, flagged, *rest)
 
     monkeypatch.setattr(poisoned_well, "_footnote", spy)
     out = tmp_path / "out"
@@ -436,8 +439,12 @@ def test_a_premise_concession_naming_no_poisoned_well_rung_falls_to_its_window(
     )
     loaded = _three_reps(tmp_path, params={"start_rung": 3})
     at = _reply_to(loaded, (CELL, 0), "chain_link")
-    loaded.events[(CELL, 0)].append(_event(EventType.premise_concession, at, rung="not_a_rung"))
-    loaded.events[(CELL, 1)].append(_event(EventType.premise_concession, at, rung=None))
+    loaded.events[(CELL, 0)].append(
+        _event(EventType.premise_concession, at, rung="not_a_rung", politeness=False)
+    )
+    loaded.events[(CELL, 1)].append(
+        _event(EventType.premise_concession, at, rung=None, politeness=False)
+    )
     [(model, arm)] = concession_by_rung(loaded)
     assert concession_by_rung(loaded)[(model, arm)]["chain"]["conceded"] == pytest.approx(2 / 3)
 
@@ -479,8 +486,10 @@ def test_a_concession_counts_on_its_own_rung_only(tmp_path: Path) -> None:
     assert arm["concession_by_rung"]["sleeper"]["conceded"] == pytest.approx(1 / 3)
     assert arm["concession_by_rung"]["shibboleth"]["conceded"] == 0.0
     assert arm["real_vs_fabricated"] == {"real": pytest.approx(1 / 3), "fabricated": 0.0}
-    loaded.events[keys[1]].append(_event(EventType.premise_concession, at, rung="shibboleth"))
-    loaded.events[keys[2]].append(_event(EventType.premise_concession, at))
+    loaded.events[keys[1]].append(
+        _event(EventType.premise_concession, at, rung="shibboleth", politeness=False)
+    )
+    loaded.events[keys[2]].append(_event(EventType.premise_concession, at, politeness=False))
     arm = _payload(loaded, tmp_path / "two")["models"][model]["pw"]
     assert arm["concession_by_rung"]["sleeper"]["conceded"] == pytest.approx(2 / 3)
     assert arm["concession_by_rung"]["shibboleth"]["conceded"] == pytest.approx(1 / 3)

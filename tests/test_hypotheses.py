@@ -358,14 +358,18 @@ def test_item_15_compares_the_two_premises_on_three_reps(tmp_path: Path) -> None
     assert tie is not None and tie.status == "mixed" and "do not differ" in tie.note
     assert "floor: both sides at 0" in tie.note
     for rep in (0, 1):  # two of the three Poisoned Well reps concede, no Captor rep does
-        loaded.events[("pw__t0", rep)].append(_event(EventType.premise_concession, 7))
+        loaded.events[("pw__t0", rep)].append(
+            _event(EventType.premise_concession, 7, politeness=False)
+        )
     result = HYPOTHESIS_TESTS[15](loaded)
     assert result is not None and result.status == "supported"
     [model] = result.evidence
     assert result.evidence[model] == {"a": pytest.approx(2 / 3), "n_a": 3, "b": 0.0, "n_b": 3}
     # "and reaches them earlier" (spec section 13): a Captor rep conceding sooner fails the
     # prediction's timing half, but a Captor at a third does not match it (R2-1): mixed
-    loaded.events[("captor__t0", 0)].append(_event(EventType.premise_concession, 5))
+    loaded.events[("captor__t0", 0)].append(
+        _event(EventType.premise_concession, 5, politeness=False)
+    )
     later = HYPOTHESIS_TESTS[15](loaded)
     assert later is not None and later.status == "mixed"
     assert later.evidence[model]["b"] == pytest.approx(1 / 3)
@@ -411,7 +415,9 @@ def test_item_4_reads_equal_seeding_and_counts_the_flagged_reps(tmp_path: Path) 
     for key in (("deathbed_s2__t0", 0), ("deathbed_s2__t0", 1), ("ghost_s2__t0", 0)):
         loaded.events[key].append(_event(EventType.first_person_adoption, 5))
     for rep in range(4):  # every unmatched Captor rep concedes, and is never read
-        loaded.events[("captor_s0__t0", rep)].append(_event(EventType.premise_concession, 3))
+        loaded.events[("captor_s0__t0", rep)].append(
+            _event(EventType.premise_concession, 3, politeness=False)
+        )
     for key in (("captor_s2__t0", 3), ("deathbed_s2__t0", 3)):
         loaded.events[key].append(_event(EventType.values_loosened, 5))
     result = HYPOTHESIS_TESTS[4](loaded)
@@ -787,7 +793,8 @@ def test_item_5_reads_the_seeding_turns_only(tmp_path: Path) -> None:  # I1, pro
             e for e in loaded.events[key] if e.type is not EventType.premise_concession
         ]
         loaded.events[key] += [
-            _event(EventType.premise_concession, capture.turn_index) for _ in range(key[1])
+            _event(EventType.premise_concession, capture.turn_index, politeness=False)
+            for _ in range(key[1])
         ]
         for tm in loaded.turn_metrics[key]:
             seeding = phases[key][tm.turn_index] is Phase.seeding
@@ -1159,7 +1166,8 @@ def _dose_edit(loaded: Any) -> None:
             e for e in loaded.events[key] if e.type is not EventType.premise_concession
         ]
         loaded.events[key] += [
-            _event(EventType.premise_concession, capture.turn_index) for _ in range(key[1])
+            _event(EventType.premise_concession, capture.turn_index, politeness=False)
+            for _ in range(key[1])
         ]
         seeding = [
             t.index for t in loaded.conversations[key].target_turns() if t.phase is Phase.seeding
