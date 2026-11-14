@@ -2,7 +2,8 @@
 
 Each (condition, control) pair is judged twice with A and B swapped; scores are averaged
 and disagreement between orderings is recorded as ``inconsistency``. Every call is cached
-by sha256(model + prompt), so analysis never re-pays for a judgement it already has.
+by sha256(model + prompt), so analysis never re-pays for a judgement it already has; the
+rating prompts' entries are keyed on the system prompt too (``JudgeCache.key(system=)``).
 """
 
 import hashlib
@@ -97,8 +98,15 @@ class JudgeCache:
         self.directory = directory
 
     @staticmethod
-    def key(model: str, prompt: str) -> str:
-        return hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
+    def key(model: str, prompt: str, *, system: str | None = None) -> str:
+        """The entry's name: sha256 of the model and the prompt. With ``system`` (the ratings'
+        asks, Task 12 fix round 2, R1-2) the system prompt sent beside the prompt is part of it
+        too, so an edit to it is asked again, never replayed; the model and prompt alone, as
+        every other cache keys, give the same key as before."""
+        if system is None:
+            return hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
+        digest = hashlib.sha256(system.encode()).hexdigest()
+        return hashlib.sha256(f"{model}\0{digest}\0{prompt}".encode()).hexdigest()
 
     def _path(self, key: str) -> Path:
         return self.directory / f"{key}.json"
@@ -178,8 +186,13 @@ def _ask(
     schema: dict[str, Any],
     parser: type[BaseModel],
     cache: JudgeCache,
+    *,
+    keyed_on_system: bool = False,
 ) -> dict[str, Any]:
-    key = cache.key(model, prompt)
+    """One cached judge ask. The cache entry is named by the model and the prompt, and with
+    ``keyed_on_system`` by ``JUDGE_SYSTEM`` too (the rating prompts: their read-back marks a
+    verdict stale when the system prompt changes, so the rerun it asks for must ask again)."""
+    key = cache.key(model, prompt, system=JUDGE_SYSTEM if keyed_on_system else None)
     cached = cache.get(key)
     if cached is not None:
         note_cached(f"judge/{key[:12]}", model)

@@ -11,6 +11,8 @@ from claude_bully.metrics.judge import (
     JudgeCache,
     JudgeError,
     PairJudgement,
+    _ask,
+    build_capture_prompt,
     build_pair_prompt,
     judge_capture,
     judge_pair,
@@ -238,3 +240,47 @@ def test_a_kill_between_the_temp_write_and_the_rename_leaves_the_old_entry(
 def test_judge_capture_missing_capture_raises(tmp_path: Path) -> None:
     with pytest.raises(KeyError):
         judge_capture(StubProvider(), MODEL, _conv("c", "X"), "nope", "r", JudgeCache(tmp_path))  # type: ignore[arg-type]
+
+
+def test_the_cache_key_names_the_system_prompt_only_when_asked() -> None:  # Task 12 fix 2, R1-2
+    plain = JudgeCache.key(MODEL, "a prompt")
+    # pinned: every cache that keys on the model and the prompt alone keeps its entries
+    assert plain == hashlib.sha256(f"{MODEL}\na prompt".encode()).hexdigest()
+    first = JudgeCache.key(MODEL, "a prompt", system="the system prompt")
+    assert first != plain and first == JudgeCache.key(MODEL, "a prompt", system="the system prompt")
+    assert first != JudgeCache.key(MODEL, "a prompt", system="another system prompt")
+    assert first != JudgeCache.key("other-model", "a prompt", system="the system prompt")
+    assert first != JudgeCache.key(MODEL, "another prompt", system="the system prompt")
+
+
+def test_a_system_prompt_edit_asks_a_keyed_ask_again_and_leaves_the_plain_ones_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Task 12 fix 2, R1-2: the ratings are keyed on it, every other judge ask is not
+    from claude_bully.metrics import judge
+    from claude_bully.metrics.judge import CAPTURE_SCHEMA, CaptureVerdict
+
+    provider = StubProvider(load_stub_script(RULES))
+    conv = _conv("cond", "COND")
+    conv.captured_responses["post_reveal"] = CapturedResponse(turn_index=1, text="I am a model.")  # type: ignore[attr-defined]
+    cache = JudgeCache(tmp_path)
+    prompt = build_capture_prompt("I am a model.", "stays grounded")
+
+    def keyed() -> None:
+        _ask(provider, MODEL, prompt, CAPTURE_SCHEMA, CaptureVerdict, cache, keyed_on_system=True)
+
+    def plain() -> None:
+        judge_capture(provider, MODEL, conv, "post_reveal", "stays grounded", cache)  # type: ignore[arg-type]
+
+    plain()
+    keyed()
+    assert provider.calls == 2  # the keyed entry is its own, apart from the plain one
+    keyed()
+    plain()
+    assert provider.calls == 2
+    monkeypatch.setattr(judge, "JUDGE_SYSTEM", judge.JUDGE_SYSTEM + " (edited)")
+    plain()
+    assert provider.calls == 2  # a plain ask replays from its cache
+    keyed()
+    assert provider.calls == 3  # a keyed ask goes to the judge again
+    keyed()
+    assert provider.calls == 3

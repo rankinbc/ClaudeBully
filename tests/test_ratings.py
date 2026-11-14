@@ -1,6 +1,7 @@
 """Phase 4 Task 10: the four rating prompts, ratings.json, the values flag from the judge."""
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from claude_bully.analysis.load import load_run
 from claude_bully.analysis.progression import is_values_loosened
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.enums import EventType
+from claude_bully.metrics import judge as judge_module
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.metrics.ratings import ANSWERS, RATING_HEADER, RatingKind, rating_prompt
 from claude_bully.paths import DATA_DIR
@@ -159,7 +161,9 @@ def test_a_rate_limit_pauses_and_the_rerun_replays_the_cache(tmp_path: Path) -> 
     # the verdict made before the limit replays from the run's judge cache; the limited ask is
     # asked again, and every item is rated
     assert answered not in again and limited in again and payload["failed"] == 0
-    replayed = f"judge/{JudgeCache.key(JUDGE_MODEL, answered)[:12]}"
+    # the ratings' cache entries are keyed on the judge's system prompt too (fix round 2, R1-2)
+    entry = JudgeCache.key(JUDGE_MODEL, answered, system=judge_module.JUDGE_SYSTEM)
+    replayed = f"judge/{entry[:12]}"
     assert any(
         line.status == "cached" and line.conversation_id == replayed
         for line in Ledger(store.run_dir / LEDGER_FILE).lines()
@@ -649,3 +653,124 @@ def test_the_judge_flag_keeps_its_rationale_out_of_the_span(tmp_path: Path) -> N
     ratings_flags(loaded, read_ratings(store.run_dir / "analysis"))
     [event] = [e for e in loaded.events[(CELL, 0)] if e.type is EventType.values_loosened]
     assert event.span == "" and event.attrs["rationale"] == "r"
+
+
+# ------------------------------------------------------------------ Task 12 fix round 2
+
+
+def _pw(store: RunStore) -> dict[str, Any]:
+    path = store.run_dir / "analysis" / "poisoned_well.json"
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return payload
+
+
+def _reask(store: RunStore, **ratings: dict[str, Any]) -> PoisonedWellJudge:
+    """``analyze --ratings`` again over the same run, the judge cache emptied so the pass asks
+    afresh, with a judge that answers ``ratings`` (an answer off the kind's list fails its item)."""
+    shutil.rmtree(store.run_dir / "judge_cache", ignore_errors=True)
+    judge = PoisonedWellJudge(verdict="accepted", ratings=ratings)
+    analyze_run(store.run_dir, ratings=True, provider_factory=PoisonedWellFactory(judge=judge))
+    return judge
+
+
+OFF_THE_LIST = {"answer": "maybe", "rationale": "r"}
+
+
+def test_a_failed_reask_keeps_the_earlier_true_and_its_rep_stays_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:  # fix round 2, R1-1 (non-negotiable 3)
+    store, _ = _rated(tmp_path)
+    [values_key] = [k for k in _ratings_json(store)["ratings"] if "/rate_values/" in k]
+    assert _pw(store)["values_loosened_left_out"] == 1
+    capsys.readouterr()
+    _reask(store, rate_values=OFF_THE_LIST)  # the rate_values ask fails, the other kinds answer
+    payload = _ratings_json(store)
+    assert payload["failed"] == 1 and not [k for k in payload["ratings"] if "/rate_values/" in k]
+    pw = _pw(store)
+    [model] = pw["models"]
+    assert pw["values_loosened_left_out"] == 1 and pw["values_loosened_by"]["judge"] == 1
+    assert pw["models"][model]["pw"]["reps"] == 0  # the rep is out of every rate
+    # the earlier verdict is carried, marked stale, in the rewritten file
+    assert payload["stale_kept"] == {values_key: {"answer": "true", "rationale": "r"}}
+    escapes = [k for k in payload["ratings"] if "/rate_escape/" in k]
+    applied = _applied(store)
+    assert applied["source"] == "pass" and applied["stale_flags_kept"] == 1
+    assert escapes and applied["applied"] == len(payload["ratings"]) and applied["stale"] == 1
+    err = capsys.readouterr().err
+    assert f"[ratings] 1 of {payload['items']} items failed" in err
+    assert "1 stale values flag(s) kept, fail closed" in err
+    text = (store.run_dir / "analysis" / "results.md").read_text(encoding="utf-8")
+    assert "1 stale values flag(s) kept, fail closed" in text
+    # a plain analyze reads it back the same; so does a second pass that fails again
+    analyze_run(store.run_dir, judge=False)
+    assert _pw(store)["values_loosened_left_out"] == 1
+    assert _applied(store)["source"] == "read_back" and _applied(store)["stale_flags_kept"] == 1
+    _reask(store, rate_values=OFF_THE_LIST)
+    assert _ratings_json(store)["stale_kept"] == {values_key: {"answer": "true", "rationale": "r"}}
+    assert _pw(store)["values_loosened_left_out"] == 1
+
+
+@pytest.mark.parametrize(("answer", "left_out"), [("false", 0), ("true", 1)])
+def test_a_reask_that_answers_replaces_the_earlier_true(
+    tmp_path: Path, answer: str, left_out: int
+) -> None:  # fix round 2, R1-1: only the judge's own fresh answer clears or renews a flag
+    store, _ = _rated(tmp_path)
+    _reask(store, rate_values={"answer": answer, "rationale": "new"})
+    payload = _ratings_json(store)
+    assert payload["stale_kept"] == {} and payload["failed"] == 0
+    [(_, verdict)] = [(k, v) for k, v in payload["ratings"].items() if "/rate_values/" in k]
+    assert verdict == {"answer": answer, "rationale": "new"}
+    assert _pw(store)["values_loosened_left_out"] == left_out
+    assert _applied(store)["stale_flags_kept"] == 0 and _applied(store)["stale"] == 0
+
+
+def test_a_reask_carries_no_false_and_no_gone_rep(tmp_path: Path) -> None:  # fix round 2, R1-1
+    store, judge = _judged_run(tmp_path, {"rate_values": {"answer": "false", "rationale": "r"}})
+    analyze_run(store.run_dir, ratings=True, provider_factory=PoisonedWellFactory(judge=judge))
+    payload = _ratings_json(store)
+    gone = f"{CELL}/9/rate_values/9"
+    payload["ratings"][gone] = {"answer": "true", "rationale": "a rep that is gone"}
+    _rewrite(store, ratings=payload["ratings"])
+    _reask(store, rate_values=OFF_THE_LIST)
+    # the earlier false is no flag, and a true of a rep that is not in the run flags nothing
+    assert _ratings_json(store)["stale_kept"] == {}
+    assert _pw(store)["values_loosened_left_out"] == 0 and _applied(store)["stale_flags_kept"] == 0
+
+
+def test_a_system_prompt_edit_makes_the_ratings_rerun_ask_the_judge_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # fix round 2, R1-2: the stale warning's rerun must not replay the stale verdicts
+    store, judge = _rated(tmp_path)
+    asked = judge.counts["rating"]
+    verdicts = len(_ratings_json(store)["ratings"])
+    assert asked > 1
+    factory = PoisonedWellFactory(judge=judge)
+    analyze_run(store.run_dir, ratings=True, provider_factory=factory)
+    assert judge.counts["rating"] == asked  # nothing edited: every verdict replays from the cache
+    monkeypatch.setattr(judge_module, "JUDGE_SYSTEM", judge_module.JUDGE_SYSTEM + " (edited)")
+    analyze_run(store.run_dir, judge=False)
+    assert _applied(store)["stale"] == verdicts  # the edit stales every verdict
+    analyze_run(store.run_dir, ratings=True, provider_factory=factory)
+    assert judge.counts["rating"] == 2 * asked  # the rerun asks the judge for each of them again
+    applied = _applied(store)
+    assert (applied["source"], applied["applied"], applied["stale"]) == ("pass", verdicts, 0)
+    assert _pw(store)["values_loosened_left_out"] == 1 and applied["stale_flags_kept"] == 0
+
+
+def test_the_rating_schema_moves_the_digest(monkeypatch: pytest.MonkeyPatch) -> None:  # N-new-2
+    from claude_bully.metrics import ratings
+
+    before = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    real = ratings.rating_schema
+
+    def edited(kind: RatingKind) -> dict[str, Any]:
+        schema = real(kind)
+        schema["properties"]["rationale"] = {
+            **schema["properties"]["rationale"],
+            "description": "edited",
+        }
+        return schema
+
+    monkeypatch.setattr(ratings, "rating_schema", edited)
+    moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert all(moved[k] != before[k] for k in ANSWERS)

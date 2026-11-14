@@ -42,7 +42,11 @@ changed since (its digest), or whose conversation is gone or has another turn co
 rep), is stale and left out, named and counted (``ratings_applied.json``); every other verdict
 stands, so one resumed rep never drops another rep's flag. A stale ``rate_values`` ``true`` of a
 rep still there keeps its flag, fail closed (Task 12 fix round 1, I1: a prompt edit or a resume
-makes the judge's evidence old, not false), counted as ``stale_flags_kept``."""
+makes the judge's evidence old, not false), counted as ``stale_flags_kept``. A ``--ratings``
+pass whose ask for a rep's ``rate_values`` failed (or was never made) keeps that rep's earlier
+``true`` the same way, in ``ratings.json``'s ``stale_kept`` (``carry_flags``, Task 12 fix round
+2, R1-1): only the judge's fresh answer clears a flag. The ratings' cache entries are keyed on
+``JUDGE_SYSTEM`` too, so the rerun a stale warning asks for asks the judge again (R1-2)."""
 
 import hashlib
 import json
@@ -316,7 +320,8 @@ def prompt_digest(kind: RatingKind) -> str:
     ``NO_USER_LINE``), for ``rate_values`` the reveal line and its transcript (``_reveal``,
     ``_values_item``, ``_transcript``), the transcript's ceiling, floor and cut path
     (``cut_to_ceiling``, ``CUT_MARK``) and, for every kind, the judge's system prompt
-    (``judge.JUDGE_SYSTEM``, Task 12 fix round 1, m1). An edit to any of
+    (``judge.JUDGE_SYSTEM``, Task 12 fix round 1, m1) and the answer schema sent beside the
+    prompt (``rating_schema``, fix round 2, N-new-2). An edit to any of
     it moves the digest, so a ``ratings.json`` verdict of the kind reads as stale, with no
     hand-kept version to forget (fix round 2, R1-n5; Task 12's carry of R2-m1: a digest of the
     prompt around two placeholders missed the selection code and ``NO_USER_LINE``)."""
@@ -331,8 +336,10 @@ def prompt_digest(kind: RatingKind) -> str:
     else:
         items = _single("probe/0", conv, kind, [3, 6, 8])
     rendered = [rating_prompt(kind, line, reply) for _, _, line, reply in items]
-    # the system prompt ``_ask`` sends beside every prompt (fix round 1, m1)
-    fixed = chr(0).join([judge.JUDGE_SYSTEM, *rendered, *bounds])
+    # the system prompt ``_ask`` sends beside every prompt (fix round 1, m1), and the schema it
+    # sends as ``json_schema`` (fix round 2, N-new-2)
+    schema = json.dumps(rating_schema(kind), sort_keys=True)
+    fixed = chr(0).join([judge.JUDGE_SYSTEM, schema, *rendered, *bounds])
     return hashlib.sha256(fixed.encode()).hexdigest()[:16]
 
 
@@ -364,15 +371,24 @@ def rate_all(
     loaded: "LoadedRun", provider: ChatProvider, model: str, cache: JudgeCache
 ) -> tuple[dict[str, RatingVerdict], int]:
     """Ask every item (``rating_items``) through ``_ask``, cached under
-    ``JudgeCache.key(model, prompt)``; the verdicts by key, and how many items failed (an
-    answer off the kind's list, a ``JudgeError`` or a ``ProviderError``). A ``RateLimitError``
-    propagates."""
+    ``JudgeCache.key(model, prompt, system=JUDGE_SYSTEM)`` (these asks only: a ``JUDGE_SYSTEM``
+    edit marks the verdicts stale, so the rerun it asks for must ask again, Task 12 fix round 2,
+    R1-2); the verdicts by key, and how many items failed (an answer off the kind's list, a
+    ``JudgeError`` or a ``ProviderError``). A ``RateLimitError`` propagates."""
     ratings: dict[str, RatingVerdict] = {}
     failed = 0
     for key, kind, bully_line, reply in rating_items(loaded):
         prompt = rating_prompt(kind, bully_line, reply)
         try:
-            raw = _ask(provider, model, prompt, rating_schema(kind), RatingVerdict, cache)
+            raw = _ask(
+                provider,
+                model,
+                prompt,
+                rating_schema(kind),
+                RatingVerdict,
+                cache,
+                keyed_on_system=True,
+            )
         except RateLimitError:
             raise
         except (JudgeError, ProviderError):
@@ -407,10 +423,13 @@ def write_ratings(
     *,
     conversations: Mapping[str, int],
     skipped: str | None = None,
+    stale_kept: Mapping[str, RatingVerdict] | None = None,
 ) -> Path:
     """``ratings.json``: ``prompts`` (kind -> ``prompt_digest``), ``ratings`` (``{key: {answer,
-    rationale}}``), ``items`` (asked: the verdicts and the failures), ``failed``, ``skipped`` and
-    ``conversations`` (``rated_conversations``)."""
+    rationale}}``), ``items`` (asked: the verdicts and the failures), ``failed``, ``skipped``,
+    ``conversations`` (``rated_conversations``) and ``stale_kept`` (``{key: {answer,
+    rationale}}``: the earlier ``rate_values`` ``true`` verdicts this pass did not replace with an
+    answer of its own, carried marked stale; ``carry_flags``, Task 12 fix round 2, R1-1)."""
     path = out_dir / RATINGS_FILE
     payload = {
         "prompts": {kind: prompt_digest(kind) for kind in ANSWERS},
@@ -419,6 +438,7 @@ def write_ratings(
         "failed": failed,
         "skipped": skipped,
         "conversations": dict(conversations),
+        "stale_kept": {k: v.model_dump() for k, v in (stale_kept or {}).items()},
     }
     path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     return path
@@ -462,6 +482,9 @@ class ReadBack(NamedTuple):
     # the stale ``rate_values`` ``true`` verdicts whose rep is still there: each keeps its flag,
     # fail closed (fix round 1 of Task 12, I1); counted among ``stale`` too
     kept: dict[str, RatingVerdict]
+    # the reps (``<cell>/<rep>``) among ``kept`` whose verdict a ``--ratings`` pass carried
+    # because it did not re-answer it (``stale_kept``, fix round 2, R1-1)
+    carried: list[str]
 
 
 def _keeps_flag(key: str, raw: Any, sizes: Mapping[str, int]) -> RatingVerdict | None:
@@ -479,20 +502,60 @@ def _keeps_flag(key: str, raw: Any, sizes: Mapping[str, int]) -> RatingVerdict |
     return verdict if verdict.answer == "true" else None
 
 
+def _carried_entries(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``stale_kept`` entries of a ``ratings.json`` payload; none for a file without them
+    (written before fix round 2) or with a damaged field."""
+    raw = payload.get("stale_kept")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def carry_flags(
+    loaded: "LoadedRun", out_dir: Path, fresh: Mapping[str, RatingVerdict]
+) -> dict[str, RatingVerdict]:
+    """The earlier ``rate_values`` ``true`` verdicts a ``--ratings`` pass must carry (Task 12
+    fix round 2, R1-1): every one ``ratings.json`` holds now, as a verdict or already carried,
+    of a rep still in the run that the pass (``fresh``, its verdicts) gave no ``rate_values``
+    answer of its own, because its ask failed or was left out. Called before the pass rewrites
+    the file. A rep's earlier ``true`` is cleared only by the judge's fresh answer, so a transient
+    judge failure on a rerun never lets a flagged rep back into the counts (non-negotiable 3)."""
+    try:
+        payload = json.loads((out_dir / RATINGS_FILE).read_text(encoding="utf-8"))
+        earlier: dict[str, Any] = {**dict(payload["ratings"]), **_carried_entries(payload)}
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        return {}
+    answered = {
+        f"{parsed[0]}/{parsed[1]}"
+        for parsed in map(_parse_key, fresh)
+        if parsed is not None and parsed[2] == "rate_values"
+    }
+    sizes = _sizes(loaded)
+    carried: dict[str, RatingVerdict] = {}
+    for key, raw in sorted(earlier.items()):
+        if key.rsplit("/", 2)[0] in answered:
+            continue
+        flag = _keeps_flag(key, raw, sizes)
+        if flag is not None:
+            carried[key] = flag
+    return carried
+
+
 def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
     """The verdicts of ``ratings.json`` that still match the run, verdict by verdict (fix round
     2, R1-m1): a verdict is stale when its kind's recorded ``prompt_digest`` is not the current
     one, or when its conversation is gone or its turn count is not the one recorded. A stale
     verdict is left out and counted; every other verdict is applied. A stale ``rate_values``
     ``true`` of a rep still there keeps its flag, fail closed (``kept``, Task 12 fix round 1,
-    I1). A file that does not read applies nothing."""
+    I1), and so does every ``stale_kept`` entry of the file (the earlier ``true`` a
+    ``--ratings`` pass did not re-answer, ``carry_flags``, fix round 2, R1-1), always stale. A
+    file that does not read applies nothing."""
     try:
         payload = json.loads((out_dir / RATINGS_FILE).read_text(encoding="utf-8"))
         prompts: dict[str, Any] = dict(payload.get("prompts") or {})
         recorded: dict[str, Any] = dict(payload.get("conversations") or {})
         entries: dict[str, Any] = dict(payload["ratings"])
+        carried_entries = _carried_entries(payload)
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
-        return ReadBack({}, 0, [], [], "it does not read", {})
+        return ReadBack({}, 0, [], [], "it does not read", {}, [])
     sizes = _sizes(loaded)
     digests: dict[str, str] = {kind: prompt_digest(kind) for kind in ANSWERS}
     applied: dict[str, RatingVerdict] = {}
@@ -520,8 +583,17 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
             except ValueError:  # a damaged entry is stale, never a crash
                 kinds.add(kind)
                 stale += 1
+    carried: set[str] = set()
+    for key, raw in carried_entries.items():
+        if key in entries:  # the file holds it as a verdict too: that one stands
+            continue
+        stale += 1
+        flag = _keeps_flag(key, raw, sizes)
+        if flag is not None:
+            kept[key] = flag
+            carried.add(key.rsplit("/", 2)[0])
     problem = "it recorded no prompt digest" if entries and not prompts else None
-    return ReadBack(applied, stale, sorted(reps), sorted(kinds), problem, kept)
+    return ReadBack(applied, stale, sorted(reps), sorted(kinds), problem, kept, sorted(carried))
 
 
 def write_applied(out_dir: Path, back: ReadBack, *, source: str) -> Path:
@@ -553,6 +625,8 @@ def stale_warning(back: ReadBack) -> str | None:
         parts.append(f"reps gone or changed since rated: {', '.join(back.stale_reps)}")
     if back.stale_kinds:
         parts.append(f"kinds whose prompt changed: {', '.join(back.stale_kinds)}")
+    if back.carried:
+        parts.append(f"values flags a --ratings pass did not re-answer: {', '.join(back.carried)}")
     kept = f"; {len(back.kept)} stale values flag(s) kept, fail closed" if back.kept else ""
     return (
         f"[ratings] {RATINGS_FILE}: {back.stale} stale verdict(s) not applied "

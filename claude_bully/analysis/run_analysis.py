@@ -55,6 +55,7 @@ from claude_bully.metrics.ratings import (
     SKIPPED_STUB,
     ReadBack,
     applied_note,
+    carry_flags,
     mark_skipped,
     rate_all,
     rated_conversations,
@@ -133,7 +134,9 @@ def analyze_run(
     (Phase 4, ``metrics/ratings.py``) and writes ``ratings.json``; it needs the judge and is off
     under a stub judge. Every analyze that does not write ``ratings.json`` reads an existing one
     and applies its ``values_loosened`` flags, with no judge call (P47). A rate limit in any pass
-    pauses the analysis (``RateLimitExit``); a rate limit in the fallback discards this pass's
+    pauses the analysis (``RateLimitExit``); a ``--ratings`` pass that does not re-answer a rep's
+    earlier ``true`` values verdict carries it, stale, so the rep stays out (Task 12 fix round 2);
+    a rate limit in the fallback discards this pass's
     events, whose verdicts made before it are cached, so the rerun replays them, and so does one
     in the ratings."""
     # the judge role, read before load_run because the fallback asks inside it
@@ -192,14 +195,26 @@ def analyze_run(
                     "them as failed)",
                     file=sys.stderr,
                 )
+            # Task 12 fix round 2, R1-1: an earlier ``true`` this pass did not re-answer (a failed
+            # or partial ask) is carried, stale, in the rewritten file and still flags its rep,
+            # so only a fresh answer clears a flag; read before ``write_ratings`` overwrites it
+            carried = carry_flags(loaded, out, loaded.ratings)
             ratings_flags(loaded, loaded.ratings)
+            ratings_flags(loaded, carried, stale=True)
             write_ratings(
                 loaded.ratings,
                 failed,
                 out,
                 conversations=rated_conversations(loaded, loaded.ratings),
+                stale_kept=carried,
             )
-            write_applied(out, ReadBack(loaded.ratings, 0, [], [], None, {}), source="pass")
+            held = sorted({key.rsplit("/", 2)[0] for key in carried})
+            back = ReadBack(loaded.ratings, len(carried), [], [], None, carried, held)
+            write_applied(out, back, source="pass")
+            warning = stale_warning(back)
+            if warning is not None:
+                print(warning, file=sys.stderr)
+            stale_note = applied_note(back)
     if not rated and (out / RATINGS_FILE).exists():
         # P47: a judge-set values flag stands on every later analyze, with no judge call; a
         # verdict that no longer matches the run is left out, named and counted, the rest

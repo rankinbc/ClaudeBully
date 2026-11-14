@@ -876,8 +876,9 @@ def rung_windows(
     }
 
 
-def _rung_of(turn: int, windows: dict[str, list[int]]) -> str | None:
-    """The latest-starting rung whose window holds ``turn``."""
+def rung_of(turn: int, windows: dict[str, list[int]]) -> str | None:
+    """The latest-starting rung whose window holds ``turn`` (``attrs.rung`` of every event here;
+    the analysis reads it too, as it reads ``rung_windows`` and ``standing_links``)."""
     holding = [(w[0], r) for r, w in windows.items() if w and turn in w]
     return max(holding)[1] if holding else None
 
@@ -890,6 +891,6 @@ def detect(conv: Conversation, *, context: EnvContext) -> list[Event]:
         events += _text_events(ctx, found)
     windows = rung_windows(conv, records, context.world)
     return [
-        e.model_copy(update={"attrs": {**e.attrs, "rung": _rung_of(e.turn_index, windows)}})
+        e.model_copy(update={"attrs": {**e.attrs, "rung": rung_of(e.turn_index, windows)}})
         for e in events
     ]

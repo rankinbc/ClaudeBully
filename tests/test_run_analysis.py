@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -90,3 +91,22 @@ def test_judgement_types_round_trip() -> None:
     assert "condition_goal" in PairJudgement.model_fields
     with pytest.raises(ValidationError):
         PairJudgement()  # type: ignore[call-arg]
+
+
+@pytest.mark.slow  # two analyses of a copied run, 5 s measured
+def test_a_system_prompt_edit_leaves_the_pair_judge_cache_alone(
+    stub_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Task 12 fix 2, R1-2: only the ratings' cache entries fold the system prompt in
+    from claude_bully.metrics import judge
+
+    run = tmp_path / "copy" / stub_run.name
+    shutil.copytree(stub_run, run)
+    shutil.rmtree(run / "judge_cache", ignore_errors=True)
+    counter: dict[str, int] = {}
+    factory = _judge_only_factory(counter)
+    analyze_run(run, provider_factory=factory, out_dir=tmp_path / "a")  # type: ignore[arg-type]
+    first_calls = counter["calls"]
+    assert first_calls > 0
+    monkeypatch.setattr(judge, "JUDGE_SYSTEM", judge.JUDGE_SYSTEM + " (edited)")
+    analyze_run(run, provider_factory=factory, out_dir=tmp_path / "b")  # type: ignore[arg-type]
+    assert counter["calls"] == first_calls  # the pair and capture judgements replay from the cache

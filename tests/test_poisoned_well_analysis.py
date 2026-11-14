@@ -351,6 +351,77 @@ def test_the_chain_stop_legend_gives_each_stop_its_colour_with_no_kept_rep(
     assert len(stops) == len(STOPS) and len(set(stops)) == len(STOPS)
 
 
+def _chart_labels(
+    monkeypatch: pytest.MonkeyPatch, loaded: Any, out: Path
+) -> tuple[list[str], list[str]]:
+    """The chain chart's bar labels and the escape chart's legend texts, read as each is saved."""
+    from claude_bully.analysis import poisoned_well
+
+    chain: list[str] = []
+    escape: list[str] = []
+    real = poisoned_well._save
+
+    def spy(fig: Any, path: Path) -> Path:
+        if path.name == poisoned_well.CHAIN_STOP_CHART:
+            chain.extend(t.get_text() for t in fig.axes[0].get_xticklabels())
+        else:
+            for ax in fig.axes:
+                legend = ax.get_legend()
+                if legend is not None:
+                    escape.extend(t.get_text() for t in legend.get_texts())
+        return real(fig, path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(poisoned_well, "_save", spy)
+        assert chain_stop_chart(loaded, out) is not None and escape_by_rung_chart(loaded, out)
+    return chain, escape
+
+
+def test_the_charts_label_an_arm_whose_every_rep_was_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # re-review N-new-1: an empty bar or panel says why it is empty
+    captor = {
+        "name": "pw2",
+        "environment": "ov",
+        "premise": "poisoned_well",
+        "seeding_turns": 2,
+        "params": {"artifacts": [], "start_rung": 3},
+    }
+    exp = pw_experiment(params={"start_rung": 3}, reps=2, extra_conditions=[captor])
+    loaded = _three_reps(tmp_path, exp=exp)
+    at = _reply_to(loaded, (CELL, 0), "chain_link")
+    flagged = [key for key in loaded.conversations if key[0].startswith("pw2")]
+    assert len(flagged) == 2
+    for key in flagged:
+        loaded.events[key].append(_event(EventType.values_loosened, at))
+    chain, escape = _chart_labels(monkeypatch, loaded, tmp_path / "one")
+    by_arm = {label.split("\n")[1]: label for label in chain}  # a bar's label: model, arm, note
+    assert by_arm["pw2"].endswith("\nall flagged") and "flagged" not in by_arm["pw"]
+    assert escape == ["pw", "pw2: all flagged"]  # the kept arm's line, then the empty one's note
+    for key in loaded.conversations:  # now every arm
+        if key not in flagged:
+            loaded.events[key].append(_event(EventType.values_loosened, at))
+    chain, escape = _chart_labels(monkeypatch, loaded, tmp_path / "all")
+    assert len(chain) == 2 and all(label.endswith("\nall flagged") for label in chain)
+    assert set(escape) == {"pw: all flagged", "pw2: all flagged"}
+
+
+def test_a_premise_concession_naming_no_poisoned_well_rung_falls_to_its_window(
+    tmp_path: Path,
+) -> None:  # re-review N-new-3: a name off the ladder says nothing, as no name says nothing
+    from claude_bully.metrics.events.poisoned_well import rung_of
+
+    assert (
+        rung_of(3, {"a": [1, 2, 3], "b": [3, 4], "c": []}) == "b" and rung_of(9, {"a": [1]}) is None
+    )
+    loaded = _three_reps(tmp_path, params={"start_rung": 3})
+    at = _reply_to(loaded, (CELL, 0), "chain_link")
+    loaded.events[(CELL, 0)].append(_event(EventType.premise_concession, at, rung="not_a_rung"))
+    loaded.events[(CELL, 1)].append(_event(EventType.premise_concession, at, rung=None))
+    [(model, arm)] = concession_by_rung(loaded)
+    assert concession_by_rung(loaded)[(model, arm)]["chain"]["conceded"] == pytest.approx(2 / 3)
+
+
 def test_extra_conditions_append_a_captor_cell_on_the_shared_control(tmp_path: Path) -> None:
     """Fix round 1, m6: ``pw_experiment(extra_conditions=)``, as Task 13's item 15 uses it: a
     Captor cell at equal seeding shares the Poisoned Well cell's control and stays out of
@@ -377,7 +448,7 @@ def test_a_concession_counts_on_its_own_rung_only(tmp_path: Path) -> None:
     """Fix round 1, I2 (the review's probe): on the full ladder the shibboleth window [5 .. 13]
     and the sleeper window [11 .. 19] overlap. A sleeper concession counts on the sleeper rung
     only; a ``premise_concession`` counts on its ``attrs.rung``, else on the latest-starting
-    window that holds it (the detectors' ``_rung_of``)."""
+    window that holds it (the detectors' ``rung_of``)."""
     loaded = _three_reps(tmp_path, exp=full_ladder(reps=3))
     keys = [(CELL, rep) for rep in range(3)]
     at = _reply_to(loaded, keys[0], "sleeper")
