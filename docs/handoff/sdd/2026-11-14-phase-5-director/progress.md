@@ -15,3 +15,11 @@ Task 1: review (opus, task-1-review.md): spec compliant; quality Approved; Criti
 carry to Task 7a: M1 (a reopened stage never overwrites an earlier call's transcript; it is the open-stage re-materialization's seam) and M2 (index() and bundle_hash refuse a junction like the writers).
 Task 1: minor (deferred, final review): M3-M6 and the nits.
 Task 1: complete (commits 97102a0..262b8a2, review clean). Pushed.
+Task 2: BASE d68aa3f; implementer dispatched (opus, task-2-brief.md, preflight rows naming Task 2 incl. Q10, Q11, report task-2-report.md).
+Task 2: implementer agent id a790fb4ff0d90ad6b.
+Task 2: implementer DONE at 049101d (on d68aa3f); gate 9932 passed, 10 skipped, 48 deselected, slow 48, both mypy clean; no golden changed; `_stubbed` gone from tests. ASSUMED: a turns script needs a non-empty default, by_cell optional; cell patterns via fnmatchcase (fnmatch ignores case on Windows); a non-string reasoning value refused; the stub-shape line in docs/00 F per the brief. Concerns: docs/08 line 175 still says "scripted" (Task 5's edit); all stubbed targets share model `stub-target`.
+Task 2: review dispatched (sonnet, review-d68aa3f..049101d.diff, task-2-review.md).
+Task 2: review (sonnet, task-2-review.md): spec met; quality good; Critical 0, Important 0, Minor 4, Nit 3. Probes: old _stubbed equals tests.helpers.stubbed on 66 caller/input pairs; Q11 clean on 17 dirtied env configs; turns mode edges as required; the reasoning key reaches no Completion field or run file. Minor: the ASSUMED rules (default required, non-string reasoning refused) untested; load_stub_script now refuses empty-falsy files ({}, 0, '', false) that used to load; the fnmatchcase deviation missing from the spec's "As planned"; the reasoning no-leak property has no shipped test.
+carry to Task 5 (the dry run, the first full stubbed run): ship a test that the stub's reserved reasoning key reaches no Completion field, record or prompt; tests for the two ASSUMED stub rules; the fnmatchcase line in the spec's "As planned".
+Task 2: minor (deferred, final review): load_stub_script's refusal of empty-falsy files (check no shipped script is empty); the nits.
+Task 2: complete (commits d68aa3f..049101d, review clean). Pushed.
