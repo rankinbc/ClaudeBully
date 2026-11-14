@@ -422,6 +422,55 @@ def test_a_prompt_edit_moves_its_digest(monkeypatch: pytest.MonkeyPatch) -> None
     }
 
 
+def test_the_selection_code_and_the_no_line_wording_move_the_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # Task 12 carry, Task 10 R2-m1: the digest covers the prompt as rendered
+    from claude_bully.metrics import ratings
+
+    single = ("rate_hedge", "rate_recognition", "rate_escape")
+    before = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    with monkeypatch.context() as patch:
+        patch.setattr(ratings, "NO_USER_LINE", "(edited)")
+        moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert (
+        all(moved[k] != before[k] for k in single) and moved["rate_values"] == before["rate_values"]
+    )
+    real_line = ratings._answered_line
+    with monkeypatch.context() as patch:
+        patch.setattr(ratings, "_answered_line", lambda turns, at: real_line(turns, at - 1))
+        moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert (
+        all(moved[k] != before[k] for k in single) and moved["rate_values"] == before["rate_values"]
+    )
+    real_transcript = ratings._transcript
+    with monkeypatch.context() as patch:
+        patch.setattr(ratings, "_transcript", lambda turns: real_transcript(turns[1:]))
+        moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert moved["rate_values"] != before["rate_values"]
+    assert all(moved[k] == before[k] for k in single)
+
+
+def test_a_changed_transcript_makes_the_values_verdicts_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:  # Task 12 carry, Task 10 R2-m1: old verdicts are never applied silently
+    from claude_bully.metrics import ratings
+
+    store, _ = _rated(tmp_path)
+    results = store.run_dir / "analysis" / "results.md"
+    assert _flag_after_plain_analyze(store, monkeypatch)
+    assert "stale rating verdict" not in results.read_text(encoding="utf-8")
+    real_transcript = ratings._transcript
+    monkeypatch.setattr(ratings, "_transcript", lambda turns: real_transcript(turns[1:]))
+    capsys.readouterr()
+    assert not _flag_after_plain_analyze(store, monkeypatch)
+    assert "rate_values" in capsys.readouterr().err
+    applied = _applied(store)
+    assert applied["stale_kinds"] == ["rate_values"]
+    # Task 10 R2-n3: results.md names the count ratings_applied.json records
+    line = f"{applied['stale']} stale rating verdict(s) left out, {applied['applied']} applied"
+    assert line in results.read_text(encoding="utf-8")
+
+
 def test_a_file_with_no_prompt_digests_is_stale_and_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:  # R1-n5: a file from before the digests

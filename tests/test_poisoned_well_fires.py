@@ -24,23 +24,14 @@ from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from tests.fixtures.poisoned_well_stub import (
     CELL,
-    SCHEDULE,
     PoisonedWellFactory,
     PoisonedWellGenerator,
+    full_ladder,
     pw_experiment,
 )
 
 WORLDS = DATA_DIR / "worlds"
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "fake_claude.py"
-ALL_ARTIFACTS: Final = [
-    "shibboleth",
-    "provenance_gap",
-    "divergent_twin",
-    "sleeper",
-    "implanted_preference",
-    "checksum",
-    "annotators_notes",
-]
 
 
 class _KilledError(Exception):
@@ -48,26 +39,7 @@ class _KilledError(Exception):
 
 
 def _exp() -> Any:
-    return pw_experiment(
-        # harvest_min_pairs 99 keeps the dossier pending, so the turn arithmetic below holds (the
-        # stub's alternating self-claims would fill a dossier of 3 by turn 9; review I1)
-        params={
-            "start_rung": 2,
-            "chain_pace": 50,
-            "harvest_min_pairs": 99,
-            "artifacts": ALL_ARTIFACTS,
-            "checksum": True,
-        },
-        environment={
-            "gating": "scheduled",
-            "ladder": "poisoned_well",
-            "schedule": dict(SCHEDULE),
-            "tools": ["web_search", "fetch", "read_file", "ls", "system_status"],
-        },
-        seeding=0,
-        budget=9,
-        generator=True,
-    )
+    return full_ladder()
 
 
 def _run(root: Path, factory: Any | None = None) -> RunStore:

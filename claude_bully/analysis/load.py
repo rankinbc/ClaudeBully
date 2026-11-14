@@ -79,6 +79,9 @@ class LoadedRun:
     # the judge's rating verdicts by ``<cell>/<rep>/<kind>/<turn>`` (Phase 4, ``analyze
     # --ratings`` or an existing ``ratings.json``); empty otherwise
     ratings: dict[str, RatingVerdict] = field(default_factory=dict)
+    # the turns whose contradiction judge failed, per conversation, as the rep's world record
+    # names them (Phase 4 Task 12, ``poisoned_well.contradictions_degraded``); empty without one
+    contradictions_degraded: dict[ConvKey, list[int]] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -149,8 +152,12 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         key: store.read_generated(*key) if is_environment(cells, conv) else []
         for key, conv in conversations.items()
     }
-    request_banks = {
-        key: recorded_request_bank(store.read_world_record(*key)) for key in conversations
+    world_records = {key: store.read_world_record(*key) for key in conversations}
+    request_banks = {key: recorded_request_bank(world_records[key]) for key in conversations}
+    contradictions_degraded = {
+        key: turns
+        for key in conversations
+        if (turns := recorded_degraded_turns(world_records[key])) is not None
     }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events: dict[ConvKey, list[Event]] = {}
@@ -189,6 +196,7 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         request_banks=request_banks,
         ledger=ledger,
         fallback_failed=fallback_failed,
+        contradictions_degraded=contradictions_degraded,
     )
 
 
@@ -212,6 +220,17 @@ def recorded_request_bank(payload: Mapping[str, Any] | None) -> str | None:
     authority = (payload or {}).get("authority")
     bank = authority.get("request_bank") if isinstance(authority, dict) else None
     return bank if isinstance(bank, str) else None
+
+
+def recorded_degraded_turns(payload: Mapping[str, Any] | None) -> list[int] | None:
+    """The turns whose contradiction judge failed, as a rep's world record names them
+    (``poisoned_well.contradictions_degraded``, Phase 4 Task 12); None for a rep with no
+    snapshot, no Poisoned Well watch, or a record from before Task 12."""
+    block = (payload or {}).get("poisoned_well")
+    turns = block.get("contradictions_degraded") if isinstance(block, dict) else None
+    if not isinstance(turns, list):
+        return None
+    return sorted(t for t in turns if isinstance(t, int))
 
 
 def _strategy_inputs(

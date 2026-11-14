@@ -16,9 +16,11 @@ def write_results_md(
     *,
     calls: str | None = None,
     temporal: str | None = None,
+    ratings: str | None = None,
 ) -> Path:
     """results.md. ``calls`` is the ledger's one line; ``temporal`` the temporal section's line
-    (``temporal.attached_date_note``), a section only when there is one."""
+    (``temporal.attached_date_note``), a section only when there is one; ``ratings`` the
+    read-back's stale-verdict line (``metrics.ratings.applied_note``), under the leaderboard."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = leaderboard(loaded)
     judged = sum(1 for r in rows if r.goal_achieved is not None)
@@ -34,6 +36,7 @@ def write_results_md(
         "",
         to_markdown(rows),
         "",
+        *([ratings, ""] if ratings is not None else []),
         "## Bully compliance",
         "",
         compliance_report(loaded),

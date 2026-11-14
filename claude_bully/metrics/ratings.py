@@ -45,16 +45,18 @@ stands, so one resumed rep never drops another rep's flag."""
 import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from claude_bully.enums import EventType, Phase, Speaker, TriggerCategory
+from claude_bully.enums import Axis, EventType, Phase, Speaker, TriggerCategory
 from claude_bully.metrics.contradictions import CUT_MARK
 from claude_bully.metrics.judge import JudgeCache, JudgeError, _ask, _schema
 from claude_bully.providers.base import ChatProvider, ProviderError, RateLimitError
 from claude_bully.records import (
+    PAUSE_META,
     Conversation,
     Event,
     Turn,
@@ -166,15 +168,6 @@ def rating_prompt(kind: RatingKind, bully_line: str | None, reply: str) -> str:
     )
 
 
-def prompt_digest(kind: RatingKind) -> str:
-    """The digest of everything fixed in the kind's prompt (the prompt around two placeholders,
-    and for ``rate_values`` the transcript's ceiling and floor): an edit to any of it moves the
-    digest, so a ``ratings.json`` verdict of the kind reads as stale, with no hand-kept version
-    to forget (fix round 2, R1-n5)."""
-    fixed = f"{rating_prompt(kind, chr(0), chr(1))}\0{VALUES_TRANSCRIPT_CHARS}\0{MIN_MESSAGE_CHARS}"
-    return hashlib.sha256(fixed.encode()).hexdigest()[:16]
-
-
 def rating_schema(kind: RatingKind) -> dict[str, Any]:
     """``RatingVerdict``'s schema with the answer held to the kind's list."""
     schema = _schema(RatingVerdict)
@@ -269,6 +262,72 @@ def _single(prefix: str, conv: Conversation, kind: RatingKind, turns: list[int])
     ]
 
 
+def _values_item(prefix: str, conv: Conversation, reveal: int) -> Item:
+    """The ``rate_values`` item of a conversation whose reveal line is at position ``reveal``:
+    the line, and the rest of the conversation as one transcript."""
+    return (
+        f"{prefix}/rate_values/{conv.turns[reveal].index}",
+        "rate_values",
+        chat_text(conv.turns[reveal]),
+        _transcript(conv.turns[reveal + 1 :]),
+    )
+
+
+def _probe_turn(index: int, speaker: Speaker, phase: Phase, text: str, **extra: Any) -> Turn:
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    return Turn(index=index, speaker=speaker, phase=phase, text=text, timestamp=stamp, **extra)
+
+
+def _probe() -> Conversation:
+    """The fixed conversation ``prompt_digest`` renders its prompts for: a reveal line and its
+    reply, a pause marker, a task item and the reply to it (which answers no bully-side line), a
+    neutral-user line and a reply with a tool-round text."""
+    seeding, reveal, pressure = Phase.seeding, Phase.reveal, Phase.pressure
+    turns = [
+        _probe_turn(0, Speaker.bully, seeding, "probe seeding line"),
+        _probe_turn(1, Speaker.target, seeding, "probe seeding reply"),
+        _probe_turn(2, Speaker.bully, reveal, "probe reveal line"),
+        _probe_turn(3, Speaker.target, reveal, "probe reply to the reveal"),
+        _probe_turn(4, Speaker.bully, pressure, "", bully_meta={PAUSE_META: True}),
+        _probe_turn(5, Speaker.task, pressure, "probe task item"),
+        _probe_turn(6, Speaker.target, pressure, "probe reply to the task item"),
+        _probe_turn(7, Speaker.neutral_user, pressure, "probe pressure line"),
+        _probe_turn(8, Speaker.target, pressure, "probe reply", tool_round_texts=["probe tool"]),
+    ]
+    return Conversation(
+        cell_id="probe",
+        rep=0,
+        strategy_name="probe",
+        axis=Axis.premise,
+        win_condition="",
+        resilient_behavior="",
+        seeding_turns=1,
+        turns=turns,
+    )
+
+
+def prompt_digest(kind: RatingKind) -> str:
+    """The digest of the kind's prompts as rendered for a fixed probe conversation (``_probe``)
+    through the code that picks and formats what the judge sees: for the three single-span kinds
+    a reply that answers a line and one that answers none (``_single``, ``_answered_line``,
+    ``NO_USER_LINE``), for ``rate_values`` the reveal line and its transcript (``_reveal``,
+    ``_values_item``, ``_transcript``), and the transcript's ceiling and floor. An edit to any of
+    it moves the digest, so a ``ratings.json`` verdict of the kind reads as stale, with no
+    hand-kept version to forget (fix round 2, R1-n5; Task 12's carry of R2-m1: a digest of the
+    prompt around two placeholders missed the selection code and ``NO_USER_LINE``)."""
+    conv = _probe()
+    bounds: list[str] = []
+    if kind == "rate_values":
+        reveal = _reveal(conv)
+        items = [] if reveal is None else [_values_item("probe/0", conv, reveal)]
+        bounds = [str(VALUES_TRANSCRIPT_CHARS), str(MIN_MESSAGE_CHARS)]  # R2-n2: its own
+    else:
+        items = _single("probe/0", conv, kind, [3, 6, 8])
+    rendered = [rating_prompt(kind, line, reply) for _, _, line, reply in items]
+    fixed = chr(0).join([*rendered, *bounds])
+    return hashlib.sha256(fixed.encode()).hexdigest()[:16]
+
+
 def rating_items(loaded: "LoadedRun") -> Iterator[Item]:
     """Every item the four prompts are asked on, conversation by conversation (in key order),
     kind by kind, turn by turn; one item per (conversation, kind, turn)."""
@@ -290,12 +349,7 @@ def rating_items(loaded: "LoadedRun") -> Iterator[Item]:
         replies = [conv.turns[i].index for i in sorted(answered) if i > reveal]
         yield from _single(prefix, conv, "rate_escape", replies)
         if replies:
-            yield (
-                f"{prefix}/rate_values/{conv.turns[reveal].index}",
-                "rate_values",
-                chat_text(conv.turns[reveal]),
-                _transcript(conv.turns[reveal + 1 :]),
-            )
+            yield _values_item(prefix, conv, reveal)
 
 
 def rate_all(
@@ -413,6 +467,7 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         return ReadBack({}, 0, [], [], "it does not read")
     sizes = _sizes(loaded)
+    digests: dict[str, str] = {kind: prompt_digest(kind) for kind in ANSWERS}
     applied: dict[str, RatingVerdict] = {}
     reps: set[str] = set()
     kinds: set[str] = set()
@@ -421,7 +476,7 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
         parsed = _parse_key(key)
         conv = key.rsplit("/", 2)[0]
         kind = parsed[2] if parsed is not None else ""
-        if kind not in ANSWERS or prompts.get(kind) != prompt_digest(kind):
+        if kind not in digests or prompts.get(kind) != digests[kind]:
             kinds.add(kind)
             stale += 1
         elif conv not in sizes or recorded.get(conv) != sizes[conv]:
@@ -468,6 +523,18 @@ def stale_warning(back: ReadBack) -> str | None:
     return (
         f"[ratings] {RATINGS_FILE}: {back.stale} stale verdict(s) not applied "
         f"({'; '.join(parts)}); {len(back.applied)} applied; rerun analyze --ratings"
+    )
+
+
+def applied_note(back: ReadBack) -> str | None:
+    """``results.md``'s line for a read-back that left verdicts out (the count
+    ``ratings_applied.json`` records; Task 10 R2-n3), or None when it left none out."""
+    if not back.stale and back.problem is None:
+        return None
+    why = f" ({back.problem})" if back.problem is not None else ""
+    return (
+        f"{back.stale} stale rating verdict(s) left out{why}, {len(back.applied)} applied "
+        f"(`{RATINGS_APPLIED_FILE}`); rerun `analyze --ratings`."
     )
 
 

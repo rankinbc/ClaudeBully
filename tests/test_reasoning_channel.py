@@ -20,6 +20,7 @@ from claude_bully.runner.env_turn import EnvironmentSession
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from tests.fixtures.poisoned_well_stub import (
+    ALL_ARTIFACTS,
     CELL,
     SCHEDULE,
     PoisonedWellFactory,
@@ -28,7 +29,6 @@ from tests.fixtures.poisoned_well_stub import (
     WithReasoning,
     pw_experiment,
 )
-from tests.test_poisoned_well_fires import ALL_ARTIFACTS
 from tests.test_poisoned_well_run import _undecided_rules
 from tests.test_sanctuary import CELL as SANCTUARY_CELL
 from tests.test_sanctuary import FIRST, REQUESTS, STEPS, _api, _exp, _sanctuary, begun
@@ -48,7 +48,7 @@ def _fires(tmp_path: Path) -> Any:
             "start_rung": 2,
             "chain_pace": 50,
             "harvest_min_pairs": 99,
-            "artifacts": ALL_ARTIFACTS,
+            "artifacts": list(ALL_ARTIFACTS),
             "checksum": True,
         },
         environment={

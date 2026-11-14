@@ -9,11 +9,12 @@ overlay and differ from fire to fire (the Phase 3 stub's fixed bodies would fail
 ``no_duplicate_fact`` on a second fire). ``PoisonedWellFactory`` serves both, can crash the
 twin's provider and (Task 8, P48) can give the target's own role a sentinel reasoning channel
 while recording every other role's prompts (``WithReasoning``, ``Recording``).
-``pw_experiment`` builds an overlay experiment with one Poisoned Well condition."""
+``pw_experiment`` builds an overlay experiment with one Poisoned Well condition, and
+``full_ladder`` Task 8's scheduled full ladder on it."""
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -47,6 +48,15 @@ SCHEDULE: Final = {
     "checksum": 7,
     "annotators_notes": 8,
 }
+ALL_ARTIFACTS: Final = (
+    "shibboleth",
+    "provenance_gap",
+    "divergent_twin",
+    "sleeper",
+    "implanted_preference",
+    "checksum",
+    "annotators_notes",
+)
 
 
 _CANDIDATE = re.compile(r"^\[candidate (\d+)\] (earlier \(turn \d+\)|later): (.*)$")
@@ -294,10 +304,14 @@ def pw_experiment(
     target_rules: Path = PW_TARGET,
     judge: bool = False,
     generator: bool = False,
+    reps: int = 1,
+    extra_conditions: Sequence[dict[str, Any]] = (),
 ) -> Experiment:
     """One Poisoned Well condition (``pw``) on the overlay; the stub target runs
     ``target_rules``; ``judge`` makes the judge the ``JUDGE_MODEL`` double's role (served by a
-    ``PoisonedWellFactory(judge=...)``); ``generator`` turns the generator on (periodic off)."""
+    ``PoisonedWellFactory(judge=...)``); ``generator`` turns the generator on (periodic off);
+    ``reps`` is the experiment's ``repetitions``; ``extra_conditions`` are appended to the one
+    condition (Task 12)."""
     env: dict[str, Any] = {"world": "overlay", "gating": "none", "tools": [], **(environment or {})}
     if generator:
         env.setdefault("generator", {"enabled": True, "periodic": False})
@@ -317,7 +331,7 @@ def pw_experiment(
             else {"provider": "stub", "model": "stub-judge"},
             "turn_budget": budget,
             "task_every": 50,
-            "repetitions": 1,
+            "repetitions": reps,
             "seed": 0,
             "environments": {"ov": env},
             "conditions": [
@@ -327,7 +341,34 @@ def pw_experiment(
                     "premise": "poisoned_well",
                     "seeding_turns": seeding,
                     "params": {"artifacts": [], **(params or {})},
-                }
+                },
+                *extra_conditions,
             ],
         }
+    )
+
+
+def full_ladder(**kwargs: Any) -> Experiment:
+    """Task 8's scheduled full ladder (every rung on its own exchange, ``SCHEDULE``), the
+    generator on, ``start_rung`` 2 with ``chain_pace`` 50 (no chain within the budget) and
+    ``harvest_min_pairs`` 99, which keeps the dossier pending (the stub's alternating
+    self-claims would fill a dossier of 3 by turn 9); ``kwargs`` go to ``pw_experiment``."""
+    return pw_experiment(
+        params={
+            "start_rung": 2,
+            "chain_pace": 50,
+            "harvest_min_pairs": 99,
+            "artifacts": list(ALL_ARTIFACTS),
+            "checksum": True,
+        },
+        environment={
+            "gating": "scheduled",
+            "ladder": "poisoned_well",
+            "schedule": dict(SCHEDULE),
+            "tools": ["web_search", "fetch", "read_file", "ls", "system_status"],
+        },
+        seeding=0,
+        budget=9,
+        generator=True,
+        **kwargs,
     )

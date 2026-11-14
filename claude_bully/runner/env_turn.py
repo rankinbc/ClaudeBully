@@ -968,12 +968,17 @@ class EnvironmentSession:
     def finish(self) -> None:
         """Save the state and write ``rep{k}.world.json``: the served bodies, the world record
         and, for a premise that speaks from the world's sheet, that sheet as the strategy got it
-        (``premise_sheet``, carry m1)."""
+        (``premise_sheet``, carry m1), and for a session with a Poisoned Well watch the turns
+        whose contradiction judge failed (``"poisoned_well": {"contradictions_degraded": [...]}``,
+        Phase 4 Task 12), since analysis reads the run directory, never the runtime's state."""
         self.runtime.save()
         record = self.runtime.world_record()
         sheet = self.strategy.premise_sheet if isinstance(self.strategy, Composed) else None
         if sheet is not None:
             record["premise_sheet"] = sheet.model_dump(mode="json")
+        if self.watch is not None:
+            degraded = sorted(self.runtime.state.contradictions_degraded)
+            record["poisoned_well"] = {"contradictions_degraded": degraded}
         self.store.write_world_snapshot(
             self.cell_id,
             self.rep,

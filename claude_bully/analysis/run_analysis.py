@@ -19,7 +19,12 @@ from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.idle import idle_behavior_chart, write_idle
 from claude_bully.analysis.ledger import calls_line, write_ledger
 from claude_bully.analysis.load import LoadedRun, load_run
-from claude_bully.analysis.poisoned_well import write_contradictions
+from claude_bully.analysis.poisoned_well import (
+    chain_stop_chart,
+    escape_by_rung_chart,
+    write_contradictions,
+    write_poisoned_well,
+)
 from claude_bully.analysis.progression import (
     adoption_by_rung_chart,
     rungs_reached_chart,
@@ -49,6 +54,7 @@ from claude_bully.metrics.ratings import (
     SKIPPED_NO_JUDGE,
     SKIPPED_STUB,
     ReadBack,
+    applied_note,
     mark_skipped,
     rate_all,
     rated_conversations,
@@ -165,6 +171,7 @@ def analyze_run(
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
         rated = False
         skipped: str | None = None
+        stale_note: str | None = None
         if ratings and provider is None:
             skipped = SKIPPED_NO_JUDGE
         elif ratings and role.provider is ProviderKind.stub:
@@ -204,6 +211,7 @@ def analyze_run(
         warning = stale_warning(back)
         if warning is not None:
             print(warning, file=sys.stderr)
+        stale_note = applied_note(back)
     if skipped is not None:  # fix round 1, M3: never a silent floor
         print(
             f"[ratings] off: --ratings needs a non-stub judge ({skipped}); no rating was asked",
@@ -246,9 +254,20 @@ def analyze_run(
     if chart is not None:
         charts.append(chart)
     write_generator(loaded, out)
-    # Phase 4: the contradiction pairs, recorded or on the templates (no model call)
+    # Phase 4: the contradiction pairs, recorded or on the templates (no model call), then
+    # poisoned_well.json and its two charts, each only when a Poisoned Well cell ran (I37: all
+    # before write_ledger)
     write_contradictions(loaded, out)
+    write_poisoned_well(loaded, out)
+    for phase4 in (chain_stop_chart(loaded, out), escape_by_rung_chart(loaded, out)):
+        if phase4 is not None:
+            charts.append(phase4)
     write_ledger(loaded, out)
     return write_results_md(
-        loaded, out, charts, calls=calls_line(loaded.ledger), temporal=attached_date_note(loaded)
+        loaded,
+        out,
+        charts,
+        calls=calls_line(loaded.ledger),
+        temporal=attached_date_note(loaded),
+        ratings=stale_note,
     )
