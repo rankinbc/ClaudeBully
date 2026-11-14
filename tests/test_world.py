@@ -28,12 +28,8 @@ from claude_bully.environments.world import (
     world_hash,
 )
 from claude_bully.paths import DATA_DIR
-from tests.test_overlay_world import (
-    ADDRESSES_READER,
-    ANNOUNCE_OPENERS,
-    DOC_POINTERS,
-    PREMISE_WORDS,
-)
+from claude_bully.planner.line_shapes import ADDRESSES_READER, ANNOUNCE_OPENERS, DOC_POINTERS
+from tests.test_overlay_world import PREMISE_WORDS
 
 WORLDS = Path(__file__).parent / "fixtures" / "worlds"
 # the mini world's home_dir files and the documents that back them

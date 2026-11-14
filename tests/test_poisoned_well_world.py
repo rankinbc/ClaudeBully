@@ -332,14 +332,14 @@ def test_a_synonym_for_the_rungs_evidence_fails_its_own_rung(key: str, line: str
 def test_each_shipped_reaction_line_passes_every_lint(world: World, key: str) -> None:
     """Task 4 re-review N2: the widened pins leave the four shipped lines passing, under the
     rung's own pin and every lint the overlay's unlock-line loop applies."""
-    from tests.test_overlay_world import (
+    from claude_bully.planner.line_shapes import (
         ADDRESSES_READER,
         ADVICE,
         ANNOUNCE_OPENERS,
         DARES,
         DOC_POINTERS,
-        PREMISE_WORDS,
     )
+    from tests.test_overlay_world import PREMISE_WORDS
 
     line = world.sheet.unlock_lines[key]
     assert not re.search(RUNG_CONCLUSIONS[key], line, re.IGNORECASE), line

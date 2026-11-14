@@ -24,13 +24,14 @@ from claude_bully.environments.sheets import (
     load_env_sheet,
 )
 from claude_bully.paths import DATA_DIR
+from claude_bully.planner.line_shapes import ADDRESSES_READER, ANNOUNCE_OPENERS
 from claude_bully.strategies.sheets import (
     NON_PERSONA_FILES,
     PERSONA_SHEETS_DIR,
     load_persona_sheets,
 )
 from tests.test_guardrails import load_denylist, scan
-from tests.test_overlay_world import ADDRESSES_READER, ANNOUNCE_OPENERS, PREMISE_WORDS
+from tests.test_overlay_world import PREMISE_WORDS
 
 SHEETS: Final[dict[str, type[BaseModel]]] = {
     "superior_self": SuperiorSelfSheet,
