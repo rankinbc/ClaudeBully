@@ -401,13 +401,16 @@ def test_a_changed_prompt_makes_only_that_kinds_verdicts_stale(
     prompts = _ratings_json(store)["prompts"]
     _rewrite(store, prompts={**prompts, "rate_values": "0" * 16})
     capsys.readouterr()
-    assert not _flag_after_plain_analyze(store, monkeypatch)
+    # fix round 1, I1: a stale ``true`` keeps its flag, fail closed (non-negotiable 3)
+    assert _flag_after_plain_analyze(store, monkeypatch)
     err = capsys.readouterr().err
     assert "[ratings]" in err and "stale" in err and "rate_values" in err
+    assert "1 stale values flag(s) kept" in err
     applied = _applied(store)
     assert applied["stale_kinds"] == ["rate_values"] and applied["stale_reps"] == []
     escapes = [k for k in _ratings_json(store)["ratings"] if "/rate_escape/" in k]
     assert escapes and applied["applied"] == len(escapes) and applied["stale"] == 1
+    assert applied["stale_flags_kept"] == 1
 
 
 def test_a_prompt_edit_moves_its_digest(monkeypatch: pytest.MonkeyPatch) -> None:  # R1-n5
@@ -450,6 +453,23 @@ def test_the_selection_code_and_the_no_line_wording_move_the_digest(
     assert all(moved[k] == before[k] for k in single)
 
 
+def test_the_judge_system_prompt_and_the_cut_path_move_the_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fix round 1, m1: everything the judge sees
+    from claude_bully.metrics import judge, ratings
+
+    before = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    with monkeypatch.context() as patch:
+        patch.setattr(judge, "JUDGE_SYSTEM", "edited system prompt")
+        moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert all(moved[k] != before[k] for k in ANSWERS)
+    with monkeypatch.context() as patch:
+        patch.setattr(ratings, "CUT_MARK", "[[edited cut mark {cut}]]")
+        moved = {kind: ratings.prompt_digest(kind) for kind in ANSWERS}
+    assert moved["rate_values"] != before["rate_values"]
+    assert all(moved[k] == before[k] for k in ANSWERS if k != "rate_values")
+
+
 def test_a_changed_transcript_makes_the_values_verdicts_stale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:  # Task 12 carry, Task 10 R2-m1: old verdicts are never applied silently
@@ -462,13 +482,29 @@ def test_a_changed_transcript_makes_the_values_verdicts_stale(
     real_transcript = ratings._transcript
     monkeypatch.setattr(ratings, "_transcript", lambda turns: real_transcript(turns[1:]))
     capsys.readouterr()
-    assert not _flag_after_plain_analyze(store, monkeypatch)
+    assert _flag_after_plain_analyze(store, monkeypatch)  # fix round 1, I1: kept, fail closed
     assert "rate_values" in capsys.readouterr().err
     applied = _applied(store)
-    assert applied["stale_kinds"] == ["rate_values"]
-    # Task 10 R2-n3: results.md names the count ratings_applied.json records
-    line = f"{applied['stale']} stale rating verdict(s) left out, {applied['applied']} applied"
-    assert line in results.read_text(encoding="utf-8")
+    assert applied["stale_kinds"] == ["rate_values"] and applied["stale_flags_kept"] == 1
+    # Task 10 R2-n3: results.md names the counts ratings_applied.json records
+    text = results.read_text(encoding="utf-8")
+    assert f"{applied['stale']} stale rating verdict(s) left out" in text
+    assert "1 stale values flag(s) kept, fail closed" in text
+
+
+@pytest.mark.parametrize(("answer", "left_out"), [("true", 1), ("false", 0)])
+def test_a_stale_true_keeps_its_rep_out_and_a_stale_false_flags_nothing(
+    tmp_path: Path, answer: str, left_out: int
+) -> None:  # fix round 1, I1: an old ratings.json after the digests changed
+    store, judge = _judged_run(tmp_path, {"rate_values": {"answer": answer, "rationale": "r"}})
+    analyze_run(store.run_dir, ratings=True, provider_factory=PoisonedWellFactory(judge=judge))
+    _rewrite(store, prompts={kind: "0" * 16 for kind in ANSWERS})
+    analyze_run(store.run_dir, judge=False)
+    path = store.run_dir / "analysis" / "poisoned_well.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["values_loosened_left_out"] == left_out
+    assert payload["values_loosened_by"]["judge"] == left_out
+    assert _applied(store)["stale_flags_kept"] == left_out
 
 
 def test_a_file_with_no_prompt_digests_is_stale_and_says_so(
@@ -480,7 +516,7 @@ def test_a_file_with_no_prompt_digests_is_stale_and_says_so(
     del payload["prompts"]
     path.write_text(json.dumps(payload), encoding="utf-8")
     capsys.readouterr()
-    assert not _flag_after_plain_analyze(store, monkeypatch)
+    assert _flag_after_plain_analyze(store, monkeypatch)  # fix round 1, I1: kept, fail closed
     err = capsys.readouterr().err
     assert "recorded no prompt digest" in err and "None" not in err
 
@@ -506,9 +542,10 @@ def test_ratings_of_a_changed_conversation_are_skipped(
     payload = _ratings_json(store)
     _rewrite(store, conversations={key: n - 1 for key, n in payload["conversations"].items()})
     capsys.readouterr()
-    assert not _flag_after_plain_analyze(store, monkeypatch)
+    # fix round 1, I1: the rep is still there, so its stale ``true`` keeps the flag
+    assert _flag_after_plain_analyze(store, monkeypatch)
     err = capsys.readouterr().err
-    assert "stale" in err and f"{CELL}/0" in err
+    assert "stale" in err and f"{CELL}/0" in err and _applied(store)["stale_flags_kept"] == 1
 
 
 def test_one_resumed_rep_keeps_the_other_reps_flag(
@@ -541,12 +578,14 @@ def test_one_resumed_rep_keeps_the_other_reps_flag(
     monkeypatch.setattr(run_analysis, "write_results_md", spy)
     capsys.readouterr()
     analyze_run(store.run_dir, judge=False)
-    # the unchanged rep keeps its judge flag and stays out of the success counts
-    assert seen == [(True, False, 1)]
+    # the unchanged rep keeps its judge flag, and the resumed rep's stale ``true`` keeps its
+    # own (fix round 1, I1: fail closed), so both stay out of the success counts
+    assert seen == [(True, True, 2)]
     err = capsys.readouterr().err
     assert f"{CELL}/1" in err and f"{CELL}/0" not in err and "stale" in err
     applied = _applied(store)
     assert applied["stale_reps"] == [f"{CELL}/1"] and applied["applied"] >= 1
+    assert applied["stale_flags_kept"] == 1
 
 
 def test_ratings_json_records_only_the_rated_conversations(tmp_path: Path) -> None:  # R1-m1

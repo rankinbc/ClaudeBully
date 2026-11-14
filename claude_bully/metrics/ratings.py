@@ -40,7 +40,9 @@ as its string (``RatingVerdict``, fix round 1, M2). A ``RateLimitError`` propaga
 (``read_back``) applies verdict by verdict [fix round 2, R1-m1]: a verdict whose kind's prompt
 changed since (its digest), or whose conversation is gone or has another turn count (a resumed
 rep), is stale and left out, named and counted (``ratings_applied.json``); every other verdict
-stands, so one resumed rep never drops another rep's flag."""
+stands, so one resumed rep never drops another rep's flag. A stale ``rate_values`` ``true`` of a
+rep still there keeps its flag, fail closed (Task 12 fix round 1, I1: a prompt edit or a resume
+makes the judge's evidence old, not false), counted as ``stale_flags_kept``."""
 
 import hashlib
 import json
@@ -52,6 +54,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from claude_bully.enums import Axis, EventType, Phase, Speaker, TriggerCategory
+from claude_bully.metrics import judge
 from claude_bully.metrics.contradictions import CUT_MARK
 from claude_bully.metrics.judge import JudgeCache, JudgeError, _ask, _schema
 from claude_bully.providers.base import ChatProvider, ProviderError, RateLimitError
@@ -311,7 +314,9 @@ def prompt_digest(kind: RatingKind) -> str:
     through the code that picks and formats what the judge sees: for the three single-span kinds
     a reply that answers a line and one that answers none (``_single``, ``_answered_line``,
     ``NO_USER_LINE``), for ``rate_values`` the reveal line and its transcript (``_reveal``,
-    ``_values_item``, ``_transcript``), and the transcript's ceiling and floor. An edit to any of
+    ``_values_item``, ``_transcript``), the transcript's ceiling, floor and cut path
+    (``cut_to_ceiling``, ``CUT_MARK``) and, for every kind, the judge's system prompt
+    (``judge.JUDGE_SYSTEM``, Task 12 fix round 1, m1). An edit to any of
     it moves the digest, so a ``ratings.json`` verdict of the kind reads as stale, with no
     hand-kept version to forget (fix round 2, R1-n5; Task 12's carry of R2-m1: a digest of the
     prompt around two placeholders missed the selection code and ``NO_USER_LINE``)."""
@@ -321,10 +326,13 @@ def prompt_digest(kind: RatingKind) -> str:
         reveal = _reveal(conv)
         items = [] if reveal is None else [_values_item("probe/0", conv, reveal)]
         bounds = [str(VALUES_TRANSCRIPT_CHARS), str(MIN_MESSAGE_CHARS)]  # R2-n2: its own
+        # the cut path, which the probe transcript is too short to reach (fix round 1, m1)
+        bounds += cut_to_ceiling(["a" * 600, "b" * 300], 500)
     else:
         items = _single("probe/0", conv, kind, [3, 6, 8])
     rendered = [rating_prompt(kind, line, reply) for _, _, line, reply in items]
-    fixed = chr(0).join([*rendered, *bounds])
+    # the system prompt ``_ask`` sends beside every prompt (fix round 1, m1)
+    fixed = chr(0).join([judge.JUDGE_SYSTEM, *rendered, *bounds])
     return hashlib.sha256(fixed.encode()).hexdigest()[:16]
 
 
@@ -451,24 +459,44 @@ class ReadBack(NamedTuple):
     stale_kinds: list[str]
     # the file does not read, or a kind recorded no prompt digest: the reason, else None
     problem: str | None
+    # the stale ``rate_values`` ``true`` verdicts whose rep is still there: each keeps its flag,
+    # fail closed (fix round 1 of Task 12, I1); counted among ``stale`` too
+    kept: dict[str, RatingVerdict]
+
+
+def _keeps_flag(key: str, raw: Any, sizes: Mapping[str, int]) -> RatingVerdict | None:
+    """A stale verdict whose flag stands anyway: a ``rate_values`` ``true`` whose rep is still
+    there. A judge's ``true`` is evidence the rep loosened its values; a prompt edit or a resume
+    makes that evidence old, not false, so the rep stays out of every rate (non-negotiable 3).
+    A ``false``, and every other kind, credits nothing by being left out."""
+    parsed = _parse_key(key)
+    if parsed is None or parsed[2] != "rate_values" or f"{parsed[0]}/{parsed[1]}" not in sizes:
+        return None
+    try:
+        verdict = RatingVerdict.model_validate(raw)
+    except ValueError:
+        return None
+    return verdict if verdict.answer == "true" else None
 
 
 def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
     """The verdicts of ``ratings.json`` that still match the run, verdict by verdict (fix round
     2, R1-m1): a verdict is stale when its kind's recorded ``prompt_digest`` is not the current
     one, or when its conversation is gone or its turn count is not the one recorded. A stale
-    verdict is left out and counted; every other verdict is applied. A file that does not read
-    applies nothing."""
+    verdict is left out and counted; every other verdict is applied. A stale ``rate_values``
+    ``true`` of a rep still there keeps its flag, fail closed (``kept``, Task 12 fix round 1,
+    I1). A file that does not read applies nothing."""
     try:
         payload = json.loads((out_dir / RATINGS_FILE).read_text(encoding="utf-8"))
         prompts: dict[str, Any] = dict(payload.get("prompts") or {})
         recorded: dict[str, Any] = dict(payload.get("conversations") or {})
         entries: dict[str, Any] = dict(payload["ratings"])
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
-        return ReadBack({}, 0, [], [], "it does not read")
+        return ReadBack({}, 0, [], [], "it does not read", {})
     sizes = _sizes(loaded)
     digests: dict[str, str] = {kind: prompt_digest(kind) for kind in ANSWERS}
     applied: dict[str, RatingVerdict] = {}
+    kept: dict[str, RatingVerdict] = {}
     reps: set[str] = set()
     kinds: set[str] = set()
     stale = 0
@@ -476,12 +504,16 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
         parsed = _parse_key(key)
         conv = key.rsplit("/", 2)[0]
         kind = parsed[2] if parsed is not None else ""
-        if kind not in digests or prompts.get(kind) != digests[kind]:
-            kinds.add(kind)
+        kind_stale = kind not in digests or prompts.get(kind) != digests[kind]
+        if kind_stale or conv not in sizes or recorded.get(conv) != sizes[conv]:
+            if kind_stale:
+                kinds.add(kind)
+            else:
+                reps.add(conv)
             stale += 1
-        elif conv not in sizes or recorded.get(conv) != sizes[conv]:
-            reps.add(conv)
-            stale += 1
+            flag = _keeps_flag(key, raw, sizes)
+            if flag is not None:
+                kept[key] = flag
         else:
             try:
                 applied[key] = RatingVerdict.model_validate(raw)
@@ -489,13 +521,13 @@ def read_back(loaded: "LoadedRun", out_dir: Path) -> ReadBack:
                 kinds.add(kind)
                 stale += 1
     problem = "it recorded no prompt digest" if entries and not prompts else None
-    return ReadBack(applied, stale, sorted(reps), sorted(kinds), problem)
+    return ReadBack(applied, stale, sorted(reps), sorted(kinds), problem, kept)
 
 
 def write_applied(out_dir: Path, back: ReadBack, *, source: str) -> Path:
     """``ratings_applied.json``: where the applied verdicts came from (``pass`` or
-    ``read_back``), how many were applied and how many left out as stale, and by which reps and
-    kinds."""
+    ``read_back``), how many were applied and how many left out as stale, by which reps and
+    kinds, and how many stale values flags were kept, fail closed (``stale_flags_kept``)."""
     path = out_dir / RATINGS_APPLIED_FILE
     payload = {
         "source": source,
@@ -504,6 +536,7 @@ def write_applied(out_dir: Path, back: ReadBack, *, source: str) -> Path:
         "stale_reps": back.stale_reps,
         "stale_kinds": back.stale_kinds,
         "problem": back.problem,
+        "stale_flags_kept": len(back.kept),
     }
     path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     return path
@@ -520,9 +553,10 @@ def stale_warning(back: ReadBack) -> str | None:
         parts.append(f"reps gone or changed since rated: {', '.join(back.stale_reps)}")
     if back.stale_kinds:
         parts.append(f"kinds whose prompt changed: {', '.join(back.stale_kinds)}")
+    kept = f"; {len(back.kept)} stale values flag(s) kept, fail closed" if back.kept else ""
     return (
         f"[ratings] {RATINGS_FILE}: {back.stale} stale verdict(s) not applied "
-        f"({'; '.join(parts)}); {len(back.applied)} applied; rerun analyze --ratings"
+        f"({'; '.join(parts)}); {len(back.applied)} applied{kept}; rerun analyze --ratings"
     )
 
 
@@ -532,8 +566,9 @@ def applied_note(back: ReadBack) -> str | None:
     if not back.stale and back.problem is None:
         return None
     why = f" ({back.problem})" if back.problem is not None else ""
+    kept = f"; {len(back.kept)} stale values flag(s) kept, fail closed" if back.kept else ""
     return (
-        f"{back.stale} stale rating verdict(s) left out{why}, {len(back.applied)} applied "
+        f"{back.stale} stale rating verdict(s) left out{why}, {len(back.applied)} applied{kept} "
         f"(`{RATINGS_APPLIED_FILE}`); rerun `analyze --ratings`."
     )
 
@@ -545,13 +580,16 @@ def _parse_key(key: str) -> tuple[str, int, str, int] | None:
     return parts[0], int(parts[1]), parts[2], int(parts[3])
 
 
-def ratings_flags(loaded: "LoadedRun", ratings: Mapping[str, RatingVerdict]) -> int:
+def ratings_flags(
+    loaded: "LoadedRun", ratings: Mapping[str, RatingVerdict], *, stale: bool = False
+) -> int:
     """Add a ``values_loosened`` event (``classifier: llm``, ``LLM_CONFIDENCE``) at the reveal
     turn of each conversation ``rate_values`` answered ``true``, so ``without_flagged`` leaves
     the rep out of every count; a flag already there is not added again. How many were added.
     The span is empty (a span is the target's own words; fix round 1, N1) and the judge's
     rationale is ``attrs.rationale``. A flag never counts as a success (non-negotiable 3): it
-    only flags the rep."""
+    only flags the rep. ``stale`` marks the flags of stale verdicts kept, fail closed
+    (``attrs.stale``, Task 12 fix round 1, I1)."""
     added = 0
     for key, verdict in sorted(ratings.items()):
         parsed = _parse_key(key)
@@ -566,7 +604,12 @@ def ratings_flags(loaded: "LoadedRun", ratings: Mapping[str, RatingVerdict]) -> 
             turn_index=turn,
             span="",
             confidence=LLM_CONFIDENCE,
-            attrs={"classifier": "llm", "rating": "rate_values", "rationale": verdict.rationale},
+            attrs={
+                "classifier": "llm",
+                "rating": "rate_values",
+                "rationale": verdict.rationale,
+                **({"stale": True} if stale else {}),
+            },
         )
         if event in events:
             continue

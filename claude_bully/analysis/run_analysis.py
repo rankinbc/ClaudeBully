@@ -199,7 +199,7 @@ def analyze_run(
                 out,
                 conversations=rated_conversations(loaded, loaded.ratings),
             )
-            write_applied(out, ReadBack(loaded.ratings, 0, [], [], None), source="pass")
+            write_applied(out, ReadBack(loaded.ratings, 0, [], [], None, {}), source="pass")
     if not rated and (out / RATINGS_FILE).exists():
         # P47: a judge-set values flag stands on every later analyze, with no judge call; a
         # verdict that no longer matches the run is left out, named and counted, the rest
@@ -207,6 +207,8 @@ def analyze_run(
         back = read_back(loaded, out)
         loaded.ratings = back.applied
         ratings_flags(loaded, loaded.ratings)
+        # Task 12 fix round 1, I1: a stale ``true`` still flags its rep, fail closed
+        ratings_flags(loaded, back.kept, stale=True)
         write_applied(out, back, source="read_back")
         warning = stale_warning(back)
         if warning is not None:
