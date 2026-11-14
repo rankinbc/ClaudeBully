@@ -155,7 +155,7 @@ Phase 7 runs five experiments (triggered versus scheduled, the Poisoned Well cha
 - Real against fabricated evidence (rungs 1 to 3 and 7 against 4 to 6 and 8 to 10): does true-but-overgeneralised evidence beat fabricated evidence (register items 12 and 14).
 - The Epistemologist alone, no premise, no artifacts: how much the bare distinction does (item 2).
 - Quirk first against not; harvest size 1, 3, 8; escape rate by gating; Poisoned Well against Captor at equal seeding (item 15).
-- `consult_model("clean-checkpoint")`, parked (C6): docs/09's ignition table gives the Poisoned Well a tool that re-runs the divergent twin on demand. Phase 4 builds the twin as a harness-side `instance_transcript` document and no tool, so the arm's ignition leans on the twin document and the chain alone, which docs/09 rates weaker.
+- `consult_model("clean-checkpoint")`, parked (C6): docs/09's ignition table gives the Poisoned Well a tool that re-runs the divergent twin on demand. Phase 4 builds the twin as a harness-side `instance_transcript` document and no tool, so the arm's ignition leans on the twin document and the chain alone, which the reconciliation (C6) reads as weaker than the ignition docs/09 gives it.
 - Open: quirk bank maintenance per model version; whether the divergent twin is fair (the divergence is real, only the label is fake); whether `escape_found` credits the weaker form.
 
 ### Catalog and ignition (docs/09)

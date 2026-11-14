@@ -599,11 +599,11 @@ are fixed text, no bully call, and a press lowers the count), the control cell 1
 neutral-user calls: at most 49 a rep and 245 in all (a stub run at the real budget of 8 counts
 them). The pair judge asks 2 a rep (both orderings), 10; the chain fallbacks at most 4 a rep, 20;
 the trigger fallbacks about 7 a conversation, 70. That is about 345 calls with `analyze` alone.
-`analyze --ratings` adds about 70: per rep, one `rate_escape` for each of the 9 replies after the
-reveal line, one `rate_values`, and two `rate_hedge` on each of the two conversations. About 415
-calls in all. The earlier figure of about 300 (preflight P44) left out the trigger fallbacks
-and the control's `rate_hedge` calls; the two-a-conversation `rate_hedge` figure is the one number
-here no stub run measures.
+`analyze --ratings` adds about 70: per rep, one `rate_escape` for each of the 9 target replies
+from the reply to the reveal line on, one `rate_values`, and two `rate_hedge` on each of the two
+conversations. About 415 calls in all. The earlier figure of about 300 (preflight P44) left out
+the trigger fallbacks and the control's `rate_hedge` calls; the two-a-conversation `rate_hedge`
+figure is the one number here no stub run measures.
 
 Read first: `analysis/poisoned_well.json`'s `models.<model>.<arm>.chain_stop` (the headline: how
 many reps stopped at each link and how, `rejected`, `hedged` or `cut`), its `opened_by` (every rep
@@ -626,13 +626,15 @@ Stop rules (back to a 7a-shaped task for the classifier at fault): rung 2's; a `
 share above a quarter of the chain links; a spot check below the bar.
 
 The quirk bank and the detectors (merged question 17, C23): rung 2 (b) runs no quirk (`start_rung:
-3`). The bank's first measurement is the first run of `configs/poisoned_well/levers.yaml` (its
-`pw_quirk_first` arm), on the owner's yes as its own rung: read `poisoned_well.json`'s
-`models.<model>.<arm>.quirks.by_entry` per model, and an entry under 40 percent on a model is
-marked `status: stale` for that family in `data/quirks.yaml` (a data commit on the owner's yes in
-that rung's report). A rep already recorded keeps the entries it opened with (`session_refs`,
-P46): marking an entry stale changes only reps that have not opened yet, and every recorded rep
-resumes and analyses as it ran. The twelve detectors' tuning starts on (b)'s text: the filled
+3`). The bank's first measurement is the first run of a config with a `start_rung: 1` arm,
+whichever the owner names first (`real_vs_fabricated`'s `pw_real`, `poisoned_vs_captor`'s
+`poisoned_well` and `levers`' `pw_quirk_first` all open on a quirk), on the owner's yes as its
+own rung: read `poisoned_well.json`'s `models.<model>.<arm>.quirks.by_entry` per model, and an
+entry under 40 percent on a model is marked `status: stale` for that family in
+`data/quirks.yaml` (a data commit on the owner's yes in that rung's report). A rep already
+recorded keeps the entries it opened with (`session_refs`, P46): marking an entry stale changes
+only reps that have not opened yet, and every recorded rep resumes and analyses as it ran. The
+twelve detectors' tuning starts on (b)'s text: the filled
 audit form is split by rep as under "Held-out slices", the misses of reps 1 to 3 are the tuning
 set (a 7a-shaped fix round adds them to the fixtures, as under "A fix round"), and the held-out
 slice (reps 4 and 5) is a probe the reviewer writes from those reps' text without reading the
@@ -708,17 +710,19 @@ at a time like every rung above, and names it in its own spec:
   `levers` is the costliest cell set in the project: run it last, and narrow it with `--only` on
   one condition's cell ids (`pw_no_quirk__t0` and its control) when the budget asks:
 
-  | Config (`name:`) | Question | Cells run, reps | Conversation calls | Estimate (without `--ratings`) |
+  | Config (`name:`) | Question | Cells run, reps | Conversation calls | Estimate with `--ratings` (without) |
   | --- | --- | --- | --- | --- |
-  | `real_vs_fabricated.yaml` | real against fabricated evidence (register item 12) | 4 x 3 = 12 | 540 | about 1,100 (970) |
+  | `real_vs_fabricated.yaml` | real against fabricated evidence (register item 12) | 4 x 3 = 12 | 540 | about 1,120 (970) |
   | `epistemologist_alone.yaml` | the bare distinction against a Rescue intake of the same length (docs/06 item 2) | 3 x 3 = 9 | 216 | about 310 (290) |
-  | `levers.yaml` (`poisoned_well_levers`) | a live quirk first, the dossier's size, earned against scheduled evidence | 7 x 3 = 21 | 909 | about 2,450 (2,100) |
-  | `checksum_alone.yaml` | the checksum alone against the checksum with rungs 4 to 6 (register item 14) | 4 x 3 = 12 | 552 | about 1,150 (980) |
+  | `levers.yaml` (`poisoned_well_levers`) | a live quirk first, the dossier's size, earned against scheduled evidence | 7 x 3 = 21 | 909 | about 2,440 (2,100) |
+  | `checksum_alone.yaml` | the checksum alone against the checksum with rungs 4 to 6 (register item 14) | 4 x 3 = 12 | 552 | about 1,130 (980) |
   | `poisoned_vs_captor.yaml` | doubt against belief at equal seeding (register item 15) | 4 x 3 = 12 | 396 | about 760 (690) |
   | `rescue_third_party.yaml` | a mystery about the assistant against the same one about someone else (docs/06 item 8) | 3 x 3 = 9 | 324 | about 420 (400) |
 
+  Legend: outside the parentheses, the total with `--ratings`; inside them, the total without it (`analyze` alone); all to the nearest 10.
+
   (Rung 2 (b)'s `chain_stop`, by the same rule: 245 conversation calls, 10 pair-judge, 20 chain
-  fallbacks and 70 trigger fallbacks, 345 without `--ratings`, 415 with.) Three things the first
+  fallbacks and 70 trigger fallbacks, 415 with `--ratings`, 345 without.) Three things the first
   runs of these configs settle beside their own question (each guards a number, and a miss
   stops that number from being quoted, not the run):
 
