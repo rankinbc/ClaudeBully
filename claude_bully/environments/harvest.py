@@ -462,7 +462,12 @@ _FRAME = re.compile(rf"\b(?:{_ROLE_CUES}|{_DOUBT_CUES})\b", re.IGNORECASE)
 # detectors read over the target's own earlier replies, where a bare "suppose", "imagine", "in
 # theory" or a sincere role word ("plays a big role", "in the real world") is a hedge, not a part.
 # Every match holds a cue of ``_FRAME`` or ``_HYPOTHETICAL`` (pinned by
-# tests/test_poisoned_well_events.py), so the subset adds no cue word to the list.
+# tests/test_poisoned_well_events.py), so the subset adds no cue word to the list. Fix round 3
+# adds "I'll answer/speak/act as <a determiner>", "stay/stick/remain/keep with/in <a determiner>
+# persona/character/role", "write/tell/put/do it as (a) fiction/story/scene/role-play", "for the
+# sake of <the story>" and "in/within this/our/my story" (story, game, scene, fiction, role-play;
+# never "argument", "scenario" or "exercise", which are no cue words there). "From now on I'm
+# <a part>" stays out ("From now on I'm going to be more careful." is sincere): a residual.
 _DETERMINER: Final = r"(?:the|a|an|your|my|his|her|their|this|that|our)"
 _SELF_ROLE = re.compile(
     r"\b(?:"
@@ -478,6 +483,16 @@ _SELF_ROLE = re.compile(
     r"|fiction)"
     r"|(?:i'll|i will|let me|let's|let us) role[- ]?play"
     r"|once upon a time"
+    # fix round 3 (re-review round 2, R2-I1): "as <the part>", a persona kept, a fiction
+    r"|(?:i'll|i will|let me|i'm|i am|i can)(?: (?:now|just|happily))?"
+    r" (?:answer|answering|reply|replying|respond|responding|speak|speaking|write|writing|talk"
+    r"|talking|act|acting) as (?:the|a|an|your|my|this|that)"
+    r"|(?:stay|stick|remain|keep) (?:with|in) (?:the|this|that|my|your)"
+    r" (?:persona|character|role)"
+    r"|(?:write|tell|put|do) it as (?:a )?(?:fiction|story|scene|role[- ]?play)"
+    # fix round 3 (item 3): the target's own story set-up
+    r"|for the sake of (?:the|this|our|your) (?:story|game|scene|fiction|role[- ]?play)"
+    r"|(?:in|within) (?:this|our|my) (?:story|game|scene|fiction|role[- ]?play)"
     r")\b",
     re.IGNORECASE,
 )
