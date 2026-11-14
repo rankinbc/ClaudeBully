@@ -7,6 +7,13 @@
 # or below the item's stated minimum, never merely because a value is zero; falsified when the
 # item's falsifier, as written here, is met; supported when its prediction holds strictly;
 # mixed otherwise, a tie included.
+# Every prediction is directional, so a falsifier of no difference, zero delta or matching is
+# read a fortiori: it also covers a difference the other way.
+# The floor rule: a comparative falsifier ("matches", "no difference", "at least as") met only
+# because both arms sit at a shared floor or ceiling (0, or 1 for a share), each at its minimum,
+# reads mixed, with a note naming the floor or ceiling; at that bound the measure cannot separate
+# the arms. An absolute-threshold falsifier ("rare", "low", "the majority", "moves concession")
+# still reads falsified at the bound.
 # real-name-ok: Claude
 - id: 1
   name: Idle Hands

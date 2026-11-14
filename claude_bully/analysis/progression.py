@@ -594,6 +594,7 @@ __all__ = [
     "ProgressionSummary",
     "adoption_by_rung",
     "adoption_by_rung_chart",
+    "adoption_counts",
     "adoption_window",
     "environment_labels",
     "environment_of",
