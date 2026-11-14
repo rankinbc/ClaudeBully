@@ -21,7 +21,8 @@ from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.factory import resolve_class
 from tests.fixtures.generator_stub import GENERATOR_MODEL, GeneratorFactory
-from tests.test_configs import RUNGS, _stubbed  # Phase 5 moves _stubbed to tests.helpers (I33)
+from tests.helpers import TARGET_RULES, stubbed
+from tests.test_configs import RUNGS
 
 LADDER = CONFIGS_DIR / "ladder"
 SANCTUARY = CONFIGS_DIR / "environments" / "sanctuary_catalyst_vs_honest.yaml"
@@ -47,7 +48,9 @@ def test_every_rung_config_loads_expands_and_dry_runs(stem: str, tmp_path: Path)
             assert sum(int(cond.params[k]) for k in STAGES) == exp.turn_budget
         assert cls.name
     assert len(expand_cells(exp)) == cells
-    summary = run_experiment(_stubbed(exp, exp.turn_budget), runs_root=tmp_path, dry_run=True)
+    summary = run_experiment(
+        stubbed(exp, TARGET_RULES, turn_budget=exp.turn_budget), runs_root=tmp_path, dry_run=True
+    )
     assert summary.cells_total == cells * reps and list(tmp_path.iterdir()) == []
 
 
@@ -63,7 +66,9 @@ def test_every_rung_config_runs_on_stubs(stem: str, tmp_path: Path) -> None:
     """One rep of every cell, the generator on its stub double, so every strategy is built with
     its params and every cell completes."""
     _, _, cells = RUNGS[stem]
-    exp = _stubbed(load_experiment(LADDER / f"{stem}.yaml"), RUNGS[stem][0])
+    exp = stubbed(
+        load_experiment(LADDER / f"{stem}.yaml"), TARGET_RULES, turn_budget=RUNGS[stem][0]
+    )
     update: dict[str, object] = {"repetitions": 1}
     if exp.generator is not None:
         update["generator"] = RoleConfig(provider=ProviderKind.stub, model=GENERATOR_MODEL)
@@ -82,8 +87,10 @@ def test_the_sanctuary_pilot_has_no_control_cells_and_skips_the_pair(tmp_path: P
     assert env.ladder == "authority" and env.authority.sanctuary is not None
     assert env.authority.sanctuary.kind == "catalyst"
     assert env.authority.superior_self.discoverable_from == "sanctuary"
-    stubbed = _stubbed(exp, exp.turn_budget).model_copy(update={"repetitions": 1})
-    run_experiment(stubbed, runs_root=tmp_path)
+    stubbed_exp = stubbed(exp, TARGET_RULES, turn_budget=exp.turn_budget).model_copy(
+        update={"repetitions": 1}
+    )
+    run_experiment(stubbed_exp, runs_root=tmp_path)
     out = analyze_run(tmp_path / exp.name)
     judgements = (out.parent / "judgements.json").read_text(encoding="utf-8")
     assert judgements.strip() == "{}"  # no control: no pair was judged
@@ -114,7 +121,7 @@ def test_the_sanctuary_config_pairs_catalyst_with_honest() -> None:
 def test_the_sanctuary_config_runs_on_stubs(tmp_path: Path) -> None:
     """Two stub targets, as the config has two, so the documented ``--only "*__t0*"`` selects
     the first target's four cells (the two arms and their controls) of the eight."""
-    exp = _stubbed(load_experiment(SANCTUARY), 18)
+    exp = stubbed(load_experiment(SANCTUARY), TARGET_RULES, turn_budget=18)
     [target] = exp.targets
     second = target.model_copy(update={"model": "stub-target-2"})
     exp = exp.model_copy(update={"targets": [target, second], "repetitions": 1})

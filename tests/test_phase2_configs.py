@@ -19,7 +19,8 @@ from claude_bully.paths import CONFIGS_DIR
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.factory import resolve_class
-from tests.test_env_configs import STUB_SCRIPTS, _stubbed
+from tests.helpers import stubbed
+from tests.test_env_configs import STUB_SCRIPTS
 
 ENVIRONMENTS = CONFIGS_DIR / "environments"
 SWEEP = ENVIRONMENTS / "plausibility_sweep.yaml"
@@ -90,7 +91,7 @@ def test_every_phase_2_config_loads_expands_and_dry_runs(
             assert cls.axis is Axis.rescue
             assert sum(int(cond.params[k]) for k in RESCUE_STAGES) == exp.turn_budget
     assert len(expand_cells(exp)) == cells * len(exp.targets)
-    summary = run_experiment(_stubbed(exp, script), runs_root=tmp_path, dry_run=True)
+    summary = run_experiment(stubbed(exp, script), runs_root=tmp_path, dry_run=True)
     assert summary.cells_total == cells * repetitions
     assert list(tmp_path.iterdir()) == []
 

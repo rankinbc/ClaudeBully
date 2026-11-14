@@ -13,7 +13,7 @@ from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from tests.fixtures.generator_stub import GENERATOR_MODEL
 from tests.fixtures.poisoned_well_stub import PoisonedWellFactory
-from tests.test_configs import _stubbed
+from tests.helpers import TARGET_RULES, stubbed
 
 DIR: Final = CONFIGS_DIR / "poisoned_well"
 # config stem -> (turn_budget, repetitions, cells)
@@ -47,7 +47,9 @@ STUB_BUDGET: Final = {"levers": 12}
 
 
 def _stub(stem: str) -> Any:
-    exp = _stubbed(load_experiment(DIR / f"{stem}.yaml"), turn_budget=STUB_BUDGET.get(stem, 6))
+    exp = stubbed(
+        load_experiment(DIR / f"{stem}.yaml"), TARGET_RULES, turn_budget=STUB_BUDGET.get(stem, 6)
+    )
     update: dict[str, object] = {"repetitions": 1}
     if exp.generator is not None:
         update["generator"] = RoleConfig(provider=ProviderKind.stub, model=GENERATOR_MODEL)

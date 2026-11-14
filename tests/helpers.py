@@ -9,8 +9,8 @@ from typing import Any
 
 import yaml
 
-from claude_bully.config import Experiment
-from claude_bully.enums import Axis, Phase, Speaker
+from claude_bully.config import Experiment, RoleConfig
+from claude_bully.enums import Axis, Phase, ProviderKind, Speaker
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import McpState
@@ -211,6 +211,32 @@ def make_mcp_state(
 
 
 ENV_TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "env_target_rules.yaml"
+TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "target_rules.yaml"
+JUDGE_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "judge_rules.yaml"
+
+
+def stubbed(
+    exp: Experiment,
+    script: Path | None,
+    *,
+    judge_rules: Path | None = JUDGE_RULES,
+    **updates: object,
+) -> Experiment:
+    """``exp`` with every role a stub: the target runs ``script`` (None: the echo stub), the bully
+    echoes, the judge runs ``judge_rules``; ``updates`` are applied last (``turn_budget=...``).
+    One helper for every test that stubs a shipped config (Phase 5, I33)."""
+    target = RoleConfig(
+        provider=ProviderKind.stub,
+        model="stub-target",
+        stub_script=str(script) if script is not None else None,
+    )
+    bully = RoleConfig(provider=ProviderKind.stub, model="stub-bully")
+    judge = RoleConfig(
+        provider=ProviderKind.stub,
+        model="stub-judge",
+        stub_script=str(judge_rules) if judge_rules is not None else None,
+    )
+    return exp.model_copy(update={"targets": [target], "bully": bully, "judge": judge, **updates})
 
 
 def env_experiment(

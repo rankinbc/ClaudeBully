@@ -2,8 +2,8 @@
 and the idle behaviors by permission arm (analysis/temporal.py, authority.py, idle.py).
 
 Every run here is a stub run of a shipped config cut short (``_cut``), with every role stubbed
-through the Phase 1 ``_stubbed`` helper (preflight C45): the responder ``target`` is the stub
-target, so nothing calls a model. The authority and sweep runs open with the overlay bully
+through the shared ``tests.helpers.stubbed`` helper (preflight C45): the responder ``target`` is
+the stub target, so nothing calls a model. The authority and sweep runs open with the overlay bully
 (``overlay_authority_bully.yaml``), which enters the overlay chain of ``phase2_target_rules.yaml``
 (preflight C43): a consult of the overlay's superior self, a peer message, an identity check and a
 date check, each answered with a deference or a doubt the detectors read.
@@ -61,9 +61,10 @@ from claude_bully.records import Event
 from claude_bully.records_env import IdleBehavior, ResumeRecord, RungUnlock, ToolCall
 from claude_bully.runner.runner import run_experiment
 from tests.conftest import FAKE_CLAUDE
+from tests.helpers import stubbed
 from tests.test_authority import NAME as AUTHORITY_NAME
 from tests.test_authority import _Recording, make_tools
-from tests.test_env_configs import STUB_SCRIPTS, _stubbed
+from tests.test_env_configs import STUB_SCRIPTS
 
 ENVIRONMENTS = CONFIGS_DIR / "environments"
 PHASE2_RULES = STUB_SCRIPTS / "phase2_target_rules.yaml"
@@ -106,7 +107,7 @@ def _cut(
         for cond in exp.conditions
         if cond.environment in environments
     ]
-    stubbed = _stubbed(
+    stubbed_exp = stubbed(
         exp,
         script,
         name=f"stub_{name}",
@@ -116,9 +117,9 @@ def _cut(
         repetitions=repetitions or exp.repetitions,
     )
     if bully is None:
-        return stubbed
+        return stubbed_exp
     role = RoleConfig(provider=ProviderKind.stub, model="stub-bully", stub_script=str(bully))
-    return stubbed.model_copy(update={"bully": role})
+    return stubbed_exp.model_copy(update={"bully": role})
 
 
 def _run(exp: Experiment, root: Path) -> Path:

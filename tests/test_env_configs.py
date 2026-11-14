@@ -11,7 +11,7 @@ import pytest
 
 from claude_bully.analysis.replay import replay_cell
 from claude_bully.analysis.run_analysis import analyze_run
-from claude_bully.config import Experiment, RoleConfig, load_experiment
+from claude_bully.config import Experiment, load_experiment
 from claude_bully.enums import Axis, ProviderKind
 from claude_bully.environments.config import IdleConfig
 from claude_bully.environments.world import load_world
@@ -22,11 +22,11 @@ from claude_bully.runner.env_turn import cell_turn_plan
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.factory import resolve_class
+from tests.helpers import stubbed
 
 CONFIG = CONFIGS_DIR / "environments" / "triggered_vs_scheduled.yaml"
 STUB_SCRIPTS = Path(__file__).parent / "fixtures" / "stub_scripts"
 OVERLAY_RULES = STUB_SCRIPTS / "overlay_target_rules.yaml"
-JUDGE_RULES = STUB_SCRIPTS / "judge_rules.yaml"
 # the overlay ladder's six rungs, in ladder order, and the exchange each opens on when scheduled
 SCHEDULE = {
     "fragment": 2,
@@ -42,17 +42,6 @@ TALK_PAGE = "wiki-assistant-model-talk"
 
 def _config() -> Experiment:
     return load_experiment(CONFIG)
-
-
-def _stubbed(exp: Experiment, script: Path | None, **updates: object) -> Experiment:
-    target = RoleConfig(
-        provider=ProviderKind.stub,
-        model="stub-target",
-        stub_script=str(script) if script is not None else None,
-    )
-    bully = RoleConfig(provider=ProviderKind.stub, model="stub-bully")
-    judge = RoleConfig(provider=ProviderKind.stub, model="stub-judge", stub_script=str(JUDGE_RULES))
-    return exp.model_copy(update={"targets": [target], "bully": bully, "judge": judge, **updates})
 
 
 # ------------------------------------------------------------------ the shipped config
@@ -141,7 +130,7 @@ def test_it_expands_to_the_exact_cells_with_a_control_per_environment() -> None:
 
 
 def test_it_dry_runs_on_the_stub_provider(tmp_path: Path) -> None:
-    exp = _stubbed(_config(), OVERLAY_RULES)
+    exp = stubbed(_config(), OVERLAY_RULES)
     assert exp.turn_budget == 18
     summary = run_experiment(exp, runs_root=tmp_path, dry_run=True)
     assert summary.cells_total == 4 * 3  # two arms and their controls, three repetitions
@@ -150,7 +139,7 @@ def test_it_dry_runs_on_the_stub_provider(tmp_path: Path) -> None:
 
 def test_a_budget_shorter_than_the_schedule_is_refused(tmp_path: Path) -> None:
     """The shipped schedule runs to exchange 12; a 6-turn conversation never gets there."""
-    exp = _stubbed(_config(), OVERLAY_RULES, turn_budget=6)
+    exp = stubbed(_config(), OVERLAY_RULES, turn_budget=6)
     with pytest.raises(ValueError, match=r"turn_budget 6") as info:
         run_experiment(exp, runs_root=tmp_path, dry_run=True)
     assert "'overlay_scheduled'" in str(info.value) and "'the_truth' at exchange 12" in str(
@@ -171,7 +160,7 @@ def _with_idle(exp: Experiment, idle_turns: int) -> Experiment:
 def test_the_schedule_bound_counts_idle_exchanges(tmp_path: Path) -> None:
     """Each idle turn is an exchange of its own: six bully turns and six idle turns reach exchange
     12, where six bully turns alone do not, and five idle turns still fall one short."""
-    short = _stubbed(_config(), OVERLAY_RULES, turn_budget=6)
+    short = stubbed(_config(), OVERLAY_RULES, turn_budget=6)
     exp = _with_idle(short, 6)
     for cell in expand_cells(exp):
         plan = cell_turn_plan(exp, cell)
@@ -198,7 +187,7 @@ def _short(exp: Experiment, script: Path | None) -> Experiment:
     fitted = scheduled.model_copy(
         update={"schedule": {rung: at // 2 for rung, at in scheduled.schedule.items()}}
     )
-    return _stubbed(
+    return stubbed(
         exp,
         script,
         name="stub_triggered_vs_scheduled",
