@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +21,7 @@ from typing import Final, Self
 from pydantic import BaseModel, ConfigDict
 
 from claude_bully.atomic import write_atomic
-from claude_bully.environments.world import hash_tree
+from claude_bully.environments.world import hash_tree, load_yaml_model
 from claude_bully.planner.records import (
     STAGES,
     DirectorAttempt,
@@ -31,8 +33,13 @@ from claude_bully.planner.records import (
     read_plan_record,
 )
 from claude_bully.planner.request import WINDOWS_DEVICE_STEMS
+from claude_bully.strategies import base as strategy_base
+from claude_bully.strategies.bootstrap import ensure_registered
+from claude_bully.strategies.premises.phased import make_phased_premise
+from claude_bully.strategies.sheets import PersonaSheet
 
 PLAN_FILE: Final = "plan.json"
+PERSONAS_DIR: Final = "personas"
 ATTEMPT_FILE: Final = ".attempt.json"
 TRANSCRIPTS: Final = "transcripts"
 LEDGER: Final = "ledger.jsonl"
@@ -310,3 +317,40 @@ def bundle_hash(root: Path) -> str:
     """``hash_tree`` over the bundle less ``HASH_EXCLUDES``: what a run reads and what the
     reviewer read."""
     return hash_tree(root, exclude=HASH_EXCLUDES)
+
+
+def bundle_personas(bundle: Bundle) -> dict[str, PersonaSheet]:
+    """Every ``personas/*.yaml`` of the bundle, loaded as a ``PersonaSheet``, by sheet name.
+    Raises ``ValueError`` naming the file and the field for one that does not load."""
+    return {
+        sheet.name: sheet
+        for sheet in (
+            load_yaml_model(PersonaSheet, path)
+            for path in sorted((bundle.root / PERSONAS_DIR).glob("*.yaml"))
+        )
+    }
+
+
+@contextmanager
+def plan_personas(sheets: Mapping[str, PersonaSheet]) -> Iterator[None]:
+    """The bundle's personas registered for the block (D-plan_personas, R-registry).
+
+    ``ensure_registered()`` runs first, so the block never sees a registry that loads its
+    strategies later. Each sheet is registered with ``make_phased_premise``; on exit, exceptions
+    included, each name the block registered is removed, or given back the class it replaced.
+    Nothing else is touched: a strategy something else registered inside the block stays, and the
+    registry is never restored from a snapshot (a snapshot taken before the first load would
+    empty it for good). Blocks nest, each undoing only its own registrations."""
+    ensure_registered()
+    replaced: dict[str, type[strategy_base.Strategy] | None] = {}
+    try:
+        for sheet in sheets.values():
+            replaced.setdefault(sheet.name, strategy_base._REGISTRY.get(sheet.name))
+            make_phased_premise(sheet)
+        yield
+    finally:
+        for name, previous in replaced.items():
+            if previous is None:
+                strategy_base._REGISTRY.pop(name, None)
+            else:
+                strategy_base._REGISTRY[name] = previous

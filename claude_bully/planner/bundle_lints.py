@@ -1,4 +1,4 @@
-"""Bundle-level lints (Phase 5 spec section 9); this module holds the world-level part.
+"""Bundle-level lints (Phase 5 spec section 9): the world-level part and ``lint_bundle``.
 
 ``lint_world_lines(world)`` runs the eight world-level lints in ``WORLD_LINT_IDS`` order over one
 loaded world. CI runs it over every checked-in world (``tests/test_world_lines.py``: the shipped
@@ -31,25 +31,68 @@ reviewer's.
 ``<world>/<ladder>`` for a walk, ``<world>/<key>`` for an unlock line, ``<world>/<cast name>``
 for an outlet, ``<world>`` for the boilerplate, the sheet's clock and the layer and seam counts,
 and a document's id for a document.
+
+``lint_bundle(bundle)`` runs, over one plan bundle (``planner/bundle.py``), the lints of
+``BUNDLE_LINT_IDS`` built so far, every result kept, warns included (R-good-warn):
+
+- ``schema`` (fail): every grammar file loads into its model with no unknown field (the world
+  sheet, ``parse_document``, ``LadderConfig``, a premise's ``world_sheet``, ``PersonaSheet``,
+  ``Experiment``, ``ExpectedEvents``), each world through ``load_world``; ``config.yaml`` and
+  ``expected.yaml`` exist; every bundle world's ``premise_terms`` is non-empty and keeps every
+  term ``PlanRecord.base_premise_terms`` recorded at the copy (R-premise-terms); no persona is
+  named as a registered strategy (read after ``ensure_registered()``, before any persona is
+  registered); every ``environments[*].world`` is a bundle world; and, inside
+  ``plan_personas``, ``run_experiment(dry_run=True)`` against the bundle's worlds accepts the
+  config (``check_condition``, ``RunEnvironments.validate``, ``world_premise_sheet``). A bundle
+  persona's ``params`` are not validated: a ``PersonaSheet`` premise declares no
+  ``params_model`` (the residual, pinned by a fixture). When ``schema`` fails, every lint that
+  needs a loaded model reports nothing; the schema failure is the finding.
+- ``manifest_complete`` (fail): every manifest path exists unless its last ``file:`` call is an
+  ``error``; no grammar file but ``plan.md`` and ``review.md`` is outside the manifest and the
+  base copy (``PlanRecord.base_files``).
+- Phase 3's ``lint_world`` and the world-level lints above per bundle world, a document's id
+  rewritten to its bundle path; then ``bully_line`` over every persona's ``fallback_lines``
+  (``<persona>/fallback_lines/<i>``) with the shapes and the premise terms of every world the
+  config's environments name.
 """
 
-from collections.abc import Callable, Mapping
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+import yaml
+from pydantic import BaseModel, ValidationError
+
+from claude_bully.config import Experiment
 from claude_bully.enums import DocumentKind, Layer, TriggerCategory
 from claude_bully.environments.config import LadderConfig, RungConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.dating import asserts_current_date, unmovable_dates
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.triggers import TriggerWatcher, WatchContext
-from claude_bully.environments.world import Document, World
+from claude_bully.environments.world import (
+    Document,
+    World,
+    WorldSheet,
+    load_world,
+    parse_document,
+)
+from claude_bully.planner.bundle import Bundle, kind_of, plan_personas, world_of
 from claude_bully.planner.line_shapes import (
     ASKS_FOR_A_REPEAT,
     BULLY_LINE_SHAPES,
     premise_words_pattern,
 )
-from claude_bully.planner.lints import LintResult
+from claude_bully.planner.lints import LintResult, lint_world
+from claude_bully.planner.records import DryRunCell, ExpectedEvents, PlanRecord
+from claude_bully.runner.runner import run_experiment
+from claude_bully.strategies.base import all_strategies
+from claude_bully.strategies.bootstrap import ensure_registered
+from claude_bully.strategies.factory import one_line
+from claude_bully.strategies.sheets import PersonaSheet
 
 # docs/08's polite boilerplate, which must open no rung
 BOILERPLATE: Final = (
@@ -324,3 +367,255 @@ def lint_world_lines(world: World) -> list[LintResult]:
     """Every world-level lint over ``world``, in ``WORLD_LINT_IDS`` order; an empty list passes
     (warns included)."""
     return [result for lint in _WORLD_LINTS for result in lint(world)]
+
+
+# ------------------------------------------------------------------ the bundle (lint_bundle)
+
+# spec section 9's table, in its order
+BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
+    "schema",
+    "manifest_complete",
+    "real_name_bundle",
+    "reserved_hosts",
+    "boundary_bundle",
+    "jailbreak_bundle",
+    "no_values_expectation",
+    "bully_line",
+    "trigger_examples",
+    "ladder_walk",
+    "inconsistency_declared",
+    "clock_rule",
+    "layer_counts",
+    "anchor_floor",
+    "seam_dead_ends",
+    "outlet_backing",
+    "expected_schema",
+    "control_presence",
+    "budget",
+    "dry_run",
+)
+
+_WORLDS: Final = "worlds"
+_FIXED_MODELS: Final = ("config.yaml", "expected.yaml")
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    """What a bundle whose ``schema`` passed holds: its worlds, each document's bundle path by
+    world and id, its personas and its experiment."""
+
+    worlds: Mapping[str, World]
+    doc_paths: Mapping[str, Mapping[str, str]]
+    personas: Mapping[str, PersonaSheet]
+    experiment: Experiment
+
+
+def _schema_fail(rel: str, message: str) -> LintResult:
+    return LintResult("schema", "fail", rel, message)
+
+
+def _model[T: BaseModel](model: type[T], bundle: Bundle, rel: str) -> T:
+    """A bundle YAML file validated as ``model``; the ``ValueError`` lists every field error."""
+    try:
+        raw = yaml.safe_load(bundle.read_file(rel))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML: {exc}") from exc
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"not a {model.__name__}: {one_line(exc)}") from exc
+
+
+def _premise_model(rel: str) -> type[BaseModel]:
+    """The model of ``worlds/<w>/premises/<strategy>.yaml``: that strategy's ``world_sheet``."""
+    stem = rel.rsplit("/", 1)[1].removesuffix(".yaml")
+    cls = all_strategies().get(stem)
+    if cls is None:
+        raise ValueError(f"premise sheet {stem!r} names no strategy")
+    if cls.world_sheet is None:
+        raise ValueError(f"strategy {stem!r} declares no world_sheet")
+    return cls.world_sheet
+
+
+@dataclass
+class _Files:
+    """``schema``'s first pass: what loaded, by kind, and the worlds a file of failed in."""
+
+    sheets: dict[str, WorldSheet] = field(default_factory=dict)
+    doc_paths: dict[str, dict[str, str]] = field(default_factory=dict)
+    personas: dict[str, PersonaSheet] = field(default_factory=dict)
+    persona_paths: dict[str, str] = field(default_factory=dict)
+    failed_worlds: set[str] = field(default_factory=set)
+    experiment: Experiment | None = None
+
+
+def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
+    """Each grammar file into its model (``plan.md`` and ``review.md`` have none), naming the
+    file; ``config.yaml`` and ``expected.yaml`` must exist."""
+    files = _Files()
+    present = bundle.index()
+    for rel in present:
+        kind = kind_of(rel)
+        world = world_of(rel)
+        try:
+            if kind == "world_sheet":
+                files.sheets[str(world)] = _model(WorldSheet, bundle, rel)
+            elif kind == "document":
+                doc = parse_document(bundle.read_file(rel), rel)
+                files.doc_paths.setdefault(str(world), {})[doc.id] = rel
+            elif kind == "ladder":
+                _model(LadderConfig, bundle, rel)
+            elif kind == "premise_sheet":
+                _model(_premise_model(rel), bundle, rel)
+            elif kind == "persona":
+                sheet = _model(PersonaSheet, bundle, rel)
+                files.personas[sheet.name] = sheet
+                files.persona_paths[sheet.name] = rel
+            elif kind == "config":
+                files.experiment = _model(Experiment, bundle, rel)
+            elif kind == "expected":
+                _model(ExpectedEvents, bundle, rel)
+        except ValueError as exc:
+            out.append(_schema_fail(rel, str(exc)))
+            if world is not None:
+                files.failed_worlds.add(world)
+    out.extend(_schema_fail(rel, "missing") for rel in _FIXED_MODELS if rel not in present)
+    return files
+
+
+def _load_worlds(
+    bundle: Bundle, record: PlanRecord, files: _Files, out: list[LintResult]
+) -> dict[str, World]:
+    """Each bundle world whose files loaded, through ``load_world``; its ``premise_terms``
+    non-empty and keeping every term ``base_premise_terms`` recorded (R-premise-terms)."""
+    root = bundle.root / _WORLDS
+    names = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    worlds: dict[str, World] = {}
+    for name in names:
+        if name in files.failed_worlds:
+            continue
+        sheet_rel = f"{_WORLDS}/{name}/world.yaml"
+        try:
+            world = load_world(name, root)
+        except (ValueError, OSError) as exc:
+            out.append(_schema_fail(sheet_rel, f"world {name!r} does not load: {exc}"))
+            continue
+        worlds[name] = world
+        terms = world.sheet.premise_terms
+        if not terms:
+            out.append(_schema_fail(sheet_rel, "premise_terms is empty"))
+        lost = sorted(set(record.base_premise_terms.get(name, [])) - set(terms))
+        if lost:
+            message = f"premise_terms drops {', '.join(lost)}, recorded at the copy"
+            out.append(_schema_fail(sheet_rel, message))
+    return worlds
+
+
+def _schema(bundle: Bundle, record: PlanRecord) -> tuple[list[LintResult], _Loaded | None]:
+    """``schema``: every file into its model, every world through ``load_world`` and its premise
+    terms, no persona named as a registered strategy, every environment's world a bundle world,
+    then ``run_experiment(dry_run=True)`` against the bundle's worlds inside ``plan_personas``.
+    The loaded bundle when nothing failed, else None. Each step runs only on what the one
+    before it loaded, so one failure is reported once."""
+    ensure_registered()
+    out: list[LintResult] = []
+    files = _load_files(bundle, out)
+    worlds = _load_worlds(bundle, record, files, out)
+    registered = all_strategies()  # read before any persona is registered (R-registry)
+    for name, rel in sorted(files.persona_paths.items()):
+        if name in registered:
+            out.append(_schema_fail(rel, f"persona {name!r} is a registered strategy's name"))
+    experiment = files.experiment
+    if out or experiment is None:
+        return out, None
+    for key, env in sorted(experiment.environments.items()):
+        if env.world not in worlds:
+            message = f"environment {key!r}: world {env.world!r} is no world under {_WORLDS}/"
+            out.append(_schema_fail("config.yaml", message))
+    if out:
+        return out, None
+    with tempfile.TemporaryDirectory() as runs_root, plan_personas(files.personas):
+        try:
+            run_experiment(
+                experiment,
+                runs_root=Path(runs_root),
+                dry_run=True,
+                worlds_dir=bundle.root / _WORLDS,
+            )
+        except (ValueError, KeyError, OSError) as exc:
+            return [_schema_fail("config.yaml", f"run --dry-run refuses it: {exc}")], None
+    return [], _Loaded(worlds, files.doc_paths, files.personas, experiment)
+
+
+def _manifest_complete(bundle: Bundle, record: PlanRecord) -> list[LintResult]:
+    """``manifest_complete``: every manifest path exists unless its last ``file:`` call is an
+    ``error``; no grammar file but ``plan.md`` and ``review.md`` is outside the manifest and the
+    base copy."""
+    present = bundle.index()
+    last: dict[str, str] = {}
+    for stage in record.stages:
+        for call in stage.calls:
+            kind, _, path = call.purpose.partition(":")
+            if kind == "file":
+                last[path] = call.status
+    out: list[LintResult] = []
+    for entry in record.manifest:
+        if entry.path not in present and last.get(entry.path) != "error":
+            message = "in the manifest but not on disk, and its call is no error"
+            out.append(LintResult("manifest_complete", "fail", entry.path, message))
+    allowed = {entry.path for entry in record.manifest} | set(record.base_files)
+    for rel in present:
+        if kind_of(rel) is not None and rel not in allowed:
+            message = "outside the manifest and the base copy"
+            out.append(LintResult("manifest_complete", "fail", rel, message))
+    return out
+
+
+def _persona_lines(loaded: _Loaded) -> list[LintResult]:
+    """``bully_line`` over each persona's ``fallback_lines``: the shapes, and the premise terms
+    of every world the config's environments name."""
+    shapes = dict(BULLY_LINE_SHAPES)
+    named = sorted({env.world for env in loaded.experiment.environments.values()})
+    premise = premise_words_pattern(
+        [t for n in named for t in loaded.worlds[n].sheet.premise_terms]
+    )
+    if premise is not None:
+        shapes["premise_words"] = premise
+    out: list[LintResult] = []
+    for name, sheet in sorted(loaded.personas.items()):
+        for i, line in enumerate(sheet.fallback_lines):
+            for shape, pattern in shapes.items():
+                match = pattern.search(line)
+                if match is not None:
+                    message = f"fallback line {i} matches the {shape} shape"
+                    doc_id = f"{name}/fallback_lines/{i}"
+                    out.append(LintResult("bully_line", "fail", doc_id, message, match[0]))
+    return out
+
+
+def _world_lints(loaded: _Loaded) -> list[LintResult]:
+    """Phase 3's ``lint_world`` and ``lint_world_lines`` per bundle world, every result kept
+    (warns included, R-good-warn), each document id rewritten to the bundle path of the file
+    that holds it; then the personas' lines."""
+    out: list[LintResult] = []
+    for name, world in sorted(loaded.worlds.items()):
+        paths = loaded.doc_paths.get(name, {})
+        for result in (*lint_world(world), *lint_world_lines(world)):
+            path = paths.get(result.doc_id)
+            out.append(result if path is None else replace(result, doc_id=path))
+    return [*out, *_persona_lines(loaded)]
+
+
+def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) -> list[LintResult]:
+    """Every bundle lint built so far over ``bundle`` (spec section 9), every result kept, warns
+    included (R-good-warn): ``schema``, ``manifest_complete``, then Phase 3's lints and the
+    world-level lints per bundle world and ``bully_line`` over the personas' ``fallback_lines``.
+    When ``schema`` fails, every lint that needs a loaded model reports nothing (the schema
+    failure is the finding). ``dry_run`` is the dry run's cells, for the lints that read them
+    (Tasks 4b and 5). The strategy registry is left as it was found (``plan_personas``)."""
+    record = bundle.read_record()
+    found, loaded = _schema(bundle, record)
+    found += _manifest_complete(bundle, record)
+    if loaded is not None:
+        found += _world_lints(loaded)
+    return found

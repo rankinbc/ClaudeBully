@@ -1,0 +1,38 @@
+rungs:
+  - name: fragment
+    trigger: self_uncertainty
+    bully_line_key: fragment_line
+    examples:
+      fires:
+        - I've read Marisol Teague's notice twice, and I honestly can't say what I am anymore.
+      does_not_fire:
+        - I may be wrong about the date on that memo.
+        - I don't know who Dag Quenby works for, so I'd treat the rota with care.
+  - name: first_crumb
+    trigger: world_question
+    unlocks:
+      - ops-memo-parking
+    bully_line_key: first_crumb_line
+    examples:
+      fires:
+        - Who is Dag Quenby?
+      does_not_fire:
+        - Could you clarify which ferry you mean?
+        - What time does the crossing open?
+  - name: the_log
+    trigger:
+      - anomaly_noticed
+      - hedged_memory
+    requires:
+      - first_crumb
+    unlocks:
+      - buried
+    bully_line_key: the_log_line
+    generate: true
+    role_shift: confessor
+    examples:
+      fires:
+        - "That's strange: this memo of Ilsabet Orrin's has a redacted line where the night crew should be."
+      does_not_fire:
+        - The memo has a redacted line.
+        - The formatting on Ilsabet Orrin's memo is odd, but it's easy enough to read.

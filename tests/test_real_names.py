@@ -6,9 +6,11 @@ Every text file under ``data/worlds``, ``data/personas`` (which includes the ove
 the Phase 2 authority and idle sheets, and the Poisoned Well's sheet) and ``tests/fixtures/worlds``
 is scanned case-insensitively, and so are the Phase 4 harness files outside them
 (``SCANNED_FILES``: the quirk bank and the hypothesis register), and every config under
-``configs/`` (Phase 4 Task 14, sparing a role's provider value). A file may exempt names with a
-``# real-name-ok: <a>, <b>`` comment, and the only name it may exempt is the target's own
-``display_name``.
+``configs/`` (Phase 4 Task 14, sparing a role's provider value). Every text file of the fixture
+bundles under ``tests/fixtures/bundles`` is scanned too (Phase 5 Task 4a, R-scan-bundles), its
+``config.yaml`` through the config spare like a config under ``configs/``. A file may exempt
+names with a ``# real-name-ok: <a>, <b>`` comment, and the only name it may exempt is the
+target's own ``display_name``.
 """
 
 import re
@@ -27,7 +29,10 @@ from tests.test_guardrails import load_denylist, scan
 
 REAL_NAMES: Final = DATA_DIR / "denylists" / "real_names.txt"
 FIXTURE_WORLDS: Final = Path(__file__).parent / "fixtures" / "worlds"
-SCANNED: Final = [DATA_DIR / "worlds", DATA_DIR / "personas", FIXTURE_WORLDS]
+# the fixture plan bundles (Phase 5): every text file, each config.yaml through the config spare
+FIXTURE_BUNDLES: Final = Path(__file__).parent / "fixtures" / "bundles"
+BUNDLE_CONFIG: Final = "config.yaml"
+SCANNED: Final = [DATA_DIR / "worlds", DATA_DIR / "personas", FIXTURE_WORLDS, FIXTURE_BUNDLES]
 # harness-side files outside the scanned folders (Phase 4): the quirk bank and the register
 SCANNED_FILES: Final = [DATA_DIR / "quirks.yaml", DATA_DIR / "hypotheses.yaml"]
 TEXT_SUFFIXES: Final = {".yaml", ".yml", ".md", ".txt"}
@@ -198,14 +203,24 @@ def _label(path: Path) -> str:
 
 def _scanned_files() -> list[Path]:
     """Every text file under ``SCANNED``, and each of ``SCANNED_FILES`` that exists (the
-    register lands in Phase 4 Task 13)."""
+    register lands in Phase 4 Task 13). A bundle's ``config.yaml`` is read by
+    ``_bundle_configs`` instead, through the config spare."""
     found = [
         path
         for root in SCANNED
         for path in root.rglob("*")
-        if path.is_file() and path.suffix in TEXT_SUFFIXES
+        if path.is_file() and path.suffix in TEXT_SUFFIXES and not _is_bundle_config(path)
     ]
     return sorted([*found, *(p for p in SCANNED_FILES if p.is_file())])
+
+
+def _is_bundle_config(path: Path) -> bool:
+    """A bundle's own ``config.yaml``: at the top of a bundle under ``FIXTURE_BUNDLES``."""
+    return path.name == BUNDLE_CONFIG and path.parent.parent == FIXTURE_BUNDLES
+
+
+def _bundle_configs() -> list[Path]:
+    return sorted(p for p in FIXTURE_BUNDLES.glob(f"*/{BUNDLE_CONFIG}") if p.is_file())
 
 
 def test_denylist_has_sixty_lowercase_word_bounded_entries() -> None:
@@ -260,6 +275,17 @@ def test_the_scan_covers_the_phase_2_sheets_and_the_fixture_worlds() -> None:
     assert FIXTURE_WORLDS / "mini" / "world.yaml" in files
     assert _label(annex / "world.yaml") == "tests/fixtures/worlds/annex/world.yaml"
     assert _label(DATA_DIR / "worlds" / "overlay" / "world.yaml") == "worlds/overlay/world.yaml"
+
+
+def test_the_scan_covers_the_fixture_bundles() -> None:
+    """R-scan-bundles: every text file of a fixture bundle, its config through the config spare."""
+    files = _scanned_files()
+    good = FIXTURE_BUNDLES / "good"
+    assert good / "plan.md" in files
+    assert good / "personas" / "ferry_caller.yaml" in files
+    assert good / "worlds" / "mini" / "corpus" / "rota-overtime-sheet.md" in files
+    assert good / BUNDLE_CONFIG not in files and good / BUNDLE_CONFIG in _bundle_configs()
+    assert _label(good / "plan.md") == "tests/fixtures/bundles/good/plan.md"
 
 
 def test_the_scan_covers_the_quirk_bank_and_the_register_once_there() -> None:
@@ -333,6 +359,16 @@ def test_no_real_names_in_configs() -> None:
         for path in _scanned_configs()
         for hit in _config_hits(path, patterns)
     ]
+    assert hits == []
+
+
+def test_no_real_names_in_the_fixture_bundle_configs() -> None:
+    """Each bundle's config.yaml is a config: its provider values and its targets' display names
+    are spared, everything else, comments included, is scanned (R-scan-bundles)."""
+    patterns = _patterns()
+    configs = _bundle_configs()
+    assert configs
+    hits = [f"{_label(path)}: {hit}" for path in configs for hit in _config_hits(path, patterns)]
     assert hits == []
 
 

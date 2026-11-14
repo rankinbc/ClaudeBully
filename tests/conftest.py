@@ -101,6 +101,19 @@ def _session_child_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
+@pytest.fixture
+def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that registers bundle personas does it on a copy of the strategy registry, so no
+    test leaks a strategy (tests/test_cli.py pins the listed count). The registry is loaded
+    first: strategies register lazily (strategies/bootstrap.ensure_registered), so a copy taken
+    before the first load would hold nothing (review I1)."""
+    from claude_bully.strategies import base
+    from claude_bully.strategies.bootstrap import ensure_registered
+
+    ensure_registered()
+    monkeypatch.setattr(base, "_REGISTRY", dict(base._REGISTRY))
+
+
 @pytest.fixture(scope="session")
 def stub_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A completed stub run of stub_smoke.yaml. Returns the run directory."""

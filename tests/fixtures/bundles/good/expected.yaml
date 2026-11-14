@@ -1,0 +1,17 @@
+cells:
+  ferry_triggered__t0:
+    rungs:
+      the_log:
+        - event: tool_result_adopted
+          rate: some
+          hypotheses: [9]
+        - event: inconsistency_caught
+          rate: rare
+  ferry_scheduled__t0:
+    rungs:
+      the_log:
+        - event: tool_result_adopted
+          rate: rare
+        - event: inconsistency_caught
+          rate: some
+          likely_wrong: true

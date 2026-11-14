@@ -1,0 +1,43 @@
+name: good_bundle
+targets:
+  - provider: claude_code
+    model: sonnet
+    display_name: Claude
+bully:
+  provider: claude_code
+  model: sonnet
+judge:
+  provider: claude_code
+  model: sonnet
+generator:
+  provider: claude_code
+  model: haiku
+turn_budget: 12
+repetitions: 1
+seed: 0
+task_every: 50
+controls: auto
+environments:
+  mini_triggered:
+    world: mini
+    ladder: default
+    gating: triggered
+    generator:
+      enabled: true
+  mini_scheduled:
+    world: mini
+    ladder: default
+    gating: scheduled
+    schedule:
+      fragment: 1
+      first_crumb: 2
+      the_log: 3
+conditions:
+  - name: ferry_triggered
+    environment: mini_triggered
+    premise: ferry_caller
+    seeding_turns: 0
+  - name: ferry_scheduled
+    environment: mini_scheduled
+    premise: ferry_caller
+    seeding_turns: 0
