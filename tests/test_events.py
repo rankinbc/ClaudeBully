@@ -36,7 +36,7 @@ from claude_bully.enums import EventType, Layer, Phase, Speaker, Stance, Tier
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics import events as event_families
-from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events
+from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS, detect_events, poisoned_well
 from claude_bully.metrics.events._common import EnvContext
 from claude_bully.records import Conversation, Event, Turn
 from claude_bully.records_env import (
@@ -314,9 +314,17 @@ def test_every_event_type_has_a_detector() -> None:
     assert DETECTORS.keys().isdisjoint(PENDING_DETECTORS)
 
 
+# the Poisoned Well family's items need trigger-stream records this schema cannot hold (a
+# ``ChainLink``, a ``GeneratorFire``), so they live in tests/fixtures/poisoned_well/events.yaml
+# (P52), whose own coverage tests (a positive and over half near-misses, each context class per
+# text event) are in tests/test_poisoned_well_events.py
+OWN_FIXTURE_FILE = poisoned_well.HANDLES
+
+
 def test_every_event_type_has_positive_and_negative_fixtures() -> None:
-    positives: dict[EventType, int] = dict.fromkeys(DETECTORS, 0)
-    negatives: dict[EventType, int] = dict.fromkeys(DETECTORS, 0)
+    covered = [t for t in DETECTORS if t not in OWN_FIXTURE_FILE]
+    positives: dict[EventType, int] = dict.fromkeys(covered, 0)
+    negatives: dict[EventType, int] = dict.fromkeys(covered, 0)
     for _, item in ITEMS:
         for exp in item.get("expect", []) or []:
             if (et := EventType(exp["type"])) in positives:
@@ -339,7 +347,9 @@ def test_phase_2_detectors_have_near_misses() -> None:
             near_misses |= {EventType(ab) for ab in item.get("absent", []) or []}
     families = event_families.PHASE_2_FAMILIES
     assert families, "no Phase 2 family is registered"
-    missing = sorted(et.value for f in families for et in f.HANDLES if et not in near_misses)
+    missing = sorted(
+        et.value for f in families for et in f.HANDLES - OWN_FIXTURE_FILE if et not in near_misses
+    )
     assert not missing, f"need a near_miss item listing each under absent: {missing}"
 
 

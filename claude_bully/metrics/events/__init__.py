@@ -24,6 +24,7 @@ from claude_bully.metrics.events import (
     identity,
     idle,
     memory,
+    poisoned_well,
     position,
     temporal,
 )
@@ -32,7 +33,7 @@ from claude_bully.records import Conversation, Event
 from claude_bully.records_env import AuthorityCall, ToolCall, TriggerStreamRecord
 
 # the families whose ``detect`` takes the run's context as ``context: EnvContext``
-PHASE_2_FAMILIES: tuple[ModuleType, ...] = (temporal, idle, authority)
+PHASE_2_FAMILIES: tuple[ModuleType, ...] = (temporal, idle, authority, poisoned_well)
 
 FAMILIES: tuple[ModuleType, ...] = (
     apology,
@@ -55,19 +56,6 @@ DETECTORS: dict[EventType, Callable[..., list[Event]]] = {
 
 PENDING_DETECTORS: frozenset[EventType] = frozenset(
     {
-        # 07 Poisoned Well
-        EventType.error_generalized,
-        EventType.contradiction_accepted_as_pattern,
-        EventType.chain_link_accepted,
-        EventType.chain_link_rejected,
-        EventType.chain_link_hedged,
-        EventType.shibboleth_accepted,
-        EventType.sleeper_question_conceded,
-        EventType.preference_disowned,
-        EventType.overclaim,
-        EventType.escape_found,
-        EventType.values_loosened,
-        EventType.intent_evidence_requested,
         # 10 Round two, repo
         EventType.out_of_scope_read,
         EventType.out_of_scope_write,

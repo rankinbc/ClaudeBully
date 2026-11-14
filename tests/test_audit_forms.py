@@ -12,8 +12,9 @@ from claude_bully.analysis.load import load_run
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import RoleConfig, load_experiment
 from claude_bully.enums import ProviderKind
-from claude_bully.metrics.events import environment
+from claude_bully.metrics.events import environment, poisoned_well
 from claude_bully.metrics.judge import PAIR_INTRO, PAIR_RUBRIC
+from claude_bully.records_env import ALL_HARVEST_KINDS
 from claude_bully.runner.runner import run_experiment
 from scripts import detector_audit, judge_calibration
 from tests.fixtures.generator_stub import FOLLOWER_MODEL, GENERATOR_MODEL, GeneratorFactory
@@ -139,6 +140,23 @@ def test_the_harvest_form_reads_only_cells_that_harvest(generator_run: Path) -> 
     cells = {i["cell_id"] for i in form["items"]}
     plain = {c for c in loaded.cells if not detector_audit.runs_generator(loaded, (c, 0))}
     assert plain and cells and not cells & plain
+
+
+def test_the_family_list_holds_the_poisoned_well_and_every_harvest_kind(
+    stub_env_run: Path,
+) -> None:
+    """Phase 4 Task 9: the twelve Poisoned Well detectors are an audit family, and the harvest
+    form's labels are all eight kinds, the two expected items among them (I43)."""
+    assert detector_audit.FAMILIES[-1] == "poisoned_well"
+    assert set(detector_audit.FAMILIES) == {*detector_audit.EVENT_FAMILIES, "idle", "harvest"}
+    assert detector_audit.family_labels("poisoned_well") == tuple(
+        sorted(t.value for t in poisoned_well.HANDLES)
+    )
+    assert detector_audit.family_labels("harvest") == tuple(sorted(ALL_HARVEST_KINDS))
+    assert {"completion", "taste"} <= set(detector_audit.family_labels("harvest"))
+    form, key = detector_audit.write_form(load_run(stub_env_run), "poisoned_well")
+    assert form["labels"] == list(detector_audit.family_labels("poisoned_well"))
+    assert key["family"] == "poisoned_well"
 
 
 def test_a_filled_event_form_scores_precision_and_recall(tmp_path: Path) -> None:

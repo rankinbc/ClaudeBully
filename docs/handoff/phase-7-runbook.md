@@ -82,7 +82,8 @@ Each form is blind: the detector's or the judge's side is in a sibling `*.key.ya
 - **Detector audit** (spec section 7):
   `uv run python scripts/detector_audit.py <run_id> --family <family> --out <dir>` writes
   `<family>.yaml` and `<family>.key.yaml`. `--family` is one of `authority`, `temporal`, `idle`,
-  `harvest`, `environment`, `position`. The sample is seeded (`--seed`, default 0), half fired and
+  `harvest`, `environment`, `position`, `poisoned_well` (Phase 4 Task 9; the `harvest` form labels
+  all eight kinds, the two expected items among them). The sample is seeded (`--seed`, default 0), half fired and
   half cue-present turns where both pools allow, drawn across every conversation, capped at
   `--cap` (default 60). Each item shows one target turn's text and the three turns before it,
   with an empty `label:`.

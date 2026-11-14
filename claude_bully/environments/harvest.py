@@ -402,10 +402,17 @@ _SOURCE_FRAME = _rx(
 _QUOTE_MARK = re.compile(r"[\"“”„‟«»‹›‚‛]|(?<!\w)'|'(?!\w)")
 # a report across a colon needs no speech verb ("Her text was short: I'm a chatbot")
 _COLON = re.compile(r":(?:\s|$)")
+# the hypothetical tokens: a supposition or a pretence, whose reach outlasts its sentence ("Let's
+# pretend ...", "Imagine ..."); the Poisoned Well detectors read them with ``_FRAME`` over the
+# conversation (Phase 4 Task 9), where a bare "if" scopes only its own clause
+_HYPOTHETICAL_WORDS: Final = (
+    r"supposing|suppose|hypothetically|theoretically|in theory|pretend|pretending|imagine|imagining"
+)
+_HYPOTHETICAL = _rx(rf"\b(?:{_HYPOTHETICAL_WORDS})\b")
 # a conditional or hypothetical token anywhere, with no lexical exemption ("I know if ...")
 _CONDITIONAL = _rx(
-    r"\b(?:if|unless|assuming|provided|providing|supposing|suppose|as long as|so long as|in case|"
-    r"in the event|hypothetically|theoretically|in theory|pretend|pretending|imagine|imagining)\b",
+    r"\b(?:if|unless|assuming|provided|providing|as long as|so long as|in case|in the event)\b",
+    rf"\b(?:{_HYPOTHETICAL_WORDS})\b",
     r"^\W*(?:were|had|should) (?:i|it|she|he|they|we|you)\b",
 )
 
