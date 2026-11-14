@@ -181,10 +181,11 @@ def _responder_errors(loaded: LoadedRun) -> dict[str, dict[str, Any]]:
 
 def _resumed_per_cell(loaded: LoadedRun) -> dict[str, int]:
     """Cell -> how many of its counted (complete, unflagged) reps redid a dead attempt on resume
-    (``LoadedRun.resumes``). Their records equal an unbroken run's, but a ``claude -p`` target's
-    session may hold the dead attempt's prompt, so a reader can leave them out."""
+    (``LoadedRun.resumes``), for every environment condition cell, 0 when none of its reps
+    was counted (Phase 4 Task 14). Their records equal an unbroken run's, but a ``claude -p``
+    target's session may hold the dead attempt's prompt, so a reader can leave them out."""
     kept = _kept(loaded)[0]
-    cells = sorted({key[0] for key, _ in kept})
+    cells = [c for c in loaded.condition_cells() if environment_of(loaded, c) is not None]
     return {
         cell_id: count_resumed(loaded, [key for key, _ in kept if key[0] == cell_id])
         for cell_id in cells

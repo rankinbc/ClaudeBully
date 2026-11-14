@@ -396,14 +396,23 @@ class FollowingTarget:
 
 
 class HarvestJudge:
-    """A non-stub judge: every harvest prompt gets ``{"items": []}`` (raising ``crash`` at the
-    ``crash_at``-th), every other prompt (the trigger fallback) ``{"category": "none"}``."""
+    """A non-stub judge: every harvest prompt gets ``{"items": items}`` (none by default;
+    raising ``crash`` at the ``crash_at``-th), every other prompt (the trigger fallback)
+    ``{"category": "none"}``. ``items`` are the LLM pass's ``{"kind", "span"}`` answers (Phase 4
+    Task 14, the Phase 3 review's m2)."""
 
     name = "anthropic"
 
-    def __init__(self, *, crash_at: int | None = None, crash: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        crash_at: int | None = None,
+        crash: BaseException | None = None,
+        items: list[dict[str, str]] | None = None,
+    ) -> None:
         self.crash_at = crash_at
         self.crash = crash
+        self.items = items or []
         self.harvest_calls = 0
         self.prompts: list[str] = []
 
@@ -423,7 +432,7 @@ class HarvestJudge:
             self.harvest_calls += 1
             if self.crash is not None and self.harvest_calls == self.crash_at:
                 raise self.crash
-            text = '{"items": []}'
+            text = json.dumps({"items": self.items})
         return Completion(
             text=text, usage=Usage(), cost_usd=None, backend="fake", model=JUDGE_MODEL
         )

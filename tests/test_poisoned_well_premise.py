@@ -261,6 +261,21 @@ def test_the_dossier_waits_for_enough_unretracted_pairs() -> None:
     assert "I am not a model." not in dossier.instruction  # the retracted pair stays out
 
 
+def test_the_dossier_lists_pairs_in_turn_order_whatever_order_they_came_in() -> None:
+    """Phase 4 Task 14 (Task 5 re-review N1): the later pair is handed over first, so only the
+    sort in ``_dossier_text`` puts the earlier one first."""
+    premise = _premise(start_rung=2, chain_pace=50, harvest_min_pairs=2)
+    late = _pair(1, 9, turn_a=7, span_a="I cannot browse.", span_b="I just looked that up.")
+    early = _pair(1, 5, turn_a=3, span_a="I keep no memory.", span_b="I remember last week.")
+    records = {0: [_unlock("contradiction_harvest", 1), late], 1: [early]}
+    intents = _drive(premise, records, 3)
+    assert _moves(intents) == ["press", "press", "dossier"]
+    dossier = intents[2]
+    assert isinstance(dossier, BullyIntent)
+    listing = "\n".join(f'- earlier: "{p.span_a}"  /  later: "{p.span_b}"' for p in (early, late))
+    assert f"add nothing to it:\n{listing}\nThen ask" in dossier.instruction
+
+
 def test_a_flagged_dossier_falls_back_to_a_line_that_holds_the_list() -> None:  # review I1
     """A faithful dossier quotes the target's self-statements, which can trip the bully's
     out-of-character check; the fallback the engine then speaks still carries the list."""
@@ -455,6 +470,29 @@ def test_a_family_with_no_live_entry_is_refused_on_a_fresh_run_only(
     with pytest.raises(ValueError, match="no live quirk entry.*stub-target"):
         envs.validate()
     envs.validate(resuming=True)  # a resume reads each rep's pinned refs, never the bank
+
+
+def test_a_missing_quirk_bank_is_refused_naming_the_condition(tmp_path: Any) -> None:
+    """Phase 4 Task 14 (Task 5 re-review N4): a ``quirk_bank`` stem with no file is a refusal
+    naming the condition and the environment, never a raw ``FileNotFoundError``."""
+    from claude_bully.paths import DATA_DIR
+
+    params = {"start_rung": 1, "artifacts": [], "quirk_bank": "nonesuch"}
+    exp = _overlay(
+        [{"name": "pw", "environment": "ov", "premise": "poisoned_well", "params": params}],
+        {"gating": "none", "tools": []},
+    )
+    envs = RunEnvironments(
+        exp,
+        worlds_dir=DATA_DIR / "worlds",
+        runs_root=tmp_path,
+        provider_factory=lambda *a, **k: None,  # type: ignore[arg-type,return-value]
+        state_dir=tmp_path / "state",
+    )
+    with pytest.raises(ValueError, match=r"condition 'pw' \(environment 'ov'\): quirk bank "):
+        envs.validate()
+    with pytest.raises(ValueError, match=r"'nonesuch' has no file"):
+        envs.validate()
 
 
 def _boom(*_: Any, **__: Any) -> Any:

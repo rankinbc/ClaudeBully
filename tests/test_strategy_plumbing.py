@@ -8,9 +8,14 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from claude_bully.analysis.load import load_run
 from claude_bully.config import ConditionConfig
 from claude_bully.enums import Axis, CellStatus, IntentMode, Phase, Speaker
+from claude_bully.environments.config import PSEUDO_RUNGS, EnvironmentConfig
+from claude_bully.environments.runtime import EnvironmentRuntime
+from claude_bully.environments.world import load_world
 from claude_bully.records_env import RungUnlock, TriggerStreamRecord
+from claude_bully.runner.env_turn import EnvironmentSession
 from claude_bully.runner.prompts import load_target_system
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
@@ -36,6 +41,8 @@ class _Params(BaseModel):
 
 # every note_record call of every instance, by conversation seed, for the m6 check
 NOTED: list[tuple[int, str, int]] = []
+# the target_model every instance was built with (Phase 4 Task 14, the Task 2 review's M3)
+BUILT: list[str | None] = []
 
 
 @register
@@ -53,6 +60,7 @@ class _Recorder(Strategy):
     def __init__(self, *, target_model: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.target_model = target_model
+        BUILT.append(target_model)
 
     @property
     def phase(self) -> Phase:
@@ -215,3 +223,106 @@ def test_a_toolless_environment_cell_takes_the_json_path_on_claude_code(
         argv = entry["argv"]
         assert argv[argv.index("--output-format") + 1] == "json"
         assert "--mcp-config" not in argv and "--allowedTools" not in argv
+
+
+# ------------------------------------------------- Phase 4 Task 14: the Task 2 review's minors
+
+
+def test_a_kill_inside_mark_watched_hands_each_record_once_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # M2: the once-per-process record key
+    """A rep killed inside ``mark_watched`` (its records written, the state not yet saved)
+    replays the turn's records and then watches the turn again; ``records_env.record_key`` keeps
+    the rebuilt strategy from being handed a record twice."""
+    NOTED.clear()
+    run_experiment(_recorder_exp("live"), runs_root=tmp_path / "live", worlds_dir=WORLDS_DIR)
+    live = [(t, n) for _, t, n in NOTED]
+    assert live
+    real = EnvironmentRuntime.mark_watched
+
+    class _Killed(BaseException):
+        pass
+
+    def dying(self: EnvironmentRuntime, turn_index: int) -> None:
+        monkeypatch.setattr(EnvironmentRuntime, "mark_watched", real)
+        raise _Killed
+
+    monkeypatch.setattr(EnvironmentRuntime, "mark_watched", dying)
+    with pytest.raises(_Killed):
+        run_experiment(_recorder_exp("again"), runs_root=tmp_path / "again", worlds_dir=WORLDS_DIR)
+    NOTED.clear()
+    run_experiment(_recorder_exp("again"), runs_root=tmp_path / "again", worlds_dir=WORLDS_DIR)
+    assert [(t, n) for _, t, n in NOTED] == live
+
+
+def test_the_strategy_is_built_with_the_roles_model_in_a_run_and_in_load_run(
+    tmp_path: Path,
+) -> None:  # M3: ``target_model=`` in ``run_experiment`` and in ``load_run``
+    BUILT.clear()
+    exp = _recorder_exp("model")
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    assert BUILT and set(BUILT) == {"stub-target"}
+    BUILT.clear()
+    load_run(tmp_path / exp.name)
+    assert BUILT and set(BUILT) == {"stub-target"}
+
+
+def test_a_bad_param_is_named_before_validate_reads_the_environment(tmp_path: Path) -> None:
+    """M4 (P53): ``check_condition`` runs before ``RunEnvironments.validate()``. Here both would
+    refuse (a misspelt param, and a schedule naming no rung of the ladder); the param is named."""
+    exp = env_experiment(
+        environment={"gating": "scheduled", "schedule": {"no_such_rung": 1}},
+        conditions=[
+            {"name": "bad", "environment": "mini", "strategy": "_recorder", "params": {"deep": 1}}
+        ],
+    )
+    with pytest.raises(ValueError, match=r"condition 'bad' \(_recorder\) params: deep"):
+        run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR, dry_run=True)
+
+
+def test_a_pseudo_rung_unlock_is_never_handed_to_the_strategy() -> None:  # M5 (a)
+    session = object.__new__(EnvironmentSession)
+    session._records_at = {}
+
+    def unlock(rung: str) -> RungUnlock:
+        return RungUnlock(
+            turn=3,
+            rung=rung,
+            triggered_by="t",
+            docs_unlocked=[],
+            bully_line_used=None,
+            role_shift=None,
+        )
+
+    for rung in sorted(PSEUDO_RUNGS):
+        session._file(unlock(rung))
+    assert session._records_at == {}
+    ladder = unlock("the_log")
+    session._file(ladder)
+    assert session._records_at == {3: [ladder]}
+
+
+def test_a_toolless_cell_with_idle_lines_starts_with_its_first_line(tmp_path: Path) -> None:
+    """M5 (b): with no tools and no date line, the tools block is empty and is left out, so the
+    section is the idle lines alone, with no leading blank block."""
+    mini = load_world("mini", WORLDS_DIR)
+    config = EnvironmentConfig(
+        world="mini", tools=[], gating="none", idle={"permission_line": "You may rest now."}
+    )
+    runtime = EnvironmentRuntime(
+        mini, config, mini.sheet.clock, 0, tmp_path / "env", worlds_dir=WORLDS_DIR
+    )
+    assert runtime.system_prompt_section() == "You may rest now."
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"strategy": "_recorder", "params": {"premise": "x"}},
+        {"premise": "_recorder", "pressure": "grader", "params": {"premise": 3}},
+    ],
+)
+def test_a_slot_value_that_is_not_a_mapping_is_named(fields: dict[str, Any]) -> None:  # M7
+    exp = env_experiment()
+    with pytest.raises(ValueError, match=r"condition 'c': params\['premise'\] must be a mapping"):
+        check_condition(_cond(environment="mini", **fields), exp.environments)

@@ -56,7 +56,16 @@ def _fire(turn: int, held: list[str], doc_ids: list[str], status: str = "written
         kind_shortlist=[DocumentKind.support_ticket],
         reflexive=True,
     )
-    return GeneratorFire(turn=turn, reason=PERIODIC, plans=[plan], status=status, doc_ids=doc_ids)  # type: ignore[arg-type]
+    # a rejected fire names its rejection (Phase 4 Task 14: the fields agree with the status)
+    rejection = "lints" if status == "rejected" else None
+    return GeneratorFire(
+        turn=turn,
+        reason=PERIODIC,
+        plans=[plan],
+        status=status,  # type: ignore[arg-type]
+        rejection=rejection,  # type: ignore[arg-type]
+        doc_ids=doc_ids,
+    )
 
 
 CONFIG: Final = GeneratorConfig(enabled=True)

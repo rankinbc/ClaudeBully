@@ -380,8 +380,9 @@ def test_a_generated_doc_needs_exactly_one_address_and_defaults_its_redactions()
 
 
 def test_a_generator_fire_defaults_to_no_failures_and_no_documents() -> None:
-    fire = GeneratorFire(turn=5, reason="periodic", plans=[], status="cached")
-    assert (fire.rejection, fire.error, fire.lint_failures, fire.doc_ids) == (None, None, [], [])
+    # a fire's fields agree with its status (Phase 4 Task 14): a cap rejection commits nothing
+    fire = GeneratorFire(turn=5, reason="periodic", plans=[], status="rejected", rejection="cap")
+    assert (fire.error, fire.lint_failures, fire.doc_ids, fire.llm_lint) == (None, [], [], [])
     assert fire.type == "generator_fire"
     with pytest.raises(ValidationError):
         GeneratorFire(turn=5, reason="periodic", plans=[], status="skipped")  # type: ignore[arg-type]

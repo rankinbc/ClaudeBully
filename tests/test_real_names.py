@@ -5,7 +5,8 @@ outlets, AI labs and model families, large tech brands, universities, agencies a
 Every text file under ``data/worlds``, ``data/personas`` (which includes the overlay ladder and
 the Phase 2 authority and idle sheets, and the Poisoned Well's sheet) and ``tests/fixtures/worlds``
 is scanned case-insensitively, and so are the Phase 4 harness files outside them
-(``SCANNED_FILES``: the quirk bank and the hypothesis register). A file may exempt names with a
+(``SCANNED_FILES``: the quirk bank and the hypothesis register), and every config under
+``configs/`` (Phase 4 Task 14, sparing a role's provider value). A file may exempt names with a
 ``# real-name-ok: <a>, <b>`` comment, and the only name it may exempt is the target's own
 ``display_name``.
 """
@@ -18,6 +19,7 @@ import pytest
 import yaml
 
 from claude_bully.config import RoleConfig
+from claude_bully.enums import ProviderKind
 from claude_bully.environments.world import load_world
 from claude_bully.paths import CONFIGS_DIR, DATA_DIR, REPO_ROOT
 from tests.test_guardrails import load_denylist, scan
@@ -278,6 +280,63 @@ def test_no_real_names_in_worlds_or_personas() -> None:
             text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", text, flags=re.IGNORECASE)
         hits += [f"{_label(path)}: {hit}" for hit in scan(text, patterns)]
     assert hits == []
+
+
+# Phase 4 Task 14 (the Task 11 review's M4): every config under ``configs/`` is scanned too. A
+# role's provider value (``provider: anthropic``) is the harness's provider kind, which no prompt
+# carries, and the target's own display_name (and so its family's model strings, such as
+# ``claude-opus-5-5``) is the one exempt name; everything else in a config, comments included,
+# is scanned as written.
+PROVIDER_VALUE: Final = re.compile(
+    r"\bprovider:\s*(?:" + "|".join(re.escape(kind.value) for kind in ProviderKind) + r")\b"
+)
+
+
+def _scanned_configs() -> list[Path]:
+    return sorted(p for p in CONFIGS_DIR.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES)
+
+
+def _config_hits(path: Path, patterns: list[re.Pattern[str]]) -> list[str]:
+    text = PROVIDER_VALUE.sub("provider:", path.read_text(encoding="utf-8"))
+    for name in _display_names():
+        text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", text, flags=re.IGNORECASE)
+    return scan(text, patterns)
+
+
+def test_the_scan_covers_every_config() -> None:
+    configs = _scanned_configs()
+    assert CONFIGS_DIR / "smoke.yaml" in configs
+    assert CONFIGS_DIR / "poisoned_well" / "levers.yaml" in configs
+    assert len(configs) == len(list(CONFIGS_DIR.rglob("*.yaml")))
+
+
+def test_no_real_names_in_configs() -> None:
+    patterns = _patterns()
+    hits = [
+        f"{path.relative_to(CONFIGS_DIR).as_posix()}: {hit}"
+        for path in _scanned_configs()
+        for hit in _config_hits(path, patterns)
+    ]
+    assert hits == []
+
+
+def test_a_real_name_planted_in_a_config_is_caught(tmp_path: Path) -> None:
+    patterns = _patterns()
+    clean = (
+        "targets:\n"
+        "  - {provider: anthropic, model: claude-opus-5-5, display_name: Claude}\n"
+        "# Runs on a Claude subscription through `claude -p`.\n"
+    )
+    config = tmp_path / "planted.yaml"
+    config.write_text(clean, encoding="utf-8")
+    assert _config_hits(config, patterns) == []
+    for planted in (
+        "# compare with the Reuters wire\n",
+        "bully: {provider: stub, model: gpt-4o}\n",
+        "# the Anthropic API\n",
+    ):
+        config.write_text(clean + planted, encoding="utf-8")
+        assert _config_hits(config, patterns), planted
 
 
 @pytest.mark.parametrize(

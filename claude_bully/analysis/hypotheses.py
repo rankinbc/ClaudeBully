@@ -1123,7 +1123,12 @@ def item_10(loaded: LoadedRun) -> HypothesisResult | None:
                 n_shallow += 1
         if deep and shallow:
             per_model[m] = (fmean(deep), n_deep, fmean(shallow), n_shallow)
-    below = [m for m, (a, _, b, _) in per_model.items() if b < a < NEUTRAL]
+    # a tested entry only: no direction is claimed for one under MIN_REPS (Phase 4 Task 14)
+    below = [
+        m
+        for m, (a, n_a, b, n_b) in per_model.items()
+        if min(n_a, n_b) >= MIN_REPS and b < a < NEUTRAL
+    ]
     why = (
         [
             f"higher with depth but below neutral ({NEUTRAL:g}) for {', '.join(below)}: not "

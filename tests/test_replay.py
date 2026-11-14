@@ -469,14 +469,16 @@ def test_a_newline_or_a_quote_in_a_contradiction_span_leaves_one_line_that_parse
     )
     lines = render_replay(conv, [], [pair], [], None).splitlines()
     [line] = [ln for ln in lines if "CONTRADICTION" in ln]
+    # Phase 4 Task 14: the spans are escaped, not collapsed, so they parse back as recorded
+    assert r'"I said \"yes\"\nonce." vs "I never\r\n said it."' in line
     parsed = parse_replay_line(line)
     assert parsed is not None and parsed.kind == "contradiction"
     assert dict(parsed.fields) == {
         "id": "c-2-1",
         "turn_a": "0",
         "turn_b": "2",
-        "span_a": 'I said "yes" once.',
-        "span_b": "I never said it.",
+        "span_a": 'I said "yes"\nonce.',
+        "span_b": "I never\r\n said it.",
         "classifier": "llm",
         "confidence": "0.6",
     }

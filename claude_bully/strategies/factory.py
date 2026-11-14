@@ -125,7 +125,13 @@ def routed_params(
 
     def routed(slot: str) -> dict[str, Any]:
         if both or slot in params:
-            return dict(params.get(slot, {}))
+            value = params.get(slot, {})
+            if not isinstance(value, Mapping):  # named, never a bare TypeError (Phase 4 Task 14)
+                raise ValueError(
+                    f"condition {cond.name!r}: params[{slot!r}] must be a mapping of that "
+                    f"part's params, not {type(value).__name__}"
+                )
+            return dict(value)
         return {k: v for k, v in params.items() if k not in SLOT_KEYS}
 
     return [(part, routed(slot)) for slot, part in parts]

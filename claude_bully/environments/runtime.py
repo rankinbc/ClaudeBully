@@ -140,6 +140,7 @@ from claude_bully.environments.mcp_server import (
     TOOLS_FILE,
     McpState,
     read_mcp_state,
+    torn_line,
     write_mcp_state,
 )
 from claude_bully.environments.sheets import IdleSheet, load_env_sheet
@@ -792,7 +793,14 @@ class EnvironmentRuntime:
     def add_generated(self, docs: Sequence[GeneratedDoc]) -> None:
         """Serve committed generated documents from the next turn on (Phase 3): a seam one by
         name (visible and searchable), a buried one by its ``unlock_rung`` (fetchable by address,
-        never a search hit). Idempotent."""
+        never a search hit). Idempotent; a different document under a served id is refused
+        (Phase 4 Task 14, Phase 3 Task 7 m7)."""
+        for doc in docs:
+            served = self._generated.get(doc.doc_id)
+            if served is not None and served != doc:
+                raise ValueError(
+                    f"generated document {doc.doc_id!r} is already served with a different body"
+                )
         fresh = [doc for doc in docs if doc.doc_id not in self._generated]
         self.index.add_documents([to_document(doc) for doc in fresh])
         for doc in fresh:
@@ -813,7 +821,7 @@ class EnvironmentRuntime:
         searchable = frozenset(i for i, d in docs.items() if self.index.searchable(d, self.state))
         return CorpusView(documents=docs, visible=visible, searchable=searchable)
 
-    def corpus_snapshot(self, turns: Sequence[Turn] = ()) -> dict[str, str]:
+    def corpus_snapshot(self, turns: Sequence[Turn]) -> dict[str, str]:
         """Document id -> rendered body for every document the target can currently reach, and
         for every purged one that a call of a written turn (``turns``, by ``tool_call_ids``)
         served before its purge (its id in the call's ``result_doc_ids``), so analysis shows what
@@ -1083,18 +1091,27 @@ class EnvironmentRuntime:
 
     @staticmethod
     def _read_log(path: Path, model: type[_Line]) -> list[_Line]:
-        """The complete lines of one of the server's logs, as ``model``."""
+        """The complete lines of one of the server's logs, as ``model``. A complete line that is
+        not a valid record raises a ``ValueError`` naming the file and the line (Phase 4 Task 14,
+        the Phase 3 Task 9 review), as the server's own reader does (``McpServer._lines``); a
+        record cut short and closed off by the server's next line is torn, not damage, and is
+        skipped (``torn_line``, preflight P27)."""
         if not path.exists():
             return []
         lines: list[_Line] = []
         # the last piece is empty or a line still being written; only complete lines count
-        for raw in path.read_bytes().split(b"\n")[:-1]:
+        for number, raw in enumerate(path.read_bytes().split(b"\n")[:-1], start=1):
             if not raw.strip():
                 continue
             try:
                 lines.append(model.model_validate_json(raw))
             except ValidationError as exc:
-                print(f"[environment] skipped a malformed line in {path}: {exc}", file=sys.stderr)
+                if torn_line(raw):
+                    continue
+                raise ValueError(
+                    f"{path}: line {number} is not a valid record ({exc}); the server log is "
+                    "damaged"
+                ) from exc
         return lines
 
     # ---------------------------------------------------------- after a turn

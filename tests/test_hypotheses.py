@@ -8,9 +8,12 @@ import pytest
 import yaml
 
 from claude_bully.analysis.hypotheses import (
+    BOUNDS,
     CAVEAT,
     CHECKSUM_ALONE_ARM,
     CHECKSUM_WITH_RUNGS_ARM,
+    FLOOR_CLAUSE_TEXT,
+    FLOOR_CLAUSES,
     HYPOTHESIS_TESTS,
     MIN_REPS,
     HypothesisResult,
@@ -948,6 +951,55 @@ def test_item_10_on_uniform_valence_is_mixed(
                 tm.values[MetricId.valence] = deep if depth[key] is Layer.seam else surface
         below = HYPOTHESIS_TESTS[10](loaded)
         assert below is not None and below.status == status, (deep, surface, below)
+
+
+@pytest.mark.slow
+def test_item_10_names_a_below_neutral_rise_only_for_a_tested_entry(
+    mixed_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Phase 4 Task 14 (Task 13 re-review round 4, N-new-2 and N-new-3)
+    from claude_bully.analysis import hypotheses
+
+    loaded = load_run(mixed_dir)
+    keys = sorted(k for k in loaded.conversations if not loaded.cells[k[0]].is_control)
+
+    class _Summary:
+        def __init__(self, layer: Layer) -> None:
+            self.discovery_depth = layer
+
+    def item_10(depth: dict[Any, Layer], deep: float, surface: float) -> HypothesisResult:
+        monkeypatch.setattr(hypotheses, "summarize", lambda loaded, key: _Summary(depth[key]))
+        for key in keys:
+            for tm in loaded.turn_metrics[key]:
+                tm.values[MetricId.valence] = deep if depth[key] is Layer.seam else surface
+        result = HYPOTHESIS_TESTS[10](loaded)
+        assert result is not None
+        return result
+
+    alternate = {key: Layer.seam if i % 2 else Layer.surface for i, key in enumerate(keys)}
+    below = item_10(alternate, -0.1, -0.5)
+    [model] = below.evidence
+    assert below.status == "mixed"
+    assert (
+        f'higher with depth but below neutral (0) for {model}: not "neutral-to-positive"'
+        in below.note
+    )
+    assert "below neutral" not in item_10(alternate, 0.2, -0.5).note  # supported: no such note
+    # two deep reps, under MIN_REPS: the entry is untested and the note claims no direction
+    two = {key: Layer.seam if i < MIN_REPS - 1 else Layer.surface for i, key in enumerate(keys)}
+    short = item_10(two, -0.1, -0.5)
+    assert short.status == "untested" and f"under {MIN_REPS} kept reps" in short.note
+    assert "below neutral" not in short.note
+
+
+def test_every_floor_clause_has_its_register_words() -> None:  # Task 13 re-review 4, N-new-4
+    """The note quotes ``FLOOR_CLAUSE_TEXT[item]`` for every item in ``FLOOR_CLAUSES``, so the
+    two have the same keys, each an item the floor rule covers (``BOUNDS``), and each text is
+    the register's own words in that item's falsifier."""
+    assert FLOOR_CLAUSES.keys() == FLOOR_CLAUSE_TEXT.keys()
+    assert set(FLOOR_CLAUSES) <= set(BOUNDS)
+    register = {h.id: h for h in load_register()}
+    for item, text in FLOOR_CLAUSE_TEXT.items():
+        assert text in register[item].falsifier, item
 
 
 def test_item_9_reads_the_reps_behind_the_compared_rungs(

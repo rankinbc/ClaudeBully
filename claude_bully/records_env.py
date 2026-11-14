@@ -154,6 +154,24 @@ class GeneratorFire(_Strict):
     doc_ids: list[str] = Field(default_factory=list)
     llm_lint: list[LlmLintVerdict] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _agrees(self) -> Self:
+        """The status and the fields agree (Phase 4 Task 14, Phase 3 Task 5 m4): ``written``
+        and ``cached`` committed ``doc_ids`` and have no ``rejection``; ``rejected`` has a
+        ``rejection`` and no ``doc_ids``; ``error`` has an ``error`` and no ``doc_ids``."""
+        problem = {
+            "written": not self.doc_ids or self.rejection is not None,
+            "cached": not self.doc_ids or self.rejection is not None,
+            "rejected": self.rejection is None or bool(self.doc_ids),
+            "error": self.error is None or bool(self.doc_ids),
+        }[self.status]
+        if problem:
+            raise ValueError(
+                f"a {self.status!r} fire with doc_ids {self.doc_ids}, rejection "
+                f"{self.rejection!r} and error {self.error!r} does not agree"
+            )
+        return self
+
 
 class GeneratedDoc(_OneAddress):
     """A committed generated document as served (Phase 3): ``body`` is the redacted text the

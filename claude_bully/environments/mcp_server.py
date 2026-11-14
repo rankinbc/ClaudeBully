@@ -213,6 +213,21 @@ def _torn_bytes(raw: bytes, exc: UnicodeDecodeError) -> bool:
     return False
 
 
+def torn_line(raw: bytes) -> bool:
+    """Whether ``raw``, one line of a server log, is a record cut short (``_torn_bytes``,
+    ``_torn``), so a reader skips it; False for a line that decodes, which a reader validates
+    (Phase 4 Task 14: ``EnvironmentRuntime._read_log`` reads the logs by this rule)."""
+    try:
+        line = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return _torn_bytes(raw, exc)
+    try:
+        json.loads(line)
+    except json.JSONDecodeError as exc:
+        return _torn(line, exc)
+    return False
+
+
 def write_launcher(directory: Path) -> Path:
     """A small script in ``directory`` that starts this server.
 
@@ -488,7 +503,8 @@ class McpServer:
         damage and raises a ``ValueError`` naming the file and the line (m7, preflight P27),
         which ``handle`` answers with the internal error and logs on stderr, so the per-turn cap
         is never counted over it. Each line is decoded strictly: a line cut inside a multibyte
-        character at its end is torn (``_torn_bytes``), and an invalid byte is damage."""
+        character at its end is torn (``_torn_bytes``), and an invalid byte is damage. A line of
+        valid JSON that is not an object is damage too (Phase 4 Task 14)."""
         if not path.exists():
             return []
         records: list[dict[str, Any]] = []
@@ -511,8 +527,12 @@ class McpServer:
                 raise ValueError(
                     f"{path}: line {number} is not valid JSON ({exc}); the server log is damaged"
                 ) from exc
-            if isinstance(record, dict):
-                records.append(record)
+            if not isinstance(record, dict):  # Phase 4 Task 14 (the Phase 3 Task 9 review)
+                raise ValueError(
+                    f"{path}: line {number} is not a JSON object ({type(record).__name__}); "
+                    "the server log is damaged"
+                )
+            records.append(record)
         return records
 
 

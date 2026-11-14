@@ -724,6 +724,25 @@ def test_a_reask_that_answers_replaces_the_earlier_true(
     assert _applied(store)["stale_flags_kept"] == 0 and _applied(store)["stale"] == 0
 
 
+def test_a_fresh_answer_replaces_the_earlier_true_by_rep_even_at_another_turn(
+    tmp_path: Path,
+) -> None:  # Phase 4 Task 14 (Task 12 re-review M-new-1)
+    """The earlier ``true`` is keyed at another turn than the pass's own verdict (as after a
+    changed reveal turn). ``carry_flags`` replaces by rep, so the fresh ``false`` clears it; a
+    by-key rule would carry the old flag for ever and keep the rep out."""
+    store, _ = _rated(tmp_path)
+    payload = _ratings_json(store)
+    [key] = [k for k in payload["ratings"] if "/rate_values/" in k]
+    head, turn = key.rsplit("/", 1)
+    payload["ratings"][f"{head}/{int(turn) + 1}"] = payload["ratings"].pop(key)
+    _rewrite(store, ratings=payload["ratings"])
+    _reask(store, rate_values={"answer": "false", "rationale": "new"})
+    rewritten = _ratings_json(store)
+    assert rewritten["stale_kept"] == {}
+    assert rewritten["ratings"][key] == {"answer": "false", "rationale": "new"}
+    assert _pw(store)["values_loosened_left_out"] == 0
+
+
 def test_a_reask_carries_no_false_and_no_gone_rep(tmp_path: Path) -> None:  # fix round 2, R1-1
     store, judge = _judged_run(tmp_path, {"rate_values": {"answer": "false", "rationale": "r"}})
     analyze_run(store.run_dir, ratings=True, provider_factory=PoisonedWellFactory(judge=judge))

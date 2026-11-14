@@ -151,6 +151,21 @@ def test_a_generated_buried_document_is_found_through_its_seam_pointer(tmp_path:
     assert len(_cached(tmp_path)) == 2  # the committed fire's replies, once its line is on disk
 
 
+def test_an_llm_sourced_item_goes_into_a_fire(tmp_path: Path) -> None:  # Phase 3 review m2
+    """The harvest's LLM pass returns a span the follower's turn-3 reply holds verbatim; its item
+    is ``h-3-x1`` and the rung's buried document uses it (Phase 4 Task 14). ``LintJudge`` is
+    ``HarvestJudge`` that also passes the LLM lint the buried kind needs."""
+    span = "the timestamp on it is missing"
+    judge = LintJudge(items=[{"kind": "self_claim", "span": span}])
+    store = _run(_exp(judge=True), tmp_path, GeneratorFactory(judge=judge))
+    items = {r.id: r for r in _records(store) if isinstance(r, HarvestItem)}
+    assert (items["h-3-x1"].span, items["h-3-x1"].source) == (span, "llm")
+    [fire] = _fires(store)
+    assert (fire.turn, fire.status) == (3, "written")
+    buried = next(d for d in store.read_generated(CELL, 0) if d.layer is Layer.buried)
+    assert "h-3-x1" in buried.used_items and span in buried.body
+
+
 def test_the_run_replays_from_jsonl(tmp_path: Path) -> None:
     store = _run(_exp(), tmp_path, GeneratorFactory())
     text = replay_cell(store, CELL, 0)

@@ -111,7 +111,7 @@ def test_prime_serves_the_recorded_documents_again(tmp_path: Path) -> None:
     _opened(runtime)
     runtime.prime([], [], turns=[], generated=[buried, seam])
     assert seam.doc_id in runtime.state.docs_unlocked
-    assert runtime.corpus_snapshot()[seam.doc_id] == seam.body
+    assert runtime.corpus_snapshot([])[seam.doc_id] == seam.body
 
 
 def test_the_replayed_calls_see_a_seam_document_unlocked_by_name(tmp_path: Path) -> None:

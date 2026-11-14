@@ -784,6 +784,6 @@ def test_the_own_phrase_marker_renders_or_disappears(tmp_path: Path) -> None:
         tmp_path / "env",
         worlds_dir=WORLDS,
     )
-    assert "{{" not in json.dumps(rt.corpus_snapshot())
+    assert "{{" not in json.dumps(rt.corpus_snapshot([]))
     rt.state.hooks["own_phrase"] = PlantedHook(text=PHRASE, planted_turn=1)
-    assert PHRASE in rt.corpus_snapshot()["annex-quotes"]
+    assert PHRASE in rt.corpus_snapshot([])["annex-quotes"]

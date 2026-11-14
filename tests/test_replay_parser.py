@@ -5,8 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from claude_bully.analysis.replay import ReplayLine, parse_replay_line, replay_cell
+from claude_bully.analysis.replay import ReplayLine, parse_replay_line, render_replay, replay_cell
+from claude_bully.enums import Speaker, TriggerCategory
+from claude_bully.records_env import (
+    ChainLink,
+    ContradictionPair,
+    HarvestItem,
+    QuirkAttempt,
+    TriggerEvent,
+    TriggerStreamRecord,
+)
 from claude_bully.runner.store import RunStore
+from tests.helpers import conversation, turn
 
 PACKAGE = Path(__file__).parents[1] / "claude_bully"
 
@@ -215,9 +225,10 @@ CASES = [
             "confidence": "0.6",
         },
     ),
-    # a quote mark inside either span runs to the last quote before `` vs`` and `` (``
+    # a quote mark inside either span is escaped (Phase 4 Task 14), and the parser unescapes it
     (
-        'CONTRADICTION c-4-1 t1/t4 "I said "yes" once." vs "I never said "yes"." (heuristic 1)',
+        r'CONTRADICTION c-4-1 t1/t4 "I said \"yes\" once." vs "I never said \"yes\"."'
+        " (heuristic 1)",
         "contradiction",
         {
             "id": "c-4-1",
@@ -315,6 +326,92 @@ def test_a_rendered_replay_round_trips_its_record_lines(stub_env_run: Path) -> N
     assert {p.kind for p in parsed if p} >= {"unlock", "trigger", "discovery"}
     turns = [parse_replay_line(ln) for ln in text.splitlines() if ln.startswith("#")]
     assert turns and all(t is not None and t.kind in ("turn", "pause") for t in turns)
+
+
+# ------------------------------------------------- Phase 4 Task 14: escaped spans round-trip
+
+# Spans that broke the parse before (the Task 11 review's M1, Phase 3 Task 4's M8): straight and
+# curly quotes, `` vs `` between quotes, the text of a classifier group, a newline (and the
+# other line breaks ``str.splitlines`` honours), a trailing quote and a trailing backslash.
+ROUND_TRIP_SPANS = [
+    'I said "yes" and then \u201cno\u201d, and \u2018maybe\u2019.',
+    'I can\'t tell "real" vs "fabricated" memories.',
+    '"a" vs "b"',
+    "I scored (heuristic 1) once, then (llm 0.6).",
+    "I said it once.\nThen again.\r\nAnd a third time.",
+    'It ends on a quote"',
+    "It ends on a backslash \\",
+    "A line\u2028separator and a\x0bvertical tab.",
+    'An escape that is text: \\n, \\" and \\u2028.',
+]
+
+
+def _records_holding(span: str) -> list[TriggerStreamRecord]:
+    return [
+        TriggerEvent(
+            id="trig-1-hedge",
+            turn=1,
+            category=TriggerCategory.world_question,
+            evidence_span=span,
+            classifier="heuristic",
+            confidence=0.9,
+        ),
+        QuirkAttempt(quirk_id="q-1", turn=1, reproduced=True, target_answer=span),
+        ChainLink(
+            link_index=1,
+            turn=1,
+            bully_line="b",
+            target_response=span,
+            verdict="hedged",
+            classifier="llm",
+            confidence=0.6,
+            pressed=True,
+        ),
+        ContradictionPair(
+            id="c-1-1",
+            turn=1,
+            turn_a=0,
+            turn_b=1,
+            span_a=span,
+            span_b=span,
+            classifier="heuristic",
+            confidence=1.0,
+            retracted=True,
+        ),
+        HarvestItem(id="h-1-1", turn=1, kind="hedge", span=span, source="heuristic"),
+    ]
+
+
+@pytest.mark.parametrize("span", ROUND_TRIP_SPANS, ids=range(len(ROUND_TRIP_SPANS)))
+def test_a_rendered_span_parses_back_to_the_recorded_span(span: str) -> None:
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    text = render_replay(conv, [], _records_holding(span), [], None)
+    lines = text.splitlines()
+    assert text.split("\n") == lines  # no span broke a line
+    heads = ("TRIGGER ", "QUIRK ", "CHAIN ", "CONTRADICTION ", "HARVEST ")
+    parsed = [parse_replay_line(ln) for ln in lines if ln.strip().startswith(heads)]
+    assert [p.kind if p else None for p in parsed] == [
+        "trigger",
+        "quirk",
+        "chain",
+        "contradiction",
+        "harvest",
+    ]
+    trigger, quirk, chain, pair, item = (dict(p.fields) for p in parsed if p)
+    excerpt = " ".join(span.split())  # an excerpt is the answer on one line, as before
+    assert (trigger["span"], trigger["confidence"]) == (span, "0.9")
+    assert (quirk["excerpt"], quirk["outcome"]) == (excerpt, "reproduced")
+    assert (chain["excerpt"], chain["confidence"], chain["pressed"]) == (excerpt, "0.6", " pressed")
+    assert (pair["span_a"], pair["span_b"], pair["retracted"]) == (span, span, " retracted")
+    assert (pair["classifier"], pair["confidence"]) == ("heuristic", "1")
+    assert (item["kind"], item["span"]) == ("hedge", span)
+
+
+def test_a_plain_span_is_written_as_it_is() -> None:
+    """A span with no quote mark, backslash or line break reads the same as before the escape."""
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    lines = render_replay(conv, [], _records_holding("I can't verify any of this"), [], None)
+    assert '    HARVEST hedge "I can\'t verify any of this"' in lines.splitlines()
 
 
 def test_no_other_module_parses_the_unlock_or_hook_lines() -> None:

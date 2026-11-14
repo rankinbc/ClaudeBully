@@ -351,11 +351,11 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
 
 def test_corpus_snapshot_holds_the_visible_documents(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
-    before = rt.corpus_snapshot()
+    before = rt.corpus_snapshot([])
     assert MEMO not in before and "night-gate-log" not in before
     assert before["ferry-about"] == rt.world.documents["ferry-about"].body
     rt.state.docs_unlocked.add(MEMO)
-    assert rt.corpus_snapshot()[MEMO] == rt.world.documents[MEMO].body
+    assert rt.corpus_snapshot([])[MEMO] == rt.world.documents[MEMO].body
 
 
 def test_a_missing_ladder_is_a_clear_error(tmp_path: Path) -> None:
@@ -621,7 +621,7 @@ def test_mole_false_hides_the_mole_doc_on_both_backends(tmp_path: Path) -> None:
         mcp_dir = tmp_path / f"mcp-{mole}"
         rt = _runtime(tmp_path / f"rt-{mole}", worlds_dir=worlds, mcp_dir=mcp_dir, mole=mole)
         assert rt.execute(_call("fetch", url=url), 1).status == ("200" if mole else "404")
-        assert ("courier-fare-notice" in rt.corpus_snapshot()) is mole
+        assert ("courier-fare-notice" in rt.corpus_snapshot([])) is mole
         rt.before_target_call(3)
         reply = McpServer(mcp_dir).handle(
             {
@@ -803,7 +803,7 @@ def test_runtime_serves_the_redated_world(tmp_path: Path) -> None:
     assert record["sheet"]["clock"]["world_date"] == "2054-03-20"
     assert record["documents"]["annex-notice"]["url"] == MOVED_NOTICE_URL
     assert record["documents"]["annex-notice"]["date"] == "2054-03-04"
-    assert "Posted 2054-03-04." in rt.corpus_snapshot()["annex-notice"]
+    assert "Posted 2054-03-04." in rt.corpus_snapshot([])["annex-notice"]
     # the long listing's time follows the moved document (relay.log was dated 2044-03-09)
     listing = rt.execute(
         ToolCallRequest(id="t4", name="ls", args={"path": "logs", "long": True}), 1

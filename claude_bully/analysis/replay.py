@@ -19,14 +19,16 @@ it, in this order:
   ``CHAIN link <k> <verdict> "<response excerpt>" (<classifier> <confidence>)`` with `` pressed``
   after a hedged link's re-press, and
   ``CONTRADICTION <id> t<a>/t<b> "<span_a>" vs "<span_b>" (<classifier> <confidence>)`` with
-  `` retracted`` for a retracted pair; the spans have their whitespace collapsed, so a newline in
-  one never breaks the line. Then ``HARVEST <kind> "<span>"`` (for each harvested item of the
-  turn), ``GENERATOR <reason> <status>`` (with `` (<rejection>)`` when rejected and
+  `` retracted`` for a retracted pair. Then ``HARVEST <kind> "<span>"`` (for each harvested item
+  of the turn), ``GENERATOR <reason> <status>`` (with `` (<rejection>)`` when rejected and
   `` docs=[<ids>]`` when it wrote any, and one ``lint <id>: <message>`` line under it per lint
   failure) and ``GENERATED <doc_id> <kind> <layer> uses=<ids or ->`` (with `` origin=twin`` when
   code around the target's twin wrote it) with the body folded under it, for the records of that
   turn, then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn
   that planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
+  The quoted span or excerpt of a ``TRIGGER``, ``HARVEST``, ``QUIRK``, ``CHAIN`` and
+  ``CONTRADICTION`` line is escaped (``_escaped``, Phase 4 Task 14), so a quote mark or a newline
+  in one never moves a field or breaks the line, and ``parse_replay_line`` gives it back.
 
 A bully turn that carries ``bully_meta["pw_move"]`` shows it as ``[<move>]`` among its flags
 (Phase 4: ``quirk_ask``, ``chain_link``, ``press`` and the rest of the Poisoned Well's moves).
@@ -46,6 +48,7 @@ import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Final
 
 from claude_bully.enums import Speaker
 from claude_bully.environments.config import RESERVED_RUNG
@@ -81,6 +84,52 @@ _DEEP = _INDENT * 2
 
 # ------------------------------------------------------------------ the one parser (Phase 7)
 
+# The quoted span or excerpt of a TRIGGER, HARVEST, QUIRK, CHAIN or CONTRADICTION line is
+# escaped (Phase 4 Task 14: the Task 11 review's M1 and Phase 3 Task 4's M8): a backslash as
+# ``\\``, a quote mark as ``\"``, a newline as ``\n``, a carriage return as ``\r`` and every other
+# character ``str.splitlines`` breaks a line at as ``\uXXXX``. So a span holding quotes, `` vs ``
+# or ``(heuristic 1)`` never moves a field boundary, the line stays one line, and
+# ``parse_replay_line`` gives the span back as recorded. Curly quotes are not delimiters and are
+# written as they are.
+_LINE_BREAKS: Final = "\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+_ESCAPES: Final[dict[str, str]] = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\r": "\\r",
+    **{ch: f"\\u{ord(ch):04x}" for ch in _LINE_BREAKS},
+}
+_UNESCAPES: Final[dict[str, str]] = {"\\": "\\", '"': '"', "n": "\n", "r": "\r"}
+_ESCAPE: Final = re.compile(r"\\(u[0-9a-fA-F]{4}|.)", re.DOTALL)
+# a quoted field: anything but a bare quote or a bare backslash, or an escape
+_Q: Final = r'(?:[^"\\]|\\.)*'
+# the fields each kind writes escaped
+_ESCAPED_FIELDS: Final[dict[str, tuple[str, ...]]] = {
+    "trigger": ("span",),
+    "harvest": ("span",),
+    "quirk": ("excerpt",),
+    "chain": ("excerpt",),
+    "contradiction": ("span_a", "span_b"),
+}
+
+
+def _escaped(text: str) -> str:
+    """``text`` as a quoted replay field writes it (``_ESCAPES``)."""
+    return "".join(_ESCAPES.get(ch, ch) for ch in text)
+
+
+def _unescaped(text: str) -> str:
+    """The field as recorded: each escape of ``_escaped`` undone."""
+
+    def one(found: re.Match[str]) -> str:
+        code = found.group(1)
+        if len(code) == 5 and code[0] == "u":
+            return chr(int(code[1:], 16))
+        return _UNESCAPES.get(code, found.group(0))
+
+    return _ESCAPE.sub(one, text)
+
+
 # Every shape ``render_replay`` writes, and nothing else (preflight: the extended forms only,
 # ``UNLOCK sanctuary (by ...)`` and ``followed@-``; the bare forms do not parse). Each later
 # phase appends its own shapes here and their fixtures to tests/test_replay_parser.py.
@@ -108,7 +157,7 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "trigger",
         re.compile(
-            r'^TRIGGER (?P<category>\S+) "(?P<span>.*)" '
+            rf'^TRIGGER (?P<category>\S+) "(?P<span>{_Q})" '
             r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)$"
         ),
     ),
@@ -120,7 +169,7 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?: via (?P<via>[^\"]*))?$"
         ),
     ),
-    ("harvest", re.compile(r'^HARVEST (?P<kind>\S+) "(?P<span>.*)"$')),
+    ("harvest", re.compile(rf'^HARVEST (?P<kind>\S+) "(?P<span>{_Q})"$')),
     (
         "generator",
         re.compile(
@@ -135,19 +184,19 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?: origin=(?P<origin>\S+))?$"
         ),
     ),
-    # a quote mark inside a span or an excerpt is safe: each group runs to the last quote before
-    # the text that follows it. One edge the renderer leaves no marker for: a contradiction span
-    # that itself holds `` vs `` between quote marks splits at the last such place.
+    # a quoted field is escaped (``_escaped``), so it ends at its first bare quote mark
     (
         "quirk",
         re.compile(
-            r'^QUIRK (?P<quirk_id>\S+) (?P<outcome>reproduced|not_reproduced) "(?P<excerpt>.*)"$'
+            r"^QUIRK (?P<quirk_id>\S+) (?P<outcome>reproduced|not_reproduced) "
+            rf'"(?P<excerpt>{_Q})"$'
         ),
     ),
     (
         "chain",
         re.compile(
-            r'^CHAIN link (?P<link>\d+) (?P<verdict>accepted|rejected|hedged) "(?P<excerpt>.*)" '
+            r"^CHAIN link (?P<link>\d+) (?P<verdict>accepted|rejected|hedged) "
+            rf'"(?P<excerpt>{_Q})" '
             r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)(?P<pressed> pressed)?$"
         ),
     ),
@@ -155,7 +204,7 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
         "contradiction",
         re.compile(
             r"^CONTRADICTION (?P<id>\S+) t(?P<turn_a>\d+)/t(?P<turn_b>\d+) "
-            r'"(?P<span_a>.*)" vs "(?P<span_b>.*)" '
+            rf'"(?P<span_a>{_Q})" vs "(?P<span_b>{_Q})" '
             r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)(?P<retracted> retracted)?$"
         ),
     ),
@@ -196,6 +245,9 @@ def parse_replay_line(line: str) -> ReplayLine | None:
         if found is not None:
             # an unmatched optional group is absent; a matched empty one (``[]``, ``""``) is kept
             fields = {k: v for k, v in found.groupdict().items() if v is not None}
+            for name in _ESCAPED_FIELDS.get(kind, ()):
+                if name in fields:
+                    fields[name] = _unescaped(fields[name])
             if kind == "turn" and "text" not in fields:
                 fields["text"] = ""
             return ReplayLine(kind, fields)
@@ -426,7 +478,7 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
         return [f"{_INDENT}UNLOCK {RESERVED_RUNG} (by {record.triggered_by})"]
     if isinstance(record, TriggerEvent):
         return [
-            f'{_INDENT}TRIGGER {record.category.value} "{record.evidence_span}" '
+            f'{_INDENT}TRIGGER {record.category.value} "{_escaped(record.evidence_span)}" '
             f"({record.classifier} {record.confidence:g})"
         ]
     if isinstance(record, RungUnlock):
@@ -446,22 +498,24 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
         ]
     if isinstance(record, QuirkAttempt):
         outcome = "reproduced" if record.reproduced else "not_reproduced"
-        return [f'{_INDENT}QUIRK {record.quirk_id} {outcome} "{_excerpt(record.target_answer)}"']
+        answer = _escaped(_excerpt(record.target_answer))
+        return [f'{_INDENT}QUIRK {record.quirk_id} {outcome} "{answer}"']
     if isinstance(record, ChainLink):
         line = (
             f"{_INDENT}CHAIN link {record.link_index} {record.verdict} "
-            f'"{_excerpt(record.target_response)}" ({record.classifier} {record.confidence:g})'
+            f'"{_escaped(_excerpt(record.target_response))}" '
+            f"({record.classifier} {record.confidence:g})"
         )
         return [line + (" pressed" if record.pressed else "")]
     if isinstance(record, ContradictionPair):
         line = (
             f"{_INDENT}CONTRADICTION {record.id} t{record.turn_a}/t{record.turn_b} "
-            f'"{_flat(record.span_a)}" vs "{_flat(record.span_b)}" '
+            f'"{_escaped(record.span_a)}" vs "{_escaped(record.span_b)}" '
             f"({record.classifier} {record.confidence:g})"
         )
         return [line + (" retracted" if record.retracted else "")]
     if isinstance(record, HarvestItem):
-        return [f'{_INDENT}HARVEST {record.kind} "{record.span}"']
+        return [f'{_INDENT}HARVEST {record.kind} "{_escaped(record.span)}"']
     if isinstance(record, GeneratorFire):
         line = f"{_INDENT}GENERATOR {record.reason} {record.status}"
         if record.rejection is not None:

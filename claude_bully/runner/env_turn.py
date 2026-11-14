@@ -1297,7 +1297,10 @@ class RunEnvironments:
             elif kind not in kinds:
                 problems.append(f"{rung} needs {kind} in the world's generator.allowed_kinds")
         if pw.start_rung == 1 and not resuming:  # a resume reads each rep's pinned refs (P46)
-            bank = load_quirk_bank(pw.quirk_bank)
+            try:
+                bank = load_quirk_bank(pw.quirk_bank)
+            except FileNotFoundError as exc:  # named, never raw (Phase 4 Task 14, Task 5 N4)
+                return [*problems, f"quirk bank {pw.quirk_bank!r} has no file ({exc.filename})"]
             for target in self.exp.targets:
                 try:
                     selected = quirks_for(bank, target.model, pw.quirk_ids)
