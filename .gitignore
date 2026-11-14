@@ -10,3 +10,7 @@ __pycache__/
 .coverage
 htmlcov/
 .superpowers/
+# Phase 5: the Director's cache and each bundle's dry run and provider state
+plans/_cache/
+plans/*/dryrun/
+plans/*/state/

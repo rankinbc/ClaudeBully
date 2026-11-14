@@ -528,3 +528,9 @@ Each v1 claim checked against `build/v1` at 569f3ca that was false or under-stat
 ## As planned (amendments from the implementation plan)
 
 To be filled when the Phase 5 plan is written: every plan decision that changes, narrows or contradicts this spec, in plan order, one line each.
+
+Task 1 (records and the bundle):
+
+- D-base_files (section 4, `PlanRecord`): `PlanRecord` gains `base_files` (bundle path to the sha256 of each file the world copy wrote) and `base_premise_terms` (world name to the copied sheet's `premise_terms`), committed with `base_worlds` in one record write; resume and the review set read "owned by the base copy" from them, never `data/worlds/`. `PlanRecord` also gains `rounds: list[list[StageRecord]]` (D-rounds, built and round-tripped here). Every `X | None` field of the plan records defaults None (preflight Q4).
+- D-write_file (section 5, `Bundle.write_file`): every write normalizes the text first (CRLF and lone CR to LF, a leading BOM dropped) and the recorded sha256 is of the text as written; the path grammar also refuses a Windows device stem (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`) as a `<name>` or `<stem>`.
+- The slug ruling (section 4, `slug`): `slug_for(question)` lowercases, takes the runs of `[a-z0-9]`, joins them with `-` and keeps the longest whole-word prefix of at most 48 characters; a question with no word that fits, or whose slug is a Windows device stem, gets `plan-<first 8 hex of sha256(question)>`; a slug never starts with `_`, so it is never `_cache`.

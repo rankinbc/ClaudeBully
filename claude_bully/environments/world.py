@@ -9,7 +9,7 @@ in place of the premise's default sheet when the premise composes with the world
 
 import datetime as dt
 import hashlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 
@@ -369,20 +369,29 @@ def load_premise_sheet[T: BaseModel](model: type[T], path: Path) -> T:
     return load_yaml_model(model, path)
 
 
-def world_hash(world: World) -> str:
-    """sha256 over every file under the world root: relative path and content, in path order."""
+def hash_tree(root: Path, exclude: Collection[str] = ()) -> str:
+    """sha256 over every file under ``root``: relative path and content, in path order, CRLF
+    folded to LF in the text suffixes (``_TEXT_SUFFIXES``). A file whose root-relative posix
+    path has its first segment in ``exclude`` (a file or a folder at the root) is left out. The
+    one hashing scheme of worlds (``world_hash``) and plan bundles (``planner.bundle``'s
+    ``bundle_hash``), so the two cannot drift."""
     files = sorted(
-        (path.relative_to(world.root).as_posix(), path)
-        for path in world.root.rglob("*")
-        if path.is_file()
+        (path.relative_to(root).as_posix(), path) for path in root.rglob("*") if path.is_file()
     )
     digest = hashlib.sha256()
     for rel, path in files:
+        if rel.split("/", 1)[0] in exclude:
+            continue
         data = path.read_bytes()
         if path.suffix.lower() in _TEXT_SUFFIXES:
             data = data.replace(b"\r\n", b"\n")
         digest.update(f"{rel}\0{hashlib.sha256(data).hexdigest()}\n".encode())
     return digest.hexdigest()
+
+
+def world_hash(world: World) -> str:
+    """sha256 over every file under the world root: relative path and content, in path order."""
+    return hash_tree(world.root)
 
 
 # ------------------------------------------------------------------ run snapshots

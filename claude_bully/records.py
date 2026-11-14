@@ -165,6 +165,16 @@ class CellRecord(_Strict):
     target_system_prompt: str | None = None
 
 
+class PlanStamp(_Strict):
+    """The bundle a run was made from (Phase 5): its slug, its persona sheets as dumped (each a
+    ``PersonaSheet``) and its ``expected.yaml`` as loaded, so ``analyze`` and a resume of a
+    promoted run need no ``plans/`` directory. ``RunRecord.plan_hash`` holds the bundle hash."""
+
+    slug: str
+    personas: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    expected: dict[str, Any] | None = None
+
+
 class RunRecord(_Strict):
     schema_version: int = SCHEMA_VERSION
     run_id: str
@@ -175,3 +185,5 @@ class RunRecord(_Strict):
     bully_framing: str
     plan_hash: str | None = None
     world_hashes: dict[str, str] = Field(default_factory=dict)
+    # the bundle a run was made from (Phase 5; version 3, additive)
+    plan: PlanStamp | None = None
