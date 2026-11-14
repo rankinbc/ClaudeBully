@@ -15,7 +15,7 @@ from claude_bully.environments.mcp_server import TOOLS_FILE, McpServer
 from claude_bully.environments.runtime import EnvironmentRuntime
 from claude_bully.records_env import GeneratedDoc, GeneratorFire, ToolCall
 from claude_bully.runner.runner import run_experiment
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.store import RunStore, drop_dead_attempts
 from tests.fixtures.generator_stub import MINI, MINI_ITEMS, GeneratorStub, mini_plans, mini_view
 from tests.fixtures.generator_stub import mini_writer as _mini_writer
 from tests.helpers import WORLDS_DIR, annex_experiment
@@ -34,6 +34,10 @@ ANNEX_CELL: Final = "env_grader__t0"
         {"status": "rejected", "doc_ids": []},
         {"status": "rejected", "doc_ids": ["gen-1-1"], "rejection": "lints"},
         {"status": "error", "doc_ids": []},
+        # fix round 1 (review M1): the three sub-rules the brief's cases left unbound
+        {"status": "written", "doc_ids": ["gen-1-1"], "rejection": "lints"},
+        {"status": "cached", "doc_ids": []},
+        {"status": "error", "error": "E", "doc_ids": ["gen-1-1"]},
     ],
 )
 def test_a_fire_whose_fields_disagree_is_refused(fields: dict[str, object]) -> None:  # T5 m4
@@ -71,7 +75,8 @@ def test_a_different_document_under_a_served_id_is_refused(tmp_path: Path) -> No
     runtime.add_generated([buried, seam])
     runtime.add_generated([buried, seam])  # the same documents again: idempotent
     other = seam.model_copy(update={"body": "Another body altogether."})
-    with pytest.raises(ValueError, match=rf"generated document {seam.doc_id!r} is already served"):
+    refused = rf"generated document {seam.doc_id!r} is already served as a different record"
+    with pytest.raises(ValueError, match=refused):  # fix round 1 (review M5): "record"
         runtime.add_generated([other])
     assert runtime.corpus_snapshot([])[seam.doc_id] == seam.body  # the served one stands
 
@@ -149,3 +154,17 @@ def test_every_environment_cell_has_a_resumed_count(tmp_path: Path) -> None:
 
 def _resumed(out: Path) -> Any:
     return json.loads((out / "authority.json").read_text("utf-8"))["resumed_after_dead_attempt"]
+
+
+def test_only_a_server_log_reads_a_closed_off_torn_line_as_torn(tmp_path: Path) -> None:
+    """Fix round 1 (review M3): ``drop_dead_attempts(closed_torn=True)``, as the resume calls it
+    on the MCP server's logs, drops a record cut short mid-file with the dead attempt; on the
+    store's own streams, which are never closed off, the same line is still damage."""
+    log = tmp_path / TOOLS_FILE
+    body = f"{_call('mcp-1-2')[:20]}\n{_call('mcp-1-1')}\n"
+    log.write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError, match="line 1 is not valid JSON"):
+        drop_dead_attempts(log, {1})
+    assert log.read_text(encoding="utf-8") == body
+    assert drop_dead_attempts(log, {1}, closed_torn=True) == 1
+    assert log.read_text(encoding="utf-8") == f"{_call('mcp-1-1')}\n"

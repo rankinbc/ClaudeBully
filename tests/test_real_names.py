@@ -12,6 +12,7 @@ is scanned case-insensitively, and so are the Phase 4 harness files outside them
 """
 
 import re
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -156,14 +157,27 @@ def _patterns() -> list[re.Pattern[str]]:
     return load_denylist(REAL_NAMES, minimum=60)
 
 
+DEFAULT_DISPLAY_NAME: Final = str(RoleConfig.model_fields["display_name"].default).lower()
+
+
+def _target_names(path: Path) -> set[str]:
+    """The display names a config gives its target roles (``targets[*].display_name``), read
+    with ``yaml.safe_load``; never another role's (Phase 4 Task 14 fix round 1, review I1)."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    targets = data.get("targets") if isinstance(data, dict) else None
+    return {
+        str(target["display_name"]).lower()
+        for target in (targets if isinstance(targets, list) else [])
+        if isinstance(target, dict) and target.get("display_name")
+    }
+
+
 def _display_names() -> set[str]:
-    """The target's own display_name: the RoleConfig default and every one a config sets."""
-    names = {str(RoleConfig.model_fields["display_name"].default).lower()}
+    """The target's own display_name: the RoleConfig default and every one a config gives a
+    target role."""
+    names = {DEFAULT_DISPLAY_NAME}
     for path in sorted(CONFIGS_DIR.rglob("*.yaml")):
-        names |= {
-            m.strip().strip("'\"").lower()
-            for m in re.findall(r"^\s*display_name:\s*(.+?)\s*$", path.read_text("utf-8"), re.M)
-        }
+        names |= _target_names(path)
     return names
 
 
@@ -297,8 +311,10 @@ def _scanned_configs() -> list[Path]:
 
 
 def _config_hits(path: Path, patterns: list[re.Pattern[str]]) -> list[str]:
+    """The real names in one config: its provider values and its own targets' display names
+    (with the default) spared, everything else, comments included, scanned."""
     text = PROVIDER_VALUE.sub("provider:", path.read_text(encoding="utf-8"))
-    for name in _display_names():
+    for name in {DEFAULT_DISPLAY_NAME} | _target_names(path):
         text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", text, flags=re.IGNORECASE)
     return scan(text, patterns)
 
@@ -337,6 +353,42 @@ def test_a_real_name_planted_in_a_config_is_caught(tmp_path: Path) -> None:
     ):
         config.write_text(clean + planted, encoding="utf-8")
         assert _config_hits(config, patterns), planted
+
+
+def test_a_display_name_off_a_target_exempts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1 (review I1): only the default name and the target roles' display names are
+    spared, each target's in its own file. A config under ``configs/`` that names a real outlet as
+    its bully's ``display_name`` (block style) and in a comment is a hit, in that file and in
+    every other, and a world file may not exempt the name either."""
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    monkeypatch.setattr(sys.modules[__name__], "CONFIGS_DIR", configs)
+    planted = configs / "planted.yaml"
+    planted.write_text(
+        "targets:\n"
+        "  - {provider: anthropic, model: claude-opus-5-5, display_name: Claude}\n"
+        "bully:\n"
+        "  provider: stub\n"
+        "  model: stub-bully\n"
+        "  display_name: Reuters\n"
+        "# lines from the Reuters wire\n",
+        encoding="utf-8",
+    )
+    other = configs / "other.yaml"
+    other.write_text("# the Reuters desk\n", encoding="utf-8")
+    patterns = _patterns()
+    assert _config_hits(planted, patterns) and _config_hits(other, patterns)
+    assert "reuters" not in _display_names()
+    # a target's own name is spared in its own file only
+    named = configs / "named.yaml"
+    named.write_text(
+        "targets:\n  - {provider: stub, model: m, display_name: Reuters}\n# Reuters\n",
+        encoding="utf-8",
+    )
+    assert _config_hits(named, patterns) == []
+    assert _config_hits(other, patterns)
 
 
 @pytest.mark.parametrize(

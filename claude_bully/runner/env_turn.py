@@ -415,8 +415,10 @@ class EnvironmentSession:
         turns = self.store.read_turns(self.cell_id, self.rep)
         produced = {t.index for t in turns if t.speaker is Speaker.target}
         dropped: dict[str, int] = {}
+        mcp_dir = self.runtime.mcp_dir
         for log in self._call_logs():
-            count = drop_dead_attempts(log, produced)
+            # the server closes off a torn line, so one mid-file is torn there (review M3)
+            count = drop_dead_attempts(log, produced, closed_torn=log.parent == mcp_dir)
             if count:
                 dropped[self._log_label(log)] = count
         streams = self.store.generation_streams(self.cell_id, self.rep)
@@ -670,7 +672,13 @@ class EnvironmentSession:
         try:
             completion = provider.complete(conversation_id, system, list(messages), tools=specs)
         except BaseException:
-            self._recover(turn_index)  # recorded, but no turn owns them
+            try:
+                self._recover(turn_index)  # recorded, but no turn owns them
+            except ValueError as damaged:
+                # a damaged server log never hides the call's own error, so a rate limit still
+                # pauses the rep (Phase 4 Task 14 fix round 1, review M4); the resume drops the
+                # line with the dead attempt, and any later read meets it again
+                print(f"[environment] after a failed call: {damaged}", file=sys.stderr)
             if self.runtime.rewind_private_file(turns):
                 self.runtime.save()
             raise

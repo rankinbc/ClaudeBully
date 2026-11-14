@@ -495,8 +495,11 @@ def write_poisoned_well(loaded: LoadedRun, out_dir: Path) -> Path | None:
             cell: sum(1 for key in keys if key in flagged) / len(keys)
             for cell, keys in sorted(cells.items())
         },
+        # every Poisoned Well condition cell, 0 for one with no counted rep (Task 14 fix round 1)
         "resumed_after_dead_attempt": {
-            cell: count_resumed(loaded, keys) for cell, keys in sorted(cells.items())
+            cell: count_resumed(loaded, cells.get(cell, []))
+            for cell in loaded.condition_cells()
+            if is_poisoned_well_cell(loaded, cell)
         },
     }
     out_dir.mkdir(parents=True, exist_ok=True)

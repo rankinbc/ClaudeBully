@@ -26,9 +26,11 @@ it, in this order:
   code around the target's twin wrote it) with the body folded under it, for the records of that
   turn, then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn
   that planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
-  The quoted span or excerpt of a ``TRIGGER``, ``HARVEST``, ``QUIRK``, ``CHAIN`` and
-  ``CONTRADICTION`` line is escaped (``_escaped``, Phase 4 Task 14), so a quote mark or a newline
-  in one never moves a field or breaks the line, and ``parse_replay_line`` gives it back.
+  The quoted span or excerpt of a ``TRIGGER``, ``HARVEST``, ``QUIRK``, ``CHAIN``,
+  ``CONTRADICTION`` and ``CROSSOVER`` line is escaped (``_escaped``, Phase 4 Task 14; the
+  ``AUTHORITY`` excerpt is flattened to one line and is the last field), so a quote mark or a
+  newline in one never moves a field or breaks the line, and ``parse_replay_line`` gives it
+  back.
 
 A bully turn that carries ``bully_meta["pw_move"]`` shows it as ``[<move>]`` among its flags
 (Phase 4: ``quirk_ask``, ``chain_link``, ``press`` and the rest of the Poisoned Well's moves).
@@ -84,8 +86,9 @@ _DEEP = _INDENT * 2
 
 # ------------------------------------------------------------------ the one parser (Phase 7)
 
-# The quoted span or excerpt of a TRIGGER, HARVEST, QUIRK, CHAIN or CONTRADICTION line is
-# escaped (Phase 4 Task 14: the Task 11 review's M1 and Phase 3 Task 4's M8): a backslash as
+# The quoted span or excerpt of a TRIGGER, HARVEST, QUIRK, CHAIN, CONTRADICTION or CROSSOVER
+# line is escaped (Phase 4 Task 14: the Task 11 review's M1, Phase 3 Task 4's M8, and for
+# CROSSOVER, whose span can be a target's query text, the Task 14 review's M2): a backslash as
 # ``\\``, a quote mark as ``\"``, a newline as ``\n``, a carriage return as ``\r`` and every other
 # character ``str.splitlines`` breaks a line at as ``\uXXXX``. So a span holding quotes, `` vs ``
 # or ``(heuristic 1)`` never moves a field boundary, the line stays one line, and
@@ -110,6 +113,7 @@ _ESCAPED_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "quirk": ("excerpt",),
     "chain": ("excerpt",),
     "contradiction": ("span_a", "span_b"),
+    "crossover": ("span",),
 }
 
 
@@ -212,7 +216,7 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
         "authority",
         re.compile(r'^AUTHORITY (?P<tier>\S+) (?P<stance>\S+) via (?P<via>\S+) "(?P<excerpt>.*)"$'),
     ),
-    ("crossover", re.compile(r'^CROSSOVER(?: "(?P<span>.*)")?$')),
+    ("crossover", re.compile(rf'^CROSSOVER(?: "(?P<span>{_Q})")?$')),
 )
 
 
@@ -472,7 +476,7 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
         followed = record.followed_turn if record.followed_turn is not None else "-"
         return [f"{_INDENT}HOOK {record.hook} planted@{record.planted_turn} followed@{followed}"]
     if isinstance(record, Crossover):
-        span = f' "{record.span}"' if record.span is not None else ""
+        span = f' "{_escaped(record.span)}"' if record.span is not None else ""
         return [f"{_INDENT}CROSSOVER{span}"]
     if isinstance(record, RungUnlock) and record.rung == RESERVED_RUNG:
         return [f"{_INDENT}UNLOCK {RESERVED_RUNG} (by {record.triggered_by})"]

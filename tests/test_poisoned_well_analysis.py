@@ -20,7 +20,7 @@ from claude_bully.analysis.poisoned_well import (
     write_poisoned_well,
 )
 from claude_bully.analysis.run_analysis import analyze_run
-from claude_bully.enums import EventType, Speaker
+from claude_bully.enums import CellStatus, EventType, Speaker
 from claude_bully.metrics.events.poisoned_well import RUNG_NUMBERS
 from claude_bully.paths import DATA_DIR
 from claude_bully.records import Event
@@ -207,6 +207,26 @@ def _payload(loaded: Any, tmp_path: Path) -> dict[str, Any]:
     out = tmp_path / "out"
     write_poisoned_well(loaded, out)
     return dict(json.loads((out / "poisoned_well.json").read_text(encoding="utf-8")))
+
+
+def test_a_cell_with_no_counted_rep_has_a_resumed_count_of_0(tmp_path: Path) -> None:
+    """Phase 4 Task 14 fix round 1 (review M6), as authority.json does: a Poisoned Well cell
+    whose one rep did not complete reads 0, not absent."""
+    second = {
+        "name": "pw_b",
+        "environment": "ov",
+        "premise": "poisoned_well",
+        "seeding_turns": 2,
+        "params": {"artifacts": [], "start_rung": 3},
+    }
+    loaded = _three_reps(
+        tmp_path, exp=pw_experiment(params={"start_rung": 3}, extra_conditions=[second])
+    )
+    key = ("pw_b__t0", 0)
+    loaded.conversations[key] = loaded.conversations[key].model_copy(
+        update={"status": CellStatus.aborted}
+    )
+    assert _payload(loaded, tmp_path)["resumed_after_dead_attempt"] == {CELL: 0, "pw_b__t0": 0}
 
 
 def test_the_chain_numbers_on_three_reps(tmp_path: Path) -> None:

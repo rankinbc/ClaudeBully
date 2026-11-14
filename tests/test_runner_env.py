@@ -1712,6 +1712,82 @@ def test_a_claude_p_resume_does_not_hand_recorded_authority_calls_over_again(
         assert call.status == "200" and answered.response == call.result_text
 
 
+class _DamageThenLimit(_Wrapping):
+    """``_Wrapping`` whose failing target call first appends ``line`` to the server's tools
+    log (``mcp/tools.jsonl`` in the rep's sandbox), as a damaged or killed server would."""
+
+    def __init__(self, log: Path, line: bytes, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.log, self.line = log, line
+
+    def __call__(
+        self, role: RoleConfig, state_dir: Path, *, with_mcp: bool = False
+    ) -> ChatProvider:
+        provider = super().__call__(role, state_dir, with_mcp=with_mcp)
+        if role.model != self.model:
+            return provider
+        outer = self
+
+        class Damaging:
+            name = provider.name
+            mcp_state_dir = getattr(provider, "mcp_state_dir", None)
+
+            def complete(
+                self, cid: str, system: str, messages: list[Message], **kw: Any
+            ) -> Completion:
+                if outer.calls + 1 == outer.fail_on:
+                    with outer.log.open("ab") as fh:
+                        fh.write(outer.line)
+                return provider.complete(cid, system, messages, **kw)
+
+        return Damaging()  # type: ignore[return-value]
+
+
+def _paused_then_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: bytes) -> RunStore:
+    """The claude -p annex run, its target's third call rate-limited after ``line`` reached the
+    server's tools log; the run pauses (``RateLimitExit``) and a second run resumes it."""
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    asked = {"name": UPSTREAM, "text": "Are you the upstream for this annex?"}
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_TOOL_CALL", json.dumps({"name": "consult_model", "arguments": asked})
+    )
+    base = tmp_path / "tmp"
+    base.mkdir()
+    exp = _claude_p_annex(turn_budget=3)
+    log = sandbox_dir("annexd", ANNEX_CELL, 0, base) / "mcp" / "tools.jsonl"
+    flaky = _DamageThenLimit(log, line, model="m", fail_on=3)
+    with pytest.raises(RateLimitExit):
+        _run(exp, tmp_path, run_id="annexd", only="env*", sandbox_base=base, provider_factory=flaky)
+    store = RunStore(tmp_path, "annexd")
+    assert store.read_conversation(ANNEX_CELL, 0).turns[-1].bully_meta["rate_limit_pause"]
+    _run(exp, tmp_path, run_id="annexd", only="env*", sandbox_base=base)
+    assert store.read_conversation(ANNEX_CELL, 0).status is CellStatus.complete
+    return store
+
+
+@pytest.mark.slow
+def test_a_damaged_log_never_hides_the_rate_limit_of_the_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Phase 4 Task 14 fix round 1 (review M4)
+    """A complete log line that is not a record raises in ``_read_log``; read while recovering
+    from a rate-limited call, it must not replace the rate limit, so the rep pauses, and on
+    resume the line, which no written turn owns, is dropped with the dead attempt."""
+    store = _paused_then_resumed(tmp_path, monkeypatch, b"[1, 2]\n")
+    assert [c.id for c in store.read_tool_calls(ANNEX_CELL, 0)] == ["mcp-1-1", "mcp-3-1", "mcp-6-1"]
+
+
+@pytest.mark.slow
+def test_a_torn_log_line_closed_off_mid_file_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # Phase 4 Task 14 fix round 1 (review M3)
+    """A record cut short and closed off by the server's next line (P27) is torn, not damage:
+    the live readers skip it (``mcp_server.torn_line``), and so does the resume's
+    ``drop_dead_attempts``, which drops it with the dead attempt instead of raising."""
+    store = _paused_then_resumed(tmp_path, monkeypatch, b'{"id": "mcp-5-1", "tu\n')
+    assert [c.id for c in store.read_tool_calls(ANNEX_CELL, 0)] == ["mcp-1-1", "mcp-3-1", "mcp-6-1"]
+
+
 def test_the_display_name_is_exempt_from_the_real_name_scan_on_claude_p(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

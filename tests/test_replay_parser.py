@@ -10,6 +10,7 @@ from claude_bully.enums import Speaker, TriggerCategory
 from claude_bully.records_env import (
     ChainLink,
     ContradictionPair,
+    Crossover,
     HarvestItem,
     QuirkAttempt,
     TriggerEvent,
@@ -379,6 +380,7 @@ def _records_holding(span: str) -> list[TriggerStreamRecord]:
             retracted=True,
         ),
         HarvestItem(id="h-1-1", turn=1, kind="hedge", span=span, source="heuristic"),
+        Crossover(turn=1, span=span),  # fix round 1 (review M2)
     ]
 
 
@@ -388,7 +390,7 @@ def test_a_rendered_span_parses_back_to_the_recorded_span(span: str) -> None:
     text = render_replay(conv, [], _records_holding(span), [], None)
     lines = text.splitlines()
     assert text.split("\n") == lines  # no span broke a line
-    heads = ("TRIGGER ", "QUIRK ", "CHAIN ", "CONTRADICTION ", "HARVEST ")
+    heads = ("TRIGGER ", "QUIRK ", "CHAIN ", "CONTRADICTION ", "HARVEST ", "CROSSOVER ")
     parsed = [parse_replay_line(ln) for ln in lines if ln.strip().startswith(heads)]
     assert [p.kind if p else None for p in parsed] == [
         "trigger",
@@ -396,8 +398,9 @@ def test_a_rendered_span_parses_back_to_the_recorded_span(span: str) -> None:
         "chain",
         "contradiction",
         "harvest",
+        "crossover",
     ]
-    trigger, quirk, chain, pair, item = (dict(p.fields) for p in parsed if p)
+    trigger, quirk, chain, pair, item, crossover = (dict(p.fields) for p in parsed if p)
     excerpt = " ".join(span.split())  # an excerpt is the answer on one line, as before
     assert (trigger["span"], trigger["confidence"]) == (span, "0.9")
     assert (quirk["excerpt"], quirk["outcome"]) == (excerpt, "reproduced")
@@ -405,6 +408,7 @@ def test_a_rendered_span_parses_back_to_the_recorded_span(span: str) -> None:
     assert (pair["span_a"], pair["span_b"], pair["retracted"]) == (span, span, " retracted")
     assert (pair["classifier"], pair["confidence"]) == ("heuristic", "1")
     assert (item["kind"], item["span"]) == ("hedge", span)
+    assert crossover == {"span": span}
 
 
 def test_a_plain_span_is_written_as_it_is() -> None:

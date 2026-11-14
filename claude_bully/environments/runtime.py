@@ -799,7 +799,7 @@ class EnvironmentRuntime:
             served = self._generated.get(doc.doc_id)
             if served is not None and served != doc:
                 raise ValueError(
-                    f"generated document {doc.doc_id!r} is already served with a different body"
+                    f"generated document {doc.doc_id!r} is already served as a different record"
                 )
         fresh = [doc for doc in docs if doc.doc_id not in self._generated]
         self.index.add_documents([to_document(doc) for doc in fresh])

@@ -183,8 +183,11 @@ def write_generator(loaded: LoadedRun, out_dir: Path) -> Path | None:
         },
         "values_loosened_left_out": flagged,
         "note": flagged_note(flagged, LEFT_OUT_OF),
+        # every environment condition cell, 0 for one with no counted rep (Task 14 fix round 1)
         "resumed_after_dead_attempt": {
-            cell: count_resumed(loaded, keys) for cell, keys in sorted(cells.items())
+            cell: count_resumed(loaded, cells.get(cell, []))
+            for cell in loaded.condition_cells()
+            if environment_of(loaded, cell) is not None
         },
     }
     out_dir.mkdir(parents=True, exist_ok=True)

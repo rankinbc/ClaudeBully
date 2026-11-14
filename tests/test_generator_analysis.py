@@ -22,7 +22,7 @@ from claude_bully.analysis.load import ConvKey, LoadedRun, load_run
 from claude_bully.analysis.progression import generator_progress, summarize_progression
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig, load_experiment
-from claude_bully.enums import EventType, Layer, ProviderKind, Speaker
+from claude_bully.enums import CellStatus, EventType, Layer, ProviderKind, Speaker
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.paths import CONFIGS_DIR
 from claude_bully.records import Event
@@ -251,6 +251,17 @@ def test_the_chart_footnote_and_the_json_count_the_flagged_reps(
     assert (data["values_loosened_left_out"], data["note"]) == (1, note)
     reps = {arm: r["reps"] for arm, r in data["arms"][MODEL].items()}
     assert reps == {"off": 2, "non_reflexive": 2, "reflexive": 1}  # the flagged rep is out
+
+
+def test_a_cell_with_no_counted_rep_has_a_resumed_count_of_0(
+    generator_run: Path, tmp_path: Path
+) -> None:  # Phase 4 Task 14 fix round 1 (review M6), as authority.json does
+    loaded = load_run(generator_run)
+    for key in [k for k in loaded.conversations if k[0] == REFLEXIVE]:
+        conv = loaded.conversations[key]
+        loaded.conversations[key] = conv.model_copy(update={"status": CellStatus.aborted})
+    data = _json(write_generator(loaded, tmp_path))
+    assert data["resumed_after_dead_attempt"] == {FLAT: 0, OFF: 0, REFLEXIVE: 0}
 
 
 def test_generator_json_holds_the_rates_the_metrics_and_the_resumed_counts(

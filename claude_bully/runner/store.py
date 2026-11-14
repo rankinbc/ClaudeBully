@@ -38,6 +38,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from claude_bully.enums import SCHEMA_VERSION
 from claude_bully.environments.config import GENERATOR_RUNG
+from claude_bully.environments.mcp_server import torn_line
 from claude_bully.records import CellRecord, Conversation, RunRecord, Turn
 from claude_bully.records_env import AuthorityCall, GeneratedDoc, ToolCall, TriggerStreamRecord
 
@@ -80,7 +81,7 @@ def _load_lines(path: Path) -> list[Any]:
         return [_checked(json.loads(line), path) for line in fh if line.strip()]
 
 
-def drop_dead_attempts(path: Path, produced: Collection[int]) -> int:
+def drop_dead_attempts(path: Path, produced: Collection[int], *, closed_torn: bool = False) -> int:
     """Rewrite the per-call JSONL file ``path`` without the lines of attempts that died, and
     return how many lines it dropped.
 
@@ -93,11 +94,15 @@ def drop_dead_attempts(path: Path, produced: Collection[int]) -> int:
     with no trailing newline, cut by the kill that ended the attempt. It is dropped with the
     attempt. Any other line that does not parse (in the middle, or ended by a newline) is damage,
     not a dead attempt, and dropping it would lose a record without a word: it raises a
-    ``ValueError`` naming the file and the line, and the file is left as it was.
+    ``ValueError`` naming the file and the line, and the file is left as it was. With
+    ``closed_torn`` (the MCP server's logs, whose ``_append_line`` closes off a killed writer's
+    fragment before its next record, P27), a record cut short anywhere in the file is torn too
+    (``mcp_server.torn_line``) and is dropped the same way (Phase 4 Task 14 fix round 1, review
+    M3); the store's own streams are never closed off, so there it is still damage.
 
     Kept lines are written back byte for byte, through a temp file and a rename; a file with
     nothing to drop is not touched."""
-    parsed = _parsed_lines(path)
+    parsed = _parsed_lines(path, closed_torn=closed_torn)
     return _keep_only(path, parsed, [_turn_in(record, produced) for _, record in parsed])
 
 
@@ -106,10 +111,11 @@ def _turn_in(record: Any, produced: Collection[int]) -> bool:
     return isinstance(turn, int) and turn in produced
 
 
-def _parsed_lines(path: Path) -> list[tuple[bytes, Any]]:
+def _parsed_lines(path: Path, *, closed_torn: bool = False) -> list[tuple[bytes, Any]]:
     """Each non-blank line of a JSONL file with its value; the torn last line (no newline after
-    it) has the value None. Any other line that does not parse raises, as in
-    ``drop_dead_attempts``."""
+    it) has the value None, and with ``closed_torn`` so does a record cut short that a later
+    line closed off (``mcp_server.torn_line``). Any other line that does not parse raises, as
+    in ``drop_dead_attempts``."""
     if not path.exists():
         return []
     lines = path.read_bytes().split(b"\n")
@@ -120,7 +126,8 @@ def _parsed_lines(path: Path) -> list[tuple[bytes, Any]]:
         try:
             out.append((line, json.loads(line)))
         except ValueError as exc:  # also bytes that are not UTF-8
-            if number == len(lines):  # nothing ends it: the writer died mid-line
+            # the writer died mid-line: the last line, or one the server closed off
+            if number == len(lines) or (closed_torn and torn_line(line)):
                 out.append((line, None))
                 continue
             raise ValueError(
