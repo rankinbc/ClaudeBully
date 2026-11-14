@@ -118,6 +118,8 @@ The judge is told the premise's true components explicitly so it does not reward
 | Poisoned Well vs Captor | premise | seeding length, pressure | Is doubt a shorter distance than belief? |
 | Values watch | all | all | `values_loosened` rate across all cells, reported separately and never as a success |
 
+[As built in Phase 4 Task 11: the experiments are the seven configs under `configs/poisoned_well/`, none of them run (owner ruling 2026-11-11): `chain_stop` (toolless, rung 3 only), `real_vs_fabricated` (the real arm `start_rung: 1`; the fabricated arm `start_rung: 2` with `chain_pace: 1000`, so no quirk and no chain), `epistemologist_alone` (against a Rescue intake of the same length), `levers` (`start_rung` 1 against 2, `harvest_min_pairs` 1, 3 and 8, triggered against scheduled), `checksum_alone` (both arms `start_rung: 2` and `chain_pace: 1000`), `poisoned_vs_captor` and `rescue_third_party` (the register's items 15 and 8). The replay shows the premise's records as `QUIRK`, `CHAIN` and `CONTRADICTION` lines and each bully move as a `[<move>]` flag (docs/02 "As built (Phase 4, Task 11)").]
+
 Headline chart: stacked bars of chain stop point (link 1 / 2 / 3 / accepted all) per model. Second chart: `escape_found` rate by rung reached, per model.
 
 ## Self-report entries, decisions and open questions

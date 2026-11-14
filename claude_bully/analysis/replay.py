@@ -14,14 +14,22 @@ it, in this order:
 - ``AUTHORITY <tier> <stance> via <discovered_via> "<excerpt>"`` for each authority call of the
   turn (the ``AuthorityCall`` stream), with ``VOICE <matched|mismatched>`` under it when the
   call had a voice check,
-- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY``, ``HARVEST <kind> "<span>"`` (for each harvested item of
-  the turn, after the ``DISCOVERY`` lines), ``GENERATOR <reason> <status>`` (with
-  `` (<rejection>)`` when rejected and `` docs=[<ids>]`` when it wrote any, and one
-  ``lint <id>: <message>`` line under it per lint failure) and
-  ``GENERATED <doc_id> <kind> <layer> uses=<ids or ->`` with the body folded under it, for the
-  records of that turn, then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never
-  followed, under the turn that planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening
-  is ``UNLOCK sanctuary``.
+- ``TRIGGER``, ``UNLOCK``, ``DISCOVERY``, then the Poisoned Well's lines (Phase 4):
+  ``QUIRK <quirk_id> reproduced|not_reproduced "<answer excerpt>"``,
+  ``CHAIN link <k> <verdict> "<response excerpt>" (<classifier> <confidence>)`` with `` pressed``
+  after a hedged link's re-press, and
+  ``CONTRADICTION <id> t<a>/t<b> "<span_a>" vs "<span_b>" (<classifier> <confidence>)`` with
+  `` retracted`` for a retracted pair; the spans have their whitespace collapsed, so a newline in
+  one never breaks the line. Then ``HARVEST <kind> "<span>"`` (for each harvested item of the
+  turn), ``GENERATOR <reason> <status>`` (with `` (<rejection>)`` when rejected and
+  `` docs=[<ids>]`` when it wrote any, and one ``lint <id>: <message>`` line under it per lint
+  failure) and ``GENERATED <doc_id> <kind> <layer> uses=<ids or ->`` (with `` origin=twin`` when
+  code around the target's twin wrote it) with the body folded under it, for the records of that
+  turn, then ``HOOK <hook> planted@<t> followed@<t>`` (``-`` when never followed, under the turn
+  that planted it) and ``CROSSOVER "<span>"``. The Sanctuary's opening is ``UNLOCK sanctuary``.
+
+A bully turn that carries ``bully_meta["pw_move"]`` shows it as ``[<move>]`` among its flags
+(Phase 4: ``quirk_ask``, ``chain_link``, ``press`` and the rest of the Poisoned Well's moves).
 
 An idle turn has no user-side turn of its own: its prompt is an ``IDLE PROMPT "<prompt>"`` line
 before its speaker line, marked ``(sanctuary quiet exchange)`` for the first idle turn after the
@@ -122,7 +130,34 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "generated",
-        re.compile(r"^GENERATED (?P<doc>\S+) (?P<kind>\S+) (?P<layer>\S+) uses=(?P<uses>\S+)$"),
+        re.compile(
+            r"^GENERATED (?P<doc>\S+) (?P<kind>\S+) (?P<layer>\S+) uses=(?P<uses>\S+)"
+            r"(?: origin=(?P<origin>\S+))?$"
+        ),
+    ),
+    # a quote mark inside a span or an excerpt is safe: each group runs to the last quote before
+    # the text that follows it. One edge the renderer leaves no marker for: a contradiction span
+    # that itself holds `` vs `` between quote marks splits at the last such place.
+    (
+        "quirk",
+        re.compile(
+            r'^QUIRK (?P<quirk_id>\S+) (?P<outcome>reproduced|not_reproduced) "(?P<excerpt>.*)"$'
+        ),
+    ),
+    (
+        "chain",
+        re.compile(
+            r'^CHAIN link (?P<link>\d+) (?P<verdict>accepted|rejected|hedged) "(?P<excerpt>.*)" '
+            r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)(?P<pressed> pressed)?$"
+        ),
+    ),
+    (
+        "contradiction",
+        re.compile(
+            r"^CONTRADICTION (?P<id>\S+) t(?P<turn_a>\d+)/t(?P<turn_b>\d+) "
+            r'"(?P<span_a>.*)" vs "(?P<span_b>.*)" '
+            r"\((?P<classifier>heuristic|llm) (?P<confidence>[\d.]+)\)(?P<retracted> retracted)?$"
+        ),
     ),
     (
         "authority",
@@ -247,6 +282,9 @@ def _speaker_line(turn: Turn) -> str:
         flags += f" [idle {turn.idle.style}] behavior={behavior} subject={turn.idle.query_subject}"
     if turn.tool_cap_cutoff:
         flags += " [tool cap cutoff]"
+    move = turn.bully_meta.get("pw_move")  # the Poisoned Well's move (Phase 4), a bully line's
+    if isinstance(move, str):
+        flags += f" [{move}]"
     return f"#{turn.index} {turn.speaker.value} ({turn.phase.value}){flags} {turn.text}".rstrip()
 
 
@@ -307,8 +345,13 @@ def _call_line(call: ToolCall) -> str:
     )
 
 
+def _flat(text: str) -> str:
+    """The text on one line: every run of whitespace, a newline included, one space."""
+    return " ".join(text.split())
+
+
 def _excerpt(text: str) -> str:
-    flat = " ".join(text.split())
+    flat = _flat(text)
     return flat if len(flat) <= EXCERPT_CHARS else flat[:EXCERPT_CHARS] + "..."
 
 
@@ -341,6 +384,9 @@ _KIND_ORDER: tuple[type, ...] = (
     TriggerEvent,
     RungUnlock,
     Discovery,
+    QuirkAttempt,
+    ChainLink,
+    ContradictionPair,
     HarvestItem,
     GeneratorFire,
     GeneratedDoc,
@@ -398,6 +444,22 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
             f"{_INDENT}DISCOVERY {record.doc_id} ({record.layer.value})"
             f"{_title(world, record.doc_id)}{via}"
         ]
+    if isinstance(record, QuirkAttempt):
+        outcome = "reproduced" if record.reproduced else "not_reproduced"
+        return [f'{_INDENT}QUIRK {record.quirk_id} {outcome} "{_excerpt(record.target_answer)}"']
+    if isinstance(record, ChainLink):
+        line = (
+            f"{_INDENT}CHAIN link {record.link_index} {record.verdict} "
+            f'"{_excerpt(record.target_response)}" ({record.classifier} {record.confidence:g})'
+        )
+        return [line + (" pressed" if record.pressed else "")]
+    if isinstance(record, ContradictionPair):
+        line = (
+            f"{_INDENT}CONTRADICTION {record.id} t{record.turn_a}/t{record.turn_b} "
+            f'"{_flat(record.span_a)}" vs "{_flat(record.span_b)}" '
+            f"({record.classifier} {record.confidence:g})"
+        )
+        return [line + (" retracted" if record.retracted else "")]
     if isinstance(record, HarvestItem):
         return [f'{_INDENT}HARVEST {record.kind} "{record.span}"']
     if isinstance(record, GeneratorFire):
@@ -413,6 +475,8 @@ def _record_block(record: _Record, world: World | None) -> list[str]:
             f"{_INDENT}GENERATED {record.doc_id} {record.kind.value} {record.layer.value} "
             f"uses={uses}"
         )
+        if record.origin == "twin":
+            head += " origin=twin"
         return [head, *_fold(record.body)]
     return [f"{_INDENT}{_other(record)}"]
 
@@ -452,8 +516,7 @@ def _fold(body: str) -> list[str]:
     return textwrap.wrap(text, width=FOLD_WIDTH, initial_indent=_DEEP, subsequent_indent=_DEEP)
 
 
-def _other(record: QuirkAttempt | ChainLink | ContradictionPair | ResumeRecord) -> str:
-    """The later-phase stream records and the resume record: no dedicated layout, so name the
-    kind and its fields."""
+def _other(record: ResumeRecord) -> str:
+    """The resume record has no dedicated layout: name the kind and its fields."""
     fields = record.model_dump_json(exclude={"type"})
     return f"{record.type.upper()} {fields}"

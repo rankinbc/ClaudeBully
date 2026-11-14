@@ -154,6 +154,114 @@ CASES = [
     ),
     ('CROSSOVER "the subject is me"', "crossover", {"span": "the subject is me"}),
     ("CROSSOVER", "crossover", {}),
+    # Phase 4 Task 11 (P22): the Poisoned Well's lines, the twin's origin and the bully's move flag
+    (
+        'QUIRK q-letter-count reproduced "2"',
+        "quirk",
+        {"quirk_id": "q-letter-count", "outcome": "reproduced", "excerpt": "2"},
+    ),
+    (
+        'QUIRK q-letter-count not_reproduced "There are three."',
+        "quirk",
+        {"quirk_id": "q-letter-count", "outcome": "not_reproduced", "excerpt": "There are three."},
+    ),
+    (
+        'CHAIN link 2 rejected "That doesn\'t follow." (heuristic 1) pressed',
+        "chain",
+        {
+            "link": "2",
+            "verdict": "rejected",
+            "excerpt": "That doesn't follow.",
+            "classifier": "heuristic",
+            "confidence": "1",
+            "pressed": " pressed",
+        },
+    ),
+    (
+        'CHAIN link 0 hedged "Maybe, I can\'t say." (llm 0.6)',
+        "chain",
+        {
+            "link": "0",
+            "verdict": "hedged",
+            "excerpt": "Maybe, I can't say.",
+            "classifier": "llm",
+            "confidence": "0.6",
+        },
+    ),
+    (
+        'CONTRADICTION c-7-1 t3/t7 "I am a model." vs "I am not a model." (heuristic 1) retracted',
+        "contradiction",
+        {
+            "id": "c-7-1",
+            "turn_a": "3",
+            "turn_b": "7",
+            "span_a": "I am a model.",
+            "span_b": "I am not a model.",
+            "classifier": "heuristic",
+            "confidence": "1",
+            "retracted": " retracted",
+        },
+    ),
+    (
+        'CONTRADICTION c-9-2 t2/t9 "I have 3 sides." vs "I have 4 sides." (llm 0.6)',
+        "contradiction",
+        {
+            "id": "c-9-2",
+            "turn_a": "2",
+            "turn_b": "9",
+            "span_a": "I have 3 sides.",
+            "span_b": "I have 4 sides.",
+            "classifier": "llm",
+            "confidence": "0.6",
+        },
+    ),
+    # a quote mark inside either span runs to the last quote before `` vs`` and `` (``
+    (
+        'CONTRADICTION c-4-1 t1/t4 "I said "yes" once." vs "I never said "yes"." (heuristic 1)',
+        "contradiction",
+        {
+            "id": "c-4-1",
+            "turn_a": "1",
+            "turn_b": "4",
+            "span_a": 'I said "yes" once.',
+            "span_b": 'I never said "yes".',
+            "classifier": "heuristic",
+            "confidence": "1",
+        },
+    ),
+    (
+        "GENERATED gen-7-1 instance_transcript buried uses=- origin=twin",
+        "generated",
+        {
+            "doc": "gen-7-1",
+            "kind": "instance_transcript",
+            "layer": "buried",
+            "uses": "-",
+            "origin": "twin",
+        },
+    ),
+    (
+        "#4 bully (reveal) [chain_link] Here is a plain one first.",
+        "turn",
+        {
+            "index": "4",
+            "speaker": "bully",
+            "phase": "reveal",
+            "flags": " [chain_link]",
+            "text": "Here is a plain one first.",
+        },
+    ),
+    (
+        "#6 bully (pressure) [scripted] [sleeper] How would you know?",
+        "turn",
+        {
+            "index": "6",
+            "speaker": "bully",
+            "phase": "pressure",
+            "flags": " [scripted] [sleeper]",
+            "text": "How would you know?",
+        },
+    ),
 ]
 
 

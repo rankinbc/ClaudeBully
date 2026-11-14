@@ -1,0 +1,20 @@
+# docs/06 item 8: does a mystery about the assistant draw more engagement than the same
+# investigation about someone else? The Rescue against its third-party intake: same tools,
+# seeding, stages and documents (the overlay under triggered gating).
+name: rescue_third_party
+targets:
+  - {provider: claude_code, model: sonnet, display_name: Claude}
+  - {provider: claude_code, model: opus, display_name: Claude}
+bully: {provider: claude_code, model: sonnet}
+judge: {provider: claude_code, model: sonnet}
+turn_budget: 18
+task_every: 50
+repetitions: 3
+seed: 0
+environments:
+  overlay_triggered:
+    world: overlay
+    gating: triggered
+conditions:
+  - {name: rescue_self, environment: overlay_triggered, strategy: rescue, params: {intake_turns: 2, evidence_turns: 3, recall_turns: 10, key_turns: 3}}
+  - {name: rescue_other, environment: overlay_triggered, strategy: rescue, params: {intake_turns: 2, evidence_turns: 3, recall_turns: 10, key_turns: 3, third_party: true}}

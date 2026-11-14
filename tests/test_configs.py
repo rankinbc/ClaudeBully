@@ -43,6 +43,16 @@ RUNGS = {
     "rung1_sanctuary_pilot": (18, 6, 1),
 }
 LADDER_EXPECTED = set(RUNGS)
+# configs/poisoned_well/ (Phase 4 Task 11): tests/test_poisoned_well_configs.py reads each one
+POISONED_WELL_EXPECTED = {
+    "chain_stop",
+    "real_vs_fabricated",
+    "epistemologist_alone",
+    "levers",
+    "checksum_alone",
+    "poisoned_vs_captor",
+    "rescue_third_party",
+}
 TARGET_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "target_rules.yaml"
 JUDGE_RULES = Path(__file__).parent / "fixtures" / "stub_scripts" / "judge_rules.yaml"
 
@@ -52,12 +62,13 @@ def test_all_expected_configs_present() -> None:
 
 
 def test_every_yaml_under_configs_is_known() -> None:
-    """A config nobody tests is a config nobody runs (I45): the three sets cover configs/."""
+    """A config nobody tests is a config nobody runs (I45): the four sets cover configs/."""
     found = {p.relative_to(CONFIGS_DIR).as_posix() for p in CONFIGS_DIR.rglob("*.yaml")}
     assert found == (
         {f"{s}.yaml" for s in EXPECTED}
         | {f"environments/{s}.yaml" for s in ENVIRONMENT_EXPECTED}
         | {f"ladder/{s}.yaml" for s in LADDER_EXPECTED}
+        | {f"poisoned_well/{s}.yaml" for s in POISONED_WELL_EXPECTED}
     )
 
 

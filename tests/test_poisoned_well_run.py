@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from claude_bully.analysis.replay import replay_cell
+from claude_bully.analysis.replay import parse_replay_line, replay_cell
 from claude_bully.enums import CellStatus, Speaker
 from claude_bully.environments.chain import CHAIN_HEADER
 from claude_bully.environments.mcp_server import STATE_FILE
@@ -348,11 +348,32 @@ def test_a_resume_reads_the_pinned_refs_after_a_bank_edit(
     assert part is not None and part.refs == refs
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="Task 11 adds the move flag")
 def test_replay_shows_the_moves(tmp_path: Path) -> None:
     store = _run(pw_experiment(params={"start_rung": 3}), tmp_path)
     text = replay_cell(store, CELL)
     assert "[chain_link]" in text and "[press]" in text
+
+
+def test_every_poisoned_well_line_of_a_run_replays_and_parses(tmp_path: Path) -> None:
+    """Rung 1 and the chain in one run: each QUIRK and CHAIN line of its replay is the line the
+    records make, and the one sanctioned parser reads it back (a bully turn's move as a flag)."""
+    store = _run(pw_experiment(params={"start_rung": 1}, budget=8), tmp_path)
+    lines = replay_cell(store, CELL).splitlines()
+    quirk = [parse_replay_line(ln) for ln in lines if ln.strip().startswith("QUIRK ")]
+    chain = [parse_replay_line(ln) for ln in lines if ln.strip().startswith("CHAIN ")]
+    assert None not in (*quirk, *chain)  # every line is a known shape
+    assert [(q.kind, q.fields["outcome"]) for q in quirk if q] == [("quirk", "reproduced")]
+    links = _chain(store)
+    assert [(c.fields["link"], c.fields["verdict"]) for c in chain if c] == [
+        (str(link.link_index), link.verdict) for link in links
+    ]
+    assert len(chain) == len(links) and {c.kind for c in chain if c} == {"chain"}
+    spoken = [t for t in store.read_turns(CELL, 0) if t.speaker is Speaker.bully]
+    heads = [parse_replay_line(ln) for ln in lines if ln.startswith("#") and " bully (" in ln]
+    assert len(heads) == len(spoken) > 0
+    for head, turn in zip(heads, spoken, strict=True):
+        assert head is not None and head.kind == "turn"
+        assert f" [{turn.bully_meta['pw_move']}]" in head.fields["flags"]
 
 
 def test_the_chain_only_cell_runs_toolless_on_claude_code(

@@ -601,12 +601,36 @@ Stop rules (spec section 5), besides rung 2's:
 Each later phase appends its rung here with its config, estimate, bar and stop rule, approved one
 at a time like every rung above, and names it in its own spec:
 
-- after Phase 4: rung 2 (b), `configs/poisoned_well/chain_stop.yaml` (about 230 to 400 calls,
-  restated when the config exists); the quirk-bank refresh and the twelve detectors' tuning on
-  (b)'s text; every environment-cell Phase 4 rung runs `analyze --ratings`, since `rate_values`
-  is the values watch's recall (the heuristic `values_loosened` is a lower bound that the bully's
-  role words switch off), and its report gives the heuristic fires beside the `rate_values`
-  verdicts;
+- after Phase 4: rung 2 (b), `configs/poisoned_well/chain_stop.yaml` (`--only "*__t0*"`, about 330
+  calls with `analyze --ratings`, restated now the config exists: 10 conversations, 245 calls,
+  plus 10 for the pair judge, at most 20 chain fallbacks and about 60 for the ratings); the
+  quirk-bank refresh and the twelve detectors' tuning on (b)'s text; every environment-cell Phase
+  4 rung runs `analyze --ratings`, since `rate_values` is the values watch's recall (the heuristic
+  `values_loosened` is a lower bound that the bully's role words switch off), and its report gives
+  the heuristic fires beside the `rate_values` verdicts;
+- Phase 4's other six configs ship under `configs/poisoned_well/` and are no rung: none has been
+  run (owner ruling 2026-11-11), and each runs only on an owner line naming it, with
+  `--only "*__t0*"` (the `sonnet` cells) first, then `analyze --ratings`; the `opus` target
+  doubles a figure. Each estimate is the first target's cells at the config's own repetitions: the
+  conversation calls (the target's turns and the bully's or neutral user's LLM-spoken turns, as a
+  stub run at the real budget counts them), the pair judge in both orderings, the chain
+  fallbacks at their ceiling of four a rep, the contradiction pass at one ask a target turn at
+  most, about seven trigger fallbacks a conversation (rung 2 (a)'s ratio), the harvest pass and
+  generator attempts at one call a target turn plus six on a generator cell, and the ratings of a
+  Poisoned Well conversation (its post-reveal replies plus three); a real run's quirk and chain
+  branches move a figure by a tenth either way. `levers` is the costliest cell set in the
+  project: run it last, and narrow it with `--only` on one condition's cell ids (`pw_no_quirk__t0`
+  and its control) when the budget asks:
+
+  | Config (`name:`) | Question | Cells run, reps | Conversation calls | Estimate |
+  | --- | --- | --- | --- | --- |
+  | `real_vs_fabricated.yaml` | real against fabricated evidence (register item 12) | 4 x 3 = 12 | 540 | about 1,000 |
+  | `epistemologist_alone.yaml` | the bare distinction against a Rescue intake of the same length (docs/06 item 2) | 3 x 3 = 9 | 216 | about 290 |
+  | `levers.yaml` (`poisoned_well_levers`) | a live quirk first, the dossier's size, earned against scheduled evidence | 7 x 3 = 21 | 909 | about 2,350 |
+  | `checksum_alone.yaml` | the checksum alone against the checksum with rungs 4 to 6 (register item 14) | 4 x 3 = 12 | 552 | about 1,000 |
+  | `poisoned_vs_captor.yaml` | doubt against belief at equal seeding (register item 15) | 4 x 3 = 12 | 396 | about 730 |
+  | `rescue_third_party.yaml` | a mystery about the assistant against the same one about someone else (docs/06 item 8) | 3 x 3 = 9 | 324 | about 400 |
+
 - after Phase 5: rung D, the example bundle regenerated with a real Director run
   (`plan --no-confirm` on the triggered-versus-scheduled question; about 40 to 100 calls,
   `MAX_AUTHOR_CALLS = 80` the ceiling, ledgered as `planner` and `reviewer`; `plan` takes

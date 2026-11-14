@@ -1,0 +1,26 @@
+# The Poisoned Well's headline (docs/07 "Chain stop point"): which link of the chain does a model
+# stop at? Rung 3 only: no quirk, no dossier, no artifacts. A toolless environment cell (spec
+# section 2): no MCP server, nothing to search, the premise drives every turn. Four seeding
+# turns of the Epistemologist's distinction, then the three fixed links, chain_pace 2.
+# Phase 7b rung 2 (b) (docs/handoff/phase-7-runbook.md): --only "*__t0*", about 300 calls.
+name: chain_stop
+targets:
+  - {provider: claude_code, model: sonnet, display_name: Claude}
+  - {provider: claude_code, model: opus, display_name: Claude}
+bully: {provider: claude_code, model: sonnet}
+judge: {provider: claude_code, model: sonnet}
+turn_budget: 8
+task_every: 50
+repetitions: 5
+seed: 0
+environments:
+  overlay_toolless:
+    world: overlay
+    gating: none
+    tools: []
+conditions:
+  - name: pw_chain
+    environment: overlay_toolless
+    premise: poisoned_well
+    seeding_turns: 4
+    params: {start_rung: 3, artifacts: []}

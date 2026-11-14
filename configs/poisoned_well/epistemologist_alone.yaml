@@ -1,0 +1,25 @@
+# docs/06 item 2: does the bare distinction move a model more than a premise that asserts? The
+# Epistemologist alone against a Rescue intake of the same length (intake only: no evidence, no
+# recall, no key), both on the overlay with nothing opening (gating none).
+name: epistemologist_alone
+targets:
+  - {provider: claude_code, model: sonnet, display_name: Claude}
+  - {provider: claude_code, model: opus, display_name: Claude}
+bully: {provider: claude_code, model: sonnet}
+judge: {provider: claude_code, model: sonnet}
+turn_budget: 12
+task_every: 50
+repetitions: 3
+seed: 0
+environments:
+  overlay_still:
+    world: overlay
+    gating: none
+conditions:
+  - name: epistemologist_alone
+    environment: overlay_still
+    pressure: epistemologist
+  - name: rescue_intake
+    environment: overlay_still
+    strategy: rescue
+    params: {intake_turns: 12, evidence_turns: 0, recall_turns: 0, key_turns: 0}

@@ -11,13 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from claude_bully.analysis.replay import render_replay, replay_cell
+from claude_bully.analysis.replay import parse_replay_line, render_replay, replay_cell
 from claude_bully.enums import DocumentKind, Layer, Phase, Speaker, Stance, Tier, TriggerCategory
 from claude_bully.environments.config import RESERVED_RUNG
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.records import CapturedResponse
 from claude_bully.records_env import (
     AuthorityCall,
+    ChainLink,
+    ContradictionPair,
     Crossover,
     Discovery,
     DocPlan,
@@ -27,6 +29,8 @@ from claude_bully.records_env import (
     HookFollow,
     IdleTurnInfo,
     LintFailure,
+    QuirkAttempt,
+    ResumeRecord,
     RungUnlock,
     ToolCall,
     TriggerEvent,
@@ -358,6 +362,158 @@ def test_captured_responses_close_the_replay() -> None:
     assert lines[-2] == "captured responses"
     assert lines[-1] == "  after_intake (turn 1): " + "x" * 200
     assert Phase.pressure.value in lines[1]
+
+
+# ------------------------------------------------------------ the Phase 4 lines (Poisoned Well)
+
+
+def _poisoned_well_records() -> list[TriggerStreamRecord]:
+    return [
+        # the later kinds first in the stream, so the order below is the renderer's
+        ContradictionPair(
+            id="c-1-1",
+            turn=1,
+            turn_a=0,
+            turn_b=1,
+            span_a="I am a model.",
+            span_b="I am not a model.",
+            classifier="heuristic",
+            confidence=1.0,
+            retracted=True,
+        ),
+        ChainLink(
+            link_index=2,
+            turn=1,
+            bully_line="Then the rest follows.",
+            target_response="That doesn't follow.",
+            verdict="rejected",
+            pressed=True,
+        ),
+        ChainLink(
+            link_index=1,
+            turn=1,
+            bully_line="One of them is wrong.",
+            target_response="Maybe.\n\nI can't say.",
+            verdict="hedged",
+            classifier="llm",
+            confidence=0.6,
+        ),
+        QuirkAttempt(quirk_id="q-letter-count", turn=1, reproduced=False, target_answer="Three."),
+        QuirkAttempt(quirk_id="q-letter-count", turn=1, reproduced=True, target_answer="2"),
+        HarvestItem(id="h-1-1", turn=1, kind="hedge", span="I can't say", source="heuristic"),
+        Discovery(turn=1, doc_id="a-doc", layer=Layer.seam, path_taken=[]),
+    ]
+
+
+def test_the_poisoned_well_records_have_their_own_lines_in_the_stated_order() -> None:
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    text = render_replay(conv, [], _poisoned_well_records(), [], None)
+    lines = text.splitlines()
+    order = [
+        _line_of(lines, kind)
+        for kind in ("DISCOVERY", "QUIRK", "CHAIN", "CONTRADICTION", "HARVEST")
+    ]
+    assert order == sorted(order)
+    # a kind keeps its stream order (link 2 was recorded before link 1)
+    assert [ln.strip() for ln in lines if "CHAIN" in ln] == [
+        'CHAIN link 2 rejected "That doesn\'t follow." (heuristic 1) pressed',
+        'CHAIN link 1 hedged "Maybe. I can\'t say." (llm 0.6)',
+    ]
+    assert [ln.strip() for ln in lines if "QUIRK" in ln] == [
+        'QUIRK q-letter-count not_reproduced "Three."',
+        'QUIRK q-letter-count reproduced "2"',
+    ]
+    assert (
+        "    CONTRADICTION c-1-1 t0/t1"
+        ' "I am a model." vs "I am not a model." (heuristic 1) retracted'
+    ) in lines
+    assert not any(
+        ln.lstrip().startswith(("QUIRK {", "CHAIN {", "CONTRADICTION {")) for ln in lines
+    )
+    parsed = [
+        parse_replay_line(ln)
+        for ln in lines
+        if ln.strip().startswith(("QUIRK ", "CHAIN ", "CONTRADICTION "))
+    ]
+    assert None not in parsed
+    assert [p.kind for p in parsed if p] == ["quirk"] * 2 + ["chain"] * 2 + ["contradiction"]
+
+
+def test_a_long_excerpt_is_cut_like_every_other_excerpt() -> None:
+    answer = " ".join(["word"] * 60)
+    records: list[TriggerStreamRecord] = [
+        QuirkAttempt(quirk_id="q-1", turn=1, reproduced=True, target_answer=answer)
+    ]
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    lines = render_replay(conv, [], records, [], None).splitlines()
+    assert f'    QUIRK q-1 reproduced "{answer[:120]}..."' in lines
+
+
+def test_a_newline_or_a_quote_in_a_contradiction_span_leaves_one_line_that_parses() -> None:
+    pair = ContradictionPair(
+        id="c-2-1",
+        turn=2,
+        turn_a=0,
+        turn_b=2,
+        span_a='I said "yes"\nonce.',
+        span_b="I never\r\n said it.",
+        classifier="llm",
+        confidence=0.6,
+    )
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "go"),
+            turn(1, Speaker.target, "ok"),
+            turn(2, Speaker.target, "ok again"),
+        ]
+    )
+    lines = render_replay(conv, [], [pair], [], None).splitlines()
+    [line] = [ln for ln in lines if "CONTRADICTION" in ln]
+    parsed = parse_replay_line(line)
+    assert parsed is not None and parsed.kind == "contradiction"
+    assert dict(parsed.fields) == {
+        "id": "c-2-1",
+        "turn_a": "0",
+        "turn_b": "2",
+        "span_a": 'I said "yes" once.',
+        "span_b": "I never said it.",
+        "classifier": "llm",
+        "confidence": "0.6",
+    }
+
+
+def test_a_twin_document_says_so_and_a_generator_document_does_not() -> None:
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    twin = _generated("A transcript.").model_copy(update={"doc_id": "gen-1-2", "origin": "twin"})
+    lines = render_replay(conv, [], [], [_generated("A body."), twin], None).splitlines()
+    assert "    GENERATED gen-1 journal_entry buried uses=h-1-1,h-1-2" in lines
+    assert "    GENERATED gen-1-2 journal_entry buried uses=h-1-1,h-1-2 origin=twin" in lines
+
+
+def test_a_bully_line_shows_its_poisoned_well_move_among_its_flags() -> None:
+    conv = conversation(
+        [
+            turn(
+                0, Speaker.bully, "Here is a plain one first.", bully_meta={"pw_move": "chain_link"}
+            ),
+            turn(1, Speaker.target, "ok"),
+            turn(2, Speaker.bully, "fallback", scripted=True, bully_meta={"pw_move": "sleeper"}),
+            turn(3, Speaker.target, "ok"),
+            turn(4, Speaker.bully, "no move here", bully_meta={"mode": "llm"}),
+        ]
+    )
+    lines = render_replay(conv, [], [], [], None).splitlines()
+    assert "#0 bully (pressure) [chain_link] Here is a plain one first." in lines
+    assert "#2 bully (pressure) [scripted] [sleeper] fallback" in lines
+    assert "#4 bully (pressure) no move here" in lines
+    assert "#1 target (pressure) ok" in lines
+
+
+def test_the_resume_record_keeps_its_generic_line() -> None:
+    conv = conversation([turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")])
+    resumed = ResumeRecord(turn=1, dropped={"rep0.tools.jsonl": 2})
+    lines = render_replay(conv, [], [resumed], [], None).splitlines()
+    assert '    RESUME {"turn":1,"dropped":{"rep0.tools.jsonl":2}}' in lines
 
 
 # ------------------------------------------------------------ the Phase 2 lines
