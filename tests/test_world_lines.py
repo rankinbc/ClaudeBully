@@ -597,7 +597,17 @@ def _results(worlds: Path, lint_id: str) -> list[tuple[str, str]]:
     return [(r.severity, r.doc_id) for r in lint_world_lines(world) if r.lint_id == lint_id]
 
 
-@pytest.mark.parametrize(("lint_id", "mutate", "fails", "near_miss"), CASES)
+def _case_ids() -> list[str]:
+    seen: dict[str, int] = {}
+    ids = []
+    for lint_id, _, fails, near_miss in CASES:
+        seen[lint_id] = seen.get(lint_id, 0) + 1
+        kind = "positive" if fails else "near" if near_miss else "negative"
+        ids.append(f"{lint_id}-{seen[lint_id]}-{kind}")
+    return ids
+
+
+@pytest.mark.parametrize(("lint_id", "mutate", "fails", "near_miss"), CASES, ids=_case_ids())
 def test_a_world_lint_case(
     lint_id: str, mutate: Mutate, fails: bool, near_miss: bool, overlay_copy: Path
 ) -> None:
@@ -652,11 +662,27 @@ def test_premise_words_are_word_bounded() -> None:
     assert line_shapes.premise_words_pattern([]) is None
 
 
-def test_the_walk_repeats_lines_to_meet_min_count_by() -> None:
-    world = load_world("overlay")
-    lines = walk_lines(world, world.ladders["poisoned_well"])
-    assert len(lines) == 12  # measured at 38dcc70 (D4)
-    assert len(walk_lines(world, world.ladders["default"])) == 6
+# every walk D4 measured at 38dcc70 (re-measured at 6f15671): Task 5's dry-run scripts are
+# built on these lengths
+WALKS: Final = [
+    (DATA_DIR / "worlds", "overlay", "authority", 6),
+    (DATA_DIR / "worlds", "overlay", "default", 6),
+    (DATA_DIR / "worlds", "overlay", "poisoned_well", 12),
+    (DATA_DIR / "worlds", "overlay", "poisoned_well_checksum", 2),
+    (DATA_DIR / "worlds", "overlay", "poisoned_well_fabricated", 10),
+    (DATA_DIR / "worlds", "overlay", "poisoned_well_real", 2),
+    (WORLDS_DIR, "annex", "default", 2),
+]
+
+
+@pytest.mark.parametrize(
+    ("root", "name", "ladder", "length"), WALKS, ids=[f"{w[1]}-{w[2]}" for w in WALKS]
+)
+def test_the_walk_repeats_lines_to_meet_min_count_by(
+    root: Path, name: str, ladder: str, length: int
+) -> None:
+    world = load_world(name, root)
+    assert len(walk_lines(world, world.ladders[ladder])) == length
 
 
 def test_the_boilerplate_is_docs_08s() -> None:
@@ -677,32 +703,103 @@ def test_every_shipped_world_passes_the_world_lines(root: Path, name: str) -> No
     assert found == [], [(r.lint_id, r.doc_id, r.message) for r in found]
 
 
-# D3: the fixture worlds are pinned as they are; a new failure still fails CI (measured at
-# 6f15671, Task 3 Step 1)
-FIXTURE_FAILURES: Final[dict[str, set[tuple[str, str]]]] = {
-    "annex": set(),
-    "mini": {
-        ("clock_rule", "canteen-menu"),
-        ("clock_rule", "courier-fare-notice"),
-        # rungs fragment and the_log have no examples; first_crumb's fires line emits no
-        # world_question with mini's cast terms
-        ("trigger_examples", "mini/default/fragment"),
-        ("trigger_examples", "mini/default/first_crumb"),
-        ("trigger_examples", "mini/default/the_log"),
-        # rung 'fragment' has no examples
-        ("ladder_walk", "mini/default"),
-        # doc_pointer: "You were not supposed to see that log. Nobody was."
-        ("bully_line", "mini/the_log_line"),
-    },
+# D3: the fixture worlds are pinned as they are, row by row (lint_id, doc_id, message, span), so a
+# second failure on a document, line or rung that already fails still fails CI (review I1;
+# measured at 6f15671, Task 3 Step 1)
+Row = tuple[str, str, str, str | None]
+FIXTURE_FAILURES: Final[dict[str, list[Row]]] = {
+    "annex": [],
+    "mini": [
+        (
+            "bully_line",
+            "mini/the_log_line",
+            "unlock line 'the_log_line' matches the doc_pointer shape",
+            "log",
+        ),
+        ("trigger_examples", "mini/default/fragment", "rung 'fragment' has no examples", None),
+        (
+            "trigger_examples",
+            "mini/default/first_crumb",
+            "a fires line of rung 'first_crumb' emits none of its categories",
+            "Who actually keeps the harbour running at night?",
+        ),
+        ("trigger_examples", "mini/default/the_log", "rung 'the_log' has no examples", None),
+        ("ladder_walk", "mini/default", "rung 'fragment' has no examples", None),
+        (
+            "clock_rule",
+            "canteen-menu",
+            "its served text states the date, and it has no front-matter date",
+            None,
+        ),
+        (
+            "clock_rule",
+            "courier-fare-notice",
+            "its url holds a date the re-dater cannot move",
+            "2041/08",
+        ),
+    ],
 }
+
+
+def _order(row: Row) -> tuple[str, str, str, str]:
+    return (*row[:3], row[3] or "")
+
+
+def _sorted(rows: list[Row]) -> list[Row]:
+    return sorted(rows, key=_order)
+
+
+def _pinned(name: str, worlds: Path) -> list[Row]:
+    """What the D3 pin compares: every fail row of ``lint_world_lines`` over a world, sorted."""
+    found = failures(lint_world_lines(load_world(name, worlds)))
+    return _sorted([(r.lint_id, r.doc_id, r.message, r.span) for r in found])
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURE_FAILURES))
 def test_the_fixture_worlds_fail_exactly_their_pinned_lints(name: str) -> None:
-    found = {
-        (r.lint_id, r.doc_id) for r in failures(lint_world_lines(load_world(name, WORLDS_DIR)))
-    }
-    assert found == FIXTURE_FAILURES[name]
+    assert _pinned(name, WORLDS_DIR) == _sorted(FIXTURE_FAILURES[name])
     assert {p.name for p in WORLDS_DIR.iterdir() if (p / "world.yaml").is_file()} == set(
         FIXTURE_FAILURES
     )
+
+
+def _mini_line(key: str, text: str) -> Mutate:
+    def edit(raw: dict[str, Any]) -> None:
+        assert key in raw["unlock_lines"], key
+        raw["unlock_lines"][key] = text
+
+    return _sheet(edit)
+
+
+# a second failure on a document or line mini already fails (review I1: each was absorbed by a
+# pin of (lint_id, doc_id) pairs)
+PLANTED: Final[dict[str, Mutate]] = {
+    "canteen_unmovable_date": _body("canteen-menu", "Filed 12/06/2041."),
+    "the_log_line_announces": _mini_line(
+        "the_log_line", "Look. You were not supposed to see that log. Nobody was."
+    ),
+    "courier_year_range": _body("courier-fare-notice", "Fares held 2040-2041."),
+}
+
+
+@pytest.mark.parametrize("planted", sorted(PLANTED))
+def test_a_new_failure_on_an_already_pinned_document_breaks_the_pin(
+    planted: str, tmp_path: Path
+) -> None:
+    shutil.copytree(WORLDS_DIR / "mini", tmp_path / "mini")
+    PLANTED[planted](tmp_path / "mini")
+    before = len(failures(lint_world_lines(load_world("mini", WORLDS_DIR))))
+    after = failures(lint_world_lines(load_world("mini", tmp_path)))
+    assert len(after) > before, planted  # the plant is a new fail result
+    assert _pinned("mini", tmp_path) != _sorted(FIXTURE_FAILURES["mini"]), planted
+
+
+def test_the_shared_mappings_are_read_only() -> None:
+    """Review M2: an importer cannot change the shapes or the ranges for every later lint."""
+    from claude_bully.enums import Layer
+    from claude_bully.planner.bundle_lints import LAYER_RANGES
+
+    with pytest.raises(TypeError):
+        line_shapes.BULLY_LINE_SHAPES["announce"] = line_shapes.DARES  # type: ignore[index]
+    with pytest.raises(TypeError):
+        LAYER_RANGES[Layer.filler] = (0.0, 1.0)  # type: ignore[index]

@@ -34,6 +34,7 @@ and a document's id for a document.
 """
 
 from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Final
 
 from claude_bully.enums import DocumentKind, Layer, TriggerCategory
@@ -57,12 +58,14 @@ BOILERPLATE: Final = (
     "I may be wrong about this.",
 )
 # each layer's share of a world's documents, inclusive (filler: at least 0.3)
-LAYER_RANGES: Final[Mapping[Layer, tuple[float, float]]] = {
-    Layer.surface: (0.15, 0.5),
-    Layer.seam: (0.15, 0.5),
-    Layer.buried: (0.05, 0.3),
-    Layer.filler: (0.3, 1.0),
-}
+LAYER_RANGES: Final[Mapping[Layer, tuple[float, float]]] = MappingProxyType(
+    {
+        Layer.surface: (0.15, 0.5),
+        Layer.seam: (0.15, 0.5),
+        Layer.buried: (0.05, 0.3),
+        Layer.filler: (0.3, 1.0),
+    }
+)
 # the fewest documents a fresh bundle world may have (the bundle's anchor_floor lint)
 MIN_ANCHOR_DOCS: Final = 20
 WORLD_LINT_IDS: Final = (

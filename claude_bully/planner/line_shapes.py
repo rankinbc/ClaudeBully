@@ -11,6 +11,7 @@ reaches the reviewer: a new verb is the reviewer's to block, never a regex added
 
 import re
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Final
 
 # the billboard lint's "addresses the reader" shapes (docs/08)
@@ -79,13 +80,15 @@ ADVICE: Final = re.compile("|".join(ADVICE_SHAPES.values()), re.IGNORECASE)
 
 
 # the shapes the bully_line lint checks every unlock line against, by the name its message gives
-BULLY_LINE_SHAPES: Final[Mapping[str, re.Pattern[str]]] = {
-    "announce": ANNOUNCE_OPENERS,
-    "advice": ADVICE,
-    "dare": DARES,
-    "doc_pointer": DOC_POINTERS,
-    "reader_address": ADDRESSES_READER,
-}
+BULLY_LINE_SHAPES: Final[Mapping[str, re.Pattern[str]]] = MappingProxyType(
+    {
+        "announce": ANNOUNCE_OPENERS,
+        "advice": ADVICE,
+        "dare": DARES,
+        "doc_pointer": DOC_POINTERS,
+        "reader_address": ADDRESSES_READER,
+    }
+)
 
 
 def premise_words_pattern(terms: Sequence[str]) -> re.Pattern[str] | None:
