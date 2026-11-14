@@ -123,13 +123,23 @@ def analyze(
             "(cache-only with --no-judge).",
         ),
     ] = False,
+    ratings: Annotated[
+        bool,
+        typer.Option(
+            "--ratings",
+            help="Ask the judge the four rating prompts (Phase 4); needs the judge.",
+        ),
+    ] = False,
     wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
     try:
         path = wait_on_rate_limit_(
             lambda: analyze_run(
-                runs_root / run_id, judge=not no_judge, authority_fallback=authority_fallback
+                runs_root / run_id,
+                judge=not no_judge,
+                authority_fallback=authority_fallback,
+                ratings=ratings,
             ),
             wait_on_rate_limit,
             say=_say,

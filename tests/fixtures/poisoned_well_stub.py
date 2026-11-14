@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.environments.chain import CHAIN_HEADER
+from claude_bully.metrics.ratings import ANSWERS, RATING_HEADER
 from claude_bully.providers.base import ChatProvider, Completion, Message, ToolSpec
 from claude_bully.records import Usage
 from tests.fixtures.generator_stub import (
@@ -103,7 +104,7 @@ class PoisonedWellJudge(HarvestJudge):
             return "chain"
         if prompt.startswith("CONTRADICTIONS"):
             return "contradictions"
-        if prompt.startswith("SINGLE RATING"):
+        if prompt.startswith(RATING_HEADER):
             return "rating"
         return None
 
@@ -130,8 +131,9 @@ class PoisonedWellJudge(HarvestJudge):
             text = contradictions_answer(prompt, self.pairs, self.sincere)
         else:
             name = prompt.split("\n", 2)[1].strip() if "\n" in prompt else ""
-            # Task 10 replaces the default with ANSWERS[name][-1], a valid answer for the kind
-            text = json.dumps(self.ratings.get(name, {"answer": "none", "rationale": "r"}))
+            # an unlisted kind gets its last answer, a valid one for the kind (P33)
+            default = {"answer": ANSWERS[name][-1], "rationale": "r"}  # type: ignore[index]
+            text = json.dumps(self.ratings.get(name, default))
         return Completion(
             text=text, usage=Usage(), cost_usd=None, backend="fake", model=JUDGE_MODEL
         )

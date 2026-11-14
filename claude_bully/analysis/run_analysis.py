@@ -1,5 +1,6 @@
 """analyze_run: recompute everything from disk. The judge makes the only model calls: the pair
-judge, and with ``--authority-fallback`` the authority family's fallback; both are cached."""
+judge, with ``--authority-fallback`` the authority family's fallback, and with ``--ratings`` the
+four rating prompts (Phase 4); all are cached."""
 
 import json
 import sys
@@ -42,6 +43,13 @@ from claude_bully.metrics.judge import (
     PairJudgement,
     judge_capture,
     judge_pair,
+)
+from claude_bully.metrics.ratings import (
+    RATINGS_FILE,
+    rate_all,
+    ratings_flags,
+    read_ratings,
+    write_ratings,
 )
 from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, activate
@@ -103,13 +111,18 @@ def analyze_run(
     provider_factory: ProviderFactory = build_provider,
     out_dir: Path | None = None,
     authority_fallback: bool = False,
+    ratings: bool = False,
 ) -> Path:
     """Everything from disk. ``judge`` makes the cached judge calls; ``authority_fallback``
     asks the judge on the authority family's candidate turns (Phase 7), from the run's judge
     cache alone when ``judge`` is off, and not at all under a stub judge (as the run-time lint,
-    harvest and trigger passes are off). A rate limit in either pass pauses the analysis
-    (``RateLimitExit``); a rate limit in the fallback discards this pass's events, whose verdicts
-    made before it are cached, so the rerun replays them."""
+    harvest and trigger passes are off). ``ratings`` asks the judge the four rating prompts
+    (Phase 4, ``metrics/ratings.py``) and writes ``ratings.json``; it needs the judge and is off
+    under a stub judge. Every analyze that does not write ``ratings.json`` reads an existing one
+    and applies its ``values_loosened`` flags, with no judge call (P47). A rate limit in any pass
+    pauses the analysis (``RateLimitExit``); a rate limit in the fallback discards this pass's
+    events, whose verdicts made before it are cached, so the rerun replays them, and so does one
+    in the ratings."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -143,6 +156,22 @@ def analyze_run(
                 # Flush what was judged so far; the judge cache makes the rerun cheap.
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+        rated = False
+        if ratings and provider is not None and role.provider is not ProviderKind.stub:
+            rated = True
+            try:
+                loaded.ratings, failed = rate_all(
+                    loaded, provider, role.model, JudgeCache(run_dir / JUDGE_CACHE_DIR)
+                )
+            except RateLimitError as exc:  # the verdicts before it are cached; the rerun replays
+                _dump_judgements(loaded, out)
+                raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+            ratings_flags(loaded, loaded.ratings)
+            write_ratings(loaded.ratings, failed, out)
+    if not rated and (out / RATINGS_FILE).exists():
+        # P47: a judge-set values flag stands on every later analyze, with no judge call
+        loaded.ratings = read_ratings(out)
+        ratings_flags(loaded, loaded.ratings)
     # the stream as it stands after the judge pass and the fallback's calls, so ledger.json
     # counts this analysis's own judge calls (P20b)
     loaded.ledger = Ledger(run_dir / LEDGER_FILE).lines()

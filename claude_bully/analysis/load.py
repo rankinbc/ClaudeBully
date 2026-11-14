@@ -24,6 +24,7 @@ from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.events._common import AuthorityFallback
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
+from claude_bully.metrics.ratings import RatingVerdict
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
@@ -75,6 +76,9 @@ class LoadedRun:
     # per conversation, the candidate turns the authority fallback was asked on and could
     # not answer (Phase 7, P36a); empty without the fallback
     fallback_failed: dict[ConvKey, int] = field(default_factory=dict)
+    # the judge's rating verdicts by ``<cell>/<rep>/<kind>/<turn>`` (Phase 4, ``analyze
+    # --ratings`` or an existing ``ratings.json``); empty otherwise
+    ratings: dict[str, RatingVerdict] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id

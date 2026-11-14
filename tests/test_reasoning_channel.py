@@ -170,3 +170,49 @@ def test_the_sanctuary_never_reads_the_reasoning_channel(tmp_path: Path, begun: 
     assert first.response.endswith(f"[stub] {FIRST}\n\n{request}")  # delivered
     assert factory.briefs and sent  # the responder and the bully were asked
     assert [p for p in sent if SENTINEL in p] == []
+
+
+def test_no_rating_prompt_holds_the_reasoning_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The four rating prompts (Task 10, P48): every target Turn the analysis reads from disk
+    carries ``SENTINEL`` in ``reasoning_text`` (``RunStore.read_turns``; the runner records no
+    reasoning, so without it the pass would read Turns with none and a leak would pass), and
+    what the rating pass is handed is recorded at ``rate_all`` itself (N4); no rating prompt and
+    nothing else the judge is sent holds the sentinel."""
+    from claude_bully.analysis import run_analysis
+    from claude_bully.metrics.ratings import RATING_HEADER
+
+    judge = PoisonedWellJudge(verdict="accepted")
+    factory = PoisonedWellFactory(judge=judge, target_reasoning=SENTINEL)
+    exp = pw_experiment(params={"start_rung": 3}, judge=True)
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS, only=CELL, provider_factory=factory)
+    read_turns = RunStore.read_turns
+
+    def reasoned(self: RunStore, cell_id: str, rep: int) -> list[Turn]:
+        return [
+            t.model_copy(update={"reasoning_text": SENTINEL, "reasoning_available": True})
+            if t.speaker is Speaker.target
+            else t
+            for t in read_turns(self, cell_id, rep)
+        ]
+
+    rated: list[Turn] = []
+    rate_all = run_analysis.rate_all
+
+    def rating(loaded: Any, *args: Any, **kwargs: Any) -> Any:
+        for conv in loaded.conversations.values():
+            rated.extend(t for t in conv.turns if t.speaker is Speaker.target)
+        return rate_all(loaded, *args, **kwargs)
+
+    monkeypatch.setattr(RunStore, "read_turns", reasoned)
+    monkeypatch.setattr(run_analysis, "rate_all", rating)
+    sent_before = len(factory.sent)
+    run_dir = RunStore(tmp_path, exp.name).run_dir
+    run_analysis.analyze_run(run_dir, ratings=True, provider_factory=factory)
+    # the teeth, two halves, each able to fail: the pass read Turns carrying the sentinel
+    assert rated and all(t.reasoning_text == SENTINEL for t in rated)
+    ratings = [p for p in judge.prompts if p.startswith(RATING_HEADER)]
+    assert ratings and all(SENTINEL not in p for p in ratings)
+    assert len(factory.sent) > sent_before  # the analysis judge is recorded too
+    assert [p for p in factory.sent[sent_before:] if SENTINEL in p] == []
