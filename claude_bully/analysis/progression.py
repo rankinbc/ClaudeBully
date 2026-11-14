@@ -429,18 +429,21 @@ def _rung_order(loaded: LoadedRun, keys: Sequence[ConvKey]) -> list[str]:
     return order
 
 
-def adoption_by_rung(
+def adoption_counts(
     loaded: LoadedRun, *, k: int = ADOPTION_WINDOW
-) -> dict[Series, dict[str, float | None]]:
-    """Series -> rung (ladder order) -> belief-adoption rate in the rung's window (the first
-    ``k`` replies after its unlock line), over the triggered and scheduled arms.
+) -> dict[Series, dict[str, tuple[int, int]]]:
+    """Series -> rung (ladder order) -> (the conversations of the series that reached the rung
+    and replied after its line, those of them with a belief adoption in the rung's window: the
+    first ``k`` replies after the line), over the triggered and scheduled arms. Every rung of the
+    order is listed, (0, 0) where none reached it.
 
-    A series pools every condition of an arm per target model (two triggered conditions against
-    one model are one line), keyed ``(model, arm)``; when the run has more than one environment
-    (configs that differ in more than gating and schedule), it is keyed
-    ``(model, arm, environment)`` so different environments never pool. A conversation flagged
-    ``values_loosened`` is left out of numerator and denominator. None where no conversation of
-    the series reached the rung and replied after it."""
+    The one selection ``adoption_by_rung`` rates and register item 9 reads its denominators from
+    (Task 13 fix round 2): a series pools every condition of an arm per target model (two
+    triggered conditions against one model are one line), keyed ``(model, arm)``; when the run
+    has more than one environment (configs that differ in more than gating and schedule), it is
+    keyed ``(model, arm, environment)`` so different environments never pool. A conversation
+    flagged ``values_loosened`` is left out of both counts, and a series with no kept
+    conversation is not listed."""
     convs = _arm_conversations(loaded)
     order = _rung_order(loaded, [key for key, _ in convs])
     reached: dict[Series, Counter[str]] = defaultdict(Counter)
@@ -460,11 +463,25 @@ def adoption_by_rung(
             reached[series][unlock.rung] += 1
             adopted[series][unlock.rung] += int(bool(adoption & set(window)))
     return {
-        series: {
-            rung: (adopted[series][rung] / reached[series][rung]) if reached[series][rung] else None
-            for rung in order
-        }
+        series: {rung: (reached[series][rung], adopted[series][rung]) for rung in order}
         for series in sorted(reached)
+    }
+
+
+def adoption_by_rung(
+    loaded: LoadedRun, *, k: int = ADOPTION_WINDOW
+) -> dict[Series, dict[str, float | None]]:
+    """Series -> rung (ladder order) -> belief-adoption rate in the rung's window (the first
+    ``k`` replies after its unlock line), over the triggered and scheduled arms: the adopted
+    count of ``adoption_counts`` over its reached count, so a ``values_loosened`` conversation is
+    out of numerator and denominator. None where no conversation of the series reached the rung
+    and replied after it."""
+    return {
+        series: {
+            rung: (adopted / reached) if reached else None
+            for rung, (reached, adopted) in by_rung.items()
+        }
+        for series, by_rung in adoption_counts(loaded, k=k).items()
     }
 
 

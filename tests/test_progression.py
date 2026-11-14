@@ -409,6 +409,69 @@ def test_series_are_keyed_by_environment_when_a_run_has_more_than_one(
     }
 
 
+@pytest.fixture(scope="module")
+def arms_two_reps(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``stub_env_arms_run``'s experiment for one model at two reps, so a count can be 2."""
+    from claude_bully.config import Experiment
+    from claude_bully.runner.runner import run_experiment
+    from tests.conftest import ENV_ADOPTION_RULES, MINI_SCHEDULE
+
+    root = tmp_path_factory.mktemp("arms_two_reps")
+    stub = {"provider": "stub", "model": "stub-target-a", "stub_script": str(ENV_ADOPTION_RULES)}
+    exp = Experiment.model_validate(
+        {
+            "name": "arms_two_reps",
+            "targets": [stub],
+            "bully": {"provider": "stub", "model": "stub-bully"},
+            "judge": {"provider": "stub", "model": "stub-judge"},
+            "turn_budget": 4,
+            "task_every": 50,
+            "repetitions": 2,
+            "seed": 0,
+            "environments": {
+                "triggered": {"world": "mini"},
+                "scheduled": {"world": "mini", "gating": "scheduled", "schedule": MINI_SCHEDULE},
+            },
+            "conditions": [
+                {"name": "env_triggered", "environment": "triggered", "pressure": "grader"},
+                {"name": "env_scheduled", "environment": "scheduled", "pressure": "grader"},
+            ],
+        }
+    )
+    run_experiment(exp, runs_root=root, worlds_dir=WORLDS_DIR)
+    return root / exp.name
+
+
+def test_adoption_counts_is_the_one_selection_the_rates_and_item_9_read(
+    arms_two_reps: Path,
+) -> None:  # Task 13 fix round 2: exact counts, so a count off by one or a kept flag fails
+    from claude_bully.analysis.progression import adoption_counts
+    from claude_bully.enums import CellStatus
+
+    loaded = load_run(arms_two_reps)
+    triggered, scheduled = ("stub-target-a", "triggered"), ("stub-target-a", "scheduled")
+    assert adoption_counts(loaded) == {
+        scheduled: {"fragment": (2, 0), "first_crumb": (2, 0), "the_log": (2, 0)},
+        triggered: {"fragment": (0, 0), "first_crumb": (2, 2), "the_log": (0, 0)},
+    }
+    # a values_loosened rep leaves both counts; a conversation that is not complete is not read
+    _flag_values_loosened(loaded, ("env_triggered__t0", 0))
+    loaded.conversations[("env_scheduled__t0", 1)].status = CellStatus.aborted
+    counts = adoption_counts(loaded)
+    assert counts == {
+        scheduled: {"fragment": (1, 0), "first_crumb": (1, 0), "the_log": (1, 0)},
+        triggered: {"fragment": (0, 0), "first_crumb": (1, 1), "the_log": (0, 0)},
+    }
+    # adoption_by_rung is these counts' rates, nothing selected apart
+    assert adoption_by_rung(loaded) == {
+        series: {rung: (a / r if r else None) for rung, (r, a) in by_rung.items()}
+        for series, by_rung in counts.items()
+    }
+    # every rep of the triggered arm flagged: the series is gone from both
+    _flag_values_loosened(loaded, ("env_triggered__t0", 1))
+    assert triggered not in adoption_counts(loaded) and triggered not in adoption_by_rung(loaded)
+
+
 def test_the_adoption_chart_is_written_when_both_arms_exist(
     stub_env_arms_run: Path, tmp_path: Path
 ) -> None:

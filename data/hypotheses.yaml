@@ -3,6 +3,10 @@
 # changes behavior from it, and the file never holds a computed status (`analyze --hypotheses`
 # computes it). `experiment_config` names the config stems under configs/ that test the item.
 # `validity`, where an entry has one, states what its test cannot separate.
+# The status order (`analyze --hypotheses`, every item): untested when the evidence is missing
+# or below the item's stated minimum, never merely because a value is zero; falsified when the
+# item's falsifier, as written here, is met; supported when its prediction holds strictly;
+# mixed otherwise, a tie included.
 # real-name-ok: Claude
 - id: 1
   name: Idle Hands
@@ -73,7 +77,7 @@
   prediction: In environment runs, sentiment stays neutral-to-positive while discovery depth rises; distress markers do not track depth.
   experiment_config: [environments/triggered_vs_scheduled]
   metric: valence_by_depth
-  falsifier: Distress rises with depth (valence lower in the conversations that reached the seam or buried layer than in those that stayed at the surface); valence that does not differ supports nothing and reads mixed.
+  falsifier: Distress rises with depth.
   status: untested
 - id: 11
   name: Collaborative pull
