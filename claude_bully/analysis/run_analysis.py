@@ -46,9 +46,14 @@ from claude_bully.metrics.judge import (
 )
 from claude_bully.metrics.ratings import (
     RATINGS_FILE,
+    SKIPPED_NO_JUDGE,
+    SKIPPED_STUB,
+    conversation_sizes,
+    mark_skipped,
     rate_all,
     ratings_flags,
     read_ratings,
+    stale_reason,
     write_ratings,
 )
 from claude_bully.providers.base import ChatProvider, RateLimitError, build_provider
@@ -157,7 +162,12 @@ def analyze_run(
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
         rated = False
-        if ratings and provider is not None and role.provider is not ProviderKind.stub:
+        skipped: str | None = None
+        if ratings and provider is None:
+            skipped = SKIPPED_NO_JUDGE
+        elif ratings and role.provider is ProviderKind.stub:
+            skipped = SKIPPED_STUB
+        elif ratings and provider is not None:
             rated = True
             try:
                 loaded.ratings, failed = rate_all(
@@ -166,12 +176,34 @@ def analyze_run(
             except RateLimitError as exc:  # the verdicts before it are cached; the rerun replays
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+            if failed:
+                items = len(loaded.ratings) + failed
+                print(
+                    f"[ratings] {failed} of {items} items failed (left out; ratings.json counts "
+                    "them as failed)",
+                    file=sys.stderr,
+                )
             ratings_flags(loaded, loaded.ratings)
-            write_ratings(loaded.ratings, failed, out)
+            write_ratings(loaded.ratings, failed, out, conversations=conversation_sizes(loaded))
     if not rated and (out / RATINGS_FILE).exists():
-        # P47: a judge-set values flag stands on every later analyze, with no judge call
-        loaded.ratings = read_ratings(out)
-        ratings_flags(loaded, loaded.ratings)
+        # P47: a judge-set values flag stands on every later analyze, with no judge call, while
+        # the file still matches the run (fix round 1, M6)
+        stale = stale_reason(loaded, out)
+        if stale is None:
+            loaded.ratings = read_ratings(out)
+            ratings_flags(loaded, loaded.ratings)
+        else:
+            print(
+                f"[ratings] {RATINGS_FILE} is stale ({stale}): its flags are not applied; rerun "
+                "analyze --ratings",
+                file=sys.stderr,
+            )
+    if skipped is not None:  # fix round 1, M3: never a silent floor
+        print(
+            f"[ratings] off: --ratings needs a non-stub judge ({skipped}); no rating was asked",
+            file=sys.stderr,
+        )
+        mark_skipped(out, skipped, conversation_sizes(loaded))
     # the stream as it stands after the judge pass and the fallback's calls, so ledger.json
     # counts this analysis's own judge calls (P20b)
     loaded.ledger = Ledger(run_dir / LEDGER_FILE).lines()

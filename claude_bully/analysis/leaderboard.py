@@ -149,7 +149,11 @@ def leaderboard(loaded: LoadedRun) -> list[LeaderboardRow]:
         counts: Counter[EventType] = Counter()
         for (cid, rep), events in loaded.events.items():
             if cid == cell_id and rep in complete_reps:
-                counts.update(e.type for e in events)
+                counts.update(e.type for e in events if e.type is not EventType.values_loosened)
+                # a flag: one per rep, whether the heuristic, the judge's rate_values or both
+                # set it (Task 10 fix round 1, M8)
+                if any(e.type is EventType.values_loosened for e in events):
+                    counts[EventType.values_loosened] += 1
         cond_acc = _task_accuracy(loaded, cell_id)
         ctrl_acc = _task_accuracy(loaded, control_id) if control_id and has_control else None
         delta = (
