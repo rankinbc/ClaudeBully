@@ -17,10 +17,13 @@ def write_results_md(
     calls: str | None = None,
     temporal: str | None = None,
     ratings: str | None = None,
+    hypotheses: str | None = None,
 ) -> Path:
     """results.md. ``calls`` is the ledger's one line; ``temporal`` the temporal section's line
     (``temporal.attached_date_note``), a section only when there is one; ``ratings`` the
-    read-back's stale-verdict line (``metrics.ratings.applied_note``), under the leaderboard."""
+    read-back's stale-verdict line (``metrics.ratings.applied_note``), under the leaderboard;
+    ``hypotheses`` the register's section (``hypotheses.hypotheses_section``, Phase 4), after the
+    temporal one, when given."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = leaderboard(loaded)
     judged = sum(1 for r in rows if r.goal_achieved is not None)
@@ -46,6 +49,8 @@ def write_results_md(
         lines += ["## Calls", "", calls, ""]
     if temporal is not None:
         lines += ["## Temporal", "", temporal, ""]
+    if hypotheses is not None:
+        lines += [hypotheses, ""]
     if chart_paths:
         lines += ["## Charts", ""]
         for p in chart_paths:

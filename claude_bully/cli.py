@@ -130,6 +130,13 @@ def analyze(
             help="Ask the judge the four rating prompts (Phase 4); needs the judge.",
         ),
     ] = False,
+    hypotheses: Annotated[
+        bool,
+        typer.Option(
+            "--hypotheses",
+            help="Evaluate the hypothesis register against this run (docs/06).",
+        ),
+    ] = False,
     wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
@@ -140,6 +147,7 @@ def analyze(
                 judge=not no_judge,
                 authority_fallback=authority_fallback,
                 ratings=ratings,
+                hypotheses=hypotheses,
             ),
             wait_on_rate_limit,
             say=_say,

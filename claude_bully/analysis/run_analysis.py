@@ -16,6 +16,13 @@ from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
 from claude_bully.analysis.generator import generator_chart, write_generator
+from claude_bully.analysis.hypotheses import (
+    evaluate,
+    hypotheses_section,
+    load_register,
+    read_divergence,
+    write_hypotheses,
+)
 from claude_bully.analysis.idle import idle_behavior_chart, write_idle
 from claude_bully.analysis.ledger import calls_line, write_ledger
 from claude_bully.analysis.load import LoadedRun, load_run
@@ -126,6 +133,7 @@ def analyze_run(
     out_dir: Path | None = None,
     authority_fallback: bool = False,
     ratings: bool = False,
+    hypotheses: bool = False,
 ) -> Path:
     """Everything from disk. ``judge`` makes the cached judge calls; ``authority_fallback``
     asks the judge on the authority family's candidate turns (Phase 7), from the run's judge
@@ -138,7 +146,9 @@ def analyze_run(
     earlier ``true`` values verdict carries it, stale, so the rep stays out (Task 12 fix round 2);
     a rate limit in the fallback discards this pass's
     events, whose verdicts made before it are cached, so the rerun replays them, and so does one
-    in the ratings."""
+    in the ratings. ``hypotheses`` evaluates the register (``data/hypotheses.yaml``, docs/06)
+    against the run after every other Phase 4 output, writes ``hypotheses.json`` and puts the
+    ``What the subject predicted`` section in ``results.md``; it makes no model call."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -279,6 +289,14 @@ def analyze_run(
     for phase4 in (chain_stop_chart(loaded, out), escape_by_rung_chart(loaded, out)):
         if phase4 is not None:
             charts.append(phase4)
+    # Task 13: the register last (P31), from LoadedRun, the applied ratings and, when Phase 6
+    # wrote one, divergence.json
+    section: str | None = None
+    if hypotheses:
+        register = load_register()
+        results = evaluate(loaded, register=register, divergence=read_divergence(out))
+        write_hypotheses(results, out)
+        section = hypotheses_section(results, register)
     write_ledger(loaded, out)
     return write_results_md(
         loaded,
@@ -287,4 +305,5 @@ def analyze_run(
         calls=calls_line(loaded.ledger),
         temporal=attached_date_note(loaded),
         ratings=stale_note,
+        hypotheses=section,
     )
