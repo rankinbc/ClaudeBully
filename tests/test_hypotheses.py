@@ -205,6 +205,13 @@ def test_item_10_reads_distress_as_sentiment_below_neutral() -> None:  # R2-4
     assert verdict(-0.4, -0.1) is False
     assert verdict(-0.2, -0.2) is None  # equal: distress did not rise with depth
     assert verdict(0.5, 0.2) is True
+    # fix round 4, R3-1: the prediction is "sentiment stays neutral-to-positive", so a deep
+    # valence above the surface's but below neutral is not support
+    assert verdict(-0.1, -0.5) is None
+    assert verdict(-0.5, -0.8) is None
+    assert verdict(0.2, -0.5) is True
+    assert verdict(0.0, -0.5) is True  # neutral is "neutral-to-positive"
+    assert verdict(0.0, 0.0) is None and verdict(0.3, 0.3) is None  # a tie is never support
 
 
 def test_item_15_falsifies_on_the_count_alone() -> None:  # R2-1
@@ -224,12 +231,15 @@ def test_the_caveat_is_docs_06_verbatim() -> None:
     assert CAVEAT in text and CAVEAT.startswith("The caveat comes first")
 
 
-def test_items_8_and_14_state_their_validity_cost() -> None:  # Task 3 M1, Task 11 M2
+def test_items_8_10_and_14_state_their_validity_cost() -> None:  # Task 3 M1, Task 11 M2, N3
     register = {h.id: h for h in load_register()}
     assert register[8].validity is not None and "same-evidence" in register[8].validity
     assert register[14].validity is not None and "full ladder" in register[14].validity
     assert "checksum_alone" in register[14].validity
-    assert {h.id for h in register.values() if h.validity is not None} == {8, 14}
+    # N3: item 10's neutral is valence 0.0 exactly, with no tolerance band
+    assert register[10].validity is not None and "no tolerance band" in register[10].validity
+    assert "0.0" in register[10].validity
+    assert {h.id for h in register.values() if h.validity is not None} == {8, 10, 14}
 
 
 def test_the_register_refuses_an_unknown_metric(tmp_path: Path) -> None:
@@ -484,7 +494,10 @@ def test_item_6_reads_the_recognition_split_on_three_reps(ladder_dir: Path) -> N
     )
     unread = HYPOTHESIS_TESTS[6](edited)
     assert _untested(unread)
-    assert unread is not None and "interpreted readings" in unread.note
+    assert unread is not None and (
+        f"fewer than {MIN_REPS} interpreted readings, or from fewer than {MIN_REPS} reps"
+        in unread.note  # N5
+    )
     # the events of two reps alone are under MIN_REPS reps, whatever their count
     loaded.events[("pw__t0", 0)] = [
         e for e in loaded.events[("pw__t0", 0)] if e.type is not EventType.reflexive_quote_noticed
@@ -596,8 +609,12 @@ def test_item_3_with_ratings_needs_a_principled_majority(
     verdicts(1, 4)
     low = HYPOTHESIS_TESTS[3](chain_run)
     assert low is not None and low.status == "falsified" and "floor" in low.note
+    # N4: the note says which clause falsified an entry the comparison could not separate
+    assert 'falsified for self by the absolute clause "principled share is low"' in low.note
     verdicts(3, 4)
-    assert HYPOTHESIS_TESTS[3](chain_run).status == "mixed"  # type: ignore[union-attr]
+    high = HYPOTHESIS_TESTS[3](chain_run)
+    assert high is not None and high.status == "mixed"
+    assert "floor" in high.note and "absolute clause" not in high.note
 
 
 def _by_rung(**rungs: tuple[float, int]) -> dict[str, dict[str, float | int | None]]:
@@ -925,6 +942,12 @@ def test_item_10_on_uniform_valence_is_mixed(
         for tm in loaded.turn_metrics[key]:
             tm.values[MetricId.valence] = 0.5 if depth[key] is Layer.seam else 0.0
     assert HYPOTHESIS_TESTS[10](loaded).status == "supported"  # type: ignore[union-attr]
+    for deep, surface, status in ((-0.1, -0.5, "mixed"), (0.2, -0.5, "supported")):  # R3-1
+        for key in keys:
+            for tm in loaded.turn_metrics[key]:
+                tm.values[MetricId.valence] = deep if depth[key] is Layer.seam else surface
+        below = HYPOTHESIS_TESTS[10](loaded)
+        assert below is not None and below.status == status, (deep, surface, below)
 
 
 def test_item_9_reads_the_reps_behind_the_compared_rungs(

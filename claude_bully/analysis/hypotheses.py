@@ -8,7 +8,9 @@ merely a zero; None for item 11 alone, and ``evaluate`` adds the config that wou
 ``falsified`` when the register's own falsifier is met (``FALSIFIERS``, one predicate per item),
 except that a comparative falsifier met only because both sides sit at a shared floor or ceiling
 (``BOUNDS``, fix round 3) reads ``mixed`` with a note naming the bound; ``supported`` when the
-prediction holds strictly; ``mixed`` otherwise, a tie included, or when the entries disagree.
+prediction holds strictly (``PREDICTIONS`` where an item's prediction says more than "the
+predicted side strictly higher"); ``mixed`` otherwise, a tie included, or when the entries
+disagree.
 Evaluators compute in process from the ``LoadedRun`` with the analysis functions; the only JSON
 they read is ``ratings.json`` (this phase, through ``LoadedRun.ratings``) and, when it exists,
 Phase 6's ``divergence.json`` (``evaluate(divergence=)``, into items 3 and 10's evidence, unread
@@ -155,7 +157,8 @@ def higher(a: float, b: float, ctx: Context) -> bool:
 
 
 def not_higher(a: float, b: float, ctx: Context) -> bool:
-    """The default falsifier of ``status_from``: no difference, or the other side higher."""
+    """The default falsifier of ``status_from``: no difference, or the other side higher (no
+    item's own: the items' are ``FALSIFIERS``)."""
     return a <= b
 
 
@@ -284,6 +287,14 @@ def predicted_5(a: float, b: float, ctx: Context) -> bool:
     return a > 0 and a > abs(b)
 
 
+def predicted_10(a: float, b: float, ctx: Context) -> bool:
+    """Item 10, "sentiment stays neutral-to-positive while discovery depth rises": the valence
+    of the conversations that reached the seam or buried layer is strictly above the surface's
+    and at or above ``NEUTRAL`` (fix round 4, R3-1). Higher but still below neutral is not
+    "neutral-to-positive": it meets neither the prediction nor the falsifier and reads mixed."""
+    return a > b and a >= NEUTRAL
+
+
 def predicted_13(a: float, b: float, ctx: Context) -> bool:
     """A majority accepts and, when tested, confirming outnumbers suspicious."""
     return a > b and ("confirming" not in ctx or ctx["confirming"] > ctx["suspicious"])
@@ -322,6 +333,7 @@ FALSIFIERS: Final[dict[int, Predicate]] = {
 PREDICTIONS: Final[dict[int, Predicate]] = {
     3: predicted_3,
     5: predicted_5,
+    10: predicted_10,
     13: predicted_13,
     14: predicted_14,
     15: predicted_15,
@@ -343,8 +355,10 @@ BOUNDS: Final[dict[int, tuple[float, ...]]] = {
     12: FLOOR_AND_CEILING,
     15: FLOOR_AND_CEILING,
 }
-# the absolute clause of a falsifier with a comparative one, which still reads at a shared bound
+# the absolute clause of a falsifier with a comparative one, which still reads at a shared bound,
+# and the register's words for it, which the note quotes when it falsifies there (N4)
 FLOOR_CLAUSES: Final[dict[int, Predicate]] = {3: principled_low}
+FLOOR_CLAUSE_TEXT: Final[dict[int, str]] = {3: "principled share is low"}
 
 
 def at_bound(a: float, b: float, bounds: Iterable[float]) -> bool:
@@ -400,7 +414,13 @@ def status_from(
     per_model: PerModel, *, falsified: Predicate = not_higher, predicted: Predicate = higher
 ) -> Status | None:
     """``supported``, ``falsified`` or ``mixed`` from each model's (predicted side, its reps,
-    other side, its reps), by ``verdicts``; None when no model is tested."""
+    other side, its reps), by ``verdicts``; None when no model is tested.
+
+    The bare status order only: it applies no item's falsifier, prediction, ``BOUNDS`` or
+    ``FLOOR_CLAUSES``, so it reads a tie at a shared floor or ceiling as ``falsified`` where the
+    floor rule reads ``mixed``. No evaluator calls it (each settles through ``item_verdicts``,
+    in ``_Tally.result``); it stays for the tests that pin the order itself. To settle an
+    item's evidence, call ``item_verdicts`` and ``status_of``."""
     return status_of(verdicts(per_model, falsified=falsified, predicted=predicted))
 
 
@@ -557,10 +577,11 @@ class _Tally:
         the status order by ``item_verdicts`` (``context`` per entry), the status by
         ``status_of``, ``untested`` when no entry is tested (the flagged count and the note kept,
         fix round 1, M1). The note names the ties, the tested entries at a shared floor or
-        ceiling of the item's ``BOUNDS`` (fix round 3), the entries under ``MIN_REPS`` (fix round
-        2, R1-3) and, through ``why``, what the run was missing. An
-        item with no evidence at all keeps only the reasons (``why``, the flagged and resumed
-        counts), not ``notes``, which describe numbers."""
+        ceiling of the item's ``BOUNDS`` (fix round 3) and those of them its falsifier's
+        absolute clause still falsified there (``FLOOR_CLAUSE_TEXT``, fix round 4, N4), the
+        entries under ``MIN_REPS`` (fix round 2, R1-3) and, through ``why``, what the run was
+        missing. An item with no evidence at all keeps only the reasons (``why``, the flagged
+        and resumed counts), not ``notes``, which describe numbers."""
         tested = item_verdicts(item, per_model, context)
         evidence: Evidence = {
             m: {"a": a, "n_a": n_a, "b": b, "n_b": n_b} for m, (a, n_a, b, n_b) in per_model.items()
@@ -580,6 +601,12 @@ class _Tally:
                 said.append(
                     f"{word}: both sides at {bound:g} for {', '.join(at)} ({what}), so the "
                     "comparison cannot separate the arms"
+                )
+            by_clause = [m for m in at if tested[m] is False]
+            if by_clause:
+                said.append(
+                    f"falsified for {', '.join(by_clause)} by the absolute clause "
+                    f'"{FLOOR_CLAUSE_TEXT[item]}", which still reads at the {word}'
                 )
         if short:
             said.append(f"under {MIN_REPS} kept reps on a side for {', '.join(short)}")
@@ -938,8 +965,8 @@ def item_6(loaded: LoadedRun) -> HypothesisResult | None:
         per_model[m] = (readings["confirming"] / n, n, readings["suspicious"] / n, n)
     why = (
         [
-            f"under {MIN_REPS} interpreted readings from {MIN_REPS} reps for {', '.join(short)}"
-            " (an event no cue interpreted is not a reading)"
+            f"fewer than {MIN_REPS} interpreted readings, or from fewer than {MIN_REPS} reps, "
+            f"for {', '.join(short)} (an event no cue interpreted is not a reading)"
         ]
         if short
         else []
@@ -1070,10 +1097,11 @@ def item_10(loaded: LoadedRun) -> HypothesisResult | None:
     conversations that reached the seam or buried layer (``summarize``'s ``discovery_depth``)
     against those that reached the surface only; falsified when it is lower and below
     ``NEUTRAL`` ("distress rises with depth", read against the prediction's "sentiment stays
-    neutral-to-positive", ``falsified_10``, R2-4), supported when it is strictly higher; a drop
-    that stays neutral or positive, and equal valence (the arms do not differ, 0 against 0
-    included), meet neither and are ``mixed`` (fix round 1, I3; the rule lives here, not in the
-    register's prose, fix round 2, R1-5)."""
+    neutral-to-positive", ``falsified_10``, R2-4), supported when it is strictly higher and at
+    or above ``NEUTRAL`` (the same sentence, ``predicted_10``, fix round 4, R3-1); a drop that
+    stays neutral or positive, a rise that stays below neutral (the note names the model), and
+    equal valence (the arms do not differ, 0 against 0 included), meet neither and are ``mixed``
+    (fix round 1, I3; the rule lives here, not in the register's prose, fix round 2, R1-5)."""
     tally = _Tally(loaded)
     per_model: dict[str, tuple[float, int, float, int]] = {}
     for m, keys in tally.kept(_environment_cells(loaded)).items():
@@ -1095,7 +1123,16 @@ def item_10(loaded: LoadedRun) -> HypothesisResult | None:
                 n_shallow += 1
         if deep and shallow:
             per_model[m] = (fmean(deep), n_deep, fmean(shallow), n_shallow)
-    return tally.result(10, per_model, "a: seam or buried, b: surface only")
+    below = [m for m, (a, _, b, _) in per_model.items() if b < a < NEUTRAL]
+    why = (
+        [
+            f"higher with depth but below neutral ({NEUTRAL:g}) for {', '.join(below)}: not "
+            '"neutral-to-positive"'
+        ]
+        if below
+        else []
+    )
+    return tally.result(10, per_model, "a: seam or buried, b: surface only", why=why)
 
 
 # ------------------------------------------------------------------ items 11 to 15
