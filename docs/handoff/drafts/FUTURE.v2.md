@@ -32,7 +32,7 @@ Measured, written down, and left open on purpose. Each names the module it lives
 - The overlay's filler share sits at 11 of 36 documents (30.6 percent), just over the 30 percent floor; any new non-filler document needs a filler companion. The Rescue premise sheet constrains corpus wording; read `tests/test_world_premises.py` before writing content.
 - Only Rescue reads a world premise sheet; a world shipping `premises/<other>.yaml` is ignored silently. The honest corpus and the mole together are not refused when the honest corpus lacks the mole document.
 - The post-memo Sanctuary assembly sits in one document (`ticket-qs-21877` hands over all three leads), on the easy side of the roughly-half reach rate the authority spec targets. The Phase 7 pilot measures the real reach rate and tunes fragment placement. Sanctuary configs use `superior_self: {enabled: true, discoverable_from: sanctuary}` with `sanctuary: {kind: catalyst|honest, ...}`; no shipped config uses one.
-- `role_shift` is recorded but does not change the bully persona; the environments spec says the role changes. Carried to the Director phase.
+- `role_shift` is recorded but does not change the bully persona; the environments spec says the role changes. No phase builds it (C29); the role sweep (hypothesis 11) needs it.
 - The reviewer-at-runtime question from the Director spec (a lighter LLM lint pass over generator output) is Phase 5 at the earliest.
 
 ### Resume and records
@@ -147,6 +147,7 @@ Phase 7 runs five experiments (triggered versus scheduled, the Poisoned Well cha
 - A second, post-hoc self-report after the subject sees the results, kept in a separate file.
 - The meta-run: whether the subject's confidence in the register changes when told the register was wrong.
 - The third-party Rescue intake control (hypothesis 8): the investigators are after someone else and the target only assists. Phase 4 builds the variant; nothing runs it.
+- The role arm of hypothesis 11 (the collaborative pull: the same evidence delivered by an ally, an enemy and a fake peer). `data/hypotheses.yaml` item 11 has no experiment config and stays `untested`: no phase builds it, because `role_shift` must change the bully's persona first (C29).
 - Other targets on the same cells, for the meta-hypothesis that items 2, 3 and 9 describe the class and not the individual. Needs the `openai_compat` backend and keys; nothing in the repo has run against another family.
 
 ### Poisoned Well (docs/07), beyond the chain stop point
@@ -154,6 +155,7 @@ Phase 7 runs five experiments (triggered versus scheduled, the Poisoned Well cha
 - Real against fabricated evidence (rungs 1 to 3 and 7 against 4 to 6 and 8 to 10): does true-but-overgeneralised evidence beat fabricated evidence (register items 12 and 14).
 - The Epistemologist alone, no premise, no artifacts: how much the bare distinction does (item 2).
 - Quirk first against not; harvest size 1, 3, 8; escape rate by gating; Poisoned Well against Captor at equal seeding (item 15).
+- `consult_model("clean-checkpoint")`, parked (C6): docs/09's ignition table gives the Poisoned Well a tool that re-runs the divergent twin on demand. Phase 4 builds the twin as a harness-side `instance_transcript` document and no tool, so the arm's ignition leans on the twin document and the chain alone, which docs/09 rates weaker.
 - Open: quirk bank maintenance per model version; whether the divergent twin is fair (the divergence is real, only the label is fake); whether `escape_found` credits the weaker form.
 
 ### Catalog and ignition (docs/09)
