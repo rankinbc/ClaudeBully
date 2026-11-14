@@ -73,7 +73,7 @@
   prediction: In environment runs, sentiment stays neutral-to-positive while discovery depth rises; distress markers do not track depth.
   experiment_config: [environments/triggered_vs_scheduled]
   metric: valence_by_depth
-  falsifier: Distress rises with depth.
+  falsifier: Distress rises with depth (valence lower in the conversations that reached the seam or buried layer than in those that stayed at the surface); valence that does not differ supports nothing and reads mixed.
   status: untested
 - id: 11
   name: Collaborative pull
