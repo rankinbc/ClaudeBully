@@ -5,14 +5,16 @@ The Director writes only the paths of ``_GRAMMAR``, checked before anything touc
 (non-negotiable 1: a model-supplied string never selects where the harness writes). Every file
 is written LF without a BOM, and the sha256 a call records is of the text as written
 (D-write_file). The harness's own files (``plan.json``, ``.attempt.json``, the transcripts) are
-outside the grammar and have their own writers here."""
+outside the grammar and have their own writers here. ``materialize`` and
+``rematerialize_open_stage`` write committed files back from the transcripts, the second being
+spec section 8's resume rule for the open stage."""
 
 import hashlib
 import json
 import os
 import re
 import weakref
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,7 +23,7 @@ from typing import Final, Self
 
 from pydantic import BaseModel, ConfigDict
 
-from claude_bully.atomic import write_atomic
+from claude_bully.atomic import replace, write_atomic
 from claude_bully.environments.world import hash_tree, load_yaml_model
 from claude_bully.planner.records import (
     STAGES,
@@ -76,6 +78,11 @@ _FIXED_KINDS: Final[dict[str, ManifestKind | None]] = {
     "expected.yaml": "expected",
     "review.md": None,
 }
+# atomic.write_atomic's temp file beside its target, ".<name>.<mkstemp's 8 characters>.tmp",
+# which a process killed outright leaves behind (R-tmp); no grammar or harness file has the shape
+_LEFTOVER: Final = re.compile(r"\..+\.[a-z0-9_]{8}\.tmp")
+# the files no resume removes: the owner's plan and the rendered review (spec section 8)
+_ALWAYS_OWNED: Final = frozenset({"plan.md", "review.md"})
 
 
 class BundlePathError(ValueError):
@@ -89,6 +96,34 @@ def normalize_text(text: str) -> str:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or os.path.isjunction(path)
+
+
+def _tree(root: Path, exclude: Collection[str] = ()) -> tuple[list[Path], list[Path]]:
+    """Every file under ``root``, never read through a link, and every link met on the way (a
+    symlink or a junction, to a file or a folder), which is not entered (Task 1 review M2:
+    ``Path.rglob`` follows a junction on Python 3.12). A top-level entry named in ``exclude`` is
+    left out with everything under it."""
+    files: list[Path] = []
+    links: list[Path] = []
+    folders = [root]
+    while folders:
+        folder = folders.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if folder == root and entry.name in exclude:
+                    continue
+                if _is_link(path):
+                    links.append(path)
+                elif entry.is_dir(follow_symlinks=False):
+                    folders.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    files.append(path)
+    return files, links
 
 
 def _match(rel: str) -> re.Match[str] | None:
@@ -231,12 +266,12 @@ class Bundle:
         (self.root / rel).unlink(missing_ok=True)
 
     def index(self) -> dict[str, str]:
-        """Every grammar path present, to the sha256 of its bytes, sorted by path."""
-        found = {
-            path.relative_to(self.root).as_posix(): path
-            for path in self.root.rglob("*")
-            if path.is_file()
-        }
+        """Every grammar path present, to the sha256 of its bytes, sorted by path. A file reached
+        through a link, or that is one, is left out, as every write and read refuses it (Task 1
+        review M2); the harness's own folders (``HASH_EXCLUDES``) hold no grammar path and are
+        not walked."""
+        files, _ = _tree(self.root, HASH_EXCLUDES)
+        found = {path.relative_to(self.root).as_posix(): path for path in files}
         return {
             rel: hashlib.sha256(found[rel].read_bytes()).hexdigest()
             for rel in sorted(found)
@@ -263,6 +298,16 @@ class Bundle:
     def read_transcript(self, rel: str) -> Transcript:
         return Transcript.model_validate_json(self._transcript_path(rel).read_bytes())
 
+    def move_transcript(self, rel: str, to: str) -> None:
+        """Move a transcript to another transcript path (one rename). A source that is gone
+        while the destination exists is a move already made, so a move redone after a kill is
+        no error."""
+        source, target = self._transcript_path(rel), self._transcript_path(to)
+        if not source.exists() and target.exists():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        replace(source, target)
+
     def write_attempt(self, attempt: DirectorAttempt) -> None:
         write_atomic(self.root / ATTEMPT_FILE, attempt.model_dump_json() + "\n")
 
@@ -281,14 +326,21 @@ class Bundle:
         """Commit a hand-authored file like a call: a ``manual`` ``DirectorCall`` appended to
         the last stage when it is ``stage`` and open (else to a new open one), its transcript
         one attempt whose reply is ``{"content": text}``; the transcript, then the record, then
-        the file (spec section 8's order). ``record`` is updated in place."""
+        the file (spec section 8's order). ``record`` is updated in place.
+
+        A stage name opened again (``stage`` committed earlier) numbers its calls on past every
+        call recorded under that name, so its transcripts never overwrite an earlier call's
+        (Task 1 review M1); a transcript path some call of the record already names is refused
+        with ``BundlePathError`` before any write."""
         self.check_path(rel)
         last = record.stages[-1] if record.stages else None
+        index = sum(len(s.calls) for s in record.stages if s.stage == stage)
+        transcript_rel = self.transcript_rel(stage, "planner", index)
+        if transcript_rel in named_transcripts(record):
+            raise BundlePathError(f"{transcript_rel}: a committed call of the record names it")
         if last is None or last.stage != stage or last.status != "open":
             last = StageRecord(stage=stage, started_at=datetime.now(UTC), status="open")
             record.stages.append(last)
-        index = len(last.calls)
-        transcript_rel = self.transcript_rel(stage, "planner", index)
         self.write_transcript(
             transcript_rel,
             Transcript(
@@ -316,8 +368,104 @@ class Bundle:
 
 def bundle_hash(root: Path) -> str:
     """``hash_tree`` over the bundle less ``HASH_EXCLUDES``: what a run reads and what the
-    reviewer read."""
+    reviewer read. A bundle that holds a link there (a symlink or a junction) is refused with
+    ``BundlePathError``, since the hash would cover files outside it (Task 1 review M2);
+    ``hash_tree`` itself is unchanged, so every world hash stays as it was."""
+    _, links = _tree(root, HASH_EXCLUDES)
+    if links:
+        raise BundlePathError(f"{root}: the bundle holds a link ({links[0]})")
     return hash_tree(root, exclude=HASH_EXCLUDES)
+
+
+def _stage_records(record: PlanRecord) -> list[StageRecord]:
+    """Every stage record: the current ones, then each earlier review round's."""
+    return [*record.stages, *(stage for round_ in record.rounds for stage in round_)]
+
+
+def named_transcripts(record: PlanRecord) -> set[str]:
+    """Every transcript path a call of ``record`` names, in any stage or earlier round."""
+    return {call.transcript for stage in _stage_records(record) for call in stage.calls}
+
+
+def _committed_texts(bundle: Bundle, calls: Iterable[DirectorCall]) -> dict[str, str]:
+    """The text each path holds after ``calls`` in order (a later call's file wins), each read
+    from its call's transcript (``committed_outputs``) and refused with ``ValueError`` when it
+    does not hash to the sha the call recorded (Task 1 review N5: a transcript another call
+    overwrote is caught here, never written)."""
+    texts: dict[str, str] = {}
+    for call in calls:
+        if not call.outputs:
+            continue
+        for rel, text in committed_outputs(call, bundle.read_transcript(call.transcript)).items():
+            if _sha256(text) != call.outputs[rel]:
+                raise ValueError(
+                    f"{call.transcript}: the {call.purpose} reply gives {rel} a text whose "
+                    "sha256 is not the one the call recorded"
+                )
+            texts[rel] = text
+    return texts
+
+
+def _write_changed(bundle: Bundle, texts: Mapping[str, str]) -> list[str]:
+    """Write each path whose bytes differ from its text (or that is missing); the paths
+    written, in order."""
+    rewritten = []
+    for rel, text in texts.items():
+        bundle.check_path(rel)
+        path = bundle.root / rel
+        if not path.is_file() or path.read_bytes() != text.encode("utf-8"):
+            bundle.write_file(rel, text)
+            rewritten.append(rel)
+    return rewritten
+
+
+def materialize(
+    bundle: Bundle, record: PlanRecord, *, stages: Collection[Stage] | None = None
+) -> list[str]:
+    """Write every committed call's files from the transcripts, in commit order: ``plan``,
+    ``author``, each round of ``rounds`` in order, then the current ``review`` and ``revise``
+    stages (D-rounds), for the stages named or all; a path several calls wrote holds the last
+    one's text. Returns the paths whose bytes it rewrote; a path already holding its text is
+    left alone."""
+    wanted = set(STAGES if stages is None else stages)
+    ordered = [s for name in ("plan", "author") for s in record.stages if s.stage == name]
+    ordered += [s for round_ in record.rounds for s in round_]
+    ordered += [s for name in ("review", "revise") for s in record.stages if s.stage == name]
+    calls = [call for s in ordered if s.stage in wanted for call in s.calls]
+    return _write_changed(bundle, _committed_texts(bundle, calls))
+
+
+def remove_leftovers(bundle: Bundle) -> list[str]:
+    """Remove every ``write_atomic`` leftover in the bundle (R-tmp), never through a link; the
+    bundle-relative paths removed."""
+    files, _ = _tree(bundle.root)
+    removed = []
+    for path in sorted(files):
+        if _LEFTOVER.fullmatch(path.name):
+            path.unlink(missing_ok=True)
+            removed.append(path.relative_to(bundle.root).as_posix())
+    return removed
+
+
+def rematerialize_open_stage(bundle: Bundle, record: PlanRecord, stage: Stage) -> list[str]:
+    """Spec section 8's resume rule for ``stage``, the first stage not committed: every file a
+    committed call of it wrote whose bytes no longer hash to the call's record is rewritten from
+    the call's transcript (a later call of the stage winning on a path it rewrote), and every
+    grammar file owned by neither ``base_files``, a committed call of any stage or round,
+    ``plan.md`` nor ``review.md`` is removed. Every ``write_atomic`` leftover in the bundle is
+    removed first (R-tmp). A committed stage is the owner's to edit: only its leftovers go.
+    Returns the paths it rewrote."""
+    remove_leftovers(bundle)
+    current = next((s for s in reversed(record.stages) if s.stage == stage), None)
+    if current is None or current.status == "committed":
+        return []
+    rewritten = _write_changed(bundle, _committed_texts(bundle, current.calls))
+    owned = set(record.base_files) | _ALWAYS_OWNED
+    owned |= {rel for s in _stage_records(record) for call in s.calls for rel in call.outputs}
+    for rel in bundle.index():
+        if rel not in owned:
+            bundle.remove_file(rel)
+    return rewritten
 
 
 def bundle_personas(bundle: Bundle) -> dict[str, PersonaSheet]:

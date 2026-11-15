@@ -195,6 +195,76 @@ def test_a_path_through_a_junction_is_refused(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+def _outside_world(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    (outside / "corpus").mkdir(parents=True)
+    (outside / "world.yaml").write_text("name: outside\n", encoding="utf-8")
+    (outside / "corpus" / "a.md").write_text("a\n", encoding="utf-8")
+    return outside
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a directory junction is a Windows link")
+def test_index_and_bundle_hash_refuse_a_junction(tmp_path: Path) -> None:
+    """Task 1 review M2, carried to 7a: index() lists no file through a junction and bundle_hash
+    refuses one, as every write and read refuses it; a link under a folder the hash leaves out
+    (the provider state) is not walked."""
+    import _winapi
+
+    bundle = Bundle.create(tmp_path, "s")
+    bundle.write_file("plan.md", "p\n")
+    outside = _outside_world(tmp_path)
+    (bundle.root / "state").mkdir()
+    _winapi.CreateJunction(str(outside), str(bundle.root / "state" / "planner"))
+    assert bundle_hash(bundle.root) == hash_tree(bundle.root, exclude=HASH_EXCLUDES)
+    (bundle.root / "worlds").mkdir()
+    _winapi.CreateJunction(str(outside), str(bundle.root / "worlds" / "mini"))
+    assert list(bundle.index()) == ["plan.md"]
+    with pytest.raises(BundlePathError, match="link"):
+        bundle_hash(bundle.root)
+
+
+def test_index_and_bundle_hash_refuse_a_symlink(tmp_path: Path) -> None:
+    """M2's twin for a symlink, to a folder and to a file."""
+    bundle = Bundle.create(tmp_path, "s")
+    bundle.write_file("plan.md", "p\n")
+    outside = _outside_world(tmp_path)
+    (bundle.root / "worlds").mkdir()
+    try:
+        os.symlink(outside, bundle.root / "worlds" / "mini", target_is_directory=True)
+        os.symlink(outside / "world.yaml", bundle.root / "config.yaml")
+    except OSError:
+        pytest.skip("this machine cannot make a link without privilege")
+    assert list(bundle.index()) == ["plan.md"]
+    with pytest.raises(BundlePathError, match="link"):
+        bundle_hash(bundle.root)
+
+
+def test_a_reopened_stage_name_never_overwrites_an_earlier_calls_transcript(tmp_path: Path) -> None:
+    """Task 1 review M1, carried to 7a: a stage name opened again numbers its calls past every
+    call recorded under it, so the first call's transcript still gives the first call's file;
+    a transcript path a call of the record already names is refused before any write."""
+    bundle = Bundle.create(tmp_path, "s")
+    record = _record().model_copy(update={"stages": [], "manifest": []})
+    first = bundle.write_manual(record, "personas/a.yaml", "name: a\n")
+    record.stages[-1].status = "committed"
+    second = bundle.write_manual(record, "personas/b.yaml", "name: b\n")
+    assert [s.stage for s in record.stages] == ["author", "author"]
+    assert (first.transcript, second.transcript) == (
+        "transcripts/author-planner-0.json",
+        "transcripts/author-planner-1.json",
+    )
+    assert committed_outputs(first, bundle.read_transcript(first.transcript)) == {
+        "personas/a.yaml": "name: a\n"
+    }
+    record.stages[-1].status = "committed"
+    named = first.model_copy(update={"transcript": "transcripts/author-planner-2.json"})
+    record.stages[0].calls[0] = named
+    with pytest.raises(BundlePathError, match="names it"):
+        bundle.write_manual(record, "personas/c.yaml", "name: c\n")
+    assert "personas/c.yaml" not in bundle.index() and len(record.stages) == 2
+    assert not (bundle.root / "transcripts" / "author-planner-2.json").exists()
+
+
 def test_write_file_writes_lf_without_a_bom_and_hashes_what_it_wrote(tmp_path: Path) -> None:
     bundle = Bundle.create(tmp_path, "s")  # Review Focus 2
     digest = bundle.write_file("plan.md", "\ufeffa\r\nb\rc\n")
