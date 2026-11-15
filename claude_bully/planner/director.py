@@ -32,6 +32,7 @@ with no write of its own (the world close) is decided afresh only past the last 
 call, so every decision a resume makes is the one an unbroken plan made (Task 7b).
 """
 
+import functools
 import hashlib
 import json
 import os
@@ -775,15 +776,18 @@ def findings_of(bundle: Bundle, record: PlanRecord) -> list[ReviewFinding]:
     return findings
 
 
-def render_review(findings: Sequence[ReviewFinding]) -> str:
+def render_review(findings: Sequence[ReviewFinding], *, revised: bool = False) -> str:
     """``review.md`` (spec section 7, stage 3; A4): the summary line ``block N / fix N / note
     N``, then per file in path order a blank line, ``## <file>`` and its findings in id order,
     ``- [<id>] <severity>: "<quote>" <problem>`` with `` (direction: <direction>)`` on a fix
     that has one; under a finding with a response, ``  - response (<planner_status>):
     <response>``; under a block with a verdict, ``  - confirm: <verdict> (closed)`` when it
-    closed, ``(open)`` otherwise. The quote is a JSON string, so a quote across a line break or
-    holding a quote mark stays one line and exact; the problem, direction and response are
-    squashed to one line. LF, one trailing newline."""
+    closed, ``(open)`` otherwise. With ``revised`` (stage 4's render, after the confirm pass) a
+    block with no verdict (a number the confirm reply left out, a confirm call that failed
+    twice, a file whose revision errored) reads ``  - confirm: none (open)``, so every open
+    block is marked (Task 8 review m1). The quote is a JSON string, so a quote across a line
+    break or holding a quote mark stays one line and exact; the problem, direction and response
+    are squashed to one line. LF, one trailing newline."""
     parts = [_count_line(_counts(findings)) + "\n"]
     for rel in sorted({f.file for f in findings}):
         lines = [f"## {rel}"]
@@ -795,8 +799,9 @@ def render_review(findings: Sequence[ReviewFinding]) -> str:
             lines.append(line)
             if f.response is not None and f.planner_status is not None:
                 lines.append(f"  - response ({f.planner_status}): {squash(f.response)}".rstrip())
-            if f.severity == "block" and f.confirm is not None:
-                lines.append(f"  - confirm: {f.confirm} ({'open' if f.open else 'closed'})")
+            if f.severity == "block" and (f.confirm is not None or revised):
+                verdict = f.confirm or "none"
+                lines.append(f"  - confirm: {verdict} ({'open' if f.open else 'closed'})")
         parts.append("\n".join(lines) + "\n")
     return "\n".join(parts)
 
@@ -1120,7 +1125,13 @@ class Director:
             for rel, sha in inputs.items()
             if rel not in own and rel in owned and owned[rel] != sha
         }
-        edited = [rel for rel in self.record.edited if rel not in stage.inputs or rel in differs]
+        # a path the stage itself writes keeps its membership as the stage found it (review I1:
+        # an edit adopted at stage 4's open, of a file stage 4 then revises, stays adopted)
+        edited = [
+            rel
+            for rel in self.record.edited
+            if rel not in stage.inputs or rel in differs or rel in own
+        ]
         edited += sorted(differs - set(edited))
         if inputs != stage.inputs or edited != self.record.edited:
             stage.inputs = inputs
@@ -1266,7 +1277,13 @@ class Director:
         committed before this run too (review M4: ``plan new`` again without ``--no-confirm``
         never authors). A stage no task has built yet raises ``NotImplementedError`` before it
         is touched (review N1). Each pass first clears what a hard kill inside a write left
-        (``_clear_hard_kill``, Task 7b fix round 1)."""
+        (``_clear_hard_kill``, Task 7b fix round 1). A plan whose stage 4 committed with
+        ``open_blocks > 0`` is ``failed`` and goes no further, whatever ``through`` names: there
+        is no second revision call (docs/08: one pass); the owner edits the bundle and runs
+        ``plan review`` (Task 9; review m2)."""
+        revise = self._stage("revise")
+        if revise is not None and revise.status == "committed" and self.record.open_blocks > 0:
+            return self.record
         with activate(self.bundle.root / LEDGER):
             for stage in STAGES[: STAGES.index(through) + 1]:
                 existing = self._stage(stage)
@@ -1378,12 +1395,22 @@ class Director:
                 index = self._close(stage, index, world)
         self._commit_stage(stage)
 
-    def _scan_plan(self) -> None:
+    def _scan_plan(self, revising: str | None = None) -> None:
         """``plan.md`` through ``real_name_bundle`` (with the owner clause), ``boundary_bundle``
         and ``jailbreak_bundle``'s lists before a stage-2 call shows it; a hit fails the stage
-        as a lint failure, its results the stage's error (Task 6 re-review N-B)."""
+        as a lint failure, its results the stage's error (Task 6 re-review N-B). With
+        ``revising``, the path before a stage-4 ``revise:<revising>`` call shows ``plan.md``
+        (``## Bundle so far``) and that file as written (Task 8 review I2): the file's own
+        results of the bundle scans (``review_scans``, which run each list over the files its
+        lint covers) join ``plan.md``'s."""
         names = [role.display_name for role in self.record.request.target_models]
-        _refuse_hits(plan_scans(self.bundle, names), "plan.md fails a lint before stage 2 shows it")
+        found = plan_scans(self.bundle, names)
+        what = "plan.md fails a lint before stage 2 shows it"
+        if revising is not None:
+            if revising != "plan.md":
+                found += [r for r in review_scans(self.bundle, self.record) if r.doc_id == revising]
+            what = f"the bundle fails a lint before the revise:{revising} call shows it"
+        _refuse_hits(list(dict.fromkeys(found)), what)
 
     def _shipped(self, manifest: Sequence[ManifestEntry]) -> list[str]:
         """The worlds the manifest names that are shipped worlds (``worlds_dir``) to copy: under
@@ -1800,16 +1827,27 @@ class Director:
 
     # ------------------------------------------------------------------ stage 3
 
-    def _judge_call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
-        """A reviewer or confirm call (``_call``), the bundle scanned first when the call is to
-        be asked (Task 6 re-review R1, carried): ``review_scans``' hits block it as a lint
-        failure, which fails the stage. A committed call is replayed, never scanned again."""
+    def _scanned_call(
+        self, stage: StageRecord, index: int, spec: CallSpec, scan: Callable[[], None]
+    ) -> Answer:
+        """A call (``_call``) whose prompt shows bundle text, ``scan`` run first when the call is
+        to be asked: a hit blocks it as a lint failure, which fails the stage. A committed call
+        is replayed, never scanned again."""
         if index >= len(stage.calls):
+            scan()
+        return self._call(stage, index, spec)
+
+    def _judge_call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
+        """A reviewer or confirm call, the bundle scanned first (Task 6 re-review R1, carried):
+        ``review_scans`` over the whole bundle."""
+
+        def scan() -> None:
             _refuse_hits(
                 review_scans(self.bundle, self.record),
                 f"the bundle fails a lint before the {spec.purpose} call shows it",
             )
-        return self._call(stage, index, spec)
+
+        return self._scanned_call(stage, index, spec, scan)
 
     def _review_spec(self, group: ReviewGroup) -> CallSpec:
         return CallSpec(
@@ -1937,7 +1975,8 @@ class Director:
         index = 0
         for rel in files:
             spec = self._revise_spec(rel, [f for f in findings if f.file == rel])
-            self._go_on(self._call(stage, index, spec))
+            scan = functools.partial(self._scan_plan, revising=rel)
+            self._go_on(self._scanned_call(stage, index, spec, scan))
             index += 1
         for world in sorted({w for rel in files if (w := _world_or_none(rel)) is not None}):
             index = self._close(stage, index, world)
@@ -1947,7 +1986,7 @@ class Director:
                 self._go_on(self._judge_call(stage, index, self._confirm_spec(rel, blocks)))
                 index += 1
         findings = findings_of(self.bundle, self.record)
-        self.bundle.write_file(REVIEW_FILE, render_review(findings))
+        self.bundle.write_file(REVIEW_FILE, render_review(findings, revised=True))
         self._checkpoint("rendered", "revise")
         self.record.open_blocks = sum(f.severity == "block" and f.open for f in findings)
         self._commit_stage(stage, failed=self.record.open_blocks > 0)

@@ -7,7 +7,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -388,12 +388,14 @@ def test_a_denylist_hit_blocks_the_reviewer_call_as_a_lint_failure(
 
 
 class _NamingPlanner(PlannerStub):
-    """A planner whose revision of plan.md signs it with the owner's name: plan.md's arrival
-    check is its size, so only the scan before the confirm call catches it."""
+    """A planner whose revision of DOC1, stage 4's last revise call, signs it with the owner's
+    name: a document's arrival check has no owner clause and no revise call follows, so only the
+    scan before the confirm call catches it (fix round 1: a revision of plan.md is caught by the
+    scan before the next revise call)."""
 
     def _reply(self, purpose: str, mode: str | None) -> str:
         reply = super()._reply(purpose, mode)
-        if purpose == "revise:plan.md":
+        if purpose == f"revise:{_doc1()}":
             data = json.loads(reply)
             data["content"] += f"\nSigned, {_owner()}.\n"
             return json.dumps(data)
@@ -656,3 +658,95 @@ def test_a_rate_limited_review_or_confirm_call_pauses_and_resumes_to_the_unbroke
     )
     assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
     assert comparable(record) == comparable(clean) and record.resumed == []
+
+
+# ---------------------------------------------------------------- fix round 1 (the review)
+
+_OWNER_LINE: Final = "The noticeboard by the stairs is tidy."
+
+
+def _edit(bundle: Bundle, rel: str, line: str) -> None:
+    """An owner's edit, written LF as the bundle writes (``Path.write_text`` would write CRLF)."""
+    bundle.write_file(rel, bundle.read_file(rel) + f"\n{line}\n")
+
+
+@pytest.mark.slow  # two plans through stage 4
+def test_an_adopted_edit_to_a_file_stage_4_revises_survives_a_k9b_resume(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review I1: an owner edit to DOC1 made before stage 4 is adopted when stage 4 opens
+    (``edited``); stage 4 then revises DOC1. A plan killed after that revision's record (K9b)
+    and resumed keeps DOC1 in ``edited``, as an unbroken plan does."""
+    doc1 = _doc1()
+    roots = {"clean": tmp_path / "clean", "killed": tmp_path / "killed"}
+    for name, root in roots.items():
+        bundle, _ = run_plan(root, through="review")
+        _edit(bundle, doc1, _OWNER_LINE)
+        kill = Kill("record", f"revise:{doc1}") if name == "killed" else None
+        run_plan(root, through="revise", kill=kill)
+    clean_bundle, killed_bundle = (
+        Bundle(root / slug_dir.name)
+        for root in roots.values()
+        for slug_dir in root.iterdir()
+        if slug_dir.name != "_cache"
+    )
+    clean, killed = clean_bundle.read_record(), killed_bundle.read_record()
+    assert clean.edited == [doc1] and clean.status == "revised"
+    assert killed.edited == clean.edited
+    assert comparable(killed) == comparable(clean)
+    assert hashed_files(killed_bundle.root) == hashed_files(clean_bundle.root)
+
+
+@pytest.mark.slow  # a plan paused in stage 4, edited and continued, per case
+@pytest.mark.parametrize("which", ["plan.md", "doc1"])
+def test_an_edit_made_in_a_stage_4_pause_is_scanned_before_any_revise_call_shows_it(
+    which: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review I2: a revise call shows plan.md (``## Bundle so far``) and the file it revises
+    (fenced, as written), so stage 2's scan path (``_scan_plan``, plan.md plus that file) runs
+    before each revise call that is asked: an owner's name planted during a pause at the call
+    fails the stage before any planner prompt carries it."""
+    rel = "plan.md" if which == "plan.md" else _doc1()
+    planner = PlannerStub(modes={f"revise:{rel}": "rate_limit"})
+    with pytest.raises(RateLimitExit):
+        run_plan(tmp_path, through="revise", planner=planner)
+    (root,) = [p for p in tmp_path.iterdir() if p.name != "_cache"]
+    _edit(Bundle(root), rel, f"Signed, {_owner()}.")
+    sent = len(planner.calls)
+    _, record = run_plan(tmp_path, through="revise", planner=planner)
+    assert record.status == "failed" and record.stages[3].status == "failed"
+    error = record.stages[3].error or ""
+    assert "real_name_bundle: " in error and f"revise:{rel}" in error
+    assert all(_owner().lower() not in m.lower() for _, _, m in planner.calls[sent:])
+    assert f"revise:{rel}" not in [c.purpose for c in record.stages[3].calls]
+    assert _owner().lower() not in (root / "plan.json").read_text("utf-8").lower()
+
+
+def test_a_block_with_no_verdict_after_stage_4_is_marked_open() -> None:
+    """Review m1: after stage 4, a block with no verdict (a number the confirm reply left out,
+    a confirm that failed twice, a revise that errored) is written ``confirm: none (open)``, so
+    the owner sees every open block; stage 3's render, before any confirm, writes none."""
+    block = ReviewFinding(id=1, severity="block", file="a.md", quote="Q", problem="P", open=True)
+    assert "confirm:" not in render_review([block])
+    assert render_review([block], revised=True) == (
+        'block 1 / fix 0 / note 0\n\n## a.md\n- [1] block: "Q" P\n  - confirm: none (open)\n'
+    )
+
+
+@pytest.mark.slow  # a plan through stage 4
+def test_a_plan_with_an_open_block_goes_no_further_than_stage_4(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review m2: a plan whose stage 4 committed with ``open_blocks > 0`` is ``failed``, and
+    ``Director.run`` walks no further, whatever ``through`` names: the owner edits the bundle
+    and runs ``plan review`` (Task 9)."""
+    reviewer = ReviewerStub(modes={f"confirm:{_doc1()}": "missing"})
+    bundle, record = run_plan(tmp_path, through="revise", reviewer=reviewer)
+    assert record.status == "failed" and record.open_blocks == 1
+    assert "  - confirm: none (open)\n" in bundle.read_file("review.md")
+    again = Director.open(
+        bundle.root, provider_factory=StubFactory(PlannerStub(), reviewer), worlds_dir=WORLDS_DIR
+    )
+    after = again.run(through="validate")  # no NotImplementedError: validate is never reached
+    assert after.status == "failed" and [s.stage for s in after.stages][-1] == "revise"
+    assert comparable(after) == comparable(record)
