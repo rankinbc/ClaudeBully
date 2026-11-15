@@ -9,7 +9,7 @@ field defaults None (preflight Q4), so a record is built from the fields a calle
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Final, Literal, Self
+from typing import Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -195,15 +195,21 @@ class PlanRecord(_Strict):
     status: PlanStatus = "planned"
 
 
-def read_plan_record(path: Path) -> PlanRecord:
-    """``plan.json``, validated; an older plan schema is refused before validation. A damaged
-    file raises ``DamagedRecordError`` (a ``ValueError``) naming the file: with the line for a
-    byte that is not UTF-8 or text that is not JSON, with the first failing field (and how many
-    more) for JSON that is not a ``PlanRecord``. The ``plan`` commands print it without a
-    traceback (the Task 7b carry; Task 9 fix round 1, review I1)."""
-    data = path.read_bytes()
+def damaged_field(where: str, exc: ValidationError) -> DamagedRecordError:
+    """``DamagedRecordError`` for JSON that is not the model: ``<where>: field <name>: <message>``
+    of the first failing field, with how many more there are. ``where`` names the file, and the
+    line for a ledger line (``<file>: line <n>``)."""
+    first, *rest = exc.errors()
+    field = ".".join(str(part) for part in first["loc"]) or "(the record)"
+    more = f" (and {len(rest)} more)" if rest else ""
+    return DamagedRecordError(f"{where}: field {field}: {first['msg']}{more}")
+
+
+def decode_record(path: Path, data: bytes) -> Any:
+    """``data``, the bytes of the JSON file ``path``, as JSON. Raises ``DamagedRecordError``
+    naming the file and the line for a byte that is not UTF-8 or text that is not JSON."""
     try:
-        raw = json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"))
     except UnicodeDecodeError as exc:
         line = data.count(b"\n", 0, exc.start) + 1
         raise DamagedRecordError(
@@ -211,6 +217,26 @@ def read_plan_record(path: Path) -> PlanRecord:
         ) from exc
     except json.JSONDecodeError as exc:
         raise DamagedRecordError(f"{path}: line {exc.lineno}: not valid JSON ({exc.msg})") from exc
+
+
+def validated_record[M: BaseModel](model: type[M], path: Path, data: bytes) -> M:
+    """The ``model`` that the JSON file ``path`` holds (``data`` its bytes). A harness record
+    that does not read back raises ``DamagedRecordError``: ``decode_record``'s message for text
+    that is not JSON, ``damaged_field``'s for JSON that is not the model."""
+    raw = decode_record(path, data)
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        raise damaged_field(str(path), exc) from exc
+
+
+def read_plan_record(path: Path) -> PlanRecord:
+    """``plan.json``, validated; an older plan schema is refused before validation. A damaged
+    file raises ``DamagedRecordError`` (a ``ValueError``) naming the file: with the line for a
+    byte that is not UTF-8 or text that is not JSON, with the first failing field (and how many
+    more) for JSON that is not a ``PlanRecord``. The ``plan`` commands print it without a
+    traceback (the Task 7b carry; Task 9 fix round 1, review I1)."""
+    raw = decode_record(path, path.read_bytes())
     if isinstance(raw, dict):
         version = raw.get("schema_version")
         if isinstance(version, int) and version < PLAN_SCHEMA_VERSION:
@@ -221,7 +247,4 @@ def read_plan_record(path: Path) -> PlanRecord:
     try:
         return PlanRecord.model_validate(raw)
     except ValidationError as exc:
-        first, *rest = exc.errors()
-        field = ".".join(str(part) for part in first["loc"]) or "(the record)"
-        more = f" (and {len(rest)} more)" if rest else ""
-        raise DamagedRecordError(f"{path}: field {field}: {first['msg']}{more}") from exc
+        raise damaged_field(str(path), exc) from exc

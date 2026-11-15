@@ -1,18 +1,19 @@
 """Phase 5 Task 9: stage 5 and the plan sub-app (spec sections 7, 11)."""
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from claude_bully import cli
 from claude_bully.planner import cli as plan_cli
 from claude_bully.planner.bundle import Bundle
 from claude_bully.planner.cli import bundle_diff, cell_line, request_from_flags
-from claude_bully.planner.request import PlanBudget
+from claude_bully.planner.request import PlanBudget, PlanRequest
 from tests.fixtures.director_stub import REQUEST, PlannerStub, ReviewerStub, StubFactory
 from tests.helpers import WORLDS_DIR
 
@@ -599,15 +600,35 @@ def test_a_schema_invalid_plan_json_is_named_with_its_file_and_field(
         assert str(bundle.root) in result.output, command
 
 
-@pytest.mark.slow  # stages 1 and 2 on the doubles
-def test_plan_new_again_without_no_confirm_on_an_authored_plan_prints_the_stop(
-    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
-) -> None:
-    """Fix round 1 (review m1): `plan new` again without --no-confirm on a slug past stage 1
-    but not runnable stops as asked (D-exit): it prints the stop message and exits 0, and runs
-    no stage."""
+def _again(tmp_path: Path, plans: Path, request: PlanRequest) -> Result:
+    """`plan new` of ``request`` again, without --no-confirm, on the plan it names."""
     import yaml
 
+    request_file = tmp_path / "request.yaml"
+    request_file.write_text(yaml.safe_dump(request.model_dump(mode="json")), "utf-8")
+    argv = ["plan", "new", "--request", str(request_file), "--plans-root", str(plans)]
+    return runner.invoke(cli.app, argv)
+
+
+def _good_plan(plans: Path) -> tuple[Bundle, PlanRequest]:
+    """The good bundle, its record's request named by its slug so `plan new` finds it."""
+    from tests.fixtures.bundle_fixtures import good_bundle
+
+    bundle = good_bundle(plans)
+    record = bundle.read_record()
+    record.request = record.request.model_copy(update={"slug": record.slug})
+    bundle.write_record(record)
+    return bundle, record.request
+
+
+@pytest.mark.slow  # stages 1 and 2 on the doubles
+def test_plan_new_again_on_an_authored_plan_reports_its_status_and_exits_1(
+    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
+) -> None:
+    """Fix round 2 (re-review N1): `plan new` again without --no-confirm on a plan past stage 1
+    runs no stage, and says what the plan is: its status, not "stopped after stage 1" (it is
+    past that), and how to go on. An authored plan is not runnable, so it exits 1 (D-exit: only
+    a plan standing at stage 1 is a stop asked for)."""
     from tests.fixtures.director_stub import run_plan
 
     planner, reviewer = stubs
@@ -615,14 +636,83 @@ def test_plan_new_again_without_no_confirm_on_an_authored_plan_prints_the_stop(
     bundle, record = run_plan(plans, through="author")
     assert record.status == "authored"
     held = bundle.read_record().stages
-    request_file = tmp_path / "request.yaml"
-    request_file.write_text(yaml.safe_dump(REQUEST.model_dump(mode="json")), "utf-8")
-    argv = ["plan", "new", "--request", str(request_file), "--plans-root", str(plans)]
-    result = runner.invoke(cli.app, argv)
-    assert result.exit_code == 0, result.output
-    assert "stopped after stage 1: review " in result.output and "plan continue" in result.output
-    assert "status authored" in result.output
+    result = _again(tmp_path, plans, REQUEST)
+    assert result.exit_code == 1, result.output
+    assert "status authored" in result.output and "stopped after stage 1" not in result.output
+    assert f"plan continue {bundle.root.as_posix()}" in result.output
     assert bundle.read_record().stages == held
+    assert planner.calls == [] and reviewer.calls == []
+
+
+def test_plan_new_again_on_a_validated_plan_prints_its_lint_failures_and_exits_1(
+    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
+) -> None:
+    """Fix round 2 (re-review N1): a plan whose stage 5 committed with failing lints is
+    `validated`, not runnable. `plan new` again without --no-confirm prints each failing lint
+    result (as `plan validate` does) and `status validated`, and exits 1; before, it said
+    "stopped after stage 1", hid the failures and exited 0."""
+    from tests.fixtures.bundle_fixtures import mutate
+
+    planner, reviewer = stubs
+    plans = tmp_path / "plans"
+    bundle, request = _good_plan(plans)
+    mutate(bundle, "worlds/mini/ladders/default.yaml", "- Who is Dag Quenby?", "- Dag Quenby.")
+    validated = runner.invoke(cli.app, ["plan", "validate", str(bundle.root)])
+    assert validated.exit_code == 1 and "status validated" in validated.output
+    held = bundle.read_record()
+    result = _again(tmp_path, plans, request)
+    assert result.exit_code == 1, result.output
+    assert "status validated" in result.output and "stopped after stage 1" not in result.output
+    failing = [r for r in held.lint_results if r.severity == "fail"]
+    assert failing
+    for lint in failing:
+        assert f"fail {lint.lint_id} {lint.doc_id}: {lint.message}" in result.output
+    assert bundle.read_record() == held
+    assert planner.calls == [] and reviewer.calls == []
+
+
+@pytest.mark.slow  # a dry run
+def test_plan_new_again_on_a_runnable_plan_prints_its_cells_and_exits_0(
+    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
+) -> None:
+    """Fix round 2 (re-review N1): a runnable plan is the one plan `plan new` again exits 0 on,
+    with its cell lines and `status runnable`, and no stop message."""
+    planner, reviewer = stubs
+    plans = tmp_path / "plans"
+    bundle, request = _good_plan(plans)
+    assert runner.invoke(cli.app, ["plan", "validate", str(bundle.root)]).exit_code == 0
+    held = bundle.read_record()
+    assert held.status == "runnable" and held.dry_run
+    result = _again(tmp_path, plans, request)
+    assert result.exit_code == 0, result.output
+    assert "status runnable" in result.output and "stopped after stage 1" not in result.output
+    for cell in held.dry_run:
+        assert cell_line(cell) in result.output
+    assert bundle.read_record() == held
+    assert planner.calls == [] and reviewer.calls == []
+
+
+@pytest.mark.slow  # stages 1 and 2 on the doubles
+def test_plan_new_again_on_a_failed_plan_prints_the_failed_stage_and_exits_1(
+    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
+) -> None:
+    """Fix round 2 (re-review N1): a plan whose stage 2 failed is `failed`; `plan new` again
+    without --no-confirm prints the failed stage's error and `status failed`, exits 1, and
+    leaves the plan as it was."""
+    from tests.fixtures.director_stub import run_plan
+
+    planner, reviewer = stubs
+    plans = tmp_path / "plans"
+    bundle, record = run_plan(
+        plans, through="author", modes={"file:config.yaml": "off_contract:twice"}
+    )
+    assert record.status == "failed"
+    held = bundle.read_record()
+    result = _again(tmp_path, plans, REQUEST)
+    assert result.exit_code == 1, result.output
+    assert "failed: stage author: " in result.output and "status failed" in result.output
+    assert "stopped after stage 1" not in result.output
+    assert bundle.read_record() == held
     assert planner.calls == [] and reviewer.calls == []
 
 
@@ -678,7 +768,11 @@ def test_a_missing_path_is_a_usage_error_with_no_traceback(
     }
     result = runner.invoke(cli.app, [a.format(**subs) for a in argv])
     assert result.exit_code == 2 and isinstance(result.exception, SystemExit), result.output
-    assert named in result.output and "nowhere" in result.output
+    # the usage panel wraps its text at 80 columns and folds a long path mid-word (a long temp
+    # folder), so the message is read with the wraps and the panel's borders taken out
+    # (fix round 2, re-review N2)
+    message = re.sub(r"[\s│|]+", "", result.output)
+    assert named in message and "nowhere" in message
     assert not (tmp_path / "p").exists()
 
 
@@ -692,3 +786,92 @@ def test_plan_new_help_holds_no_home_folder_name() -> None:
     assert Path.home().name not in result.output
     assert str(REPO_ROOT) not in result.output and REPO_ROOT.as_posix() not in result.output
     assert "<repo>/plans" in result.output
+
+
+# ------------------------------------------------------------------------------ fix round 2
+
+
+def _damaged_request_root(plans: Path, step: str) -> Path:
+    """A plan killed inside stage 2 at the ``step`` write of the first document's call: its
+    bundle root, with the dead attempt's marker (``transcript``) or the committed call
+    (``record``) left for the resume to read."""
+    from claude_bully.planner.director import author_order
+    from claude_bully.planner.request import slug_for
+    from tests.fixtures.bundle_fixtures import GOOD_MANIFEST
+    from tests.fixtures.director_stub import Crash, Kill, run_plan
+
+    doc = next(e.path for e in author_order(GOOD_MANIFEST) if e.kind == "document")
+    with pytest.raises(Crash):
+        run_plan(plans, through="author", kill=Kill(step, f"file:{doc}"), resume=False)
+    return plans / slug_for(REQUEST.question)
+
+
+def _prints_the_damage(result: Result, *want: str) -> None:
+    """The command exited 1 as ``SystemExit`` and printed ``error:`` with each ``want``, no
+    traceback (the printed text is read with the panel's wraps taken out)."""
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit), result.output
+    assert "Traceback" not in result.output
+    text = re.sub(r"\s+", "", result.output)
+    assert "error:" in text
+    for fragment in want:
+        assert re.sub(r"\s+", "", fragment) in text, (fragment, result.output)
+
+
+@pytest.mark.parametrize(
+    ("damage", "want"),
+    [
+        (b"{not json", ".attempt.json: line 1: not valid JSON"),
+        (b'{"stage": "author", "role": "planner", "index": "x"}', ".attempt.json: field index: "),
+        (b"\xff\xfe", ".attempt.json: line 1: a byte that is not UTF-8"),
+    ],
+)
+def test_a_damaged_attempt_marker_is_named_with_its_file_and_no_traceback(
+    damage: bytes, want: str, tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 2 (re-review R1): `.attempt.json` is a harness record. One that does not read
+    back raises ``DamagedRecordError`` naming the file and the line or field, and `plan
+    continue` prints it as `error:`; before, a traceback."""
+    root = _damaged_request_root(tmp_path / "plans", "transcript")
+    (root / ".attempt.json").write_bytes(damage)
+    result = runner.invoke(cli.app, ["plan", "continue", str(root)])
+    _prints_the_damage(result, str(root / want.split(":")[0]), want)
+
+
+@pytest.mark.parametrize("damage", ["cut", "wrong_shape", "not_utf8"])
+def test_a_damaged_transcript_is_named_with_its_file_and_no_traceback(
+    damage: str, tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 2 (re-review R1): a transcript a committed call names that does not read back
+    (cut short, not a ``Transcript``, not UTF-8) raises ``DamagedRecordError`` naming the file
+    and the line or field; `plan continue` prints it as `error:`; before, a traceback."""
+    root = _damaged_request_root(tmp_path / "plans", "record")
+    name = "author-planner-1.json"  # the manifest is call 0, the first document call 1
+    path = root / "transcripts" / name
+    data = path.read_bytes()
+    if damage == "cut":
+        path.write_bytes(data[: len(data) // 2])
+        want = f"{name}: line "
+    elif damage == "wrong_shape":
+        path.write_text(json.dumps({**json.loads(data), "attempts": "none"}), "utf-8")
+        want = f"{name}: field attempts: "
+    else:
+        path.write_bytes(data.replace(b"{", b"{" + bytes([255]), 1))
+        want = f"{name}: line 1: a byte that is not UTF-8"
+    result = runner.invoke(cli.app, ["plan", "continue", str(root)])
+    _prints_the_damage(result, want)
+
+
+def test_a_schema_invalid_ledger_line_is_named_with_its_file_and_line_and_no_traceback(
+    tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 2 (re-review R1): a plan ledger line that is valid JSON but no ``LedgerLine``,
+    among a dead attempt's lines the resume reads, raises ``DamagedRecordError`` naming the
+    file, the line and the field; `plan continue` prints it as `error:`; before, a traceback."""
+    root = _damaged_request_root(tmp_path / "plans", "transcript")
+    ledger = root / "ledger.jsonl"
+    lines = ledger.read_bytes().split(b"\n")
+    last = max(n for n, line in enumerate(lines) if line.strip())
+    lines[last] = b'{"conversation_id": 7}'
+    ledger.write_bytes(b"\n".join(lines))
+    result = runner.invoke(cli.app, ["plan", "continue", str(root)])
+    _prints_the_damage(result, f"ledger.jsonl: line {last + 1}: field ")

@@ -135,6 +135,7 @@ from claude_bully.planner.records import (
     ReviewFinding,
     Stage,
     StageRecord,
+    damaged_field,
 )
 from claude_bully.planner.request import PlanRequest, slug_for
 from claude_bully.providers.base import (
@@ -1211,14 +1212,19 @@ class Director:
                 self.bundle.write_record(self.record)
         self.bundle.clear_attempt()
 
-    def _ledger_raw(self) -> list[str]:
-        """The plan ledger's non-blank lines, split on ``\\n`` alone as ``parsed_lines`` splits
-        (fix round 2, re-review N-B: ``splitlines`` also splits on U+2028, U+2029 and U+0085,
-        which a provider's error text can carry raw); each line's bytes kept."""
+    def _ledger_numbered(self) -> list[tuple[int, str]]:
+        """The plan ledger's non-blank lines with their line numbers, split on ``\\n`` alone as
+        ``parsed_lines`` splits and numbers (fix round 2, re-review N-B: ``splitlines`` also
+        splits on U+2028, U+2029 and U+0085, which a provider's error text can carry raw); each
+        line's bytes kept."""
         path = self.bundle.root / LEDGER
         if not path.is_file():
             return []
-        return [line for line in path.read_bytes().decode("utf-8").split("\n") if line.strip()]
+        lines = path.read_bytes().decode("utf-8").split("\n")
+        return [(number, line) for number, line in enumerate(lines, start=1) if line.strip()]
+
+    def _ledger_raw(self) -> list[str]:
+        return [line for _, line in self._ledger_numbered()]
 
     def _ledger_lines(self) -> int:
         """The plan ledger's line count, which a marker records (``ledger_lines``)."""
@@ -1232,16 +1238,22 @@ class Director:
         ids, so the failed call's own line, before the offset, stays). The redone call writes its
         own, so the ledger reads as an unbroken plan's. A rate limit's line stays, its marker
         cleared before any resume (D-rate-limit; the dry run, whose lines are stub calls, drops
-        it)."""
-        raw = self._ledger_raw()
+        it). A line it reads that is no ``LedgerLine`` is damage, not a dead attempt: it raises
+        ``DamagedRecordError`` naming the file, the line and the field, and the ledger is left
+        as it was (Task 9 fix round 2, review R1)."""
+        numbered = self._ledger_numbered()
+        path = self.bundle.root / LEDGER
         prefix = f"plan/{self.bundle.slug}/{attempt.stage}/{attempt.role}/{attempt.index}/"
-        kept = raw[: attempt.ledger_lines] + [
-            line
-            for line in raw[attempt.ledger_lines :]
-            if not LedgerLine.model_validate_json(line).conversation_id.startswith(prefix)
-        ]
-        if len(kept) != len(raw):
-            write_atomic(self.bundle.root / LEDGER, "".join(f"{line}\n" for line in kept))
+        kept = [line for _, line in numbered[: attempt.ledger_lines]]
+        for number, line in numbered[attempt.ledger_lines :]:
+            try:
+                dead = LedgerLine.model_validate_json(line).conversation_id.startswith(prefix)
+            except ValidationError as exc:
+                raise damaged_field(f"{path}: line {number}", exc) from exc
+            if not dead:
+                kept.append(line)
+        if len(kept) != len(numbered):
+            write_atomic(path, "".join(f"{line}\n" for line in kept))
 
     def _clear_hard_kill(self) -> None:
         """What a process killed outright inside a write leaves, cleared on every pass of

@@ -58,6 +58,9 @@ BundleDir = Annotated[Path, typer.Argument(help="The plan's directory, plans/<sl
 # the default as its expression: the absolute path would print the login's home folder (review m4)
 PLANS_ROOT_SHOWN: Final = "<repo>/plans"
 _NO_FILE: Final = "/dev/null"
+# the statuses of a plan between stage 1 and stage 5 that neither failed nor was held: `plan
+# continue` is the way on
+_MID_PLAN: Final = frozenset({"authored", "reviewed", "revised"})
 
 
 # ------------------------------------------------------------------------------ the request
@@ -318,11 +321,19 @@ def new(
         director = _director(Director.new, plan_request, plans_root=plans_root)
         _refuse_open_blocks(director.record)
         record = _drive(lambda: director.run(stop_after_plan=not no_confirm), wait_on_rate_limit)
-    # stopped after stage 1 as asked, this run's or an earlier one's (D-exit; review m1): any
-    # status but runnable and failed (a plan held by open blocks was refused above)
-    if not no_confirm and record.status not in ("runnable", "failed"):
-        _stopped(director)
-        return
+    if not no_confirm:
+        # only a plan standing at stage 1 is a stop after stage 1 as asked, this run's or an
+        # earlier one's (D-exit; review M4); a plan past it is reported as it is (fix round 2,
+        # re-review N1): its failed stage, open blocks or lint failures, its status, and the
+        # exit its status implies. A plan held by open blocks was refused above.
+        if record.status == "planned":
+            _stopped(director)
+            return
+        if record.status in _MID_PLAN:
+            typer.echo(
+                f"plan new without --no-confirm runs stage 1 only; this plan stands at "
+                f"{record.status}, so run plan continue {director.bundle.root.as_posix()}"
+            )
     _finish(record)
 
 

@@ -34,8 +34,10 @@ from claude_bully.planner.records import (
     Stage,
     StageRecord,
     read_plan_record,
+    validated_record,
 )
 from claude_bully.planner.request import WINDOWS_DEVICE_STEMS
+from claude_bully.runner.store import DamagedRecordError
 from claude_bully.strategies import base as strategy_base
 from claude_bully.strategies.bootstrap import ensure_registered
 from claude_bully.strategies.premises.phased import make_phased_premise
@@ -192,22 +194,28 @@ def committed_outputs(call: DirectorCall, transcript: Transcript) -> dict[str, s
     """The text of each file ``call`` committed, read from its transcript's last reply and
     normalized as written: ``plan`` gives ``plan.md`` the reply; ``file:``, ``repair:`` and
     ``revise:`` give their path ``json.loads(reply)["content"]``. A call that committed no file
-    gives none. Raises ``ValueError`` when the purpose does not give the paths ``call.outputs``
-    names."""
+    gives none. Raises ``DamagedRecordError``, naming the transcript, when it holds no attempt,
+    when its reply is no JSON object with a ``content``, or when the purpose does not give the
+    paths ``call.outputs`` names (Task 9 fix round 2, review R1)."""
     if not call.outputs:
         return {}
     if not transcript.attempts:
-        raise ValueError(f"{call.transcript}: no attempt to read the committed files from")
+        raise DamagedRecordError(f"{call.transcript}: no attempt to read the committed files from")
     reply = transcript.attempts[-1].reply
     kind, _, path = call.purpose.partition(":")
     if call.purpose == "plan":
         files = {"plan.md": reply}
     elif kind in ("file", "repair", "revise") and path:
-        files = {path: json.loads(reply)["content"]}
+        try:
+            files = {path: json.loads(reply)["content"]}
+        except (ValueError, KeyError, TypeError) as exc:
+            raise DamagedRecordError(
+                f"{call.transcript}: the {call.purpose} reply is not a JSON object with a content"
+            ) from exc
     else:
         files = {}
     if set(files) != set(call.outputs):
-        raise ValueError(
+        raise DamagedRecordError(
             f"{call.transcript}: purpose {call.purpose!r} gives {sorted(files)}, "
             f"the call records {sorted(call.outputs)}"
         )
@@ -299,7 +307,10 @@ class Bundle:
         write_atomic(self._transcript_path(rel), transcript.model_dump_json(indent=1) + "\n")
 
     def read_transcript(self, rel: str) -> Transcript:
-        return Transcript.model_validate_json(self._transcript_path(rel).read_bytes())
+        """A transcript; ``DamagedRecordError`` naming the file and the line or field when it
+        does not read back (Task 9 fix round 2, review R1)."""
+        path = self._transcript_path(rel)
+        return validated_record(Transcript, path, path.read_bytes())
 
     def archive_failed_transcript(self, rel: str) -> str | None:
         """Move a failed call's transcript under ``transcripts/failed/`` (one rename), to
@@ -325,10 +336,12 @@ class Bundle:
         write_atomic(self.root / ATTEMPT_FILE, attempt.model_dump_json() + "\n")
 
     def read_attempt(self) -> DirectorAttempt | None:
+        """The marker, or None when there is none; ``DamagedRecordError`` naming the file and
+        the line or field when it does not read back (Task 9 fix round 2, review R1)."""
         path = self.root / ATTEMPT_FILE
         if not path.is_file():
             return None
-        return DirectorAttempt.model_validate_json(path.read_bytes())
+        return validated_record(DirectorAttempt, path, path.read_bytes())
 
     def clear_attempt(self) -> None:
         (self.root / ATTEMPT_FILE).unlink(missing_ok=True)
@@ -409,16 +422,16 @@ def named_transcripts(record: PlanRecord) -> set[str]:
 
 def _committed_texts(bundle: Bundle, calls: Iterable[DirectorCall]) -> dict[str, str]:
     """The text each path holds after ``calls`` in order (a later call's file wins), each read
-    from its call's transcript (``committed_outputs``) and refused with ``ValueError`` when it
-    does not hash to the sha the call recorded (Task 1 review N5: a transcript another call
-    overwrote is caught here, never written)."""
+    from its call's transcript (``committed_outputs``) and refused with ``DamagedRecordError``
+    when it does not hash to the sha the call recorded (Task 1 review N5: a transcript another
+    call overwrote is caught here, never written)."""
     texts: dict[str, str] = {}
     for call in calls:
         if not call.outputs:
             continue
         for rel, text in committed_outputs(call, bundle.read_transcript(call.transcript)).items():
             if _sha256(text) != call.outputs[rel]:
-                raise ValueError(
+                raise DamagedRecordError(
                     f"{call.transcript}: the {call.purpose} reply gives {rel} a text whose "
                     "sha256 is not the one the call recorded"
                 )

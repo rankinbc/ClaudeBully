@@ -34,6 +34,8 @@ from random import Random
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
+from pydantic import ValidationError
+
 from claude_bully.analysis.progression import unlocks_of
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.atomic import write_atomic
@@ -56,7 +58,7 @@ from claude_bully.planner.bundle import (
     plan_personas,
 )
 from claude_bully.planner.bundle_lints import walk_lines
-from claude_bully.planner.records import DryRunCell, LintRecord
+from claude_bully.planner.records import DryRunCell, LintRecord, damaged_field
 from claude_bully.providers.base import ChatProvider, Completion, Message, ToolSpec
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine, wrap
 from claude_bully.providers.stub import ScriptedTurns, StubProvider, TurnEntry
@@ -622,7 +624,9 @@ def _drop_dead_lines(store: RunStore) -> None:
     (``runner/store.parsed_lines``, as the plan ledger's resume applies it): a torn last line, an
     append a hard kill cut short, is a dead call's line and goes; a last line with no newline
     after it gets one, so the redo's first append is not glued to it; any other line that does
-    not parse is damage and raises naming it (Task 9's hard-kill sweep of stage 5). A generator
+    not parse is damage and raises naming it (Task 9's hard-kill sweep of stage 5), as does one
+    that parses but is no ``LedgerLine`` (``DamagedRecordError`` naming the file, the line and
+    the field: Task 9 fix round 2, review R1). A generator
     line is also owned by its rep's committed fire: its conversation id names the document
     (``<conv>/generator/<doc_id>/<attempt>``), and a ``GeneratorFire`` whose plans hold that id
     is the fire's commit, which a resume never redoes, though ``watched_through`` may lag it (a
@@ -631,15 +635,22 @@ def _drop_dead_lines(store: RunStore) -> None:
     parsed = parsed_lines(path)
     if not parsed:
         return
+    # each line's number as parsed_lines numbers it, to name a line that is no LedgerLine
+    # (Task 9 fix round 2, review R1)
+    rows = path.read_bytes().split(b"\n")
+    numbers = [number for number, row in enumerate(rows, start=1) if row.strip()]
     # per unfinished rep, its written turns, watched_through and the documents its committed
     # fires planned; a complete rep owns every line
     reps: dict[tuple[str, int], tuple[list[Turn], int, set[str]] | None] = {}
     kept: list[str] = []
-    for raw_bytes, value in parsed:
+    for number, (raw_bytes, value) in zip(numbers, parsed, strict=True):
         if value is None:  # the torn last line
             continue
         raw = raw_bytes.decode("utf-8")
-        line = LedgerLine.model_validate(value)
+        try:
+            line = LedgerLine.model_validate(value)
+        except ValidationError as exc:
+            raise damaged_field(f"{path}: line {number}", exc) from exc
         cell_id, rep, turn = line.cell_id, line.rep, line.turn
         if cell_id is not None and rep is not None and turn is not None:
             key = (cell_id, rep)

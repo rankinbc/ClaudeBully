@@ -202,6 +202,32 @@ def test_a_torn_last_ledger_line_is_dropped_and_the_resume_goes_on(
     assert ledger.read_bytes().endswith(b"\n")
 
 
+def test_a_schema_invalid_ledger_line_raises_the_named_damaged_record_error(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 9 fix round 2 (re-review R1): a line of the dry run's own ledger that is valid JSON
+    but no ``LedgerLine`` is damage, not a dead attempt: the resume raises
+    ``DamagedRecordError`` naming the file, the line and the field (before, a pydantic
+    ``ValidationError`` that named neither), and the ledger is left as it was."""
+    from claude_bully.runner.store import DamagedRecordError
+
+    bundle = good_bundle(tmp_path / "damaged")
+    real = dryrun.dryrun_provider_factory
+    monkeypatch.setattr(dryrun, "dryrun_provider_factory", _killing("target", 3))
+    with pytest.raises(_Killed):
+        dry_run(bundle)
+    monkeypatch.setattr(dryrun, "dryrun_provider_factory", real)
+    ledger = bundle.root / "dryrun" / dry_run_id(bundle) / "ledger.jsonl"
+    lines = ledger.read_bytes().split(b"\n")
+    lines[1] = b'{"conversation_id": 7}'
+    ledger.write_bytes(b"\n".join(lines))
+    held = ledger.read_bytes()
+    with pytest.raises(DamagedRecordError, match=r"ledger\.jsonl: line 2: field ") as caught:
+        dry_run(bundle)
+    assert isinstance(caught.value, ValueError)
+    assert ledger.read_bytes() == held
+
+
 @pytest.mark.slow
 def test_a_kill_after_a_fire_commits_keeps_the_fires_ledger_lines(
     tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch

@@ -1,6 +1,7 @@
 """Phase 5 Task 1: hash_tree, the bundle's path grammar, its writes and bundle_hash."""
 
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -340,3 +341,91 @@ def test_a_manual_file_commits_like_a_call_and_reads_back(tmp_path: Path) -> Non
 def test_the_gitignore_keeps_the_cache_dry_runs_and_state_out() -> None:
     lines = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert {"plans/_cache/", "plans/*/dryrun/", "plans/*/state/"} <= set(lines)
+
+
+def test_a_damaged_transcript_raises_the_named_damaged_record_error(tmp_path: Path) -> None:
+    """Phase 5 Task 9 fix round 2 (re-review R1): a transcript that is not UTF-8, not JSON or not
+    a ``Transcript`` raises ``DamagedRecordError`` naming the file, with the line, or the field;
+    before, a pydantic ``ValidationError`` that named neither."""
+    from claude_bully.planner.bundle import Transcript, TranscriptAttempt
+    from claude_bully.runner.store import DamagedRecordError
+
+    bundle = Bundle.create(tmp_path, "s")
+    rel = bundle.transcript_rel("author", "planner", 0)
+    good = Transcript(
+        system_sha256=None, model="m", attempts=[TranscriptAttempt(message="a", reply="b")]
+    )
+    bundle.write_transcript(rel, good)
+    assert bundle.read_transcript(rel) == good
+    text = good.model_dump_json(indent=1)
+    wrong = {**good.model_dump(), "attempts": "none"}
+    cases = {
+        "line 1: a byte that is not UTF-8": text.encode().replace(b"{", b"{\xff", 1),
+        "line 2: not valid JSON": b"{\n  nope\n",
+        "field attempts: ": json.dumps(wrong).encode(),
+        "field model: ": json.dumps({"system_sha256": None, "attempts": []}).encode(),
+    }
+    for want, data in cases.items():
+        (bundle.root / rel).write_bytes(data)
+        with pytest.raises(DamagedRecordError, match=want) as caught:
+            bundle.read_transcript(rel)
+        assert "author-planner-0.json" in str(caught.value), want
+
+
+def test_a_damaged_attempt_marker_raises_the_named_damaged_record_error(tmp_path: Path) -> None:
+    """Fix round 2 (re-review R1): ``.attempt.json`` that does not read back raises
+    ``DamagedRecordError`` naming the file, with the line or the field."""
+    from claude_bully.planner.records import DirectorAttempt
+    from claude_bully.runner.store import DamagedRecordError
+
+    bundle = Bundle.create(tmp_path, "s")
+    bundle.write_attempt(DirectorAttempt(stage="author", role="planner", index=4))
+    good = (bundle.root / ".attempt.json").read_bytes()
+    cases = {
+        "line 1: a byte that is not UTF-8": good.replace(b"{", b"{\xff", 1),
+        "line 1: not valid JSON": b'{"stage": ',
+        "field index: ": b'{"stage": "author", "role": "planner", "index": "x"}',
+        "field stage: ": b'{"stage": "nowhere", "role": "planner", "index": 1}',
+    }
+    for want, data in cases.items():
+        (bundle.root / ".attempt.json").write_bytes(data)
+        with pytest.raises(DamagedRecordError, match=want) as caught:
+            bundle.read_attempt()
+        assert ".attempt.json" in str(caught.value), want
+
+
+def test_a_committed_call_the_transcript_cannot_give_raises_the_named_damaged_record_error(
+    tmp_path: Path,
+) -> None:
+    """Fix round 2 (re-review R1): a committed call whose transcript no longer gives the file
+    it recorded (a reply that is no ``{"content": ...}``, a text of another sha256, a purpose
+    that gives other paths, no attempt) is a damaged transcript, named with its file."""
+    from claude_bully.planner.bundle import Transcript, materialize
+    from claude_bully.runner.store import DamagedRecordError
+
+    bundle = Bundle.create(tmp_path, "s")
+    record = _record().model_copy(update={"stages": [], "manifest": []})
+    call = bundle.write_manual(record, "personas/p.yaml", "name: p\n")
+    transcript = bundle.read_transcript(call.transcript)
+    first = transcript.attempts[0]
+
+    def with_reply(reply: str) -> Transcript:
+        return transcript.model_copy(
+            update={"attempts": [first.model_copy(update={"reply": reply})]}
+        )
+
+    cases = [
+        ("sha256 is not the one the call recorded", with_reply('{"content": "x"}')),
+        ("no attempt to read", transcript.model_copy(update={"attempts": []})),
+        ("not a JSON object with a content", with_reply("oops")),
+        ("not a JSON object with a content", with_reply('{"text": "x"}')),
+    ]
+    for want, damaged in cases:
+        bundle.write_transcript(call.transcript, damaged)
+        with pytest.raises(DamagedRecordError, match=want) as caught:
+            materialize(bundle, record)
+        assert "author-planner-0.json" in str(caught.value), want
+    other = call.model_copy(update={"purpose": "manifest"})
+    with pytest.raises(DamagedRecordError, match=r"gives \[\]") as caught:
+        committed_outputs(other, transcript)
+    assert "author-planner-0.json" in str(caught.value)
