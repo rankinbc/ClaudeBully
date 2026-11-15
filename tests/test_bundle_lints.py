@@ -203,6 +203,15 @@ ANNEX_TERMS: Final = (
     "next-of-kin]\n"
 )
 TRIGGERED_LADDER: Final = "    ladder: default\n    gating: triggered\n"
+# the runtime reads an environment's ladder under every gating (environments/runtime.py:503-508)
+NO_GATING_LADDER: Final = "    ladder: default\n    gating: none\n"
+TRIGGERED_GENERATOR: Final = "    gating: triggered\n    generator:\n"
+SECOND_TRIGGERED: Final = (
+    "  - name: ferry_triggered_two\n"
+    "    environment: mini_triggered\n"
+    "    premise: ferry_caller\n"
+    "    seeding_turns: 2\n"
+)
 
 
 def _annex_terms(terms: str) -> Callable[[Bundle], None]:
@@ -267,6 +276,24 @@ SCHEMA_POSITIVES: Final[list[tuple[Callable[[Bundle], None], list[Reason]]]] = [
         _edit("config.yaml", TRIGGERED_LADDER, TRIGGERED_LADDER.replace("default", "nope")),
         [("config.yaml", "world 'mini' has no ladder 'nope'")],
     ),
+    # the runtime reads the ladder whatever the gating, so a `none` environment naming a ladder
+    # the world lacks refuses at its first rep: schema fails it too (round 2, review N-1)
+    (
+        _edit("config.yaml", TRIGGERED_LADDER, NO_GATING_LADDER.replace("default", "nope")),
+        [("config.yaml", "world 'mini' has no ladder 'nope'")],
+    ),
+    # an environment-level refusal two conditions share is reported once (round 2, review N-2)
+    (
+        _all(
+            _edit(
+                "config.yaml",
+                TRIGGERED_GENERATOR,
+                "    gating: triggered\n    honest: true\n    generator:\n",
+            ),
+            _append("config.yaml", SECOND_TRIGGERED),
+        ),
+        [("config.yaml", "sets honest: true, but the world sheet has no honest_corpus")],
+    ),
     # a root that is no mapping names the root, never "params" (review N3)
     (
         lambda bundle: bundle.write_file("expected.yaml", "- a list\n"),
@@ -312,6 +339,10 @@ CASES: Final[list[tuple[str, Mutate, bool, bool]]] = [
         True,
     ),
     ("schema", _alternative_ladder, False, True),  # the environment's ladder is the world's
+    # a `none` environment naming a ladder the world has is fine (round 2, review N-1)
+    ("schema", _edit("config.yaml", TRIGGERED_LADDER, NO_GATING_LADDER), False, True),
+    # two conditions on one environment that refuses nothing (the shared-refusal row's twin)
+    ("schema", _append("config.yaml", SECOND_TRIGGERED), False, True),
     ("schema", _spare_persona, False, True),  # a second name, unused
     # the pinned residual: a bundle persona's params are not validated (a PersonaSheet premise
     # declares no params_model; measured: check_condition accepts the same key on captor)
@@ -561,6 +592,63 @@ def test_independent_faults_are_each_reported_and_a_dependent_step_says_it_was_s
     for part in skipped:
         assert any(part in note for note in notes), (part, notes)
     assert all(note.startswith("skipped: ") for note in notes), notes
+
+
+def test_a_no_gating_environment_naming_a_missing_ladder_fails_schema(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Round 2, review N-1: ``EnvironmentRuntime`` reads the ladder under every gating, so the
+    ladder check has no gating clause."""
+    bundle = good_bundle(tmp_path)
+    mutate(bundle, "config.yaml", TRIGGERED_LADDER, NO_GATING_LADDER.replace("default", "nope"))
+    found = _schema_fails(bundle)
+    assert [(r.doc_id, r.message) for r in found] == [
+        ("config.yaml", "environment 'mini_triggered': world 'mini' has no ladder 'nope'")
+    ]
+
+
+def test_an_environment_refusal_two_conditions_share_is_reported_once(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Round 2, review N-2: both conditions on ``mini_triggered`` meet the one refusal; the
+    per-condition runs would report it twice."""
+    bundle = good_bundle(tmp_path)
+    mutate(
+        bundle,
+        "config.yaml",
+        TRIGGERED_GENERATOR,
+        "    gating: triggered\n    honest: true\n    generator:\n",
+    )
+    mutate(bundle, "config.yaml", "conditions:\n", "conditions:\n" + SECOND_TRIGGERED)
+    messages = [r.message for r in _schema_fails(bundle)]
+    assert len(messages) == 1 and "environment 'mini_triggered'" in messages[0], messages
+
+
+def _skip_bundles() -> list[object]:
+    """Every bundle whose schema results are read for the skip property: the good bundle (the
+    one fixture bundle), each schema positive and each of the review's two-fault bundles."""
+    rows: list[object] = [pytest.param(None, id="good")]
+    rows += [pytest.param(c, id=f"positive-{i}") for i, (c, _) in enumerate(SCHEMA_POSITIVES)]
+    rows += [pytest.param(c, id=f"two-faults-{i}") for i, (c, _, _) in enumerate(TWO_FAULTS)]
+    return rows
+
+
+@pytest.mark.parametrize("change", _skip_bundles())
+def test_a_schema_skip_warn_never_stands_without_a_schema_fail(
+    change: Mutate, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review N-3: a skip is a warn beside the failure that caused it. A skip on a bundle with no
+    fail would let ``lint_bundle`` load it with every lint silent."""
+    bundle = good_bundle(tmp_path)
+    if change is not None:
+        change(bundle)
+    results = [r for r in lint_bundle(bundle) if r.lint_id == "schema"]
+    fails = [r for r in results if r.severity == "fail"]
+    warns = [r for r in results if r.severity == "warn"]
+    assert all(r.message.startswith("skipped: ") for r in warns), [r.message for r in warns]
+    assert not warns or fails, [(r.doc_id, r.message) for r in warns]
+    if change is None:
+        assert results == []
 
 
 def test_the_lints_inside_an_open_block_for_the_same_persona_find_no_clash(

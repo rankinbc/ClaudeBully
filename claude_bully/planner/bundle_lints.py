@@ -42,8 +42,9 @@ and a document's id for a document.
   and keeps every term ``PlanRecord.base_premise_terms`` recorded at the copy, without case
   (R-premise-terms); no two persona files share a name and no persona is named as a registered
   strategy (a class a ``plan_personas`` block registered is a plan's, not a strategy); every
-  ``environments[*].world`` is a directory under ``worlds/`` and, under triggered or scheduled
-  gating, its ``ladder`` a ladder of that world; and, inside ``plan_personas``,
+  ``environments[*].world`` is a directory under ``worlds/`` and its ``ladder`` a ladder of that
+  world, whatever the gating (``EnvironmentRuntime`` reads it under every one); and, inside
+  ``plan_personas``,
   ``run_experiment(dry_run=True)`` against the bundle's worlds accepts the config
   (``check_condition``, ``RunEnvironments.validate``, ``world_premise_sheet``), each condition's
   refusal reported. Each step runs on what loaded, so every independent fault is reported; a
@@ -407,8 +408,6 @@ BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
 _WORLDS: Final = "worlds"
 _CONFIG: Final = "config.yaml"
 _FIXED_MODELS: Final = (_CONFIG, "expected.yaml")
-# the gatings that read an environment's ladder
-_LADDERED: Final = frozenset({"triggered", "scheduled"})
 
 
 @dataclass(frozen=True)
@@ -564,8 +563,8 @@ def _persona_names(files: _Files, out: list[LintResult]) -> set[str]:
 def _environments(
     experiment: Experiment, names: Sequence[str], worlds: Mapping[str, World], out: list[LintResult]
 ) -> dict[str, str]:
-    """Every environment's world a directory under ``worlds/`` and, under a gating that reads one,
-    its ladder a ladder of that world (review M2: ``run --dry-run`` builds no triggered ladder).
+    """Every environment's world a directory under ``worlds/`` and its ladder a ladder of that
+    world, whatever the gating: ``EnvironmentRuntime`` reads the ladder under every one (round 2).
     The environments that failed, or whose world did not load, with why."""
     bad: dict[str, str] = {}
     for key, env in sorted(experiment.environments.items()):
@@ -578,7 +577,7 @@ def _environments(
         if world is None:
             bad[key] = f"world {env.world!r} does not load"
             out.append(_skipped(_CONFIG, f"the ladder of environment {key!r}", bad[key]))
-        elif env.gating in _LADDERED and env.ladder not in world.ladders:
+        elif env.ladder not in world.ladders:
             message = f"environment {key!r}: world {env.world!r} has no ladder {env.ladder!r}"
             out.append(_schema_fail(_CONFIG, message))
             bad[key] = f"environment {key!r} failed a check"
@@ -587,7 +586,8 @@ def _environments(
 
 def _refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
     """What ``run_experiment(dry_run=True)`` refuses: nothing, or, since it stops at its first
-    refusal, each condition's own refusal run alone (the whole run's when none refuses alone)."""
+    refusal, each condition's own refusal run alone (the whole run's when none refuses alone).
+    A refusal two conditions share, an environment's, is reported once."""
 
     def refusal(exp: Experiment) -> str | None:
         with tempfile.TemporaryDirectory() as runs_root:
@@ -605,7 +605,8 @@ def _refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
     alone = [
         refusal(experiment.model_copy(update={"conditions": [c]})) for c in experiment.conditions
     ]
-    return [message for message in alone if message is not None] or [whole]
+    found = [message for message in alone if message is not None]
+    return list(dict.fromkeys(found)) or [whole]
 
 
 def _runnable(
