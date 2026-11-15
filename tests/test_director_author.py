@@ -610,6 +610,44 @@ def test_plan_md_with_a_denylist_hit_fails_stage_2_before_any_call_shows_it(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    ("rel", "how"),
+    [
+        pytest.param("worlds/mini/world.yaml", "sheet", id="world-sheet"),
+        pytest.param("worlds/mini/corpus/ferry-about.md", "title", id="document-title"),
+    ],
+)
+def test_an_owner_edit_to_a_world_sheet_or_a_document_title_fails_stage_2_before_any_call(
+    rel: str, how: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Task 8 re-review, point 3: every stage-2 file call shows the world sheets and one index
+    line per document (``## Bundle so far``), so the whole bundle is scanned (``review_scans``)
+    each time the stage is entered, not ``plan.md`` alone: an owner's name planted in a copied
+    world's sheet or in a base document's title during a pause at the first file call fails the
+    stage before any planner prompt carries it. Neither file is one stage 2 has written, so the
+    resume does not write the planted text back over it."""
+    owner = sorted(owner_names())[0]  # read at run time: the name is on no checked-in list
+    first = f"file:{author_order(GOOD_MANIFEST)[0].path}"
+    planner = PlannerStub(modes={first: "rate_limit"})
+    with pytest.raises(RateLimitExit):
+        run_plan(tmp_path, through="author", planner=planner)
+    path = tmp_path / SLUG / rel
+    text = path.read_text("utf-8")
+    if how == "sheet":
+        text += f"\n# Signed, {owner.title()}.\n"
+    else:
+        text = text.replace("\ntitle: ", f"\ntitle: Signed, {owner.title()}. ", 1)
+    path.write_text(text, "utf-8", newline="\n")
+    sent = len(planner.calls)
+    _, record = run_plan(tmp_path, through="author", planner=planner)
+    assert record.status == "failed" and record.stages[1].status == "failed"
+    assert "real_name_bundle: " in (record.stages[1].error or "")
+    assert first not in [c.purpose for c in record.stages[1].calls]
+    assert all(owner not in m.lower() for _, _, m in planner.calls[sent:])
+    assert owner not in (tmp_path / SLUG / "plan.json").read_text("utf-8").lower()
+
+
+@pytest.mark.slow
 def test_a_close_that_still_fails_after_its_repair_fails_the_stage(
     tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

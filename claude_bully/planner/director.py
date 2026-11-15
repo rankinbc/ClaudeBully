@@ -32,7 +32,6 @@ with no write of its own (the world close) is decided afresh only past the last 
 call, so every decision a resume makes is the one an unbroken plan made (Task 7b).
 """
 
-import functools
 import hashlib
 import json
 import os
@@ -88,7 +87,6 @@ from claude_bully.planner.bundle_lints import (
     dry_run_refusals,
     environment_refusals,
     model_from_text,
-    plan_scans,
     premise_sheet_model,
     review_scans,
 )
@@ -1355,12 +1353,12 @@ class Director:
 
     def author(self) -> None:
         """Stage 2 (spec section 7), in order: the stage opened with its ``inputs`` and the hand
-        edits adopted (one record write); ``plan.md``'s denylist scans, before any call shows it
-        (Task 6 re-review N-B); the copy of the request's reused world (D-copy); the manifest
-        call (index 0, ``MANIFEST_SCHEMA``, its ``commit`` setting ``record.manifest``); the
-        copy of each shipped world the manifest names; the say line; one file call per entry in
-        ``author_order``, each world closed after its last file (``_close``); status
-        ``authored``.
+        edits adopted (one record write); the bundle's denylist scans (``_scan_bundle``), before
+        any call shows it (Task 6 re-review N-B; the whole bundle, Task 8 re-review); the copy of
+        the request's reused world (D-copy); the manifest call (index 0, ``MANIFEST_SCHEMA``, its
+        ``commit`` setting ``record.manifest``); the copy of each shipped world the manifest
+        names; the say line; one file call per entry in ``author_order``, each world closed after
+        its last file (``_close``); status ``authored``.
 
         A document whose call is an ``error`` from two failed checks keeps its call and is not
         written, unless that drops a fresh world under ``MIN_ANCHOR_DOCS``; any other ``error``
@@ -1370,7 +1368,7 @@ class Director:
         frozen at the calls made before it, and the copies are keyed on ``base_worlds``, so a
         resume that skips a committed manifest call still copies."""
         stage = self._open_stage("author", adopt=True)
-        self._scan_plan()
+        self._scan_bundle("stage 2")
         request = self.record.request
         if request.world == "reuse" and request.base_world is not None:
             self._copy_worlds([request.base_world])
@@ -1395,22 +1393,18 @@ class Director:
                 index = self._close(stage, index, world)
         self._commit_stage(stage)
 
-    def _scan_plan(self, revising: str | None = None) -> None:
-        """``plan.md`` through ``real_name_bundle`` (with the owner clause), ``boundary_bundle``
-        and ``jailbreak_bundle``'s lists before a stage-2 call shows it; a hit fails the stage
-        as a lint failure, its results the stage's error (Task 6 re-review N-B). With
-        ``revising``, the path before a stage-4 ``revise:<revising>`` call shows ``plan.md``
-        (``## Bundle so far``) and that file as written (Task 8 review I2): the file's own
-        results of the bundle scans (``review_scans``, which run each list over the files its
-        lint covers) join ``plan.md``'s."""
-        names = [role.display_name for role in self.record.request.target_models]
-        found = plan_scans(self.bundle, names)
-        what = "plan.md fails a lint before stage 2 shows it"
-        if revising is not None:
-            if revising != "plan.md":
-                found += [r for r in review_scans(self.bundle, self.record) if r.doc_id == revising]
-            what = f"the bundle fails a lint before the revise:{revising} call shows it"
-        _refuse_hits(list(dict.fromkeys(found)), what)
+    def _scan_bundle(self, before: str) -> None:
+        """The bundle through the denylist scans before a call shows it (``before`` names it):
+        ``bundle_lints.review_scans`` over the whole bundle, ``plan.md`` included, so ``plan.md``'s
+        owner clause, Boundary and jailbreak lists (Task 6 re-review N-B), every world sheet, the
+        index line of every document and the file a revise call shows as written are all read
+        (Task 8 re-review, point 3). A hit fails the stage as a lint failure, its results the
+        stage's error, the owner clause naming no name. The one path of stage 2's opening, every
+        reviewer and confirm call and every revise call."""
+        _refuse_hits(
+            review_scans(self.bundle, self.record),
+            f"the bundle fails a lint before {before} shows it",
+        )
 
     def _shipped(self, manifest: Sequence[ManifestEntry]) -> list[str]:
         """The worlds the manifest names that are shipped worlds (``worlds_dir``) to copy: under
@@ -1827,27 +1821,14 @@ class Director:
 
     # ------------------------------------------------------------------ stage 3
 
-    def _scanned_call(
-        self, stage: StageRecord, index: int, spec: CallSpec, scan: Callable[[], None]
-    ) -> Answer:
-        """A call (``_call``) whose prompt shows bundle text, ``scan`` run first when the call is
-        to be asked: a hit blocks it as a lint failure, which fails the stage. A committed call
-        is replayed, never scanned again."""
+    def _scanned_call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
+        """A call (``_call``) whose prompt shows bundle text, the bundle scanned first
+        (``_scan_bundle``) when the call is to be asked: a hit blocks it as a lint failure, which
+        fails the stage. A committed call is replayed, never scanned again. Every stage-3 and
+        stage-4 call goes through it."""
         if index >= len(stage.calls):
-            scan()
+            self._scan_bundle(f"the {spec.purpose} call")
         return self._call(stage, index, spec)
-
-    def _judge_call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
-        """A reviewer or confirm call, the bundle scanned first (Task 6 re-review R1, carried):
-        ``review_scans`` over the whole bundle."""
-
-        def scan() -> None:
-            _refuse_hits(
-                review_scans(self.bundle, self.record),
-                f"the bundle fails a lint before the {spec.purpose} call shows it",
-            )
-
-        return self._scanned_call(stage, index, spec, scan)
 
     def _review_spec(self, group: ReviewGroup) -> CallSpec:
         return CallSpec(
@@ -1866,7 +1847,7 @@ class Director:
         """Stage 3 (spec section 7): the stage opened with its ``inputs`` and the hand edits
         adopted, as stage 2 opens; one reviewer call per ``review_groups`` entry
         (``REVIEW_SCHEMA``, system ``reviewer``, ``check_findings``), each after the denylist
-        scans (``_judge_call``); any ``error`` call fails the stage and the plan, so a review the
+        scans (``_scanned_call``); any ``error`` call fails the stage and the plan, so a review the
         harness cannot read is never read as no findings. Then ``review.md`` is rendered from
         ``findings_of`` and written, the ``rendered`` checkpoint, and only then the stage
         commits with ``review_counts`` (one record write); status ``reviewed``. ``review.md``
@@ -1874,7 +1855,7 @@ class Director:
         the render and the commit renders the same bytes again (R-review-md)."""
         stage = self._open_stage("review", adopt=True)
         for index, group in enumerate(review_groups(self.bundle, self.record)):
-            answer = self._judge_call(stage, index, self._review_spec(group))
+            answer = self._scanned_call(stage, index, self._review_spec(group))
             if answer.call.status == "error":
                 raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
         findings = findings_of(self.bundle, self.record)
@@ -1957,33 +1938,32 @@ class Director:
     def revise(self) -> None:
         """Stage 4 (spec section 7), in order: the stage opened with its ``inputs`` (``review.md``
         among them) and the hand edits adopted; one planner ``revise:<path>`` call per file with
-        a block or a fix, in path order (``_revise_spec``), the file replaced on its commit; a
-        call that fails its check twice leaves the file and its findings unanswered and the
-        stage goes on (D-revise-error); each world of a revised file closed again
-        (``_close``, within the ``MAX_REPAIR_CALLS`` stage 2 left); one ``confirm:<path>`` call
-        per file that had a block, after the denylist scans; ``review.md`` rendered again with
-        the responses and verdicts, the ``rendered`` checkpoint; ``open_blocks`` counted and the
-        stage committed in one record write, status ``revised``, or ``failed`` with
-        ``open_blocks > 0`` (the owner edits and runs ``plan review``; one pass, docs/08). A
-        provider error on any call fails the stage and the plan (spec section 13, preflight
-        Q43); ``plan continue`` retries the stage from that call. A resume replays the committed
-        calls in order and asks each file's revision of its committed pre-revision text, which
-        no call of the stage wrote before it."""
+        a block or a fix, in path order (``_revise_spec``), each after the denylist scans, the
+        file replaced on its commit; a call that fails its check twice leaves the file and its
+        findings unanswered and the stage goes on (D-revise-error); each world of a revised file
+        closed again (``_close``, within the ``MAX_REPAIR_CALLS`` stage 2 left); one
+        ``confirm:<path>`` call per file that had a block, after the denylist scans; ``review.md``
+        rendered again with the responses and verdicts, the ``rendered`` checkpoint;
+        ``open_blocks`` counted and the stage committed in one record write, status ``revised``,
+        or ``failed`` with ``open_blocks > 0`` (the owner edits and runs ``plan review``; one
+        pass, docs/08). A provider error on any call fails the stage and the plan (spec section
+        13, preflight Q43); ``plan continue`` retries the stage from that call. A resume replays
+        the committed calls in order and asks each file's revision of its committed pre-revision
+        text, which no call of the stage wrote before it."""
         stage = self._open_stage("revise", adopt=True)
         findings = review_findings(self.bundle, self.record)
         files = sorted({f.file for f in findings if f.severity in ("block", "fix")})
         index = 0
         for rel in files:
             spec = self._revise_spec(rel, [f for f in findings if f.file == rel])
-            scan = functools.partial(self._scan_plan, revising=rel)
-            self._go_on(self._scanned_call(stage, index, spec, scan))
+            self._go_on(self._scanned_call(stage, index, spec))
             index += 1
         for world in sorted({w for rel in files if (w := _world_or_none(rel)) is not None}):
             index = self._close(stage, index, world)
         for rel in files:
             blocks = _blocks(findings, rel)
             if blocks:
-                self._go_on(self._judge_call(stage, index, self._confirm_spec(rel, blocks)))
+                self._go_on(self._scanned_call(stage, index, self._confirm_spec(rel, blocks)))
                 index += 1
         findings = findings_of(self.bundle, self.record)
         self.bundle.write_file(REVIEW_FILE, render_review(findings, revised=True))
