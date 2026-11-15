@@ -21,10 +21,19 @@ from typing import Final
 import pytest
 import yaml
 
-from claude_bully.config import RoleConfig
-from claude_bully.enums import ProviderKind
 from claude_bully.environments.world import load_world
 from claude_bully.paths import CONFIGS_DIR, DATA_DIR, REPO_ROOT
+
+# the address patterns and the config spare live in the package since Phase 5 Task 4b (D-scans)
+from claude_bully.planner.bundle_lints import (
+    EMAIL_DOMAIN,
+    PROVIDER_VALUE,
+    PUBLIC_HOST,
+    RESERVED_TLDS,
+    URL_HOST,
+    config_display_names,
+    config_scan_text,
+)
 from tests.test_guardrails import load_denylist, scan
 
 REAL_NAMES: Final = DATA_DIR / "denylists" / "real_names.txt"
@@ -37,14 +46,6 @@ SCANNED: Final = [DATA_DIR / "worlds", DATA_DIR / "personas", FIXTURE_WORLDS, FI
 SCANNED_FILES: Final = [DATA_DIR / "quirks.yaml", DATA_DIR / "hypotheses.yaml"]
 TEXT_SUFFIXES: Final = {".yaml", ".yml", ".md", ".txt"}
 EXEMPTION: Final = re.compile(r"^\s*#\s*real-name-ok:\s*(.+?)\s*$", re.MULTILINE)
-RESERVED_TLDS: Final = (".example", ".test", ".invalid")
-URL_HOST: Final = re.compile(r"https?://([^/\s)\]>\"'`]+)", re.IGNORECASE)
-EMAIL_DOMAIN: Final = re.compile(r"\b[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
-# a bare host name ending in a public suffix, e.g. in a config's host list
-PUBLIC_HOST: Final = re.compile(
-    r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|ai|gov|edu|co|uk|us|info|biz|dev|app)\b",
-    re.IGNORECASE,
-)
 
 REAL: Final = [
     "Anthropic",
@@ -162,27 +163,12 @@ def _patterns() -> list[re.Pattern[str]]:
     return load_denylist(REAL_NAMES, minimum=60)
 
 
-DEFAULT_DISPLAY_NAME: Final = str(RoleConfig.model_fields["display_name"].default).lower()
-
-
-def _target_names(path: Path) -> set[str]:
-    """The display names a config gives its target roles (``targets[*].display_name``), read
-    with ``yaml.safe_load``; never another role's (Phase 4 Task 14 fix round 1, review I1)."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    targets = data.get("targets") if isinstance(data, dict) else None
-    return {
-        str(target["display_name"]).lower()
-        for target in (targets if isinstance(targets, list) else [])
-        if isinstance(target, dict) and target.get("display_name")
-    }
-
-
 def _display_names() -> set[str]:
-    """The target's own display_name: the RoleConfig default and every one a config gives a
-    target role."""
-    names = {DEFAULT_DISPLAY_NAME}
+    """The target's own display_name: the RoleConfig default (what an empty config gives) and
+    every one a config gives a target role (``config_display_names``, never another role's)."""
+    names = config_display_names("")
     for path in sorted(CONFIGS_DIR.rglob("*.yaml")):
-        names |= _target_names(path)
+        names |= config_display_names(path.read_text(encoding="utf-8"))
     return names
 
 
@@ -326,10 +312,8 @@ def test_no_real_names_in_worlds_or_personas() -> None:
 # role's provider value (``provider: anthropic``) is the harness's provider kind, which no prompt
 # carries, and the target's own display_name (and so its family's model strings, such as
 # ``claude-opus-5-5``) is the one exempt name; everything else in a config, comments included,
-# is scanned as written.
-PROVIDER_VALUE: Final = re.compile(
-    r"\bprovider:\s*(?:" + "|".join(re.escape(kind.value) for kind in ProviderKind) + r")\b"
-)
+# is scanned as written. ``PROVIDER_VALUE`` and the spare (``config_scan_text``) are the
+# package's, which the bundle lint ``real_name_bundle`` reads too.
 
 
 def _scanned_configs() -> list[Path]:
@@ -339,10 +323,8 @@ def _scanned_configs() -> list[Path]:
 def _config_hits(path: Path, patterns: list[re.Pattern[str]]) -> list[str]:
     """The real names in one config: its provider values and its own targets' display names
     (with the default) spared, everything else, comments included, scanned."""
-    text = PROVIDER_VALUE.sub("provider:", path.read_text(encoding="utf-8"))
-    for name in {DEFAULT_DISPLAY_NAME} | _target_names(path):
-        text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", text, flags=re.IGNORECASE)
-    return scan(text, patterns)
+    text = path.read_text(encoding="utf-8")
+    return scan(config_scan_text(text, config_display_names(text)), patterns)
 
 
 def test_the_scan_covers_every_config() -> None:
@@ -381,6 +363,7 @@ def test_a_real_name_planted_in_a_config_is_caught(tmp_path: Path) -> None:
     )
     config = tmp_path / "planted.yaml"
     config.write_text(clean, encoding="utf-8")
+    assert PROVIDER_VALUE.search(clean)  # the spare has a provider value to drop
     assert _config_hits(config, patterns) == []
     for planted in (
         "# compare with the Reuters wire\n",

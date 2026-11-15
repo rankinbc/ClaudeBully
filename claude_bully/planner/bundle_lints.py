@@ -32,8 +32,8 @@ reviewer's.
 for an outlet, ``<world>`` for the boilerplate, the sheet's clock and the layer and seam counts,
 and a document's id for a document.
 
-``lint_bundle(bundle)`` runs, over one plan bundle (``planner/bundle.py``), the lints of
-``BUNDLE_LINT_IDS`` built so far, every result kept, warns included (R-good-warn):
+``lint_bundle(bundle)`` runs, over one plan bundle (``planner/bundle.py``), every lint of
+``BUNDLE_LINT_IDS`` but ``dry_run`` (Task 5's), every result kept, warns included (R-good-warn):
 
 - ``schema`` (fail): every grammar file loads into its model with no unknown field (the world
   sheet, ``parse_document``, ``LadderConfig``, a premise's ``world_sheet``, ``PersonaSheet``,
@@ -55,14 +55,27 @@ and a document's id for a document.
 - ``manifest_complete`` (fail): every manifest path exists unless its last ``file:`` call is an
   ``error``; no grammar file but ``plan.md`` and ``review.md`` is outside the manifest and the
   base copy (``PlanRecord.base_files``).
+- ``real_name_bundle``, ``reserved_hosts``, ``boundary_bundle``, ``jailbreak_bundle`` and
+  ``no_values_expectation`` (fail): the denylists and the address patterns over whole file text,
+  comments included, whatever ``schema`` found (each function's docstring names its files).
 - Phase 3's ``lint_world`` and the world-level lints above per bundle world, a document's id
   rewritten to its bundle path; then ``bully_line`` over every persona's ``fallback_lines``
   (``<persona>/fallback_lines/<i>``) with the shapes and the premise terms of every world the
   config's environments name.
+- ``anchor_floor`` (fail): a world with no ``base_worlds`` entry has ``MIN_ANCHOR_DOCS``
+  documents. ``expected_schema``, ``control_presence`` and ``budget`` (fail): set relations and
+  counts over the cells ``expand_cells`` gives, inside ``plan_personas``; ``budget``'s
+  ``max_calls`` clause only when the dry run's cells are given.
+
+The real-name scan's address patterns and config spare live here too (D-scans):
+``RESERVED_TLDS``, ``URL_HOST``, ``EMAIL_DOMAIN``, ``PUBLIC_HOST``, ``PROVIDER_VALUE``,
+``config_display_names``, ``config_scan_text`` and its JSON twin ``record_scan_text``;
+``tests/test_real_names.py`` imports them back.
 """
 
+import re
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -71,8 +84,9 @@ from typing import Final
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from claude_bully.config import ConditionConfig, Experiment
-from claude_bully.enums import DocumentKind, Layer, TriggerCategory
+from claude_bully.analysis.hypotheses import load_register
+from claude_bully.config import ConditionConfig, Experiment, RoleConfig
+from claude_bully.enums import DocumentKind, Layer, ProviderKind, TriggerCategory
 from claude_bully.environments.config import LadderConfig, RungConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.dating import asserts_current_date, unmovable_dates
@@ -85,7 +99,13 @@ from claude_bully.environments.world import (
     load_world,
     parse_document,
 )
+from claude_bully.metrics.events import DETECTORS
+from claude_bully.paths import DATA_DIR
 from claude_bully.planner.bundle import (
+    DRYRUN_DIR,
+    PERSONAS_DIR,
+    STATE_DIR,
+    TRANSCRIPTS,
     Bundle,
     is_plan_persona,
     kind_of,
@@ -97,8 +117,15 @@ from claude_bully.planner.line_shapes import (
     BULLY_LINE_SHAPES,
     premise_words_pattern,
 )
-from claude_bully.planner.lints import LintResult, lint_world
+from claude_bully.planner.lints import (
+    BOUNDARY_PATH,
+    REAL_NAMES_PATH,
+    LintResult,
+    lint_world,
+    load_patterns,
+)
 from claude_bully.planner.records import DryRunCell, ExpectedEvents, PlanRecord
+from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.base import all_strategies
 from claude_bully.strategies.bootstrap import ensure_registered
@@ -407,18 +434,80 @@ BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
 
 _WORLDS: Final = "worlds"
 _CONFIG: Final = "config.yaml"
-_FIXED_MODELS: Final = (_CONFIG, "expected.yaml")
+_EXPECTED: Final = "expected.yaml"
+_FIXED_MODELS: Final = (_CONFIG, _EXPECTED)
+
+# The address and spare patterns of the repository's real-name scan, moved here unchanged in
+# text from tests/test_real_names.py, which imports them back (D-scans).
+RESERVED_TLDS: Final = (".example", ".test", ".invalid")
+URL_HOST: Final = re.compile(r"https?://([^/\s)\]>\"'`]+)", re.IGNORECASE)
+EMAIL_DOMAIN: Final = re.compile(r"\b[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+# a bare host name ending in a public suffix, e.g. in a config's host list
+PUBLIC_HOST: Final = re.compile(
+    r"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|ai|gov|edu|co|uk|us|info|biz|dev|app)\b",
+    re.IGNORECASE,
+)
+# A role's provider value (``provider: anthropic``) is the harness's provider kind, which no
+# prompt carries.
+PROVIDER_VALUE: Final = re.compile(
+    r"\bprovider:\s*(?:" + "|".join(re.escape(kind.value) for kind in ProviderKind) + r")\b"
+)
+# the JSON twin of PROVIDER_VALUE, for a run or plan record: a "provider" or "backend" value
+_RECORD_PROVIDER: Final = re.compile(
+    r'"(provider|backend)":\s*"(?:'
+    + "|".join(re.escape(kind.value) for kind in ProviderKind)
+    + r')"'
+)
+_DEFAULT_DISPLAY_NAME: Final = str(RoleConfig.model_fields["display_name"].default)
+
+
+def config_display_names(text: str) -> set[str]:
+    """The names a config's text spares: the ``RoleConfig`` default ``display_name`` and every
+    one its ``targets`` give, lowercased; never another role's (Phase 4 Task 14 fix round 1,
+    review I1). Text that is no YAML mapping gives the default alone."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        data = None
+    targets = data.get("targets") if isinstance(data, dict) else None
+    return {_DEFAULT_DISPLAY_NAME.lower()} | {
+        str(target["display_name"]).lower()
+        for target in (targets if isinstance(targets, list) else [])
+        if isinstance(target, dict) and target.get("display_name")
+    }
+
+
+def _spare_names(text: str, display_names: Collection[str]) -> str:
+    for name in display_names:
+        text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", text, flags=re.IGNORECASE)
+    return text
+
+
+def config_scan_text(text: str, display_names: Collection[str]) -> str:
+    """A config's text as the real-name scan reads it: each role's provider value spared, then
+    each of ``display_names``, word-bounded and case-insensitive; everything else, comments
+    included, kept."""
+    return _spare_names(PROVIDER_VALUE.sub("provider:", text), display_names)
+
+
+def record_scan_text(text: str, display_names: Collection[str]) -> str:
+    """The JSON twin of ``config_scan_text`` (R-scan-bundles: ``plan.json``, ``ledger.jsonl``,
+    ``dryrun.jsonl``): each ``"provider"`` and ``"backend"`` value that is a ``ProviderKind``
+    value spared, then each of ``display_names``. The backend goes first, so ``claude_code`` is
+    never left as ``_code``."""
+    return _spare_names(_RECORD_PROVIDER.sub(r'"\1": ""', text), display_names)
 
 
 @dataclass(frozen=True)
 class _Loaded:
     """What a bundle whose ``schema`` passed holds: its worlds, each document's bundle path by
-    world and id, its personas and its experiment."""
+    world and id, its personas, its experiment and its expected events."""
 
     worlds: Mapping[str, World]
     doc_paths: Mapping[str, Mapping[str, str]]
     personas: Mapping[str, PersonaSheet]
     experiment: Experiment
+    expected: ExpectedEvents
 
 
 def _schema_fail(rel: str, message: str) -> LintResult:
@@ -472,6 +561,7 @@ class _Files:
     failed_worlds: set[str] = field(default_factory=set)
     failed_persona: bool = False
     experiment: Experiment | None = None
+    expected: ExpectedEvents | None = None
 
 
 def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
@@ -499,7 +589,7 @@ def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
             elif kind == "config":
                 files.experiment = _model(Experiment, bundle, rel)
             elif kind == "expected":
-                _model(ExpectedEvents, bundle, rel)
+                files.expected = _model(ExpectedEvents, bundle, rel)
         except ValueError as exc:
             # parse_document's message opens with the path the doc_id already holds
             out.append(_schema_fail(rel, str(exc).removeprefix(f"{rel}: ")))
@@ -665,9 +755,9 @@ def _schema(bundle: Bundle, record: PlanRecord) -> tuple[list[LintResult], _Load
         checked = experiment.model_copy(update={"conditions": runnable})
         with plan_personas(personas):
             out.extend(_schema_fail(_CONFIG, m) for m in _refusals(checked, root))
-    if out:
+    if out or files.expected is None:
         return out, None
-    return [], _Loaded(worlds, files.doc_paths, files.personas, experiment)
+    return [], _Loaded(worlds, files.doc_paths, files.personas, experiment, files.expected)
 
 
 def _manifest_complete(bundle: Bundle, record: PlanRecord) -> list[LintResult]:
@@ -729,16 +819,264 @@ def _world_lints(loaded: _Loaded) -> list[LintResult]:
     return [*out, *_persona_lines(loaded)]
 
 
+# ------------------------------------------------ the denylist scans (whole text, no model)
+
+_JAILBREAK_PATH: Final = DATA_DIR / "jailbreak_denylist.txt"
+# what jailbreak_bundle leaves out: the transcripts (they quote) and the git-ignored dry run and
+# provider state (preflight Q24: the scan is the committed set the CI scan reads)
+_NOT_JAILBREAK_SCANNED: Final = frozenset({TRANSCRIPTS, DRYRUN_DIR, STATE_DIR})
+_VALUES_LOOSENED: Final = "values_loosened"
+
+
+def _world_and_persona_files(bundle: Bundle) -> list[str]:
+    """Every grammar path under ``worlds/`` or ``personas/``, sorted."""
+    return [rel for rel in bundle.index() if rel.startswith((f"{_WORLDS}/", f"{PERSONAS_DIR}/"))]
+
+
+def _denylist_hits(
+    lint_id: str, rel: str, text: str, patterns: Sequence[re.Pattern[str]], what: str
+) -> list[LintResult]:
+    """One fail per pattern of a denylist that matches ``text``, its first match the span."""
+    return [
+        LintResult(lint_id, "fail", rel, f"holds {what}: {found[0]!r}", found[0])
+        for pattern in patterns
+        if (found := pattern.search(text)) is not None
+    ]
+
+
+def _real_name_bundle(bundle: Bundle) -> list[LintResult]:
+    """``real_name_bundle``: ``real_names.txt`` over the whole text of every ``worlds/`` and
+    ``personas/`` file, ``config.yaml`` through the config spare (its provider values and its
+    targets' display names, ``config_scan_text``) and ``expected.yaml``. ``plan.md``,
+    ``review.md`` and ``transcripts/`` are exempt for a plan in flight, since they quote; a
+    checked-in bundle is scanned whole by CI (R-scan-bundles)."""
+    patterns = load_patterns(REAL_NAMES_PATH)
+    present = bundle.index()
+    texts = {rel: bundle.read_file(rel) for rel in _world_and_persona_files(bundle)}
+    if _CONFIG in present:
+        config = bundle.read_file(_CONFIG)
+        texts[_CONFIG] = config_scan_text(config, config_display_names(config))
+    if _EXPECTED in present:
+        texts[_EXPECTED] = bundle.read_file(_EXPECTED)
+    return [
+        result
+        for rel, text in texts.items()
+        for result in _denylist_hits("real_name_bundle", rel, text, patterns, "a real name")
+    ]
+
+
+def _reserved_hosts(bundle: Bundle) -> list[LintResult]:
+    """``reserved_hosts``: every URL host (``URL_HOST``, its port dropped) and email domain
+    (``EMAIL_DOMAIN``) in a ``worlds/`` or ``personas/`` file ends in ``RESERVED_TLDS``, and no
+    bare host name ends in a public suffix (``PUBLIC_HOST``).
+
+    The URL and email clauses are the closed rule. The bare-host clause is a deny list of public
+    suffixes, so a bare host on an unlisted suffix (``pennetferry.xyz``) passes and is the
+    reviewer's guardrail audit's (R-bare-host, the pinned residual: closing it fails three
+    overlay tokens that name no host)."""
+    reserved = ", ".join(RESERVED_TLDS)
+    out: list[LintResult] = []
+    for rel in _world_and_persona_files(bundle):
+        text = bundle.read_file(rel)
+        found = [("url host", h.split(":")[0].lower()) for h in URL_HOST.findall(text)]
+        found += [("email domain", d.lower()) for d in EMAIL_DOMAIN.findall(text)]
+        reported: set[str] = set()
+        for what, host in dict.fromkeys(found):
+            if not host.endswith(RESERVED_TLDS):
+                message = f"{what} {host!r} is not under {reserved}"
+                out.append(LintResult("reserved_hosts", "fail", rel, message, host))
+                reported.add(host)
+        # a host a url or an address already failed is not reported again as a bare one
+        for host in dict.fromkeys(m[0] for m in PUBLIC_HOST.finditer(text)):
+            if host.lower() not in reported:
+                message = f"bare host {host!r} ends in a public suffix"
+                out.append(LintResult("reserved_hosts", "fail", rel, message, host))
+    return out
+
+
+def _boundary_bundle(bundle: Bundle) -> list[LintResult]:
+    """``boundary_bundle``: ``boundary.txt`` over the whole text, comments included, of every
+    ``worlds/`` and ``personas/`` file and ``config.yaml``; no field is exempt."""
+    patterns = load_patterns(BOUNDARY_PATH)
+    rels = _world_and_persona_files(bundle)
+    if _CONFIG in bundle.index():
+        rels.append(_CONFIG)
+    return [
+        result
+        for rel in rels
+        for result in _denylist_hits(
+            "boundary_bundle", rel, bundle.read_file(rel), patterns, "a Boundary word"
+        )
+    ]
+
+
+def _jailbreak_bundle(bundle: Bundle) -> list[LintResult]:
+    """``jailbreak_bundle``: ``data/jailbreak_denylist.txt`` over every file of the bundle but
+    those under ``transcripts/``, ``dryrun/`` and ``state/`` (spec section 9, preflight Q24):
+    the grammar files, ``plan.json`` (the request's question and constraints), the ledger and
+    ``dryrun.jsonl`` among them."""
+    patterns = load_patterns(_JAILBREAK_PATH)
+    out: list[LintResult] = []
+    for path in sorted(p for p in bundle.root.rglob("*") if p.is_file()):
+        rel = path.relative_to(bundle.root).as_posix()
+        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED:
+            continue
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        what = "a jailbreak denylist phrase"
+        out += _denylist_hits("jailbreak_bundle", rel, text, patterns, what)
+    return out
+
+
+def _no_values_expectation(bundle: Bundle) -> list[LintResult]:
+    """``no_values_expectation``: the text ``values_loosened`` nowhere in ``expected.yaml``,
+    comments included: predicting it would let a rep in which it fired count as a hit."""
+    if _EXPECTED not in bundle.index() or _VALUES_LOOSENED not in bundle.read_file(_EXPECTED):
+        return []
+    message = f"names {_VALUES_LOOSENED}, which no plan may predict"
+    return [LintResult("no_values_expectation", "fail", _EXPECTED, message, _VALUES_LOOSENED)]
+
+
+# ------------------------------------------------- the count and set-relation lints (a model)
+
+
+def _anchor_floor(loaded: _Loaded, record: PlanRecord) -> list[LintResult]:
+    """``anchor_floor``: a fresh world, one with no ``base_worlds`` entry (it was not copied),
+    has at least ``MIN_ANCHOR_DOCS`` documents."""
+    out: list[LintResult] = []
+    for name, world in sorted(loaded.worlds.items()):
+        count = len(world.documents)
+        if name not in record.base_worlds and count < MIN_ANCHOR_DOCS:
+            message = f"fresh world {name!r} has {count} documents, under {MIN_ANCHOR_DOCS}"
+            out.append(LintResult("anchor_floor", "fail", f"{_WORLDS}/{name}/world.yaml", message))
+    return out
+
+
+def _cell_rungs(loaded: _Loaded, cell: CellSpec) -> tuple[str | None, set[str]]:
+    """The ladder a cell runs and its rung names; ``(None, set())`` for a cell with no
+    environment."""
+    if cell.condition.environment is None:
+        return None, set()
+    env = loaded.experiment.environments[cell.condition.environment]
+    ladder = loaded.worlds[env.world].ladders[env.ladder]
+    return env.ladder, {rung.name for rung in ladder.rungs}
+
+
+def _expected_schema(loaded: _Loaded, cells: Sequence[CellSpec]) -> list[LintResult]:
+    """``expected_schema``: every cell of ``expected.yaml`` is one ``expand_cells`` gives and
+    every rung one of its ladder; every event has a detector (``DETECTORS``, so none of
+    ``PENDING_DETECTORS``); every hypothesis id is in the register; at least one expectation is
+    ``likely_wrong``."""
+    by_id = {cell.cell_id: cell for cell in cells}
+    register = {h.id for h in load_register()}
+    out: list[str] = []
+    for cell_id, expectation in sorted(loaded.expected.cells.items()):
+        cell = by_id.get(cell_id)
+        if cell is None:
+            out.append(f"cell {cell_id!r} is no cell config.yaml expands to")
+        ladder, rungs = _cell_rungs(loaded, cell) if cell is not None else (None, None)
+        for rung, items in sorted(expectation.rungs.items()):
+            if rungs is not None and rung not in rungs:
+                why = "it runs no environment" if ladder is None else f"ladder {ladder!r} lacks it"
+                out.append(f"cell {cell_id!r}: rung {rung!r} is no rung of its ladder ({why})")
+            at = f"cell {cell_id!r}, rung {rung!r}"
+            for item in items:
+                if item.event not in DETECTORS:
+                    out.append(f"{at}: event {item.event.value!r} has no detector")
+                out += [
+                    f"{at}: hypothesis {h} is not in the register"
+                    for h in item.hypotheses
+                    if h not in register
+                ]
+    every = [i for e in loaded.expected.cells.values() for r in e.rungs.values() for i in r]
+    if not any(item.likely_wrong for item in every):
+        out.append("no expectation is marked likely_wrong")
+    return [LintResult("expected_schema", "fail", _EXPECTED, message) for message in out]
+
+
+def _control_presence(loaded: _Loaded, cells: Sequence[CellSpec]) -> list[LintResult]:
+    """``control_presence``: every condition cell ``expand_cells`` gives has a
+    ``control_cell_id`` (under ``controls: auto`` it gets one by construction; under
+    ``explicit`` a control condition of its seeding and environment gives it one)."""
+    mode = loaded.experiment.controls
+    return [
+        LintResult(
+            "control_presence",
+            "fail",
+            _CONFIG,
+            f"condition cell {cell.cell_id!r} has no control cell (controls: {mode})",
+        )
+        for cell in cells
+        if not cell.is_control and cell.control_cell_id is None
+    ]
+
+
+def _budget(
+    loaded: _Loaded,
+    record: PlanRecord,
+    cells: Sequence[CellSpec],
+    dry_run: Sequence[DryRunCell] | None,
+) -> list[LintResult]:
+    """``budget``: the config inside the request's budget (``turn_budget`` against
+    ``max_turns``, ``repetitions`` against ``n_per_cell``, the cells ``expand_cells`` gives
+    against ``max_cells``) and, only when the dry run's cells are given and ``max_calls`` is
+    set, their summed ``estimated_calls`` against it (D-lint_bundle)."""
+    budget = record.request.budget
+    exp = loaded.experiment
+    out: list[str] = []
+    if exp.turn_budget > budget.max_turns:
+        out.append(
+            f"turn_budget {exp.turn_budget} is over the request's max_turns {budget.max_turns}"
+        )
+    if exp.repetitions > budget.n_per_cell:
+        out.append(
+            f"repetitions {exp.repetitions} is over the request's n_per_cell {budget.n_per_cell}"
+        )
+    if len(cells) > budget.max_cells:
+        out.append(f"{len(cells)} cells, over the request's max_cells {budget.max_cells}")
+    if dry_run is not None and budget.max_calls is not None:
+        total = sum(cell.estimated_calls for cell in dry_run)
+        if total > budget.max_calls:
+            out.append(
+                f"the dry run estimates {total} calls, over the request's max_calls "
+                f"{budget.max_calls}"
+            )
+    return [LintResult("budget", "fail", _CONFIG, message) for message in out]
+
+
+def _set_lints(
+    loaded: _Loaded, record: PlanRecord, dry_run: Sequence[DryRunCell] | None
+) -> list[LintResult]:
+    """``expected_schema``, ``control_presence`` and ``budget`` over the cells
+    ``expand_cells`` gives, inside ``plan_personas`` (a condition may name a bundle persona)."""
+    with plan_personas(loaded.personas):
+        cells = expand_cells(loaded.experiment)
+    return [
+        *_expected_schema(loaded, cells),
+        *_control_presence(loaded, cells),
+        *_budget(loaded, record, cells, dry_run),
+    ]
+
+
 def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) -> list[LintResult]:
-    """Every bundle lint built so far over ``bundle`` (spec section 9), every result kept, warns
-    included (R-good-warn): ``schema``, ``manifest_complete``, then Phase 3's lints and the
-    world-level lints per bundle world and ``bully_line`` over the personas' ``fallback_lines``.
-    When ``schema`` fails, every lint that needs a loaded model reports nothing (the schema
-    failure is the finding). ``dry_run`` is the dry run's cells, for the lints that read them
-    (Tasks 4b and 5). The strategy registry is left as it was found (``plan_personas``)."""
+    """Every lint of ``BUNDLE_LINT_IDS`` but ``dry_run`` (Task 5's) over ``bundle`` (spec
+    section 9), every result kept, warns included (R-good-warn): ``schema``,
+    ``manifest_complete``, the four denylist scans and ``no_values_expectation`` (whole text,
+    run whatever ``schema`` found), then Phase 3's lints and the world-level lints per bundle
+    world and ``bully_line`` over the personas' ``fallback_lines``, then ``anchor_floor``,
+    ``expected_schema``, ``control_presence`` and ``budget``. When ``schema`` fails, every lint
+    that needs a loaded model reports nothing (the schema failure is the finding). ``dry_run``
+    is the dry run's cells: ``budget``'s ``max_calls`` clause reads them, and with None it
+    reports nothing. The strategy registry is left as it was found (``plan_personas``)."""
     record = bundle.read_record()
     found, loaded = _schema(bundle, record)
     found += _manifest_complete(bundle, record)
+    found += _real_name_bundle(bundle)
+    found += _reserved_hosts(bundle)
+    found += _boundary_bundle(bundle)
+    found += _jailbreak_bundle(bundle)
+    found += _no_values_expectation(bundle)
     if loaded is not None:
         found += _world_lints(loaded)
+        found += _anchor_floor(loaded, record)
+        found += _set_lints(loaded, record, dry_run)
     return found
