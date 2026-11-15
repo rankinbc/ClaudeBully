@@ -441,11 +441,17 @@ def materialize(
     one's text. Returns the paths whose bytes it rewrote; a path already holding its text is
     left alone."""
     wanted = set(STAGES if stages is None else stages)
+    calls = [call for s in commit_order(record) if s.stage in wanted for call in s.calls]
+    return _write_changed(bundle, _committed_texts(bundle, calls))
+
+
+def commit_order(record: PlanRecord) -> list[StageRecord]:
+    """Every stage record in the order its calls committed (D-rounds): ``plan``, ``author``,
+    each round of ``rounds`` in order, then the current ``review`` and ``revise``."""
     ordered = [s for name in ("plan", "author") for s in record.stages if s.stage == name]
     ordered += [s for round_ in record.rounds for s in round_]
     ordered += [s for name in ("review", "revise") for s in record.stages if s.stage == name]
-    calls = [call for s in ordered if s.stage in wanted for call in s.calls]
-    return _write_changed(bundle, _committed_texts(bundle, calls))
+    return ordered
 
 
 def remove_leftovers(bundle: Bundle) -> list[str]:

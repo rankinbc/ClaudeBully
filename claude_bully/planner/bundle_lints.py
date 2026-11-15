@@ -710,6 +710,14 @@ def _model[T: BaseModel](model: type[T], bundle: _View, rel: str) -> T:
     text = bundle.read_file(
         rel
     )  # read apart: its ValueErrors (bad bytes, a link) say what they are
+    return model_from_text(model, text)
+
+
+def model_from_text[T: BaseModel](model: type[T], text: str) -> T:
+    """YAML text validated as ``model``: what ``schema`` reads of a file, and what stage 2's
+    arrival check reads of a reply before it is written (Task 7b). Raises ``ValueError`` for
+    text the loader cannot build, an anchor that holds its own alias, or a field error (every
+    one listed)."""
     try:
         raw = yaml.safe_load(text)
     except _YAML_REFUSED as exc:  # a value the loader refuses (a date, a tag) or cannot nest
@@ -880,10 +888,12 @@ def _environments(
     return bad
 
 
-def _refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
+def dry_run_refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
     """What ``run_experiment(dry_run=True)`` refuses: nothing, or, since it stops at its first
     refusal, each condition's own refusal run alone (the whole run's when none refuses alone).
-    A refusal two conditions share, an environment's, is reported once."""
+    A refusal two conditions share, an environment's, is reported once. Its runs root is a
+    temporary directory (preflight Q39: a ``RunStore`` makes its run directory), so nothing is
+    left beside the bundle; ``schema`` and stage 2's ``config.yaml`` arrival both read it."""
 
     def refusal(exp: Experiment) -> str | None:
         with tempfile.TemporaryDirectory() as runs_root:
@@ -963,7 +973,7 @@ def _schema(bundle: _View, record: PlanRecord) -> tuple[list[LintResult], _Loade
         personas = {n: s for n, s in files.personas.items() if n not in bad_personas}
         checked = experiment.model_copy(update={"conditions": runnable})
         with plan_personas(personas):
-            out.extend(_schema_fail(_CONFIG, m) for m in _refusals(checked, root))
+            out.extend(_schema_fail(_CONFIG, m) for m in dry_run_refusals(checked, root))
     if out or files.expected is None:
         return [*out, *files.off_grammar], None
     loaded = _Loaded(worlds, files.doc_paths, files.personas, experiment, files.expected)
@@ -1173,6 +1183,33 @@ def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
         "\n".join(_collapse(s) for s in _strings(request.model_dump(mode="json"))),
     ]
     return [*out, *_denylist_hits("jailbreak_bundle", PLAN_FILE, texts, patterns, what)]
+
+
+def plan_scans(bundle: Bundle, display_names: Collection[str]) -> list[LintResult]:
+    """The denylist scans over ``plan.md`` alone, run before a stage-2 call shows it to the
+    planner (Task 6 re-review N-B): ``real_name_bundle``'s clause through the config spare
+    (``display_names`` and the ``RoleConfig`` default spared, since a plan names its target)
+    and its owner clause (no span), ``boundary_bundle``'s list and ``jailbreak_bundle``'s, each
+    a fail on ``plan.md`` as ``lint_bundle`` words it. Nothing when there is no ``plan.md``;
+    bytes that are no UTF-8 are read replaced, so the scan never raises."""
+    view = _View(bundle)
+    if _PLAN not in view.index():
+        return []
+    texts = view.scan_texts(_PLAN)
+    names = {name.lower() for name in display_names} | {_DEFAULT_DISPLAY_NAME.lower()}
+    spared = [config_scan_text(text, names) for text in texts]
+    out = _denylist_hits(
+        "real_name_bundle", _PLAN, spared, load_patterns(REAL_NAMES_PATH), "a real name"
+    )
+    if any(owner_pattern(owner_names()).search(text) for text in texts):
+        out.append(LintResult("real_name_bundle", "fail", _PLAN, OWNER_REASON))
+    out += _denylist_hits(
+        "boundary_bundle", _PLAN, texts, load_patterns(BOUNDARY_PATH), "a Boundary word"
+    )
+    jailbreak = load_patterns(_JAILBREAK_PATH)
+    return out + _denylist_hits(
+        "jailbreak_bundle", _PLAN, texts, jailbreak, "a jailbreak denylist phrase"
+    )
 
 
 def _no_values_expectation(view: _View) -> list[LintResult]:

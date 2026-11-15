@@ -25,20 +25,39 @@ on. A first message over ``MAX_CONTEXT_CHARS`` is refused before it is sent
 ``Director.run`` resumes at the first stage not committed (spec section 8): it records a dead
 attempt first, while a committed ``error`` call still holds its index (R-marker), reopens a
 failed stage (the failed-stage ruling), re-materializes the open stage
-(``bundle.rematerialize_open_stage``) and goes on at ``len(calls)``.
+(``bundle.rematerialize_open_stage``) and goes on at ``len(calls)``. A resumed stage replays
+its committed calls in order (``Director._call``): a committed call's answer is rebuilt from
+its transcript by the call's pure ``parse``, never by a check that reads state, and a step
+with no write of its own (the world close) is decided afresh only past the last committed
+call, so every decision a resume makes is the one an unbroken plan made (Task 7b).
 """
 
 import hashlib
 import json
+import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Literal, Self
+from typing import Any, Final, Literal, Self, get_args
+
+from pydantic import BaseModel, ValidationError
 
 from claude_bully.atomic import write_atomic
-from claude_bully.config import RoleConfig
-from claude_bully.environments.world import WORLDS_DIR
+from claude_bully.config import Experiment, RoleConfig
+from claude_bully.enums import Layer
+from claude_bully.environments.config import LadderConfig
+from claude_bully.environments.corpus import UnlockState
+from claude_bully.environments.ladder import Ladder
+from claude_bully.environments.world import (
+    WORLDS_DIR,
+    Document,
+    WorldSheet,
+    load_world,
+    parse_document,
+    world_hash,
+)
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import REPO_ROOT
 from claude_bully.planner.bundle import (
@@ -47,10 +66,24 @@ from claude_bully.planner.bundle import (
     PLAN_FILE,
     STATE_DIR,
     Bundle,
+    BundlePathError,
     Transcript,
     TranscriptAttempt,
+    bundle_personas,
+    commit_order,
+    is_plan_persona,
+    kind_of,
     normalize_text,
+    plan_personas,
     rematerialize_open_stage,
+    world_of,
+)
+from claude_bully.planner.bundle_lints import (
+    MIN_ANCHOR_DOCS,
+    dry_run_refusals,
+    model_from_text,
+    plan_scans,
+    premise_sheet_model,
 )
 from claude_bully.planner.context import (
     MAX_CONTEXT_CHARS,
@@ -59,11 +92,14 @@ from claude_bully.planner.context import (
     planner_message,
     prompt_hashes,
 )
+from claude_bully.planner.lints import LintContext, failures, lint_document, lint_world
 from claude_bully.planner.records import (
     STAGES,
     DirectorAttempt,
     DirectorCall,
+    ExpectedEvents,
     ManifestEntry,
+    ManifestKind,
     PlanRecord,
     PlanStatus,
     Stage,
@@ -79,7 +115,11 @@ from claude_bully.providers.base import (
     build_provider,
 )
 from claude_bully.providers.ledger import LedgerLine, activate, note_cached
+from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, _git_sha
+from claude_bully.strategies.base import all_strategies
+from claude_bully.strategies.bootstrap import ensure_registered
+from claude_bully.strategies.sheets import PersonaSheet
 
 DIRECTOR_CACHE_VERSION: Final = 1
 MAX_PLAN_CHARS: Final = 20_000
@@ -106,6 +146,78 @@ PLAN_TASK: Final = (
     "result looks like, and the budget check. Reply with the Markdown of plan.md and nothing "
     "else: it is written to the bundle as you send it."
 )
+
+# the review calls a manifest's budget counts beside its file calls, one per review group (the
+# brief's "the three review calls"; a corpus over REVIEW_CHUNK_DOCS documents makes more)
+REVIEW_CALLS: Final = 3
+WORLDS: Final = "worlds"
+FIXED_ENTRIES: Final = ("config.yaml", "expected.yaml")
+
+# {"files": [{"path", "kind", "purpose", "layer"}]} (spec section 7, stage 2 step 2)
+MANIFEST_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["files"],
+    "properties": {
+        "files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "kind", "purpose", "layer"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "kind": {"enum": list(get_args(ManifestKind))},
+                    "purpose": {"type": "string"},
+                    "layer": {"enum": [*(layer.value for layer in Layer), None]},
+                },
+            },
+        }
+    },
+}
+# {"content": "<the file's text>"}: a file call's and a repair call's reply (step 3)
+FILE_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["content"],
+    "properties": {"content": {"type": "string"}},
+}
+
+MANIFEST_TASK: Final = (
+    "Write the manifest, stage 2 of your instructions: every file the bundle needs that you "
+    "will write, one entry each, as the JSON object "
+    '{"files": [{"path": ..., "kind": ..., "purpose": ..., "layer": ...}]}. A path is one of '
+    "config.yaml, expected.yaml, worlds/<name>/world.yaml, worlds/<name>/corpus/<stem>.md, "
+    "worlds/<name>/ladders/<stem>.yaml, worlds/<name>/premises/<strategy>.yaml and "
+    "personas/<stem>.yaml, each <name> and <stem> lowercase letters, digits, '-' and '_'; "
+    "kind is that path's kind (world_sheet, document, ladder, premise_sheet, persona, config, "
+    "expected); purpose is one line, shown back to you when the file is asked for; layer is a "
+    "document's layer and null for every other file. A reused world is copied whole under "
+    "worlds/<name>/ before any file is asked for: list only the files you add or patch. "
+    "config.yaml and expected.yaml are always listed. The harness then asks for each file, one "
+    "per call, in a fixed order: per world its sheet, its documents, its ladders and its "
+    "premise sheets, then the personas, config.yaml and expected.yaml."
+)
+
+
+def file_task(entry: ManifestEntry) -> str:
+    """The task of the file call for ``entry``: its path, kind and purpose, and the reply."""
+    return (
+        f"Write {entry.path}, a {entry.kind}, the manifest's entry for: {entry.purpose}\n"
+        'Reply with the JSON object {"content": <the whole text of the file>}. The text must '
+        "load into the contract above; it is written to the bundle as you send it."
+    )
+
+
+def repair_task(rel: str, problems: Sequence[str]) -> str:
+    """The task of the repair call for ``rel``: what the world close found in it."""
+    found = "".join(f"- {problem}\n" for problem in problems)
+    return (
+        f"The world close found these problems in {rel}, which is already written:\n{found}"
+        'Reply with the JSON object {"content": <the whole text of the file, fixed>}; it '
+        "replaces the file as you send it."
+    )
+
 
 Role = Literal["planner", "reviewer"]
 Checkpoint = Callable[[str, str], None]
@@ -148,7 +260,11 @@ class CallSpec:
     ``planner/context.py``'s builders only); ``check(reply)`` returns the parsed reply and its
     failures; ``outputs(parsed)`` the files the call commits, path to text; ``commit(parsed,
     record)`` sets the record fields the call commits, in the same write as the call (R-commit).
-    """
+    ``parse(reply)``, when given, is the pure half of ``check``: a function of the reply alone,
+    the parsed value ``check`` returns for it. A resume rebuilds a committed call's parsed reply
+    with it, so a check that reads state (the manifest's call budget, the bundle on disk) is
+    never run again on other state (the Task 7a re-review's carry); with none, ``check``'s
+    parsed value is read."""
 
     stage: Stage
     role: Role
@@ -159,6 +275,7 @@ class CallSpec:
     check: Callable[[str], tuple[Any, list[str]]]
     outputs: Callable[[Any], dict[str, str]]
     commit: Callable[[Any, PlanRecord], None] | None = None
+    parse: Callable[[str], Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +296,89 @@ def _check_plan(reply: str) -> tuple[str, list[str]]:
             f"the reply is {len(reply):,} characters; plan.md holds at most {MAX_PLAN_CHARS:,}"
         ]
     return reply, []
+
+
+_NOT_MANIFEST: Final = 'the reply is not the JSON object {"files": [...]} and nothing else'
+_NOT_CONTENT: Final = 'the reply is not the JSON object {"content": <the file\'s text>}'
+
+
+def _field_errors(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(map(str, error['loc'])) or '<root>'}: {error['msg']}" for error in exc.errors()
+    )
+
+
+def _read_manifest(reply: str) -> tuple[list[ManifestEntry] | None, str]:
+    """The manifest a reply holds, or None and why not; a function of the reply alone."""
+    try:
+        data = json.loads(reply)
+    except ValueError:
+        return None, _NOT_MANIFEST
+    if not isinstance(data, dict) or set(data) != {"files"} or not isinstance(data["files"], list):
+        return None, _NOT_MANIFEST
+    entries: list[ManifestEntry] = []
+    for number, raw in enumerate(data["files"], 1):
+        try:
+            entries.append(ManifestEntry.model_validate(raw))
+        except ValidationError as exc:
+            return None, f"manifest entry {number} does not load: {_field_errors(exc)}"
+    return entries, ""
+
+
+def parse_manifest(reply: str) -> list[ManifestEntry] | None:
+    """The manifest call's pure parse: the entries a reply holds, or None."""
+    return _read_manifest(reply)[0]
+
+
+def parse_content(reply: str) -> str | None:
+    """A file or repair call's pure parse: the ``content`` string of ``{"content": ...}`` and
+    nothing else, or None."""
+    try:
+        data = json.loads(reply)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or set(data) != {"content"}:
+        return None
+    content = data["content"]
+    return content if isinstance(content, str) else None
+
+
+def _commit_manifest(parsed: Any, record: PlanRecord) -> None:
+    record.manifest = list(parsed)  # R-commit: in the manifest call's own record write
+
+
+_WORLD_KINDS: Final[Mapping[ManifestKind, int]] = {
+    "world_sheet": 0,
+    "document": 1,
+    "ladder": 2,
+    "premise_sheet": 3,
+}
+_LATER_KINDS: Final[tuple[ManifestKind, ...]] = ("persona", "config", "expected")
+
+
+def author_order(manifest: Sequence[ManifestEntry]) -> list[ManifestEntry]:
+    """Stage 2's file order (spec section 7, step 3): per world, in the order the manifest first
+    names it, its sheet, its documents in manifest order, its ladders, then its premise sheets;
+    then the personas, ``config.yaml`` and ``expected.yaml``, each in manifest order."""
+    worlds = dict.fromkeys(world_of(e.path) for e in manifest if e.kind in _WORLD_KINDS)
+    ordered: list[ManifestEntry] = []
+    for world in worlds:
+        mine = [e for e in manifest if e.kind in _WORLD_KINDS and world_of(e.path) == world]
+        ordered += sorted(mine, key=lambda e: _WORLD_KINDS[e.kind])
+    for kind in _LATER_KINDS:
+        ordered += [e for e in manifest if e.kind == kind]
+    return ordered
+
+
+_ARRIVAL_MODELS: Final[Mapping[ManifestKind, type[BaseModel]]] = {
+    "world_sheet": WorldSheet,
+    "ladder": LadderConfig,
+    "persona": PersonaSheet,
+    "expected": ExpectedEvents,
+}
+# the first document a world-close message names ("document 'x' links_to ...", "buried
+# document 'x' is unreachable ..."): World.validate_links' own message shapes
+_NAMED_DOCUMENT: Final = re.compile(r"(?:buried )?document '([^']+)'")
 
 
 class Director:
@@ -365,42 +565,65 @@ class Director:
         """Refuse the call when the plan has made ``max_director_calls`` calls (spec section 13:
         refused before the call, with the count)."""
         limit = self.record.request.max_director_calls
-        made = sum(
-            call.status != "manual"
-            for stage in [*self.record.stages, *(s for r in self.record.rounds for s in r)]
-            for call in stage.calls
-        )
+        made = self._calls_made()
         if made >= limit:
             raise DirectorError(
                 f"the plan would pass max_director_calls ({limit}): {made} calls made"
             )
+
+    def _all_calls(self) -> list[DirectorCall]:
+        """Every committed call, in every stage and earlier round."""
+        stages = [*self.record.stages, *(s for r in self.record.rounds for s in r)]
+        return [call for stage in stages for call in stage.calls]
+
+    def _calls_made(self) -> int:
+        """The planner and reviewer calls the plan has committed (a manual file is none)."""
+        return sum(call.status != "manual" for call in self._all_calls())
 
     # ------------------------------------------------------------------ stages and resume
 
     def _stage(self, stage: Stage) -> StageRecord | None:
         return next((s for s in reversed(self.record.stages) if s.stage == stage), None)
 
-    def _open_stage(self, stage: Stage) -> StageRecord:
+    def _open_stage(self, stage: Stage, *, adopt: bool = False) -> StageRecord:
         """The open record of ``stage``, written as a new one when the last record is not it. A
         stage is opened once: a name the record already holds is refused, so no call of a
         second record of it can take an earlier call's index and transcript (Task 1 review M1;
-        a resume reopens a failed stage in place)."""
+        a resume reopens a failed stage in place). With ``adopt``, a new record holds the sha of
+        every grammar file present (``inputs``) and the plan adopts the hand edits it finds
+        (``_adopt_edits``), in the record write that opens the stage, before anything else."""
         last = self.record.stages[-1] if self.record.stages else None
         if last is not None and last.stage == stage and last.status == "open":
             return last
         if self._stage(stage) is not None:
             raise DirectorError(f"stage {stage} has a record already; a stage is opened once")
         opened = StageRecord(stage=stage, started_at=datetime.now(UTC), status="open")
+        if adopt:
+            opened.inputs = self.bundle.index()
+            self._adopt_edits(opened.inputs)
         self.record.stages.append(opened)
         self.bundle.write_record(self.record)
         return opened
+
+    def _adopt_edits(self, present: Mapping[str, str]) -> None:
+        """``edited`` gains each path present whose sha differs from the one its last committing
+        call recorded, or, for a file no call wrote, from ``base_files`` (spec section 8: a
+        committed stage's files are the owner's to edit, and the next stage adopts them)."""
+        owned = dict(self.record.base_files)
+        for stage in commit_order(self.record):
+            for call in stage.calls:
+                owned.update(call.outputs)
+        for rel, sha in present.items():
+            if rel in owned and owned[rel] != sha and rel not in self.record.edited:
+                self.record.edited.append(rel)
 
     def _call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
         """The answer to the stage's call at ``index``: asked when the stage has not reached it,
         else rebuilt from the committed call, so a resumed stage handles it exactly as it
         handled the fresh answer (review C1: a committed ``error`` call fails the stage again,
-        never reads as done). The parsed reply is read back from the transcript; a call there
-        with another purpose is refused."""
+        never reads as done). The parsed reply is read back from the transcript by the spec's
+        pure ``parse`` (else its ``check``'s parsed value), so no check that reads state runs
+        on a resume; a call there with another purpose is refused."""
         if index >= len(stage.calls):
             return self.ask(spec)
         call = stage.calls[index]
@@ -410,8 +633,8 @@ class Director:
             )
         parsed: Any = None
         if call.status != "error":
-            transcript = self.bundle.read_transcript(call.transcript)
-            parsed, _ = spec.check(transcript.attempts[-1].reply)
+            reply = self.bundle.read_transcript(call.transcript).attempts[-1].reply
+            parsed = spec.parse(reply) if spec.parse is not None else spec.check(reply)[0]
         return Answer(call=call, parsed=parsed, provider_failed=call.provider_failed)
 
     def _commit_stage(self, stage: StageRecord) -> None:
@@ -505,7 +728,7 @@ class Director:
                         return self.record
                     continue
                 if not callable(getattr(self, stage, None)):
-                    raise NotImplementedError(f"stage {stage} is not built yet (Tasks 7b to 9)")
+                    raise NotImplementedError(f"stage {stage} is not built yet (Tasks 8 and 9)")
                 if existing is not None:  # the first stage not committed: spec section 8
                     # first, while a committed error call still holds its index (R-marker)
                     self._record_dead_attempt(existing)
@@ -562,3 +785,441 @@ class Director:
         if answer.call.status == "error":
             raise DirectorError(f"the plan call failed: {answer.call.error}")
         self._commit_stage(stage)
+
+    # ------------------------------------------------------------------ stage 2
+
+    def author(self) -> None:
+        """Stage 2 (spec section 7), in order: the stage opened with its ``inputs`` and the hand
+        edits adopted (one record write); ``plan.md``'s denylist scans, before any call shows it
+        (Task 6 re-review N-B); the copy of the request's reused world (D-copy); the manifest
+        call (index 0, ``MANIFEST_SCHEMA``, its ``commit`` setting ``record.manifest``); the
+        copy of each shipped world the manifest names; the say line; one file call per entry in
+        ``author_order``, each world closed after its last file (``_close``); status
+        ``authored``.
+
+        A document whose call is an ``error`` from two failed checks keeps its call and is not
+        written, unless that drops a fresh world under ``MIN_ANCHOR_DOCS``; any other ``error``
+        (a provider error or a timeout on any call, a document's included, or any other file
+        that fails twice) fails the stage and the plan (``DirectorError``; spec section 13).
+        A resume replays the committed calls in order (``_call``): the manifest's budget is
+        frozen at the calls made before it, and the copies are keyed on ``base_worlds``, so a
+        resume that skips a committed manifest call still copies."""
+        stage = self._open_stage("author", adopt=True)
+        self._scan_plan()
+        request = self.record.request
+        if request.world == "reuse" and request.base_world is not None:
+            self._copy_worlds([request.base_world])
+        manifest_spec = self._manifest_spec(self._calls_made())  # the budget as of the call
+        answer = self._call(stage, 0, manifest_spec)
+        if answer.call.status == "error":
+            raise DirectorError(f"the manifest call failed: {answer.call.error}")
+        manifest: list[ManifestEntry] = answer.parsed
+        self._copy_worlds(self._shipped(manifest))
+        order = author_order(manifest)
+        self.say(f"the manifest implies {len(order) + REVIEW_CALLS} calls")
+        last = {world_of(e.path): i for i, e in enumerate(order) if e.kind in _WORLD_KINDS}
+        dropped: list[str] = []
+        index = 1
+        for i, entry in enumerate(order):
+            answer = self._call(stage, index, self._file_spec(entry, "file"))
+            index += 1
+            if answer.call.status == "error":
+                self._drop(answer, entry, manifest, dropped)
+            world = world_of(entry.path) if entry.kind in _WORLD_KINDS else None
+            if world is not None and last[world] == i:
+                index = self._close(stage, index, world)
+        self._commit_stage(stage)
+
+    def _scan_plan(self) -> None:
+        """``plan.md`` through ``real_name_bundle`` (with the owner clause), ``boundary_bundle``
+        and ``jailbreak_bundle``'s lists before a stage-2 call shows it; a hit fails the stage
+        as a lint failure, its results the stage's error (Task 6 re-review N-B)."""
+        names = [role.display_name for role in self.record.request.target_models]
+        found = plan_scans(self.bundle, names)
+        if found:
+            listed = "; ".join(f"{r.lint_id}: {r.message}" for r in found)
+            raise DirectorError(f"plan.md fails a lint before stage 2 shows it: {listed}")
+
+    def _shipped(self, manifest: Sequence[ManifestEntry]) -> list[str]:
+        """The worlds the manifest names that are shipped worlds (``worlds_dir``) to copy: under
+        ``world: reuse`` only (D-copy; under ``fresh`` a shipped name is refused)."""
+        if self.record.request.world != "reuse":
+            return []
+        named = dict.fromkeys(w for e in manifest if (w := _world_or_none(e.path)) is not None)
+        return [w for w in named if (self.worlds_dir / w / "world.yaml").is_file()]
+
+    def _copy_worlds(self, names: Sequence[str]) -> None:
+        """D-copy: each of ``names`` that ``base_worlds`` lacks is copied byte for byte from
+        ``worlds_dir`` under ``worlds/<name>/`` (each file written LF), then ``base_worlds``,
+        ``base_files`` and ``base_premise_terms`` are committed in one record write. Keyed on
+        ``base_worlds``, so it runs again on a resume and never twice; a copy killed midway
+        leaves files no record owns, which the resume removes before copying again."""
+        todo = [name for name in dict.fromkeys(names) if name not in self.record.base_worlds]
+        if not todo:
+            return
+        files: dict[str, str] = {}
+        hashes: dict[str, str] = {}
+        terms: dict[str, list[str]] = {}
+        for name in todo:
+            try:
+                source = load_world(name, self.worlds_dir)
+            except (ValueError, OSError) as exc:
+                raise DirectorError(f"the reused world {name!r} does not load: {exc}") from exc
+            for path in sorted(p for p in source.root.rglob("*") if p.is_file()):
+                rel = f"{WORLDS}/{name}/{path.relative_to(source.root).as_posix()}"
+                try:
+                    files[rel] = self.bundle.write_file(rel, path.read_text(encoding="utf-8"))
+                except BundlePathError as exc:
+                    raise DirectorError(f"the reused world {name!r}: {exc}") from exc
+            hashes[name] = world_hash(source)
+            terms[name] = list(source.sheet.premise_terms)
+        self.record.base_files.update(files)
+        self.record.base_worlds.update(hashes)
+        self.record.base_premise_terms.update(terms)
+        self.bundle.write_record(self.record)
+
+    # ------------------------------------------------------------------ the manifest
+
+    def _manifest_spec(self, made: int) -> CallSpec:
+        """The manifest call; ``made`` is the calls the plan made before it, frozen here."""
+        return CallSpec(
+            stage="author",
+            role="planner",
+            purpose="manifest",
+            system="planner",
+            schema=MANIFEST_SCHEMA,
+            message=lambda failures: self._planner_message("manifest", MANIFEST_TASK, failures),
+            check=lambda reply: self._check_manifest(reply, made),
+            outputs=lambda parsed: {},
+            commit=_commit_manifest,
+            parse=parse_manifest,
+        )
+
+    def _check_manifest(self, reply: str, made: int) -> tuple[Any, list[str]]:
+        entries, why = _read_manifest(reply)
+        if entries is None:
+            return None, [why]
+        return entries, [
+            *self._entry_failures(entries),
+            *self._world_failures(entries),
+            *self._budget_failures(entries, made),
+        ]
+
+    def _entry_failures(self, entries: Sequence[ManifestEntry]) -> list[str]:
+        """Each entry's path inside the grammar and named once, its ``kind`` the path's, a
+        ``layer`` on a document and on nothing else, a premise sheet's stem a strategy with a
+        ``world_sheet``, a persona's stem no registered strategy's; ``config.yaml`` and
+        ``expected.yaml`` listed."""
+        ensure_registered()
+        strategies = all_strategies()
+        out: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            path = entry.path
+            if path in seen:
+                out.append(f"{path}: listed twice; each path is one entry")
+                continue
+            seen.add(path)
+            try:
+                expected = kind_of(self.bundle.check_path(path))
+            except BundlePathError as exc:
+                out.append(str(exc))
+                continue
+            if expected is None:
+                out.append(f"{path}: no manifest entry names it (stage 1 and the review write it)")
+                continue
+            if entry.kind != expected:
+                out.append(f"{path}: kind {entry.kind}, but the path is a {expected}")
+            if expected == "document" and entry.layer is None:
+                out.append(f"{path}: a document needs its layer")
+            if expected != "document" and entry.layer is not None:
+                out.append(f"{path}: only a document has a layer")
+            if expected == "premise_sheet":
+                try:
+                    premise_sheet_model(path)
+                except ValueError as exc:
+                    out.append(f"{path}: {exc}")
+            stem = path.rsplit("/", 1)[-1].removesuffix(".yaml")
+            if expected == "persona" and stem in strategies:
+                if not is_plan_persona(strategies[stem]):
+                    out.append(
+                        f"{path}: {stem!r} is a registered strategy; a persona needs its own"
+                    )
+        out += [f"the manifest lists no {rel}" for rel in FIXED_ENTRIES if rel not in seen]
+        return out
+
+    def _world_failures(self, entries: Sequence[ManifestEntry]) -> list[str]:
+        """Each fresh world (named, neither copied nor to be copied) has its sheet listed, at
+        least ``MIN_ANCHOR_DOCS`` documents and a filler share of at least ``MIN_FILLER_SHARE``;
+        under ``world: fresh`` no world takes a shipped world's name (D-copy)."""
+        named = dict.fromkeys(w for e in entries if (w := _world_or_none(e.path)) is not None)
+        copied = set(self.record.base_worlds) | set(self._shipped(entries))
+        out: list[str] = []
+        for world in named:
+            if world in copied:
+                continue
+            if (self.worlds_dir / world / "world.yaml").is_file():
+                out.append(
+                    f"world {world!r} is a shipped world's name; a fresh world needs its own"
+                )
+                continue
+            mine = [e for e in entries if _world_or_none(e.path) == world]
+            if f"{WORLDS}/{world}/world.yaml" not in {e.path for e in mine}:
+                out.append(
+                    f"fresh world {world!r}: the manifest lists no {WORLDS}/{world}/world.yaml"
+                )
+            docs = [e for e in mine if e.kind == "document"]
+            if len(docs) < MIN_ANCHOR_DOCS:
+                out.append(
+                    f"fresh world {world!r} lists {len(docs)} documents, under MIN_ANCHOR_DOCS "
+                    f"({MIN_ANCHOR_DOCS})"
+                )
+            filler = sum(e.layer is Layer.filler for e in docs)
+            if docs and filler / len(docs) < MIN_FILLER_SHARE:
+                out.append(
+                    f"fresh world {world!r}: {filler} of its {len(docs)} documents are filler, "
+                    f"under MIN_FILLER_SHARE ({MIN_FILLER_SHARE:.0%})"
+                )
+        return out
+
+    def _budget_failures(self, entries: Sequence[ManifestEntry], made: int) -> list[str]:
+        """The calls made before the manifest, the manifest call, one call per entry and
+        ``REVIEW_CALLS`` past ``max_director_calls`` refuse the manifest (spec section 13)."""
+        limit = self.record.request.max_director_calls
+        total = made + 1 + len(entries) + REVIEW_CALLS
+        if total <= limit:
+            return []
+        return [
+            f"the plan would pass max_director_calls ({limit}): {made} calls made, the manifest "
+            f"call, its {len(entries)} file calls and {REVIEW_CALLS} review calls make {total}"
+        ]
+
+    # ------------------------------------------------------------------ the files
+
+    def _file_spec(
+        self, entry: ManifestEntry, kind: Literal["file", "repair"], problems: Sequence[str] = ()
+    ) -> CallSpec:
+        """A ``file:<path>`` or ``repair:<path>`` call: ``FILE_SCHEMA``, the entry's contract,
+        the arrival check of spec section 7 step 3, the file its output."""
+        purpose = f"{kind}:{entry.path}"
+        text = file_task(entry) if kind == "file" else repair_task(entry.path, problems)
+        return CallSpec(
+            stage="author",
+            role="planner",
+            purpose=purpose,
+            system="planner",
+            schema=FILE_SCHEMA,
+            message=lambda failures: self._planner_message(purpose, text, failures, contract=entry),
+            check=lambda reply: self._check_file(entry, reply),
+            outputs=lambda content: {entry.path: content},
+            parse=parse_content,
+        )
+
+    def _relative(self, message: str) -> str:
+        """``message`` with the bundle root left out of every path it names, so a message the
+        planner is shown is the same wherever the plans root is."""
+        return message.replace(f"{self.bundle.root}{os.sep}", "")
+
+    def _check_file(self, entry: ManifestEntry, reply: str) -> tuple[Any, list[str]]:
+        content = parse_content(reply)
+        if content is None:
+            return None, [_NOT_CONTENT]
+        found = self._arrival(entry, normalize_text(content))
+        return content, [self._relative(message) for message in found]
+
+    def _arrival(self, entry: ManifestEntry, text: str) -> list[str]:
+        """What one file can show on arrival (spec section 7, steps 3 and 5): its model, and for
+        a document ``lint_document`` (``_document_arrival``), for ``config.yaml`` the refusals
+        ``run --dry-run`` would give (``_config_arrival``)."""
+        try:
+            if entry.kind == "document":
+                return self._document_arrival(entry.path, text)
+            if entry.kind == "config":
+                return self._config_arrival(text)
+            if entry.kind == "premise_sheet":
+                ensure_registered()
+                model = premise_sheet_model(entry.path)
+            else:
+                model = _ARRIVAL_MODELS[entry.kind]
+            model_from_text(model, text)
+        except ValueError as exc:
+            message = str(exc)
+            return [message if message.startswith(entry.path) else f"{entry.path}: {message}"]
+        return []
+
+    def _world_documents(self, world: str, *, besides: str) -> dict[str, Document]:
+        """The documents of ``world`` the bundle holds, by id, all but the file ``besides``;
+        a file that does not parse is left out (the close names it)."""
+        out: dict[str, Document] = {}
+        for rel in self.bundle.index():
+            if rel == besides or kind_of(rel) != "document" or world_of(rel) != world:
+                continue
+            try:
+                doc = parse_document(self.bundle.read_file(rel), rel)
+            except ValueError:
+                continue
+            out.setdefault(doc.id, doc)
+        return out
+
+    def _document_arrival(self, rel: str, text: str) -> list[str]:
+        """``parse_document``, then ``lint_document`` with a ``LintContext`` over the world's
+        documents present and this one, its cast, premise terms and clock from the world's sheet
+        as written; ``links_resolve`` waits for the close."""
+        doc = parse_document(text, rel)
+        world = str(world_of(rel))
+        sheet_rel = f"{WORLDS}/{world}/world.yaml"
+        if sheet_rel not in self.bundle.index():
+            return [f"{rel}: its world's sheet {sheet_rel} is not written"]
+        sheet = model_from_text(WorldSheet, self.bundle.read_file(sheet_rel))
+        documents = self._world_documents(world, besides=rel)
+        documents[doc.id] = doc
+        ctx = LintContext(
+            documents=documents,
+            cast=frozenset(member.name for member in sheet.cast),
+            premise_terms=tuple(sheet.premise_terms),
+            start=sheet.clock.world_date,
+        )
+        return [
+            f"{r.lint_id}: {r.message}" + (f" ({r.span!r})" if r.span else "")
+            for r in failures(lint_document(doc, ctx))
+            if r.lint_id != "links_resolve"
+        ]
+
+    def _config_arrival(self, text: str) -> list[str]:
+        """Step 5: ``Experiment``, ``expand_cells`` and ``run_experiment(dry_run=True)`` against
+        the bundle's worlds (``dry_run_refusals``, its runs root a temporary directory,
+        preflight Q39), inside ``plan_personas(bundle_personas(bundle))``."""
+        experiment = model_from_text(Experiment, text)
+        personas = bundle_personas(self.bundle)
+        with plan_personas(personas):
+            try:
+                expand_cells(experiment)
+            except (ValueError, KeyError) as exc:
+                return [f"config.yaml: its cells do not expand: {exc}"]
+            refusals = dry_run_refusals(experiment, self.bundle.root / WORLDS)
+        return [f"config.yaml: {refusal}" for refusal in refusals]
+
+    def _drop(
+        self,
+        answer: Answer,
+        entry: ManifestEntry,
+        manifest: Sequence[ManifestEntry],
+        dropped: list[str],
+    ) -> None:
+        """An ``error`` file call: a document's from two failed checks is dropped (its call
+        kept, its file not written) unless a fresh world falls under ``MIN_ANCHOR_DOCS``; any
+        other fails the stage."""
+        call = answer.call
+        if answer.provider_failed or entry.kind != "document":
+            raise DirectorError(f"the {call.purpose} call failed: {call.error}")
+        dropped.append(entry.path)
+        world = world_of(entry.path)
+        if world in self.record.base_worlds:
+            return
+        left = sum(
+            e.kind == "document" and world_of(e.path) == world and e.path not in dropped
+            for e in manifest
+        )
+        if left < MIN_ANCHOR_DOCS:
+            raise DirectorError(
+                f"fresh world {world!r} falls to {left} documents, under MIN_ANCHOR_DOCS "
+                f"({MIN_ANCHOR_DOCS}), with {entry.path} dropped: {call.error}"
+            )
+
+    # ------------------------------------------------------------------ the world close
+
+    def _entry(self, rel: str) -> ManifestEntry:
+        """The manifest's entry for ``rel``, or one for a file of a reused world's copy."""
+        found = next((e for e in self.record.manifest if e.path == rel), None)
+        if found is not None:
+            return found
+        kind = kind_of(rel)
+        assert kind is not None  # a world file: kind_of names every one
+        return ManifestEntry(path=rel, kind=kind, purpose="a file of the reused world's copy")
+
+    def _repairs_made(self) -> int:
+        return sum(call.purpose.startswith("repair:") for call in self._all_calls())
+
+    def _close(self, stage: StageRecord, index: int, world: str) -> int:
+        """The close of ``world`` after its last file (spec section 7, step 4), from the call at
+        ``index``; the index after it. Past the last committed call the close runs on the
+        bundle (``_close_failures``): with nothing failing it is done; else the first failing
+        file not yet repaired gets one ``repair:<path>`` call, within ``MAX_REPAIR_CALLS`` a
+        plan, and the close runs again; a close whose failing files were all repaired fails the
+        stage. Before it, the committed call list is replayed: a committed repair of the world
+        is the repair an unbroken plan asked for, and any other committed call means the close
+        had passed. The close writes nothing, so the bundle a decision reads is the one the
+        unbroken plan read."""
+        repaired: set[str] = set()
+        while True:
+            if index < len(stage.calls):  # replay from the committed call list
+                kind, _, rel = stage.calls[index].purpose.partition(":")
+                if kind != "repair" or _world_or_none(rel) != world:
+                    return index
+                answer = self._call(stage, index, self._file_spec(self._entry(rel), "repair"))
+            else:
+                found = self._close_failures(world)
+                if not found:
+                    return index
+                listed = "; ".join(f"{rel}: {m}" for rel, ms in found.items() for m in ms)
+                todo = [rel for rel in found if rel not in repaired]
+                if not todo:
+                    raise DirectorError(f"the close of world {world!r} still fails: {listed}")
+                if self._repairs_made() >= MAX_REPAIR_CALLS:
+                    raise DirectorError(
+                        f"the close of world {world!r} fails with MAX_REPAIR_CALLS "
+                        f"({MAX_REPAIR_CALLS}) repairs made: {listed}"
+                    )
+                rel = todo[0]
+                spec = self._file_spec(self._entry(rel), "repair", found[rel])
+                answer = self._call(stage, index, spec)
+            if answer.call.status == "error":
+                raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
+            repaired.add(rel)
+            index += 1
+
+    def _close_failures(self, world: str) -> dict[str, list[str]]:
+        """What the close finds, by the file each failure names, in path order: ``load_world``
+        (which runs ``World.validate_links``; its one failure named by the path it opens with,
+        else by the document it names, else the sheet), a ``Ladder`` per ladder under
+        ``triggered`` gating (preflight Q38: the config arrives after the worlds), then
+        ``failures(lint_world(world))`` by document id."""
+        present = [rel for rel in self.bundle.index() if world_of(rel) == world]
+        sheet = f"{WORLDS}/{world}/world.yaml"
+        ids: dict[str, str] = {}
+        for rel in present:
+            if kind_of(rel) == "document":
+                try:
+                    ids.setdefault(parse_document(self.bundle.read_file(rel), rel).id, rel)
+                except ValueError:
+                    continue
+        found: dict[str, list[str]] = {}
+        try:
+            loaded = load_world(world, self.bundle.root / WORLDS)
+        except (ValueError, OSError) as exc:
+            message = str(exc)
+            for rel in [*present, sheet]:
+                message = message.replace(str(self.bundle.root / rel), rel)
+            message = self._relative(message)
+            named = _NAMED_DOCUMENT.match(message)
+            at = next((rel for rel in present if message.startswith(f"{rel}:")), None)
+            if at is None:
+                at = ids.get(named[1], sheet) if named is not None else sheet
+            return {at: [message]}
+        for name, config in sorted(loaded.ladders.items()):
+            try:
+                Ladder(config, "triggered", {}, UnlockState(), loaded)
+            except ValueError as exc:
+                found.setdefault(f"{WORLDS}/{world}/ladders/{name}.yaml", []).append(str(exc))
+        for result in failures(lint_world(loaded)):
+            message = f"{result.lint_id}: {result.message}"
+            found.setdefault(ids.get(result.doc_id, sheet), []).append(message)
+        return dict(sorted(found.items()))
+
+
+def _world_or_none(rel: str) -> str | None:
+    """The world of a grammar path; None outside ``worlds/`` or outside the grammar."""
+    try:
+        return world_of(rel)
+    except BundlePathError:
+        return None
