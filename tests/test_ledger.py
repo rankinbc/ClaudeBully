@@ -253,6 +253,20 @@ def test_a_cache_hit_is_noted_as_cached(tmp_path: Path) -> None:
     )
 
 
+def test_a_cache_hit_on_a_plan_id_is_a_cached_planner_line(tmp_path: Path) -> None:
+    """Phase 5 Task 6: a Director call's cache hit is ledgered under its role, with no cell."""
+    with activate(tmp_path / LEDGER_FILE) as ledger:
+        note_cached("plan/s/author/planner/0/a1", "opus")
+    [line] = ledger.lines()
+    assert (line.role, line.status, line.model, line.cell_id, line.rep) == (
+        "planner",
+        "cached",
+        "opus",
+        None,
+        None,
+    )
+
+
 # ------------------------------------------------------------------ in a run
 
 

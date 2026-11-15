@@ -1,0 +1,1 @@
+Below are a file and a numbered list of passages, each with a stated problem. A passage may or may not appear in the file. For each number, read the whole file and say whether the stated problem is present anywhere in it, in those words or in others: `present`, `absent`, or `cannot_tell`. Give one verdict per number.

@@ -13,8 +13,10 @@ PRESSURE_SHEETS_DIR = DATA_DIR / "strategies" / "pressures"
 PERSONA_SHEETS_DIR = DATA_DIR / "personas"
 # files in data/personas that are not PersonaSheets: the Rescue team, the Phase 2 authority and
 # idle sheets (claude_bully.environments.sheets), the Phase 3 world generator's system prompt
-# (claude_bully.environments.generator) and the Poisoned Well's own sheet (Phase 4,
-# claude_bully.environments.poisoned_well_sheet)
+# (claude_bully.environments.generator), the Poisoned Well's own sheet (Phase 4,
+# claude_bully.environments.poisoned_well_sheet), the LLM lint's reader (Phase 7a,
+# claude_bully.planner.llm_lint) and the Director's three prompts (Phase 5,
+# claude_bully.planner.context)
 NON_PERSONA_FILES = {
     "rescue_team.yaml",
     "superior_self.yaml",
@@ -24,6 +26,9 @@ NON_PERSONA_FILES = {
     "world_generator.md",
     "lint_reviewer.md",
     "poisoned_well.yaml",
+    "director_planner.md",
+    "director_reviewer.md",
+    "director_confirm.md",
 }
 
 

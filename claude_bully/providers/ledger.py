@@ -10,8 +10,9 @@ own and keeps its own file, which the session folds into the run's after every t
 the backend reports as information.
 
 The role vocabulary is ``ROLES``; ``role`` is an open string so a later phase appends its names
-(reconciliation C27): Phase 4 adds ``chain``, ``contradictions``, ``twin``; Phase 5 ``planner``
-and ``reviewer``.
+(reconciliation C27): Phase 4 adds ``chain``, ``contradictions``, ``twin``; Phase 5 (Task 6)
+adds ``planner`` and ``reviewer``, read from a Director call's id,
+``plan/<slug>/<stage>/<role>/<index>/a<attempt>``.
 """
 
 import re
@@ -63,12 +64,15 @@ ROLES: Final[tuple[str, ...]] = (
     "chain",
     "contradictions",
     "twin",
+    "planner",
+    "reviewer",
     "responder",
     "doctor",
     "other",
 )
 LedgerStatus = Literal["ok", "error", "rate_limit", "cached", "timeout"]
-# conversation id shapes: ``<run>/<cell>/rep<k>/<role word>[/...]``, ``judge/<key>``, ``doctor...``
+# conversation id shapes: ``<run>/<cell>/rep<k>/<role word>[/...]``, ``judge/<key>``, ``doctor...``,
+# and a Director call's ``plan/<slug>/<stage>/<role>/<index>/a<attempt>`` (Phase 5)
 _CELL_ID: Final = re.compile(r"^[^/]+/(?P<cell>[^/]+)/rep(?P<rep>\d+)(?:/(?P<role>[^/]+))?")
 _ROLE_WORDS: Final = {
     "target": "target",
@@ -83,6 +87,7 @@ _ROLE_WORDS: Final = {
     "twin": "twin",
     "authority": "responder",
 }
+_PLAN_ROLES: Final = frozenset({"planner", "reviewer"})
 
 
 class LedgerLine(BaseModel):
@@ -119,11 +124,16 @@ def parse_conversation_id(conversation_id: str) -> tuple[str | None, int | None]
 def role_of(conversation_id: str) -> str:
     """The ledger role of a conversation id (``ROLES``); ``other`` for a shape nobody fixed. The
     cell shape is read first and its role word wins (the doctor's nested responder is
-    ``doctor/responder/rep0/authority/<call id>``, a ``responder`` line); the ``judge/`` and
-    ``doctor`` prefixes decide an id with no ``rep<k>`` segment."""
+    ``doctor/responder/rep0/authority/<call id>``, a ``responder`` line); then a Director call's
+    ``plan/<slug>/<stage>/<role>/...`` names its role in the fourth segment (no stage name is
+    ``rep<k>``, so the cell shape never reads one); the ``judge/`` and ``doctor`` prefixes decide
+    an id with no ``rep<k>`` segment."""
     found = _CELL_ID.match(conversation_id)
     if found is not None and found.group("role") in _ROLE_WORDS:
         return _ROLE_WORDS[found.group("role")]
+    segments = conversation_id.split("/")
+    if len(segments) > 3 and segments[0] == "plan" and segments[3] in _PLAN_ROLES:
+        return segments[3]
     if conversation_id.startswith("judge/"):
         return "judge"
     if conversation_id.startswith("doctor"):
