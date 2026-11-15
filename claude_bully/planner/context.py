@@ -671,11 +671,21 @@ def _refuse_review_file(*rels: str) -> None:
         )
 
 
-def reviewer_message(bundle: Bundle, group: ReviewGroup) -> str:
+def _fix(fix: Sequence[str]) -> str:
+    """A retry's failures under ``### Fix these``, as the planner's task lists them, each on one
+    line, so none opens with ``call:``; nothing on a first attempt."""
+    if not fix:
+        return ""
+    return "\n### Fix these\n" + "".join(f"- {_one_line(failure)}\n" for failure in fix)
+
+
+def reviewer_message(bundle: Bundle, group: ReviewGroup, fix: Sequence[str] = ()) -> str:
     """The reviewer's user message: the group's files in full and the unchanged base files by
     index line, the lint rules (never a result), the group, and the reply's fields (D-reply).
     Every file is read through ``Bundle.read_file``, so a path outside the grammar is refused,
-    and ``review.md`` is refused in the files and the index alike: no part of it is shown."""
+    and ``review.md`` is refused in the files and the index alike: no part of it is shown. On a
+    retry ``fix`` lists the reply's failures under ``## Report on`` (spec section 7: the retry
+    names the problem); with none the message is as before."""
     _refuse_review_file(*group.files, *group.index)
     shown = [f"### {rel}\n{_trimmed(bundle.read_file(rel))}\n" for rel in group.files]
     if group.index:
@@ -685,18 +695,24 @@ def reviewer_message(bundle: Bundle, group: ReviewGroup) -> str:
     parts = [
         _part("Bundle", "\n".join(shown)),
         _part("Lint list", "\n".join(f"- {lint_id}" for lint_id in lint_ids)),
-        _part("Report on", f"call: review:{group.name}\nfiles: {', '.join(group.files)}"),
+        _part(
+            "Report on",
+            f"call: review:{group.name}\nfiles: {', '.join(group.files)}\n{_fix(fix)}",
+        ),
         _part("Reply", REVIEW_REPLY),
     ]
     return "\n".join(parts)
 
 
-def confirm_message(rel: str, text: str, passages: Sequence[tuple[int, str, str]]) -> str:
+def confirm_message(
+    rel: str, text: str, passages: Sequence[tuple[int, str, str]], fix: Sequence[str] = ()
+) -> str:
     """The confirm call's user message: the file as it is, each passage by its local number
     (1 to k) with its stated problem, and the reply's fields. No severity, response, author or
     history is shown (D-confirm), and never ``review.md``. A quote is a JSON string and a
     problem's later lines are indented, so a passage reads one way and no passage line opens
-    with ``call:`` (Task 6 review M8)."""
+    with ``call:`` (Task 6 review M8). On a retry ``fix`` lists the reply's failures after the
+    passages; with none the message is as before."""
     _refuse_review_file(rel)
     numbered = "".join(
         f"{number}. {json.dumps(quote, ensure_ascii=False)}\n"
@@ -705,7 +721,7 @@ def confirm_message(rel: str, text: str, passages: Sequence[tuple[int, str, str]
     )
     parts = [
         _part("File", f"### {rel}\n{text}"),
-        _part("Passages", f"call: confirm:{rel}\n{numbered}"),
+        _part("Passages", f"call: confirm:{rel}\n{numbered}{_fix(fix)}"),
         _part("Reply", CONFIRM_REPLY),
     ]
     return "\n".join(parts)

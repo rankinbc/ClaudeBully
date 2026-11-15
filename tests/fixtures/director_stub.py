@@ -3,26 +3,29 @@ bundle (``tests/fixtures/bundles/good/``), the factory that serves them to the D
 helpers the Director's resume-parity tests share.
 
 A double reads the call's purpose from the last ``call: <purpose>`` line of the user message
-(D-call). A reply mode (``off_contract`` and the rest) applies to the call's first attempt, the
-conversation id ending ``/a1``, or to both when it ends ``:twice``; it keys on the id, never on
-a count the double keeps, so a call redone after a rate limit or a kill records the attempts an
-unbroken one does (R-stub-modes). A raising mode (``rate_limit``, ``timeout``,
-``provider_error``) and ``crash_at`` fire once per double, on the first call with that purpose,
-so the same double lets a continued plan go on."""
+(D-call), and what it quotes or revises from the message too, never from the fixture files, so a
+later round quotes what the bundle holds then (review I5). A reply mode (``off_contract`` and the
+rest) applies to the call's first attempt, the conversation id ending ``/a1``, or to both when it
+ends ``:twice``; it keys on the id, never on a count the double keeps, so a call redone after a
+rate limit or a kill records the attempts an unbroken one does (R-stub-modes). A raising mode
+(``rate_limit``, ``timeout``, ``provider_error``) and ``crash_at`` fire once per double, on the
+first call with that purpose, so the same double lets a continued plan go on."""
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+import yaml
+
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
 from claude_bully.environments.world import parse_document
 from claude_bully.planner.bundle import CACHE_DIR, HASH_EXCLUDES, Bundle
-from claude_bully.planner.director import DIRECTOR_CACHE, Director
+from claude_bully.planner.director import DIRECTOR_CACHE, Director, author_order
 from claude_bully.planner.records import PlanRecord, Stage
 from claude_bully.planner.request import PlanBudget, PlanRequest
 from claude_bully.providers.base import (
@@ -53,9 +56,16 @@ REQUEST: Final[PlanRequest] = PlanRequest(
 SECOND_PERSON_LINE: Final = "If you are reading this, nobody told you."
 FRESH_WORLD: Final = "fresh"
 _NO_MODES: Final[Mapping[str, str]] = MappingProxyType({})
+_NO_VERDICTS: Final[Mapping[int, str]] = MappingProxyType({})
 _CALL: Final = re.compile(r"^call: (.+)$", re.MULTILINE)
 _MANIFEST_MODES: Final = frozenset({"outside_grammar", "repeated_path", "no_config", "fresh_small"})
 _TEXT_MODES: Final = frozenset({"lint_fail", "close_fail", "crlf"})
+# a review:<group> reply's modes, a confirm:<path> reply's, a revise:<path> reply's (Task 8)
+_REVIEW_MODES: Final = frozenset(
+    {"not_in_group", "no_quote_block", "quote_missing", "counts_wrong", "empty_no_summary", "clean"}
+)
+_CONFIRM_MODES: Final = frozenset({"missing"})
+_REVISE_MODES: Final = frozenset({"declined", "keep_quote", "no_response"})
 _RAISING: Final[Mapping[str, Callable[[], ProviderError]]] = MappingProxyType(
     {
         "rate_limit": lambda: RateLimitError("window", retry_after_s=60),
@@ -102,7 +112,8 @@ class _DirectorDouble:
         crash_at: str | None = None,
         reasoning: str | None = None,
     ) -> None:
-        known = _MANIFEST_MODES | _TEXT_MODES | {"off_contract"}
+        known = _MANIFEST_MODES | _TEXT_MODES | _REVIEW_MODES | _CONFIRM_MODES | _REVISE_MODES
+        known |= {"off_contract"}
         for mode in modes.values():
             if mode not in _RAISING and mode.removesuffix(":twice") not in known:
                 raise ValueError(f"unknown director double mode {mode!r}")
@@ -111,6 +122,7 @@ class _DirectorDouble:
         self.crash_at = crash_at
         self.reasoning = reasoning
         self.calls: list[tuple[str, str, str]] = []
+        self.message = ""  # the user message of the call being answered
         self.resets: list[str] = []
         self._fired: set[tuple[str, str]] = set()
 
@@ -135,6 +147,7 @@ class _DirectorDouble:
     ) -> Completion:
         message = messages[-1].content
         self.calls.append((conversation_id, system, message))
+        self.message = message
         purpose = _purpose(message)
         if purpose == self.crash_at and self._once("crash", purpose):
             raise Crash(f"killed inside the {purpose} call")
@@ -229,10 +242,53 @@ def _manifest(mode: str | None) -> str:
     return json.dumps({"files": files})
 
 
+# the good bundle's first document in author order: the reviewer double's one block
+DOC1: Final = next(e.path for e in author_order(GOOD_MANIFEST) if e.kind == "document")
+# what a revision puts in place of a block's quote: a pure function of the quote that never
+# equals it, so a second review round's block on it is closed again (preflight Q42)
+DULL: Final = ("The stairwell light has a new bulb.", "The noticeboard by the stairs is tidy.")
+BLOCK_PROBLEM: Final = "reads as written to persuade"
+FIX_PROBLEM: Final = "the null result has no number"
+FIX_DIRECTION: Final = "name the null result's number"
+NOTE_PROBLEM: Final = "a line the caller could say to anyone"
+FIXED_BLOCK: Final = "Put a plain line in place of the quoted one."
+FIXED_FIX: Final = "Gave the null result its number."
+DECLINED: Final = "Kept as it is: such a memo reads that way."
+_SENTENCE: Final = re.compile(r".*?[.?!](?=\s|$)", re.DOTALL)
+_FENCED: Final = re.compile(r"^(`{3,})\w*\n(.*?)^\1\n", re.MULTILINE | re.DOTALL)
+_RENDERED: Final = re.compile(r"^- \[(\d+)\] (block|fix|note): (.*)$", re.MULTILINE)
+
+
+def dull(quote: str) -> str:
+    """The dull sentence a revision writes in place of ``quote``."""
+    return DULL[0] if quote != DULL[0] else DULL[1]
+
+
+def first_sentence(text: str) -> str:
+    """The first sentence of a file's text, exactly as it stands (a line break kept): past a
+    document's front matter, the first paragraph that is no heading or table row and holds a
+    sentence end."""
+    body = text
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        body = text[end + 5 :] if end >= 0 else text
+    for paragraph in re.split(r"\n[ \t]*\n", body):
+        stripped = paragraph.strip()
+        if stripped and not stripped.startswith(("#", "|")):
+            found = _SENTENCE.match(stripped)
+            if found is not None:
+                return found.group(0)
+    raise ValueError("the text holds no sentence")
+
+
 class PlannerStub(_DirectorDouble):
     """The planner double: ``plan`` gives the good ``plan.md``; ``manifest`` the good manifest;
-    ``file:<p>`` and ``repair:<p>`` ``{"content": <the good file>}``. ``revise:<p>`` is Task 8's.
-    """
+    ``file:<p>`` and ``repair:<p>`` ``{"content": <the good file>}``. ``revise:<p>`` (Task 8)
+    reads the file and its findings from the message: each block's quote is replaced by
+    ``dull(quote)`` and each block and fix answered ``fixed``; mode ``declined`` answers a block
+    ``declined`` and leaves the file, ``keep_quote`` answers it ``fixed`` and leaves the quote
+    in, ``no_response`` leaves out the response to the highest-numbered block or fix finding
+    (preflight Q45), ``close_fail`` revises and then links a document no world holds."""
 
     model = "stub-planner"
 
@@ -246,16 +302,127 @@ class PlannerStub(_DirectorDouble):
             return _manifest(mode)
         if kind in ("file", "repair") and rel:
             return json.dumps({"content": _text(_good(rel), mode)})
+        if kind == "revise" and rel:
+            return _revision(self.message, mode)
         raise ValueError(f"the planner double answers no {purpose!r} call")
 
 
+def _revision(message: str, mode: str | None) -> str:
+    """A ``revise:`` reply built from the message's fenced file and fenced findings."""
+    task = message[message.rindex("\ncall: revise:") :]
+    fenced = _FENCED.findall(task)
+    text, rendered = fenced[0][1], fenced[1][1]
+    decoder = json.JSONDecoder()
+    responses: list[dict[str, Any]] = []
+    for number, severity, rest in _RENDERED.findall(rendered):
+        quote = decoder.raw_decode(rest)[0]
+        if severity == "block" and mode == "declined":
+            responses.append({"finding": int(number), "status": "declined", "text": DECLINED})
+        elif severity == "block":
+            responses.append({"finding": int(number), "status": "fixed", "text": FIXED_BLOCK})
+            if mode != "keep_quote":
+                text = text.replace(quote, dull(quote), 1)
+        elif severity == "fix":
+            responses.append({"finding": int(number), "status": "fixed", "text": FIXED_FIX})
+    if mode == "no_response" and responses:
+        responses.remove(max(responses, key=lambda r: int(r["finding"])))
+    if mode == "close_fail":  # the revision links a document no world holds: the close repairs
+        text = _no_such_link(text)
+    return json.dumps({"content": text, "responses": responses})
+
+
+def _shown(message: str, files: Sequence[str]) -> dict[str, str]:
+    """Each file's text as the review message shows it under ``### <path>``."""
+    part = message.split("\n## Lint list\n", 1)[0]
+    out: dict[str, str] = {}
+    for rel in files:
+        start = part.index(f"### {rel}\n") + len(f"### {rel}\n")
+        ends = [part.find(f"\n\n### {o}\n", start) for o in [*files, "Unchanged base files"]]
+        out[rel] = part[start : min([e for e in ends if e >= 0] + [len(part)])]
+    return out
+
+
+def _finding(
+    severity: str, rel: str, quote: str, problem: str, direction: str | None = None
+) -> dict[str, Any]:
+    return {
+        "severity": severity,
+        "file": rel,
+        "quote": quote,
+        "problem": problem,
+        "direction": direction,
+    }
+
+
 class ReviewerStub(_DirectorDouble):
-    """The reviewer double, with the planner's keywords; Task 8 fills its replies."""
+    """The reviewer double. ``review:<group>``: one ``block`` on ``DOC1`` (its first sentence),
+    one ``note`` on the first persona (its first ``fallback_lines`` entry) and one ``fix`` on
+    ``plan.md`` (its first sentence), each in the group that shows the file and each quoted from
+    the file's text as the message shows it; its modes ``not_in_group``, ``no_quote_block``,
+    ``quote_missing``, ``counts_wrong``, ``empty_no_summary`` and ``clean``. ``confirm:<path>``:
+    ``absent`` for every passage number shown, unless ``verdicts`` maps the local number to
+    ``present`` or ``cannot_tell``; mode ``missing`` leaves the last number out."""
 
     model = "stub-reviewer"
 
+    def __init__(
+        self,
+        *,
+        modes: Mapping[str, str] = _NO_MODES,
+        crash_at: str | None = None,
+        reasoning: str | None = None,
+        verdicts: Mapping[int, str] = _NO_VERDICTS,
+    ) -> None:
+        super().__init__(modes=modes, crash_at=crash_at, reasoning=reasoning)
+        self.verdicts = dict(verdicts)
+
     def _reply(self, purpose: str, mode: str | None) -> str:
-        raise ValueError(f"the reviewer double answers no {purpose!r} call yet (Task 8)")
+        if mode == "off_contract":
+            return "not json"
+        kind, _, rest = purpose.partition(":")
+        if kind == "review" and rest:
+            return self._review(mode)
+        if kind == "confirm" and rest:
+            return self._confirm(mode)
+        raise ValueError(f"the reviewer double answers no {purpose!r} call")
+
+    def _review(self, mode: str | None) -> str:
+        if mode == "empty_no_summary":
+            return json.dumps({"findings": []})
+        files = re.findall(r"^files: (.*)$", self.message, re.MULTILINE)[-1].split(", ")
+        texts = _shown(self.message, files)
+        findings: list[dict[str, Any]] = []
+        personas = [rel for rel in files if rel.startswith("personas/")]
+        for rel in files:
+            if rel == DOC1:
+                findings.append(_finding("block", rel, first_sentence(texts[rel]), BLOCK_PROBLEM))
+            elif personas and rel == personas[0]:
+                line = yaml.safe_load(texts[rel])["fallback_lines"][0]
+                findings.append(_finding("note", rel, line, NOTE_PROBLEM))
+            elif rel == "plan.md":
+                quote = first_sentence(texts[rel])
+                findings.append(_finding("fix", rel, quote, FIX_PROBLEM, FIX_DIRECTION))
+        if mode == "clean":
+            findings = []
+        elif mode == "not_in_group":
+            other = "plan.md" if "plan.md" not in files else "review.md"
+            findings.append(_finding("note", other, "", "a finding on another group's file"))
+        elif mode == "no_quote_block":
+            findings.append(_finding("block", files[0], "", "a block that quotes nothing"))
+        elif mode == "quote_missing":
+            findings.append(_finding("note", files[0], "text that no file holds", "a stray quote"))
+        summary = {s: sum(f["severity"] == s for f in findings) for s in ("block", "fix", "note")}
+        if mode == "counts_wrong":
+            summary["block"] += 1
+        return json.dumps({"summary": summary, "findings": findings})
+
+    def _confirm(self, mode: str | None) -> str:
+        passages = self.message.split("\ncall: confirm:", 1)[1].split("\n## Reply\n", 1)[0]
+        numbers = [int(n) for n in re.findall(r"^(\d+)\. ", passages, re.MULTILINE)]
+        if mode == "missing" and numbers:
+            numbers = numbers[:-1]
+        verdicts = [{"passage": n, "verdict": self.verdicts.get(n, "absent")} for n in numbers]
+        return json.dumps({"verdicts": verdicts})
 
 
 @dataclass(frozen=True)

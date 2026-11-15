@@ -34,16 +34,16 @@ call, so every decision a resume makes is the one an unbroken plan made (Task 7b
 
 import hashlib
 import json
-import math
 import os
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal, Self, get_args
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from claude_bully.atomic import write_atomic
 from claude_bully.config import Experiment, RoleConfig
@@ -72,6 +72,7 @@ from claude_bully.planner.bundle import (
     TranscriptAttempt,
     bundle_personas,
     commit_order,
+    committed_outputs,
     is_plan_persona,
     kind_of,
     normalize_text,
@@ -88,16 +89,28 @@ from claude_bully.planner.bundle_lints import (
     model_from_text,
     plan_scans,
     premise_sheet_model,
+    review_scans,
 )
 from claude_bully.planner.context import (
     MAX_CONTEXT_CHARS,
+    REVIEW_FILE,
+    ReviewGroup,
     TaskPart,
+    confirm_message,
     load_director_prompt,
     planner_message,
     prompt_hashes,
+    reviewer_message,
     unchanged_base_files,
 )
-from claude_bully.planner.lints import LintContext, failures, lint_document, lint_world
+from claude_bully.planner.lints import (
+    LintContext,
+    LintResult,
+    failures,
+    lint_document,
+    lint_world,
+    squash,
+)
 from claude_bully.planner.records import (
     STAGES,
     DirectorAttempt,
@@ -107,6 +120,7 @@ from claude_bully.planner.records import (
     ManifestKind,
     PlanRecord,
     PlanStatus,
+    ReviewFinding,
     Stage,
     StageRecord,
 )
@@ -382,26 +396,436 @@ def author_order(manifest: Sequence[ManifestEntry]) -> list[ManifestEntry]:
     return ordered
 
 
+def _group_of(rel: str) -> str | None:
+    """The ``REVIEW_GROUPS`` member a path is reviewed in; None outside the grammar and for
+    ``review.md``."""
+    try:
+        kind = kind_of(rel)
+    except BundlePathError:
+        return None
+    if kind == "document":
+        return "corpus"
+    if kind in _LINES_KINDS:
+        return "lines"
+    if kind in _PLAN_KINDS or rel == "plan.md":
+        return "plan"
+    return None
+
+
+def _review_sets(paths: Iterable[str]) -> list[tuple[str, tuple[str, ...]]]:
+    """Stage 3's chunking rule over ``paths`` (spec section 7, stage 3): the ``corpus`` group's
+    documents in path order, in chunks of at most ``REVIEW_CHUNK_DOCS`` named ``corpus-1``,
+    ``corpus-2``, ...; ``lines``, the world sheets, ladders, personas and premise sheets in path
+    order; ``plan``, ``plan.md``, ``config.yaml`` and ``expected.yaml`` in that order. A group
+    with no file is left out. The one rule ``review_calls`` (the budget) and ``review_groups``
+    (the calls) both read, so the two never disagree."""
+    by_group: dict[str, list[str]] = {name: [] for name in REVIEW_GROUPS}
+    for rel in sorted(set(paths)):
+        group = _group_of(rel)
+        if group is not None:
+            by_group[group].append(rel)
+    plan_order = ("plan.md", *FIXED_ENTRIES)
+    by_group["plan"].sort(key=plan_order.index)
+    corpus = by_group["corpus"]
+    out = [
+        (f"corpus-{n + 1}", tuple(corpus[i : i + REVIEW_CHUNK_DOCS]))
+        for n, i in enumerate(range(0, len(corpus), REVIEW_CHUNK_DOCS))
+    ]
+    return out + [(name, tuple(by_group[name])) for name in ("lines", "plan") if by_group[name]]
+
+
 def review_calls(paths: Iterable[str]) -> int:
     """The reviewer calls stage 3 makes over a bundle holding ``paths`` (spec section 7, stage
     3, ``REVIEW_GROUPS``): one per chunk of at most ``REVIEW_CHUNK_DOCS`` documents (``corpus``),
     one for the world sheets, ladders, personas and premise sheets (``lines``), and one for
     ``plan.md``, ``config.yaml`` and ``expected.yaml`` (``plan``); a group with no file makes
-    none, and a path outside the grammar, or ``review.md``, is in no group."""
-    documents = 0
-    groups: set[str] = set()
-    for rel in set(paths):
-        try:
-            kind = kind_of(rel)
-        except BundlePathError:
+    none, and a path outside the grammar, or ``review.md``, is in no group (``_review_sets``)."""
+    return len(_review_sets(paths))
+
+
+def review_groups(bundle: Bundle, record: PlanRecord) -> list[ReviewGroup]:
+    """Stage 3's reviewer calls, one ``ReviewGroup`` each (``_review_sets``): every grammar file
+    present but ``review.md`` and the unchanged base files (``context.unchanged_base_files``,
+    the rule's one home, which the manifest's budget reads too), in groups; each group's
+    ``index`` is the unchanged base files of its kinds, shown by one index line each so links
+    can be followed. A group with no file is left out."""
+    unchanged = unchanged_base_files(record.base_files, record.manifest)
+    reviewed = set(bundle.index()) - set(unchanged) - {REVIEW_FILE}
+    index: dict[str, list[str]] = {name: [] for name in REVIEW_GROUPS}
+    for rel in unchanged:
+        group = _group_of(rel)
+        if group is not None:
+            index[group].append(rel)
+    return [
+        ReviewGroup(name, files, tuple(index[name.partition("-")[0]]))
+        for name, files in _review_sets(reviewed)
+    ]
+
+
+# ------------------------------------------------------------------ stage 3 and 4 replies
+
+SEVERITIES: Final = ("block", "fix", "note")
+Verdict = Literal["present", "absent", "cannot_tell"]
+_VERDICTS: Final[tuple[Verdict, ...]] = get_args(Verdict)
+# {"summary": {"block", "fix", "note"}, "findings": [{"severity", "file", "quote", "problem",
+# "direction"}]} (spec section 7, stage 3; the reply context.REVIEW_REPLY names)
+REVIEW_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "findings"],
+    "properties": {
+        "summary": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(SEVERITIES),
+            "properties": {s: {"type": "integer", "minimum": 0} for s in SEVERITIES},
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "file", "quote", "problem", "direction"],
+                "properties": {
+                    "severity": {"enum": list(SEVERITIES)},
+                    "file": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "direction": {"type": ["string", "null"]},
+                },
+            },
+        },
+    },
+}
+# {"content", "responses": [{"finding", "status", "text"}]} (spec section 7, stage 4)
+REVISE_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["content", "responses"],
+    "properties": {
+        "content": {"type": "string"},
+        "responses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["finding", "status", "text"],
+                "properties": {
+                    "finding": {"type": "integer"},
+                    "status": {"enum": ["fixed", "declined"]},
+                    "text": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+# {"verdicts": [{"passage", "verdict"}]}, ``passage`` the local number shown (D-confirm)
+CONFIRM_SCHEMA: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["verdicts"],
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["passage", "verdict"],
+                "properties": {
+                    "passage": {"type": "integer"},
+                    "verdict": {"enum": list(_VERDICTS)},
+                },
+            },
+        }
+    },
+}
+
+
+class _Reply(BaseModel):
+    """A judge or revise reply read strictly: no extra key, no coerced type."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _Summary(_Reply):
+    block: int
+    fix: int
+    note: int
+
+
+class _RawFinding(_Reply):
+    severity: Literal["block", "fix", "note"]
+    file: str
+    quote: str
+    problem: str
+    direction: str | None = None
+
+
+class _Review(_Reply):
+    summary: _Summary | None = None
+    findings: list[_RawFinding]
+
+
+class _Response(_Reply):
+    finding: int
+    status: Literal["fixed", "declined"]
+    text: str
+
+
+class Revision(_Reply):
+    """A revise call's parsed reply: the file's whole new text and one response per finding."""
+
+    content: str
+    responses: list[_Response]
+
+
+class _Verdict(_Reply):
+    passage: int
+    verdict: str
+
+
+class _Verdicts(_Reply):
+    verdicts: list[_Verdict]
+
+
+_NOT_REVIEW: Final = (
+    'the reply is not the JSON object {"summary": {...}, "findings": [...]} and nothing else'
+)
+_NOT_REVISION: Final = (
+    'the reply is not the JSON object {"content": ..., "responses": [...]} and nothing else'
+)
+_NOT_VERDICTS: Final = 'the reply is not the JSON object {"verdicts": [...]} and nothing else'
+
+
+def _load[T: _Reply](model: type[T], reply: str) -> T | None:
+    try:
+        return model.model_validate_json(reply)
+    except ValidationError:
+        return None
+
+
+def _counts(findings: Iterable[ReviewFinding]) -> dict[str, int]:
+    listed = list(findings)
+    return {s: sum(f.severity == s for f in listed) for s in SEVERITIES}
+
+
+def _count_line(counts: Mapping[str, int]) -> str:
+    return " / ".join(f"{s} {counts[s]}" for s in SEVERITIES)
+
+
+def parse_review(reply: str) -> list[ReviewFinding]:
+    """A review call's pure parse: the findings a reply holds, unnumbered (``id=0``), a block
+    ``open`` until stage 4 closes it; none for a reply that does not load."""
+    review = _load(_Review, reply)
+    if review is None:
+        return []
+    return [
+        ReviewFinding(
+            id=0,
+            severity=raw.severity,
+            file=raw.file,
+            quote=raw.quote,
+            problem=raw.problem,
+            direction=raw.direction,
+            open=raw.severity == "block",
+        )
+        for raw in review.findings
+    ]
+
+
+def check_findings(
+    reply: str, group: ReviewGroup, bundle: Bundle
+) -> tuple[list[ReviewFinding], list[str]]:
+    """A review reply's findings (unnumbered, ``id=0``) and its failures, spec section 7 stage
+    3's refusals in full: a reply that is not the object; no ``summary`` (a reply with no
+    findings is clean only with the explicit zero summary, so a review the harness cannot read
+    is never read as none); a finding's ``file`` not a file of the group; a ``block`` with no
+    quote; a non-empty quote whose ``squash`` is not in the ``squash`` of the file's text (as
+    the review message shows it); the summary's counts not the findings'. No failure repeats
+    a quote, so none can carry a ``call:`` line into the retry."""
+    review = _load(_Review, reply)
+    if review is None:
+        return [], [_NOT_REVIEW]
+    findings = parse_review(reply)
+    failures: list[str] = []
+    if review.summary is None:
+        failures.append(
+            'the reply has no summary; with nothing to report it is {"summary": {"block": 0, '
+            '"fix": 0, "note": 0}, "findings": []}'
+        )
+    for number, finding in enumerate(findings, 1):
+        if finding.file not in group.files:
+            failures.append(
+                f"finding {number}: {finding.file!r} is not a file of this group "
+                f"({', '.join(group.files)})"
+            )
+        elif finding.severity == "block" and not squash(finding.quote):
+            failures.append(f"finding {number}: a block quotes the exact text it is about")
+        elif squash(finding.quote) not in squash(bundle.read_file(finding.file)):
+            failures.append(f"finding {number}: its quote is not text of {finding.file}")
+    counts = _counts(findings)
+    if review.summary is not None and review.summary.model_dump() != counts:
+        failures.append(
+            f"the summary counts {_count_line(review.summary.model_dump())}, but the findings "
+            f"are {_count_line(counts)}"
+        )
+    return findings, failures
+
+
+def parse_revision(reply: str) -> Revision | None:
+    """A revise call's pure parse: its ``content`` and ``responses``, or None."""
+    return _load(Revision, reply)
+
+
+def parse_verdicts(reply: str) -> dict[int, str] | None:
+    """A confirm call's pure parse: each local passage number to its verdict, or None."""
+    loaded = _load(_Verdicts, reply)
+    if loaded is None:
+        return None
+    return {v.passage: v.verdict for v in loaded.verdicts}
+
+
+def check_verdicts(reply: str, shown: int) -> tuple[dict[int, str] | None, list[str]]:
+    """A confirm reply's verdicts and its failures: a reply that is not the object, a number
+    that is not one shown (1 to ``shown``), a number given twice, a verdict not one of
+    ``present``, ``absent``, ``cannot_tell``. A number left out is no failure (preflight Q44):
+    its passage has no verdict, and its block stays open (spec section 7, stage 4)."""
+    loaded = _load(_Verdicts, reply)
+    if loaded is None:
+        return None, [_NOT_VERDICTS]
+    failures: list[str] = []
+    seen: Counter[int] = Counter(v.passage for v in loaded.verdicts)
+    for number, times in sorted(seen.items()):
+        if not 1 <= number <= shown:
+            failures.append(f"passage {number} is not a number shown (1 to {shown})")
+        elif times > 1:
+            failures.append(f"passage {number} has {times} verdicts; give one per number")
+    for verdict in dict.fromkeys(v.verdict for v in loaded.verdicts):
+        if verdict not in _VERDICTS:
+            failures.append(f"{verdict!r} is not a verdict: give present, absent or cannot_tell")
+    return parse_verdicts(reply), failures
+
+
+def _last_stage(record: PlanRecord, stage: Stage) -> StageRecord | None:
+    return next((s for s in reversed(record.stages) if s.stage == stage), None)
+
+
+def _last_reply(bundle: Bundle, call: DirectorCall) -> str:
+    return bundle.read_transcript(call.transcript).attempts[-1].reply
+
+
+def review_findings(bundle: Bundle, record: PlanRecord) -> list[ReviewFinding]:
+    """The committed review calls' findings, numbered 1.. in call order and reply order, as
+    stage 3 left them: no response, no verdict."""
+    review = _last_stage(record, "review")
+    found: list[ReviewFinding] = []
+    for call in review.calls if review is not None else []:
+        if call.status != "error" and call.purpose.startswith("review:"):
+            found += parse_review(_last_reply(bundle, call))
+    return [finding.model_copy(update={"id": n}) for n, finding in enumerate(found, 1)]
+
+
+def _blocks(findings: Sequence[ReviewFinding], rel: str) -> list[ReviewFinding]:
+    """The blocks on ``rel`` in id order: the confirm call's passages, numbered 1 to k."""
+    return [f for f in findings if f.file == rel and f.severity == "block"]
+
+
+def findings_of(bundle: Bundle, record: PlanRecord) -> list[ReviewFinding]:
+    """The one reader of the findings (R-review-md): ``review_findings``, then from the
+    committed revise stage's calls, read from their transcripts, each block and fix finding's
+    ``response`` and ``planner_status`` (its file's ``revise:`` reply) and each block's
+    ``confirm`` (its file's ``confirm:`` reply, the local passage number mapped back) and
+    ``open``. A block closes only when its ``planner_status`` is ``fixed``, ``squash(quote)`` is
+    not in the ``squash`` of its file as the stage's last committed call that wrote it left it,
+    and its verdict is ``absent`` (spec section 7, stage 4). No record holds a second copy, so a
+    resume renders what an unbroken plan renders, whatever the files hold now."""
+    findings = review_findings(bundle, record)
+    revise = _last_stage(record, "revise")
+    if revise is None:
+        return findings
+    texts: dict[str, str] = {}
+    for call in revise.calls:
+        if call.status == "error":
             continue
-        if kind == "document":
-            documents += 1
-        elif kind in _LINES_KINDS:
-            groups.add("lines")
-        elif kind in _PLAN_KINDS or rel == "plan.md":
-            groups.add("plan")
-    return math.ceil(documents / REVIEW_CHUNK_DOCS) + len(groups)
+        kind, _, rel = call.purpose.partition(":")
+        if call.outputs:
+            texts.update(committed_outputs(call, bundle.read_transcript(call.transcript)))
+        if kind == "revise":
+            revision = parse_revision(_last_reply(bundle, call))
+            answers = {r.finding: r for r in revision.responses} if revision else {}
+            for finding in findings:
+                if finding.file == rel and finding.id in answers:
+                    finding.response = answers[finding.id].text
+                    finding.planner_status = answers[finding.id].status
+        elif kind == "confirm":
+            verdicts = parse_verdicts(_last_reply(bundle, call)) or {}
+            for number, block in enumerate(_blocks(findings, rel), 1):
+                verdict = verdicts.get(number)
+                if verdict in _VERDICTS:
+                    block.confirm = verdict
+    for finding in findings:
+        if finding.severity == "block":
+            now = texts.get(finding.file)
+            finding.open = not (
+                finding.planner_status == "fixed"
+                and now is not None
+                and squash(finding.quote) not in squash(now)
+                and finding.confirm == "absent"
+            )
+    return findings
+
+
+def render_review(findings: Sequence[ReviewFinding]) -> str:
+    """``review.md`` (spec section 7, stage 3; A4): the summary line ``block N / fix N / note
+    N``, then per file in path order a blank line, ``## <file>`` and its findings in id order,
+    ``- [<id>] <severity>: "<quote>" <problem>`` with `` (direction: <direction>)`` on a fix
+    that has one; under a finding with a response, ``  - response (<planner_status>):
+    <response>``; under a block with a verdict, ``  - confirm: <verdict> (closed)`` when it
+    closed, ``(open)`` otherwise. The quote is a JSON string, so a quote across a line break or
+    holding a quote mark stays one line and exact; the problem, direction and response are
+    squashed to one line. LF, one trailing newline."""
+    parts = [_count_line(_counts(findings)) + "\n"]
+    for rel in sorted({f.file for f in findings}):
+        lines = [f"## {rel}"]
+        for f in sorted((f for f in findings if f.file == rel), key=lambda f: f.id):
+            line = f"- [{f.id}] {f.severity}: {json.dumps(f.quote, ensure_ascii=False)}"
+            line += f" {squash(f.problem)}" if squash(f.problem) else ""
+            if f.severity == "fix" and f.direction and squash(f.direction):
+                line += f" (direction: {squash(f.direction)})"
+            lines.append(line)
+            if f.response is not None and f.planner_status is not None:
+                lines.append(f"  - response ({f.planner_status}): {squash(f.response)}".rstrip())
+            if f.severity == "block" and f.confirm is not None:
+                lines.append(f"  - confirm: {f.confirm} ({'open' if f.open else 'closed'})")
+        parts.append("\n".join(lines) + "\n")
+    return "\n".join(parts)
+
+
+def _fenced(text: str, info: str = "") -> str:
+    """``text`` in a fence longer than any backtick run it holds, so the context scrub, which
+    never edits a fenced block, leaves it as written and a quote in it stays exact."""
+    run = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, run + 1)
+    body = text if text.endswith("\n") else f"{text}\n"
+    return f"{fence}{info}\n{body}{fence}\n"
+
+
+def revise_task(rel: str, text: str, rendered: str) -> str:
+    """The task of the ``revise:<rel>`` call (spec section 7, stage 4; docs/08 "Stage 4"): the
+    file as committed before stage 4, its findings as ``render_review`` renders them, and the
+    reply's fields. Both are fenced, so the scrub leaves them as written."""
+    info = "markdown" if rel.endswith(".md") else "yaml"
+    return (
+        f"Revise {rel}, stage 4 of your instructions: fix every finding tagged block or fix "
+        "below and answer each one; a note needs no answer. The file as it stands:\n"
+        f"{_fenced(text, info)}"
+        f"Its findings:\n{_fenced(rendered)}"
+        'Reply with the JSON object {"content": <the whole text of the file, revised>, '
+        '"responses": [{"finding": <the number in brackets>, "status": "fixed" | "declined", '
+        '"text": <what you changed, or why you did not>}]}, one response per block and fix '
+        "finding above. The content is checked as the file was when it arrived, and replaces "
+        "the file as you send it."
+    )
 
 
 def _world_files(root: Path, name: str) -> list[tuple[str, Path]]:
@@ -626,7 +1050,7 @@ class Director:
     # ------------------------------------------------------------------ stages and resume
 
     def _stage(self, stage: Stage) -> StageRecord | None:
-        return next((s for s in reversed(self.record.stages) if s.stage == stage), None)
+        return _last_stage(self.record, stage)
 
     def _open_stage(self, stage: Stage, *, adopt: bool = False) -> StageRecord:
         """The open record of ``stage``, written as a new one when the last record is not it. A
@@ -676,11 +1100,26 @@ class Director:
         ``inputs`` holds each of its paths as it now is (one the resume removed left out), and
         ``edited`` holds one of them exactly when it differs from its committing call's sha (a
         plan.md put back after a failed scan leaves it; an edit made during a pause joins it).
-        Other entries of ``edited`` stay. One record write, only when either changed."""
+        Other entries of ``edited`` stay. A path the stage itself writes keeps the sha it opened
+        with and is no edit (Task 8): a file a committed call of the stage rewrote (stage 4's
+        revisions), which the resume wrote back from that call's transcript, and ``review.md``,
+        which the review and revise stages render before they commit (R-review-md). Each is the
+        stage's output, not its input. One record write, only when either changed."""
         present = self.bundle.index()
-        inputs = {rel: present[rel] for rel in stage.inputs if rel in present}
+        own = {rel for call in stage.calls for rel in call.outputs}
+        if stage.stage in ("review", "revise"):
+            own.add(REVIEW_FILE)
+        inputs = {
+            rel: stage.inputs[rel] if rel in own else present[rel]
+            for rel in stage.inputs
+            if rel in present
+        }
         owned = self._owned(besides=stage)
-        differs = {rel for rel, sha in inputs.items() if rel in owned and owned[rel] != sha}
+        differs = {
+            rel
+            for rel, sha in inputs.items()
+            if rel not in own and rel in owned and owned[rel] != sha
+        }
         edited = [rel for rel in self.record.edited if rel not in stage.inputs or rel in differs]
         edited += sorted(differs - set(edited))
         if inputs != stage.inputs or edited != self.record.edited:
@@ -708,10 +1147,12 @@ class Director:
             parsed = spec.parse(reply) if spec.parse is not None else spec.check(reply)[0]
         return Answer(call=call, parsed=parsed, provider_failed=call.provider_failed)
 
-    def _commit_stage(self, stage: StageRecord) -> None:
+    def _commit_stage(self, stage: StageRecord, *, failed: bool = False) -> None:
+        """The stage committed and the status it earned, or with ``failed`` the plan
+        ``failed`` (stage 4 with ``open_blocks > 0``), in one record write."""
         stage.status = "committed"
         stage.finished_at = datetime.now(UTC)
-        self.record.status = _EARNED[stage.stage]
+        self.record.status = "failed" if failed else _EARNED[stage.stage]
         self.bundle.write_record(self.record)
 
     def _fail(self, stage: Stage, error: str) -> None:
@@ -834,7 +1275,7 @@ class Director:
                         return self.record
                     continue
                 if not callable(getattr(self, stage, None)):
-                    raise NotImplementedError(f"stage {stage} is not built yet (Tasks 8 and 9)")
+                    raise NotImplementedError(f"stage {stage} is not built yet (Task 9)")
                 self._clear_hard_kill()  # before the stage is read, record or none (review I1)
                 if existing is not None:  # the first stage not committed: spec section 8
                     # first, while a committed error call still holds its index (R-marker)
@@ -942,10 +1383,7 @@ class Director:
         and ``jailbreak_bundle``'s lists before a stage-2 call shows it; a hit fails the stage
         as a lint failure, its results the stage's error (Task 6 re-review N-B)."""
         names = [role.display_name for role in self.record.request.target_models]
-        found = plan_scans(self.bundle, names)
-        if found:
-            listed = "; ".join(f"{r.lint_id}: {r.message}" for r in found)
-            raise DirectorError(f"plan.md fails a lint before stage 2 shows it: {listed}")
+        _refuse_hits(plan_scans(self.bundle, names), "plan.md fails a lint before stage 2 shows it")
 
     def _shipped(self, manifest: Sequence[ManifestEntry]) -> list[str]:
         """The worlds the manifest names that are shipped worlds (``worlds_dir``) to copy: under
@@ -1116,14 +1554,20 @@ class Director:
     # ------------------------------------------------------------------ the files
 
     def _file_spec(
-        self, entry: ManifestEntry, kind: Literal["file", "repair"], problems: Sequence[str] = ()
+        self,
+        entry: ManifestEntry,
+        kind: Literal["file", "repair"],
+        problems: Sequence[str] = (),
+        *,
+        stage: Stage = "author",
     ) -> CallSpec:
-        """A ``file:<path>`` or ``repair:<path>`` call: ``FILE_SCHEMA``, the entry's contract,
-        the arrival check of spec section 7 step 3, the file its output."""
+        """A ``file:<path>`` or ``repair:<path>`` call of ``stage`` (stage 4 closes its worlds
+        again): ``FILE_SCHEMA``, the entry's contract, the arrival check of spec section 7 step
+        3, the file its output."""
         purpose = f"{kind}:{entry.path}"
         text = file_task(entry) if kind == "file" else repair_task(entry.path, problems)
         return CallSpec(
-            stage="author",
+            stage=stage,
             role="planner",
             purpose=purpose,
             system="planner",
@@ -1293,7 +1737,8 @@ class Director:
                 kind, _, rel = stage.calls[index].purpose.partition(":")
                 if kind != "repair" or _world_or_none(rel) != world:
                     return index
-                answer = self._call(stage, index, self._file_spec(self._entry(rel), "repair"))
+                spec = self._file_spec(self._entry(rel), "repair", stage=stage.stage)
+                answer = self._call(stage, index, spec)
             else:
                 found = self._close_failures(world)
                 if not found:
@@ -1308,7 +1753,7 @@ class Director:
                         f"({MAX_REPAIR_CALLS}) repairs made: {listed}"
                     )
                 rel = todo[0]
-                spec = self._file_spec(self._entry(rel), "repair", found[rel])
+                spec = self._file_spec(self._entry(rel), "repair", found[rel], stage=stage.stage)
                 answer = self._call(stage, index, spec)
             if answer.call.status == "error":
                 raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
@@ -1352,6 +1797,175 @@ class Director:
             message = f"{result.lint_id}: {result.message}"
             found.setdefault(ids.get(result.doc_id, sheet), []).append(message)
         return dict(sorted(found.items()))
+
+    # ------------------------------------------------------------------ stage 3
+
+    def _judge_call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
+        """A reviewer or confirm call (``_call``), the bundle scanned first when the call is to
+        be asked (Task 6 re-review R1, carried): ``review_scans``' hits block it as a lint
+        failure, which fails the stage. A committed call is replayed, never scanned again."""
+        if index >= len(stage.calls):
+            _refuse_hits(
+                review_scans(self.bundle, self.record),
+                f"the bundle fails a lint before the {spec.purpose} call shows it",
+            )
+        return self._call(stage, index, spec)
+
+    def _review_spec(self, group: ReviewGroup) -> CallSpec:
+        return CallSpec(
+            stage="review",
+            role="reviewer",
+            purpose=f"review:{group.name}",
+            system="reviewer",
+            schema=REVIEW_SCHEMA,
+            message=lambda fix: reviewer_message(self.bundle, group, fix),
+            check=lambda reply: check_findings(reply, group, self.bundle),
+            outputs=lambda parsed: {},
+            parse=parse_review,
+        )
+
+    def review(self) -> None:
+        """Stage 3 (spec section 7): the stage opened with its ``inputs`` and the hand edits
+        adopted, as stage 2 opens; one reviewer call per ``review_groups`` entry
+        (``REVIEW_SCHEMA``, system ``reviewer``, ``check_findings``), each after the denylist
+        scans (``_judge_call``); any ``error`` call fails the stage and the plan, so a review the
+        harness cannot read is never read as no findings. Then ``review.md`` is rendered from
+        ``findings_of`` and written, the ``rendered`` checkpoint, and only then the stage
+        commits with ``review_counts`` (one record write); status ``reviewed``. ``review.md``
+        is derived from the committed calls, never a call's output, so a plan killed between
+        the render and the commit renders the same bytes again (R-review-md)."""
+        stage = self._open_stage("review", adopt=True)
+        for index, group in enumerate(review_groups(self.bundle, self.record)):
+            answer = self._judge_call(stage, index, self._review_spec(group))
+            if answer.call.status == "error":
+                raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
+        findings = findings_of(self.bundle, self.record)
+        self.bundle.write_file(REVIEW_FILE, render_review(findings))
+        self._checkpoint("rendered", "review")
+        self.record.review_counts = _counts(findings)
+        self._commit_stage(stage)
+
+    # ------------------------------------------------------------------ stage 4
+
+    def _revise_spec(self, rel: str, mine: Sequence[ReviewFinding]) -> CallSpec:
+        """The ``revise:<rel>`` call: ``REVISE_SCHEMA``, the file's contract (none for
+        ``plan.md``), the file as it stands and its findings rendered (``revise_task``)."""
+        purpose = f"revise:{rel}"
+        entry = None if rel == "plan.md" else self._entry(rel)
+        rendered = render_review(mine)
+
+        def message(fix: Sequence[str]) -> str:
+            text = revise_task(rel, self.bundle.read_file(rel), rendered)
+            return self._planner_message(purpose, text, fix, contract=entry)
+
+        return CallSpec(
+            stage="revise",
+            role="planner",
+            purpose=purpose,
+            system="planner",
+            schema=REVISE_SCHEMA,
+            message=message,
+            check=lambda reply: self._check_revision(rel, entry, mine, reply),
+            outputs=lambda parsed: {rel: parsed.content},
+            parse=parse_revision,
+        )
+
+    def _check_revision(
+        self,
+        rel: str,
+        entry: ManifestEntry | None,
+        mine: Sequence[ReviewFinding],
+        reply: str,
+    ) -> tuple[Revision | None, list[str]]:
+        """A revise reply: the object, its content through the arrival check of the file's kind
+        (stage 2's; ``plan.md``'s is stage 1's), and exactly one response for every block and
+        fix finding of the file and none for another number."""
+        revision = parse_revision(reply)
+        if revision is None:
+            return None, [_NOT_REVISION]
+        content = normalize_text(revision.content)
+        if entry is None:
+            found = _check_plan(content)[1]
+        else:
+            found = [self._relative(m) for m in self._arrival(entry, content)]
+        wanted = [f.id for f in mine if f.severity in ("block", "fix")]
+        answered = Counter(r.finding for r in revision.responses)
+        for number in wanted:
+            if answered[number] != 1:
+                found.append(
+                    f"finding {number} has {answered[number]} responses; every block and fix "
+                    f"finding of {rel} has exactly one"
+                )
+        for number in sorted(set(answered) - set(wanted)):
+            found.append(f"finding {number} is no block or fix finding of {rel}; answer only those")
+        return revision, found
+
+    def _confirm_spec(self, rel: str, blocks: Sequence[ReviewFinding]) -> CallSpec:
+        """The ``confirm:<rel>`` call: system ``confirm``, ``CONFIRM_SCHEMA``, the file as it is
+        now and each block's quote and problem by its local number (D-confirm)."""
+        passages = [(n, f.quote, f.problem) for n, f in enumerate(blocks, 1)]
+        return CallSpec(
+            stage="revise",
+            role="reviewer",
+            purpose=f"confirm:{rel}",
+            system="confirm",
+            schema=CONFIRM_SCHEMA,
+            message=lambda fix: confirm_message(rel, self.bundle.read_file(rel), passages, fix),
+            check=lambda reply: check_verdicts(reply, len(passages)),
+            outputs=lambda parsed: {},
+            parse=parse_verdicts,
+        )
+
+    def revise(self) -> None:
+        """Stage 4 (spec section 7), in order: the stage opened with its ``inputs`` (``review.md``
+        among them) and the hand edits adopted; one planner ``revise:<path>`` call per file with
+        a block or a fix, in path order (``_revise_spec``), the file replaced on its commit; a
+        call that fails its check twice leaves the file and its findings unanswered and the
+        stage goes on (D-revise-error); each world of a revised file closed again
+        (``_close``, within the ``MAX_REPAIR_CALLS`` stage 2 left); one ``confirm:<path>`` call
+        per file that had a block, after the denylist scans; ``review.md`` rendered again with
+        the responses and verdicts, the ``rendered`` checkpoint; ``open_blocks`` counted and the
+        stage committed in one record write, status ``revised``, or ``failed`` with
+        ``open_blocks > 0`` (the owner edits and runs ``plan review``; one pass, docs/08). A
+        provider error on any call fails the stage and the plan (spec section 13, preflight
+        Q43); ``plan continue`` retries the stage from that call. A resume replays the committed
+        calls in order and asks each file's revision of its committed pre-revision text, which
+        no call of the stage wrote before it."""
+        stage = self._open_stage("revise", adopt=True)
+        findings = review_findings(self.bundle, self.record)
+        files = sorted({f.file for f in findings if f.severity in ("block", "fix")})
+        index = 0
+        for rel in files:
+            spec = self._revise_spec(rel, [f for f in findings if f.file == rel])
+            self._go_on(self._call(stage, index, spec))
+            index += 1
+        for world in sorted({w for rel in files if (w := _world_or_none(rel)) is not None}):
+            index = self._close(stage, index, world)
+        for rel in files:
+            blocks = _blocks(findings, rel)
+            if blocks:
+                self._go_on(self._judge_call(stage, index, self._confirm_spec(rel, blocks)))
+                index += 1
+        findings = findings_of(self.bundle, self.record)
+        self.bundle.write_file(REVIEW_FILE, render_review(findings))
+        self._checkpoint("rendered", "revise")
+        self.record.open_blocks = sum(f.severity == "block" and f.open for f in findings)
+        self._commit_stage(stage, failed=self.record.open_blocks > 0)
+
+    @staticmethod
+    def _go_on(answer: Answer) -> None:
+        """Stage 4 goes on past a call that failed its check twice, never past a provider
+        error (spec section 13)."""
+        if answer.call.status == "error" and answer.provider_failed:
+            raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
+
+
+def _refuse_hits(found: Sequence[LintResult], what: str) -> None:
+    """A denylist scan's hits block what comes next as a lint failure: ``DirectorError`` with
+    the results (an owner-clause result names no name), which fails the stage."""
+    if found:
+        listed = "; ".join(f"{r.lint_id}: {r.message}" for r in found)
+        raise DirectorError(f"{what}: {listed}")
 
 
 def _world_or_none(rel: str) -> str | None:

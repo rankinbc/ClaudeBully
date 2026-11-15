@@ -1232,6 +1232,25 @@ def plan_scans(bundle: Bundle, display_names: Collection[str]) -> list[LintResul
     )
 
 
+def review_scans(bundle: Bundle, record: PlanRecord) -> list[LintResult]:
+    """The denylist scans run on the bundle before each reviewer and each confirm call (Task 6
+    re-review R1, carried to Task 8): ``plan_scans`` over ``plan.md`` (stage 2's path, the
+    request's target display names spared), then ``lint_bundle``'s own ``real_name_bundle``
+    (with its owner clause), ``boundary_bundle`` and ``jailbreak_bundle`` over the bundle, each
+    result once. ``review.md`` and ``transcripts/`` stay exempt, as they are at stage 5. Bytes
+    that are no UTF-8 and YAML that does not parse are read as the scans read them, so the scans
+    report and never raise."""
+    names = [role.display_name for role in record.request.target_models]
+    view = _View(bundle)
+    found = [
+        *plan_scans(bundle, names),
+        *_real_name_bundle(view),
+        *_boundary_bundle(view),
+        *_jailbreak_bundle(view, record),
+    ]
+    return list(dict.fromkeys(found))
+
+
 def _no_values_expectation(view: _View) -> list[LintResult]:
     """``no_values_expectation``: the text ``values_loosened`` nowhere in ``expected.yaml``,
     comments included: predicting it would let a rep in which it fired count as a hit."""
