@@ -647,6 +647,71 @@ def test_an_owner_edit_to_a_world_sheet_or_a_document_title_fails_stage_2_before
     assert owner not in (tmp_path / SLUG / "plan.json").read_text("utf-8").lower()
 
 
+class _PlantedHit(PlannerStub):
+    """The planner double whose ``file:<target>`` content ends in ``hit``, a comment holding the
+    owner's name: a hit no arrival check of a non-document file reads (the owner clause is a
+    bundle lint's), so the call commits and stage 2 goes on."""
+
+    def __init__(self, target: str, hit: str) -> None:
+        super().__init__()
+        self.target, self.hit = target, hit
+
+    def _reply(self, purpose: str, mode: str | None) -> str:
+        reply = super()._reply(purpose, mode)
+        if purpose == f"file:{self.target}":
+            content = json.loads(reply)["content"].rstrip("\n")
+            reply = json.dumps({"content": f"{content}\n{self.hit}\n"})
+        return reply
+
+
+@pytest.mark.slow  # four plans through stage 3 per case, two of them continued
+@pytest.mark.parametrize("step", ["record", "files"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("expected.yaml", id="the-last-file"),
+        pytest.param("personas/ferry_caller.yaml", id="a-middle-file"),
+    ],
+)
+def test_a_stage_2_resumed_after_a_planner_written_hit_ends_as_an_unbroken_plan_does(
+    target: str, step: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Task 8 re-review round 2, I1: the planner's own output is no owner text, and it is scanned
+    by the first stage-3 reviewer call, as an unbroken plan scans it. A plan killed after the
+    call that wrote a hit committed (its record, or its file) and resumed goes on and fails at
+    stage 3 with the record, the files and the ledger of the unbroken plan, instead of failing
+    at stage 2's opening scan, where every continue wrote the hit back over the owner's fix from
+    the call's transcript. The owner's edit then lets either plan reach ``reviewed``."""
+    owner = sorted(owner_names())[0]  # read at run time: the name is on no checked-in list
+    hit = f"# Signed, {owner.title()}."
+    clean_bundle, clean = run_plan(
+        tmp_path / "clean", through="review", planner=_PlantedHit(target, hit)
+    )
+    bundle, record = run_plan(
+        tmp_path / "killed",
+        through="review",
+        planner=_PlantedHit(target, hit),
+        kill=Kill(step, f"file:{target}"),
+    )
+    stages = [("plan", "committed"), ("author", "committed"), ("review", "failed")]
+    for planned in (clean, record):
+        assert planned.status == "failed"
+        assert [(s.stage, s.status) for s in planned.stages] == stages
+        assert "before the review:corpus-1 call shows it" in (planned.stages[2].error or "")
+        assert "real_name_bundle: " in (planned.stages[2].error or "")
+    assert comparable(record) == comparable(clean)
+    assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
+    assert _ledger_ids(bundle.root) == _ledger_ids(clean_bundle.root)
+    assert owner not in (bundle.root / "plan.json").read_text("utf-8").lower()
+    for root in (tmp_path / "clean", tmp_path / "killed"):  # the owner fixes the file, continues
+        path = root / SLUG / target
+        path.write_text(path.read_text("utf-8").replace(hit, "# ok"), "utf-8", newline="\n")
+        fixed_bundle, fixed = run_plan(root, through="review")
+        assert fixed.status == "reviewed" and fixed.stages[2].status == "committed"
+        assert owner not in fixed_bundle.read_file(target).lower()
+        assert fixed.edited == [target]  # the owner's fix is adopted, never written back over
+
+
 @pytest.mark.slow
 def test_a_close_that_still_fails_after_its_repair_fails_the_stage(
     tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch

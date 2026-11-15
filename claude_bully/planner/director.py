@@ -37,7 +37,7 @@ import json
 import os
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1366,9 +1366,15 @@ class Director:
         that fails twice) fails the stage and the plan (``DirectorError``; spec section 13).
         A resume replays the committed calls in order (``_call``): the manifest's budget is
         frozen at the calls made before it, and the copies are keyed on ``base_worlds``, so a
-        resume that skips a committed manifest call still copies."""
+        resume that skips a committed manifest call still copies. The opening scan leaves out
+        the paths the stage's own committed calls wrote (Task 8 re-review round 2, I1): a resume
+        has written them back from their transcripts, an unbroken pass opens with none of them
+        on disk, they are the planner's output and never owner text (an owner's edit to one is
+        overwritten), and the first stage-3 call scans them, so a hit in one fails at stage 3
+        whether or not the stage was interrupted, and the owner's fix is never written over."""
         stage = self._open_stage("author", adopt=True)
-        self._scan_bundle("stage 2")
+        own = {rel for call in stage.calls for rel in call.outputs}
+        self._scan_bundle("stage 2", besides=own)
         request = self.record.request
         if request.world == "reuse" and request.base_world is not None:
             self._copy_worlds([request.base_world])
@@ -1393,16 +1399,17 @@ class Director:
                 index = self._close(stage, index, world)
         self._commit_stage(stage)
 
-    def _scan_bundle(self, before: str) -> None:
+    def _scan_bundle(self, before: str, besides: Collection[str] = ()) -> None:
         """The bundle through the denylist scans before a call shows it (``before`` names it):
         ``bundle_lints.review_scans`` over the whole bundle, ``plan.md`` included, so ``plan.md``'s
         owner clause, Boundary and jailbreak lists (Task 6 re-review N-B), every world sheet, the
         index line of every document and the file a revise call shows as written are all read
         (Task 8 re-review, point 3). A hit fails the stage as a lint failure, its results the
         stage's error, the owner clause naming no name. The one path of stage 2's opening, every
-        reviewer and confirm call and every revise call."""
+        reviewer and confirm call and every revise call. The results on the paths of ``besides``
+        are left out (stage 2's opening: see ``author``)."""
         _refuse_hits(
-            review_scans(self.bundle, self.record),
+            [r for r in review_scans(self.bundle, self.record) if r.doc_id not in besides],
             f"the bundle fails a lint before {before} shows it",
         )
 
