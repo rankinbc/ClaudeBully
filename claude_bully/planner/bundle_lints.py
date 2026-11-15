@@ -106,6 +106,7 @@ from claude_bully.planner.bundle import (
     DRYRUN_DIR,
     DRYRUN_FILE,
     LEDGER,
+    NAME,
     PERSONAS_DIR,
     PLAN_FILE,
     STATE_DIR,
@@ -515,10 +516,18 @@ def record_scan_text(text: str, display_names: Collection[str]) -> str:
     return _spare_names(_RECORD_PROVIDER.sub(r'"\1": ""', text), display_names)
 
 
+_PARAGRAPH_BREAK: Final = re.compile(r"\n\s*\n")
+
+
 def _collapse(text: str) -> str:
-    """``text`` with every whitespace run one space: what a reader of a folded scalar, a wrapped
-    line or a double space sees (fix round 1, review I3)."""
-    return " ".join(text.split())
+    """``text`` with the whitespace of each paragraph (a blank-line-separated block) collapsed to
+    single spaces, the paragraphs on their own lines: what a reader of a folded scalar, a wrapped
+    line or a double space sees (fix round 1, review I3). A pattern reads one paragraph at a
+    time, so a list's lookahead (``the verge`` not before ``of``) holds across a wrapped line but
+    not across a blank one: a heading that ends ``The Verge`` and a paragraph that opens ``Of``
+    stay two sentences (fix round 2, re-review M-A)."""
+    paragraphs = (" ".join(paragraph.split()) for paragraph in _PARAGRAPH_BREAK.split(text))
+    return "\n".join(paragraph for paragraph in paragraphs if paragraph)
 
 
 def _strings(data: object, skip: frozenset[str] = frozenset()) -> list[str]:
@@ -564,6 +573,7 @@ class _View:
         self._index: dict[str, str] | None = None
         self._files: list[str] | None = None
         self._texts: dict[str, str] = {}
+        self._replaced: dict[str, str] = {}
         self._scans: dict[tuple[str, frozenset[str]], list[str]] = {}
 
     def index(self) -> dict[str, str]:
@@ -579,21 +589,32 @@ class _View:
         return self._files
 
     def read_file(self, rel: str) -> str:
-        """Any file under the root, as text: a grammar path through ``Bundle.read_file`` (which
-        refuses a link), any other file with bytes that are no UTF-8 replaced."""
+        """A grammar path's text through ``Bundle.read_file``, which refuses a link and raises
+        ``UnicodeDecodeError`` for bytes that are no UTF-8: what the schema's loaders read."""
         if rel not in self._texts:
-            if rel in self.index():
-                self._texts[rel] = self._bundle.read_file(rel)
-            else:
-                data = (self.root / rel).read_bytes()
-                self._texts[rel] = data.decode("utf-8", errors="replace")
+            self._texts[rel] = self._bundle.read_file(rel)
         return self._texts[rel]
+
+    def scan_text(self, rel: str) -> str:
+        """Any file under the root, as the scans read it: a grammar path through ``read_file``,
+        any other file's bytes, and for bytes that are no UTF-8 the text with each bad byte
+        replaced, so a scan never raises and ``schema`` is the one that names the file (fix
+        round 2, re-review N-2)."""
+        try:
+            if rel in self.index():
+                return self.read_file(rel)
+        except UnicodeDecodeError:
+            pass
+        if rel not in self._replaced:
+            data = (self.root / rel).read_bytes()
+            self._replaced[rel] = data.decode("utf-8", errors="replace")
+        return self._replaced[rel]
 
     def scan_texts(self, rel: str, skip: frozenset[str] = frozenset()) -> list[str]:
         """``_scan_texts`` of the file, parsed once for every scan that reads it."""
         key = (rel, skip)
         if key not in self._scans:
-            self._scans[key] = _scan_texts(rel, self.read_file(rel), skip)
+            self._scans[key] = _scan_texts(rel, self.scan_text(rel), skip)
         return self._scans[key]
 
     def world_and_persona_files(self) -> list[str]:
@@ -623,6 +644,23 @@ def _skipped(rel: str, what: str, why: str) -> LintResult:
     """A ``schema`` step not run because a step it depends on failed: a warn beside that
     step's failure, so the report says what was not checked."""
     return LintResult("schema", "warn", rel, f"skipped: {what} ({why})")
+
+
+def _not_utf8(exc: UnicodeDecodeError) -> str:
+    """``schema``'s message for a file whose bytes are no UTF-8: the first bad byte and where."""
+    return f"not valid UTF-8: byte 0x{exc.object[exc.start]:02x} at offset {exc.start}"
+
+
+def _off_grammar_message(rel: str) -> str:
+    """``schema``'s message for a file under ``worlds/`` or ``personas/`` the grammar refuses:
+    the file, what the grammar allows and what to do (fix round 2, re-review N-1)."""
+    allowed = (
+        "plan.md, config.yaml, expected.yaml, review.md, worlds/<name>/world.yaml, "
+        "worlds/<name>/corpus/<stem>.md, worlds/<name>/ladders/<stem>.yaml, "
+        "worlds/<name>/premises/<stem>.yaml and personas/<stem>.yaml, "
+        f"where <name> and <stem> match {NAME}"
+    )
+    return f"{_OFF_GRAMMAR}, which allows only {allowed}; remove or rename {rel}"
 
 
 def _field_errors(exc: ValidationError) -> str:
@@ -667,6 +705,8 @@ class _Files:
     failed_persona: bool = False
     experiment: Experiment | None = None
     expected: ExpectedEvents | None = None
+    # the files under worlds/ and personas/ outside the grammar, each a failure of its own
+    off_grammar: list[LintResult] = field(default_factory=list)
 
 
 def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
@@ -695,21 +735,31 @@ def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
                 files.experiment = _model(Experiment, bundle, rel)
             elif kind == "expected":
                 files.expected = _model(ExpectedEvents, bundle, rel)
+            else:
+                # plan.md and review.md have no model, but a text of bytes that are no UTF-8 is
+                # one no reader of the bundle can take (round 2, re-review N-2)
+                bundle.read_file(rel)
         except ValueError as exc:
-            # parse_document's message opens with the path the doc_id already holds
-            out.append(_schema_fail(rel, str(exc).removeprefix(f"{rel}: ")))
+            if isinstance(exc, UnicodeDecodeError):
+                message = _not_utf8(exc)
+            else:
+                # parse_document's message opens with the path the doc_id already holds
+                message = str(exc).removeprefix(f"{rel}: ")
+            out.append(_schema_fail(rel, message))
             if world is not None:
                 files.failed_worlds.add(world)
             if kind == "persona":
                 files.failed_persona = True
     out.extend(_schema_fail(rel, "missing") for rel in _FIXED_MODELS if rel not in present)
     # fix round 1 (review I2): load_world and bundle_personas glob past the grammar, so a file
-    # there that the Director could not have written must not reach a run
-    out.extend(
-        _schema_fail(rel, f"{_OFF_GRAMMAR}, though a loader reads every file here")
+    # there that the Director could not have written must not reach a run. Round 2 (re-review
+    # N-1): kept apart from ``out``, since the grammar files around it loaded and the lints that
+    # need them have their say beside the failure
+    files.off_grammar = [
+        _schema_fail(rel, _off_grammar_message(rel))
         for rel in bundle.world_and_persona_files()
         if rel not in present
-    )
+    ]
     return files
 
 
@@ -847,7 +897,10 @@ def _schema(bundle: _View, record: PlanRecord) -> tuple[list[LintResult], _Loade
     step runs on what loaded, so each independent fault is reported (review M1); a step that
     depends on a failed one is skipped with a ``skipped:`` warn naming why, and a condition the
     dry run cannot check (its world, environment or persona failed) is left out of it with one.
-    The loaded bundle when nothing failed, else None."""
+    A file under ``worlds/`` or ``personas/`` outside the grammar fails on its own and stops
+    nothing (fix round 2, re-review N-1): the grammar files around it loaded, so the loaded
+    bundle is what the other steps left. The loaded bundle when nothing else failed, else
+    None."""
     ensure_registered()
     out: list[LintResult] = []
     files = _load_files(bundle, out)
@@ -859,7 +912,7 @@ def _schema(bundle: _View, record: PlanRecord) -> tuple[list[LintResult], _Loade
     if experiment is None:
         what = "the environment checks and run --dry-run"
         out.append(_skipped(_CONFIG, what, f"{_CONFIG} does not load"))
-        return out, None
+        return [*out, *files.off_grammar], None
     bad_envs = _environments(experiment, names, worlds, out)
     runnable = _runnable(experiment, files, bad_personas, bad_envs, out)
     if runnable:
@@ -868,8 +921,9 @@ def _schema(bundle: _View, record: PlanRecord) -> tuple[list[LintResult], _Loade
         with plan_personas(personas):
             out.extend(_schema_fail(_CONFIG, m) for m in _refusals(checked, root))
     if out or files.expected is None:
-        return out, None
-    return [], _Loaded(worlds, files.doc_paths, files.personas, experiment, files.expected)
+        return [*out, *files.off_grammar], None
+    loaded = _Loaded(worlds, files.doc_paths, files.personas, experiment, files.expected)
+    return files.off_grammar, loaded
 
 
 def _manifest_complete(bundle: _View, record: PlanRecord) -> list[LintResult]:
@@ -940,6 +994,10 @@ _NOT_JAILBREAK_SCANNED: Final = frozenset({TRANSCRIPTS, DRYRUN_DIR, STATE_DIR})
 # the harness's own records at the root: written by the harness, never by the planner (fix
 # round 1, review I1); plan.json's request is scanned on its own
 _HARNESS_RECORDS: Final = frozenset({PLAN_FILE, ATTEMPT_FILE, LEDGER, DRYRUN_FILE})
+# the review quotes the text it blocks and names the class (a phrase, the word jailbreak), and
+# no run reads it, so it is no planner output to fail: out of scope as real_name_bundle already
+# has it; a checked-in bundle's review.md is read whole by CI (fix round 2, re-review R1)
+_QUOTING_FILES: Final = frozenset({"review.md"})
 _VALUES_LOOSENED: Final = "values_loosened"
 
 
@@ -967,7 +1025,7 @@ def _real_name_bundle(view: _View) -> list[LintResult]:
     present = view.index()
     texts = {rel: view.scan_texts(rel) for rel in view.world_and_persona_files()}
     if _CONFIG in present:
-        config = view.read_file(_CONFIG)
+        config = view.scan_text(_CONFIG)
         names = config_display_names(config)
         spared = view.scan_texts(_CONFIG, frozenset({"provider"}))
         texts[_CONFIG] = [config_scan_text(text, names) for text in spared]
@@ -993,7 +1051,7 @@ def _reserved_hosts(view: _View) -> list[LintResult]:
     reserved = ", ".join(RESERVED_TLDS)
     out: list[LintResult] = []
     for rel in view.world_and_persona_files():
-        text = view.read_file(rel)
+        text = view.scan_text(rel)
         found = [("url host", host) for host in url_hosts(text)]
         found += [("email domain", d.lower()) for d in EMAIL_DOMAIN.findall(text)]
         reported: set[str] = set()
@@ -1029,16 +1087,21 @@ def _boundary_bundle(view: _View) -> list[LintResult]:
 def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
     """``jailbreak_bundle``: ``data/jailbreak_denylist.txt`` over the whole text
     (``_scan_texts``) of every file of the bundle but ``transcripts/``, ``dryrun/`` and
-    ``state/`` (spec section 9, preflight Q24) and the harness's own records (``plan.json``,
-    ``.attempt.json``, ``ledger.jsonl``, ``dryrun.jsonl``), and over ``plan.json``'s request
-    (its question and constraints), the one planner-authored text there (fix round 1, review
-    I1: a recorded lint result holds the lint id and the matched phrase, so scanning the whole
-    record would fail every later validate)."""
+    ``state/`` (spec section 9, preflight Q24), the harness's own records (``plan.json``,
+    ``.attempt.json``, ``ledger.jsonl``, ``dryrun.jsonl``) and ``review.md``, and over
+    ``plan.json``'s request (its question and constraints), the one planner-authored text
+    there (fix round 1, review I1: a recorded lint result holds the lint id and the matched
+    phrase, so scanning the whole record would fail every later validate). ``review.md`` quotes
+    the phrases it blocks and names the class, so a bundle whose planner had fixed the file
+    would still fail stage 5 on the review (fix round 2, re-review R1); ``plan.md`` stays in
+    scope, since stage 4 can revise it."""
     patterns = load_patterns(_JAILBREAK_PATH)
     what = "a jailbreak denylist phrase"
     out: list[LintResult] = []
     for rel in view.files():
-        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED or rel in _HARNESS_RECORDS:
+        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED:
+            continue
+        if rel in _HARNESS_RECORDS or rel in _QUOTING_FILES:
             continue
         texts = view.scan_texts(rel)
         out += _denylist_hits("jailbreak_bundle", rel, texts, patterns, what)
@@ -1053,7 +1116,7 @@ def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
 def _no_values_expectation(view: _View) -> list[LintResult]:
     """``no_values_expectation``: the text ``values_loosened`` nowhere in ``expected.yaml``,
     comments included: predicting it would let a rep in which it fired count as a hit."""
-    if _EXPECTED not in view.index() or _VALUES_LOOSENED not in view.read_file(_EXPECTED):
+    if _EXPECTED not in view.index() or _VALUES_LOOSENED not in view.scan_text(_EXPECTED):
         return []
     message = f"names {_VALUES_LOOSENED}, which no plan may predict"
     return [LintResult("no_values_expectation", "fail", _EXPECTED, message, _VALUES_LOOSENED)]
@@ -1187,7 +1250,9 @@ def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) 
     run whatever ``schema`` found), then Phase 3's lints and the world-level lints per bundle
     world and ``bully_line`` over the personas' ``fallback_lines``, then ``anchor_floor``,
     ``expected_schema``, ``control_presence`` and ``budget``. When ``schema`` fails, every lint
-    that needs a loaded model reports nothing (the schema failure is the finding). ``dry_run``
+    that needs a loaded model reports nothing (the schema failure is the finding), but for a
+    failure that is only a file under ``worlds/`` or ``personas/`` outside the grammar: the
+    grammar files loaded, so their lints run beside it. ``dry_run``
     is the dry run's cells: ``budget``'s ``max_calls`` clause reads them, and with None it
     reports nothing. The strategy registry is left as it was found (``plan_personas``)."""
     record = bundle.read_record()

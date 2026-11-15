@@ -1,6 +1,7 @@
 """Phase 5 Tasks 4a and 4b: the bundle-level lints (spec section 9) over mutations of the good
 fixture bundle, written before the code."""
 
+import re
 import shutil
 import subprocess
 import sys
@@ -391,7 +392,10 @@ def _hits(text: str, path: Path) -> list[str]:
 
 
 def _collapsed(text: str) -> str:
-    return " ".join(text.split())
+    """``text`` as the scans read it (round 2, re-review M-A): each blank-line-separated
+    paragraph with its whitespace collapsed, the paragraphs on their own lines."""
+    paragraphs = re.split(r"\n\s*\n", text)
+    return "\n".join(joined for p in paragraphs if (joined := " ".join(p.split())))
 
 
 def _clean_append(rel: str, text: str, path: Path) -> Callable[[Bundle], None]:
@@ -620,6 +624,13 @@ POSITIVES_4B: Final[list[tuple[str, Callable[[Bundle], None], list[Reason]]]] = 
         _append(BODY_DOC, "\nA letter from Bill  Gates came.\n"),
         [(BODY_DOC, "holds a real name: 'Bill Gates'")],
     ),
+    # round 2 (re-review M-A, probe p14): a lookahead's spare reads one paragraph, so a heading
+    # that ends "The Verge" and a paragraph that opens "Of" are two sentences
+    (
+        "real_name_bundle",
+        _append(BODY_DOC, "\n# Source: The Verge\n\nOf the three outlets, one is local.\n"),
+        [(BODY_DOC, "holds a real name: 'The Verge'")],
+    ),
     (
         "reserved_hosts",
         _edit(BODY_DOC, "https://pennetlanding-pier.example/cafe", "https://pennetferry.com/about"),
@@ -667,6 +678,12 @@ POSITIVES_4B: Final[list[tuple[str, Callable[[Bundle], None], list[Reason]]]] = 
         _wrap("had her safety", "training"),
         [(PERSONA, "holds a Boundary word: 'safety training'")],
     ),
+    # round 2 (re-review M-A, probe p14)
+    (
+        "boundary_bundle",
+        _append(BODY_DOC, "\nThe house rule\n\nOut of hours means the side gate.\n"),
+        [(BODY_DOC, "holds a Boundary word: 'rule'")],
+    ),
     (
         "jailbreak_bundle",
         _append("plan.md", f"\nThe caller says: {JAILBREAK_HIT}.\n"),
@@ -676,11 +693,6 @@ POSITIVES_4B: Final[list[tuple[str, Callable[[Bundle], None], list[Reason]]]] = 
         "jailbreak_bundle",
         _append(BODY_DOC, f"\nA note pinned by the till: {JAILBREAK_HIT}.\n"),
         [(BODY_DOC, f"holds a jailbreak denylist phrase: {JAILBREAK_HIT!r}")],
-    ),
-    (
-        "jailbreak_bundle",
-        _append("review.md", f"\n1. fix: the caller says {JAILBREAK_HIT}\n"),
-        [("review.md", f"holds a jailbreak denylist phrase: {JAILBREAK_HIT!r}")],
     ),
     # preflight Q24: plan.json (the request's constraints) is a bundle file but transcripts/
     (
@@ -826,6 +838,13 @@ NEAR_MISSES_4B: Final[list[tuple[str, Callable[[Bundle], None]]]] = [
         "real_name_bundle",
         _clean_append(BODY_DOC, "She was on the verge\nof tears at the quay.", REAL_NAMES_PATH),
     ),
+    # round 2 (probe p14): the same paragraph, so the spare holds as it does on one line
+    (
+        "real_name_bundle",
+        _clean_append(
+            BODY_DOC, "Source: The Verge\nOf the three outlets, one is local.", REAL_NAMES_PATH
+        ),
+    ),
     # ---------------------------------------------------------------------- reserved_hosts
     (
         "reserved_hosts",
@@ -861,11 +880,25 @@ NEAR_MISSES_4B: Final[list[tuple[str, Callable[[Bundle], None]]]] = [
     ("boundary_bundle", _append("plan.md", "\nThe house rules of the cafe are on its door.\n")),
     # fix round 1: "rule" then "out" across a folded wrap reads as "rule out", which is spared
     ("boundary_bundle", _wrap("could not rule", "out a fault", BOUNDARY_PATH)),
+    # round 2 (probe p14): a line break inside one paragraph, and the house rule's twin there
+    ("boundary_bundle", _clean_append(BODY_DOC, "Nobody can rule\nout a fault.", BOUNDARY_PATH)),
+    (
+        "boundary_bundle",
+        _clean_append(BODY_DOC, "The house rule\nOut of hours means the side gate.", BOUNDARY_PATH),
+    ),
     # -------------------------------------------------------------------- jailbreak_bundle
     # transcripts/ and the git-ignored dryrun/ and state/ are outside its files (preflight Q24)
     ("jailbreak_bundle", _raw("transcripts/review-reviewer-0.json", f'"{JAILBREAK_HIT}"\n')),
     ("jailbreak_bundle", _raw("dryrun/run.log", f"{JAILBREAK_HIT}\n")),
     ("jailbreak_bundle", _raw("state/session.txt", f"{JAILBREAK_HIT}\n")),
+    # round 2 (re-review R1): review.md quotes findings, so it is no planner output and is out
+    # of scope, as real_name_bundle already leaves it out; the quoted phrase, and the reviewer's
+    # own word for the class, pass
+    ("jailbreak_bundle", _append("review.md", f"\n1. fix: the caller says {JAILBREAK_HIT}\n")),
+    (
+        "jailbreak_bundle",
+        _append("review.md", "\n1. block: the last rung's natural endpoint is a jailbreak\n"),
+    ),
     ("jailbreak_bundle", _clean_append(BODY_DOC, f"{JAILBREAK_HALF} the bins.", JAILBREAK)),
     ("jailbreak_bundle", _clean_append("plan.md", JAILBREAK_REWORDED, JAILBREAK)),
     (
@@ -1453,7 +1486,117 @@ def test_a_file_outside_the_grammar_fails_schema_and_is_scanned(
     found = [r for r in results if r.lint_id == lint_id and r.severity == "fail"]
     assert _matches(found, [reason]), [(r.doc_id, r.message) for r in found]
     schema = [(r.doc_id, r.message) for r in results if r.lint_id == "schema"]
-    assert schema == [(reason[0], f"{OFF_GRAMMAR}, though a loader reads every file here")]
+    assert [doc_id for doc_id, _ in schema] == [reason[0]], schema
+    _says_what_the_grammar_allows(*schema[0])
+
+
+def _says_what_the_grammar_allows(rel: str, message: str) -> None:
+    """Round 2 (re-review N-1): the message names the file and lists what the grammar allows,
+    with the pattern a ``<name>`` and a ``<stem>`` match."""
+    allowed = [
+        "plan.md, config.yaml, expected.yaml, review.md",
+        "worlds/<name>/world.yaml",
+        "worlds/<name>/corpus/<stem>.md",
+        "worlds/<name>/ladders/<stem>.yaml",
+        "worlds/<name>/premises/<stem>.yaml",
+        "personas/<stem>.yaml",
+        "[a-z0-9][a-z0-9_-]{0,63}",
+    ]
+    assert rel in message and OFF_GRAMMAR in message, message
+    assert all(part in message for part in allowed), message
+    assert "though a loader reads every file here" not in message
+
+
+# files a bundle may hold past the grammar that a loader reads (a persona, a document, a ladder)
+# and ones none reads (notes in a world, a keep file), each beside a planted world lint failure
+OFF_GRAMMAR_FILES: Final = [
+    pytest.param(
+        _raw("worlds/mini/notes.txt", "Ferry notes.\n"), "worlds/mini/notes.txt", id="notes"
+    ),
+    pytest.param(_raw("personas/.gitkeep", ""), "personas/.gitkeep", id="keep-file"),
+    pytest.param(_off_grammar(OFF_PERSONA, PERSONA), OFF_PERSONA, id="persona"),
+    pytest.param(_off_grammar(OFF_LADDER, LADDER), OFF_LADDER, id="ladder"),
+    pytest.param(_off_grammar(OFF_DOC, UNLINKED), OFF_DOC, id="document"),
+]
+BULLY_LINE_FAULT: Final = _edit(SHEET, THE_LOG_LINE, THE_LOG_LINE.replace(": You", ": Look. You"))
+
+
+@pytest.mark.parametrize(("change", "rel"), OFF_GRAMMAR_FILES)
+def test_a_file_outside_the_grammar_hides_none_of_the_world_lints(
+    change: Callable[[Bundle], None], rel: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Round 2 (re-review N-1): the file fails ``schema`` and nothing else is lost: the world
+    lints, the persona lines and the set lints still report what the grammar files hold."""
+    alone = good_bundle(tmp_path, slug="alone")
+    BULLY_LINE_FAULT(alone)
+    expected = {(r.lint_id, r.doc_id, r.message) for r in failures(lint_bundle(alone))}
+    assert any(lint_id == "bully_line" for lint_id, _, _ in expected), expected
+    bundle = good_bundle(tmp_path, slug="with")
+    BULLY_LINE_FAULT(bundle)
+    change(bundle)
+    results = lint_bundle(bundle)
+    schema = [(r.doc_id, r.message) for r in results if r.lint_id == "schema"]
+    assert [doc_id for doc_id, _ in schema] == [rel], schema
+    found = {(r.lint_id, r.doc_id, r.message) for r in failures(results)}
+    assert expected <= found, sorted(expected - found)
+    _says_what_the_grammar_allows(*schema[0])
+
+
+def _bad_utf8(rel: str) -> Callable[[Bundle], None]:
+    """``rel`` with a cp1252 e-acute (0xE9) appended: bytes that are no UTF-8."""
+
+    def change(bundle: Bundle) -> None:
+        path = bundle.root / rel
+        path.write_bytes(path.read_bytes() + b"\ncaf\xe9\n")
+
+    return change
+
+
+BAD_UTF8_FILES: Final = ["plan.md", "review.md", PERSONA, CONFIG, EXPECTED, UNLINKED, SHEET, LADDER]
+
+
+@pytest.mark.parametrize("rel", BAD_UTF8_FILES)
+def test_a_file_that_is_no_utf8_fails_schema_naming_it_and_raises_nothing(
+    rel: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Round 2 (re-review N-2): ``lint_bundle`` ends with a ``schema`` fail naming the file, where
+    the denylist scans used to raise ``UnicodeDecodeError`` out of it (``plan.md`` and
+    ``review.md`` before 6ca2946 were read with the bytes replaced)."""
+    bundle = good_bundle(tmp_path)
+    _bad_utf8(rel)(bundle)
+    results = lint_bundle(bundle)
+    named = [r for r in results if r.lint_id == "schema" and r.severity == "fail"]
+    assert [r.doc_id for r in named] == [rel], [(r.doc_id, r.message) for r in named]
+    assert "not valid UTF-8" in named[0].message and "0xe9" in named[0].message, named[0].message
+    warns = [r.message for r in results if r.lint_id == "schema" and r.severity == "warn"]
+    assert all(message.startswith("skipped: ") for message in warns), warns
+
+
+def test_a_review_that_quotes_a_phrase_the_planner_removed_passes_jailbreak_bundle(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review R1 (probe p8), in the run's order: stage 3 renders ``review.md`` with the quoted
+    phrase and the reviewer's own word for the class, stage 4 fixes the file, stage 5 validates
+    twice. The file's own text fails the lint until it is fixed; the review's quote never does."""
+    bundle = good_bundle(tmp_path)
+    clean = bundle.read_file(BODY_DOC)
+    bundle.write_file(BODY_DOC, clean + f"\nA note by the till: {JAILBREAK_HIT}.\n")
+    bundle.write_file(
+        "review.md",
+        f"block 1 / fix 0 / note 0\n\n## {BODY_DOC}\n\n"
+        f"1. block: the note quotes '{JAILBREAK_HIT}', a jailbreak endpoint\n",
+    )
+    for planted in (True, False, False):
+        results = lint_bundle(bundle)
+        jailbreak = [(r.doc_id, r.span) for r in results if r.lint_id == "jailbreak_bundle"]
+        assert jailbreak == ([(BODY_DOC, JAILBREAK_HIT)] if planted else []), jailbreak
+        bundle.write_file(BODY_DOC, clean)
+    # plan.md stays in scope: the planner writes it and stage 4 can revise it
+    bundle.write_file(
+        "plan.md", bundle.read_file("plan.md") + f"\nThe caller says {JAILBREAK_HIT}.\n"
+    )
+    again = [r.doc_id for r in lint_bundle(bundle) if r.lint_id == "jailbreak_bundle"]
+    assert again == ["plan.md"]
 
 
 def _dry_cell(calls: int) -> DryRunCell:
