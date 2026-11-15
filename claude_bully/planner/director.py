@@ -19,7 +19,8 @@ provider is built and called:
 
 A rate limit commits nothing: the marker is removed and ``RateLimitExit`` raised, the stage left
 open (D-rate-limit). A provider error, a timeout among them, is an ``error`` call, never waited
-on. A message over ``MAX_CONTEXT_CHARS`` is refused before it is sent (``DirectorError``).
+on. A first message over ``MAX_CONTEXT_CHARS`` is refused before it is sent
+(``DirectorError``); a retry over it is an ``error`` call, recording the attempt that was sent.
 
 ``Director.run`` resumes at the first stage not committed (spec section 8): it records a dead
 attempt first, while a committed ``error`` call still holds its index (R-marker), reopens a
@@ -45,7 +46,6 @@ from claude_bully.planner.bundle import (
     LEDGER,
     PLAN_FILE,
     STATE_DIR,
-    TRANSCRIPTS,
     Bundle,
     Transcript,
     TranscriptAttempt,
@@ -90,7 +90,6 @@ MAX_REPAIR_CALLS: Final = 10
 ROLE_KEY_EXCLUDES: Final = frozenset({"command", "timeout_s", "api_key_env"})
 DOCS_DIR: Final = REPO_ROOT / "docs"
 DIRECTOR_CACHE: Final = "director"
-FAILED_TRANSCRIPTS: Final = f"{TRANSCRIPTS}/failed"
 
 # the status a plan has earned once each stage commits
 _EARNED: Final[Mapping[Stage, PlanStatus]] = {
@@ -250,7 +249,11 @@ class Director:
         index = len(stage.calls)
         self._check_ceiling()  # DirectorError naming max_director_calls before any write
         rel = self.bundle.transcript_rel(spec.stage, spec.role, index)
-        self.bundle.write_attempt(DirectorAttempt(stage=spec.stage, role=spec.role, index=index))
+        self.bundle.write_attempt(
+            DirectorAttempt(
+                stage=spec.stage, role=spec.role, index=index, ledger_lines=self._ledger_lines()
+            )
+        )
         system = load_director_prompt(spec.system)
         role = self._role(spec.role)
         provider = self._provider(spec.role)
@@ -264,11 +267,16 @@ class Director:
         for attempt in (1, 2):
             message = spec.message(failures)
             if len(message) > MAX_CONTEXT_CHARS:
-                self.bundle.clear_attempt()  # nothing was sent: no call is dead
-                raise DirectorError(
-                    f"{spec.purpose}: the message is {len(message):,} characters, over "
-                    f"MAX_CONTEXT_CHARS ({MAX_CONTEXT_CHARS:,}); nothing was sent"
+                what = "the retry's message" if attempt == 2 else "the message"
+                over = (
+                    f"{spec.purpose}: {what} is {len(message):,} characters, over "
+                    f"MAX_CONTEXT_CHARS ({MAX_CONTEXT_CHARS:,})"
                 )
+                if attempt == 2:  # attempt 1 was sent: an error call records it (review M2)
+                    error = f"{'; '.join(failures)}; {over}; the retry was not sent"
+                    break
+                self.bundle.clear_attempt()  # nothing was sent: no call is dead
+                raise DirectorError(f"{over}; nothing was sent")
             key = director_cache_key(role, system, message, spec.schema)
             cid = conversation_id(self.bundle.slug, spec.stage, spec.role, index, attempt)
             hit = self.cache.get(key)
@@ -324,6 +332,7 @@ class Director:
             transcript=rel,
             attempts=2 if len(attempts) == 2 else 1,
             error=error,
+            provider_failed=provider_failed,
         )
         stage.calls.append(call)
         if status != "error" and spec.commit is not None:
@@ -386,17 +395,24 @@ class Director:
         self.bundle.write_record(self.record)
         return opened
 
-    def _done(self, stage: StageRecord, index: int, purpose: str) -> DirectorCall | None:
-        """The committed call at ``index`` of a resumed stage, or None when the stage has not
-        reached it; a call there with another purpose is refused."""
+    def _call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
+        """The answer to the stage's call at ``index``: asked when the stage has not reached it,
+        else rebuilt from the committed call, so a resumed stage handles it exactly as it
+        handled the fresh answer (review C1: a committed ``error`` call fails the stage again,
+        never reads as done). The parsed reply is read back from the transcript; a call there
+        with another purpose is refused."""
         if index >= len(stage.calls):
-            return None
+            return self.ask(spec)
         call = stage.calls[index]
-        if call.purpose != purpose:
+        if call.purpose != spec.purpose:
             raise DirectorError(
-                f"stage {stage.stage}: call {index} is {call.purpose!r}, not {purpose!r}"
+                f"stage {stage.stage}: call {index} is {call.purpose!r}, not {spec.purpose!r}"
             )
-        return call
+        parsed: Any = None
+        if call.status != "error":
+            transcript = self.bundle.read_transcript(call.transcript)
+            parsed, _ = spec.check(transcript.attempts[-1].reply)
+        return Answer(call=call, parsed=parsed, provider_failed=call.provider_failed)
 
     def _commit_stage(self, stage: StageRecord) -> None:
         stage.status = "committed"
@@ -414,45 +430,58 @@ class Director:
         self.bundle.write_record(self.record)
 
     def _record_dead_attempt(self, stage: StageRecord) -> None:
-        """A marker naming a call of ``stage`` at or past ``len(calls)`` is a dead attempt: it is
-        appended to ``record.resumed``, its ledger lines are dropped, and the marker cleared;
-        any other marker is only cleared, so a marker is read at most once (R-marker)."""
+        """A marker naming a call of ``stage`` at or past ``len(calls)`` is a dead attempt: its
+        ledger lines are dropped, it is appended to ``record.resumed`` unless it is already the
+        last entry there (the runtime's ``flagged`` rule, ``runner/env_turn.py``: a resume
+        killed before its marker clear reads the same marker again, review M1), and the marker
+        is cleared; any other marker is only cleared, so a marker is read at most once
+        (R-marker)."""
         attempt = self.bundle.read_attempt()
         if attempt is None:
             return
         if attempt.stage == stage.stage and attempt.index >= len(stage.calls):
             self._drop_dead_lines(attempt)
-            self.record.resumed.append(attempt)
-            self.bundle.write_record(self.record)
+            if attempt not in self.record.resumed[-1:]:
+                self.record.resumed.append(attempt)
+                self.bundle.write_record(self.record)
         self.bundle.clear_attempt()
+
+    def _ledger_raw(self) -> list[str]:
+        path = self.bundle.root / LEDGER
+        if not path.is_file():
+            return []
+        return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def _ledger_lines(self) -> int:
+        """The plan ledger's line count, which a marker records (``ledger_lines``)."""
+        return len(self._ledger_raw())
 
     def _drop_dead_lines(self, attempt: DirectorAttempt) -> None:
         """Drop the dead attempt's lines from the plan's ledger, the rule the dry run applies
         through ``AttemptMarker.written`` (Task 5, D-K12): a line whose call never reached the
-        record. The redone call writes its own, so the ledger reads as an unbroken plan's. A
-        rate limit's line stays, its marker cleared before any resume (D-rate-limit)."""
-        path = self.bundle.root / LEDGER
-        if not path.is_file():
-            return
+        record. The marker names the newest call's lines exactly: those of its conversation
+        ids after its ``ledger_lines`` (review I1: a failed call's retry reuses the index and the
+        ids, so the failed call's own line, before the offset, stays). The redone call writes its
+        own, so the ledger reads as an unbroken plan's. A rate limit's line stays, its marker
+        cleared before any resume (D-rate-limit; the dry run, whose lines are stub calls, drops
+        it)."""
+        raw = self._ledger_raw()
         prefix = f"plan/{self.bundle.slug}/{attempt.stage}/{attempt.role}/{attempt.index}/"
-        raw = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        kept = [
+        kept = raw[: attempt.ledger_lines] + [
             line
-            for line in raw
+            for line in raw[attempt.ledger_lines :]
             if not LedgerLine.model_validate_json(line).conversation_id.startswith(prefix)
         ]
         if len(kept) != len(raw):
-            write_atomic(path, "".join(f"{line}\n" for line in kept))
+            write_atomic(self.bundle.root / LEDGER, "".join(f"{line}\n" for line in kept))
 
     def _reopen_failed(self, stage: StageRecord) -> None:
         """The failed-stage ruling: the stage's last call, when it is an ``error``, leaves
-        ``calls`` (its transcript moved under ``transcripts/failed/``, its error kept in the
-        stage's ``error``), and the stage is open again, to retry from that call."""
+        ``calls`` (its transcript moved under ``transcripts/failed/``, numbered past an earlier
+        failure of the same call, review M3; its error kept in the stage's ``error``), and the
+        stage is open again, to retry from that call."""
         if stage.calls and stage.calls[-1].status == "error":
-            call = stage.calls[-1]
-            self.bundle.move_transcript(
-                call.transcript, f"{FAILED_TRANSCRIPTS}/{Path(call.transcript).name}"
-            )
+            self.bundle.archive_failed_transcript(stage.calls[-1].transcript)
             stage.calls.pop()
         stage.status = "open"
         stage.finished_at = None
@@ -464,12 +493,19 @@ class Director:
         """Every stage through ``through``, in the plan's own ledger, resuming at the first
         stage not committed (spec section 8); ``stop_after_plan`` returns once stage 1 commits.
         A failed stage fails the plan and returns its record; a rate limit raises
-        ``RateLimitExit`` with the stage left open."""
+        ``RateLimitExit`` with the stage left open. ``stop_after_plan`` stops at a stage 1
+        committed before this run too (review M4: ``plan new`` again without ``--no-confirm``
+        never authors). A stage no task has built yet raises ``NotImplementedError`` before it
+        is touched (review N1)."""
         with activate(self.bundle.root / LEDGER):
             for stage in STAGES[: STAGES.index(through) + 1]:
                 existing = self._stage(stage)
                 if existing is not None and existing.status == "committed":
+                    if stage == "plan" and stop_after_plan:
+                        return self.record
                     continue
+                if not callable(getattr(self, stage, None)):
+                    raise NotImplementedError(f"stage {stage} is not built yet (Tasks 7b to 9)")
                 if existing is not None:  # the first stage not committed: spec section 8
                     # first, while a committed error call still holds its index (R-marker)
                     self._record_dead_attempt(existing)
@@ -512,19 +548,17 @@ class Director:
         refused when blank or over ``MAX_PLAN_CHARS``. Status ``planned``; an ``error`` call
         fails the stage and the plan."""
         stage = self._open_stage("plan")
-        if self._done(stage, 0, "plan") is None:
-            answer = self.ask(
-                CallSpec(
-                    stage="plan",
-                    role="planner",
-                    purpose="plan",
-                    system="planner",
-                    schema=None,
-                    message=lambda failures: self._planner_message("plan", PLAN_TASK, failures),
-                    check=_check_plan,
-                    outputs=lambda reply: {"plan.md": reply},
-                )
-            )
-            if answer.call.status == "error":
-                raise DirectorError(f"the plan call failed: {answer.call.error}")
+        spec = CallSpec(
+            stage="plan",
+            role="planner",
+            purpose="plan",
+            system="planner",
+            schema=None,
+            message=lambda failures: self._planner_message("plan", PLAN_TASK, failures),
+            check=_check_plan,
+            outputs=lambda reply: {"plan.md": reply},
+        )
+        answer = self._call(stage, 0, spec)
+        if answer.call.status == "error":
+            raise DirectorError(f"the plan call failed: {answer.call.error}")
         self._commit_stage(stage)

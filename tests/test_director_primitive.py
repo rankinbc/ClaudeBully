@@ -421,3 +421,162 @@ def test_plan_new_on_a_slug_that_holds_another_request_is_refused(
         Director.new(
             other, plans_root=tmp_path, provider_factory=StubFactory(PlannerStub(), ReviewerStub())
         )
+
+
+# ---------------------------------------------------------------- fix round 1 (task-7a-review.md)
+
+
+def _command(
+    plans_root: Path, planner: PlannerStub, checkpoint: Kill | None = None
+) -> PlanRecord | None:
+    """One `plan new` on the same request: the record it returns, or None when it was killed."""
+    director = _director(plans_root, planner, checkpoint=checkpoint)
+    try:
+        return director.run(through="plan")
+    except Crash:
+        return None
+
+
+def _state(plans_root: Path) -> tuple[object, ...]:
+    """Everything parity compares, for a plan made under ``plans_root``."""
+    bundle = Bundle(plans_root / SLUG)
+    record = bundle.read_record()
+    failed = bundle.root / "transcripts" / "failed"
+    kept = {p.name: p.read_bytes() for p in failed.iterdir()} if failed.is_dir() else {}
+    return comparable(record), hashed_files(bundle.root), _ledger(bundle), kept
+
+
+@pytest.mark.parametrize("failure", ["provider_error", "check_twice"])
+def test_a_plan_killed_after_its_error_call_commits_fails_as_an_unbroken_one(
+    failure: str, tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review C1: killed after an error call's commit and before the stage fails, the resume
+    handles the committed call as a fresh answer: the stage and the plan fail as an unbroken
+    run's do, and the continue that follows ends where an unbroken continue ends."""
+    modes = {"plan": "provider_error"} if failure == "provider_error" else {}
+    if failure == "check_twice":
+        monkeypatch.setattr(director_module, "MAX_PLAN_CHARS", 10)  # both attempts refused
+    clean = _command(tmp_path / "clean", PlannerStub(modes=modes))
+    assert clean is not None and clean.status == "failed"
+    (call,) = clean.stages[0].calls
+    assert call.status == "error" and call.provider_failed is (failure == "provider_error")
+    assert _command(tmp_path / "killed", PlannerStub(modes=modes), Kill("record", "plan")) is None
+    resumed = _command(tmp_path / "killed", PlannerStub(modes=modes))
+    assert resumed is not None and resumed.status == "failed"
+    assert not (tmp_path / "killed" / SLUG / "plan.md").exists()
+    assert _state(tmp_path / "killed") == _state(tmp_path / "clean")
+    monkeypatch.setattr(director_module, "MAX_PLAN_CHARS", 20_000)
+    for root in ("clean", "killed"):
+        final = _command(tmp_path / root, PlannerStub())
+        assert final is not None and final.status == "planned"
+    assert _state(tmp_path / "killed") == _state(tmp_path / "clean")
+
+
+@pytest.mark.parametrize("point", ["K1", "K4"])
+def test_a_kill_in_a_continued_call_keeps_the_earlier_error_calls_ledger_line(
+    point: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review I1: the retried call reuses the error call's index and conversation id, so only
+    the lines after the marker's ledger offset are the dead attempt's."""
+    _command(tmp_path / "clean", PlannerStub(modes={"plan": "provider_error"}))
+    _command(tmp_path / "clean", PlannerStub())
+    _command(tmp_path / "killed", PlannerStub(modes={"plan": "provider_error"}))
+    if point == "K1":
+        assert _command(tmp_path / "killed", PlannerStub(crash_at="plan")) is None
+    else:
+        assert _command(tmp_path / "killed", PlannerStub(), Kill("transcript", "plan")) is None
+    record = _command(tmp_path / "killed", PlannerStub())
+    assert record is not None and [(a.stage, a.index) for a in record.resumed] == [("plan", 0)]
+    cid = f"plan/{SLUG}/plan/planner/0/a1"
+    assert _ledger(Bundle(tmp_path / "clean" / SLUG)) == [(cid, "error"), (cid, "ok")]
+    assert _state(tmp_path / "killed")[:3] == _state(tmp_path / "clean")[:3]
+
+
+def test_a_dead_attempt_is_recorded_once_when_its_resume_dies_before_the_marker_clears(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M1: the runtime's flagged rule (runner/env_turn.py), so a marker the record
+    already names as the last dead attempt is not appended again."""
+    with pytest.raises(Crash):
+        run_plan(tmp_path, through="plan", kill=Kill("transcript", "plan"), resume=False)
+    clear = Bundle.clear_attempt
+    deaths: list[str] = []
+
+    def dying(bundle: Bundle) -> None:
+        if not deaths:
+            deaths.append("killed before the marker clear")
+            raise Crash(deaths[0])
+        clear(bundle)
+
+    monkeypatch.setattr(Bundle, "clear_attempt", dying)
+    with pytest.raises(Crash):
+        run_plan(tmp_path, through="plan", resume=False)
+    _, record = run_plan(tmp_path, through="plan")
+    assert [(a.stage, a.role, a.index) for a in record.resumed] == [("plan", "planner", 0)]
+
+
+def test_a_retry_over_the_context_limit_commits_the_attempt_that_was_sent(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M2: attempt 1 was sent, so a retry over MAX_CONTEXT_CHARS is an error call that
+    records it, never a refusal that leaves its ledger line owned by no record."""
+    from claude_bully.providers.ledger import activate
+
+    monkeypatch.setattr(director_module, "MAX_CONTEXT_CHARS", 1_000)
+    spec = replace(
+        _manifest_spec(),
+        message=lambda failures: "call: manifest\n" + ("x" * 2_000 if failures else ""),
+    )
+    director = _director(tmp_path, PlannerStub(modes={"manifest": "off_contract"}))
+    with activate(director.bundle.root / "ledger.jsonl"):
+        answer = director.ask(spec)
+    assert (answer.call.status, answer.call.attempts) == ("error", 1)
+    assert "MAX_CONTEXT_CHARS (1,000)" in (answer.call.error or "")
+    assert "the retry was not sent" in (answer.call.error or "")
+    transcript = director.bundle.read_transcript(answer.call.transcript)
+    assert [a.reply for a in transcript.attempts] == ["not json"]
+    assert _ledger(director.bundle) == [(f"plan/{SLUG}/plan/planner/0/a1", "ok")]
+    assert director.bundle.read_record().stages[0].calls == [answer.call]
+
+
+def test_a_call_that_fails_across_two_continues_keeps_both_failed_transcripts(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M3: the second failure's transcript is numbered past the first's under failed/,
+    never written over it."""
+    for limit in (10, 20):
+        monkeypatch.setattr(director_module, "MAX_PLAN_CHARS", limit)
+        _, record = run_plan(tmp_path, through="plan")
+        assert record.status == "failed"
+    monkeypatch.setattr(director_module, "MAX_PLAN_CHARS", 20_000)
+    _, record = run_plan(tmp_path, through="plan")
+    assert record.status == "planned"
+    failed = tmp_path / SLUG / "transcripts" / "failed"
+    kept = {p.name: p.read_bytes() for p in failed.iterdir()}
+    assert set(kept) == {"plan-planner-0.json", "plan-planner-0-2.json"}
+    assert b"at most 10" in kept["plan-planner-0.json"]
+    assert b"at most 20" in kept["plan-planner-0-2.json"]
+
+
+def test_stop_after_plan_on_a_committed_plan_stops(tmp_path: Path, isolated_registry: None) -> None:
+    """Review M4: `plan new` again on a planned slug, without --no-confirm, never authors."""
+    bundle, _ = run_plan(tmp_path, through="plan")
+    factory = StubFactory(PlannerStub(), ReviewerStub())
+    again = Director.open(bundle.root, provider_factory=factory, worlds_dir=WORLDS_DIR)
+    record = again.run(stop_after_plan=True)
+    assert record.status == "planned" and [s.stage for s in record.stages] == ["plan"]
+
+
+def test_a_stage_not_built_yet_is_refused_before_it_opens(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review N1: until Tasks 7b to 9 land, a run past the plan names the stage it lacks."""
+    bundle, _ = run_plan(tmp_path, through="plan")
+    again = Director.open(
+        bundle.root,
+        provider_factory=StubFactory(PlannerStub(), ReviewerStub()),
+        worlds_dir=WORLDS_DIR,
+    )
+    with pytest.raises(NotImplementedError, match="stage author"):
+        again.run(through="author")
+    assert [s.stage for s in bundle.read_record().stages] == ["plan"]

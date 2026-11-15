@@ -67,11 +67,14 @@ _GRAMMAR: Final = re.compile(
 
 _STAGE_NAMES: Final = "|".join(STAGES)
 # the harness-built transcript paths: <stage>-<role>-<index>.json, at the top, under an earlier
-# review round (D-rounds) or under failed/ (D-failed-stage)
+# review round (D-rounds) or under failed/ (D-failed-stage), where a later failure of the same
+# call is numbered on, <stage>-<role>-<index>-<n>.json from 2 (Task 7a fix round 1, review M3)
+_TRANSCRIPT_STEM: Final = rf"(?:{_STAGE_NAMES})-(?:planner|reviewer)-(?:0|[1-9][0-9]*)"
 _TRANSCRIPT: Final = re.compile(
-    rf"{TRANSCRIPTS}/(?:(?:round-[1-9][0-9]*|failed)/)?"
-    rf"(?:{_STAGE_NAMES})-(?:planner|reviewer)-(?:0|[1-9][0-9]*)\.json"
+    rf"{TRANSCRIPTS}/(?:(?:round-[1-9][0-9]*/)?{_TRANSCRIPT_STEM}"
+    rf"|failed/{_TRANSCRIPT_STEM}(?:-(?:[2-9]|[1-9][0-9]+))?)\.json"
 )
+FAILED: Final = f"{TRANSCRIPTS}/failed"
 _FIXED_KINDS: Final[dict[str, ManifestKind | None]] = {
     "plan.md": None,
     "config.yaml": "config",
@@ -298,15 +301,25 @@ class Bundle:
     def read_transcript(self, rel: str) -> Transcript:
         return Transcript.model_validate_json(self._transcript_path(rel).read_bytes())
 
-    def move_transcript(self, rel: str, to: str) -> None:
-        """Move a transcript to another transcript path (one rename). A source that is gone
-        while the destination exists is a move already made, so a move redone after a kill is
-        no error."""
-        source, target = self._transcript_path(rel), self._transcript_path(to)
-        if not source.exists() and target.exists():
-            return
+    def archive_failed_transcript(self, rel: str) -> str | None:
+        """Move a failed call's transcript under ``transcripts/failed/`` (one rename), to
+        ``<name>.json`` or, when an earlier failure of the same call holds that, to the first
+        free ``<name>-<n>.json`` from 2, so no failed transcript is written over (review M3).
+        Returns the path it moved to; None when ``rel`` is already gone, a move made before a
+        kill, so a reopen redone after one moves nothing."""
+        source = self._transcript_path(rel)
+        if not source.exists():
+            return None
+        stem = rel.rsplit("/", 1)[-1].removesuffix(".json")
+        to = f"{FAILED}/{stem}.json"
+        n = 2
+        while self._transcript_path(to).exists():
+            to = f"{FAILED}/{stem}-{n}.json"
+            n += 1
+        target = self._transcript_path(to)
         target.parent.mkdir(parents=True, exist_ok=True)
         replace(source, target)
+        return to
 
     def write_attempt(self, attempt: DirectorAttempt) -> None:
         write_atomic(self.root / ATTEMPT_FILE, attempt.model_dump_json() + "\n")

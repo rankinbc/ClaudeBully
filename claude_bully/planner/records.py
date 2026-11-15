@@ -58,6 +58,9 @@ class DirectorCall(_Strict):
     transcript: str
     attempts: Literal[1, 2]
     error: str | None = None
+    # an error from a ProviderError (a timeout among them), not from two failed checks, so a
+    # resumed call answers as a fresh one did (Task 7a fix round 1, review C1)
+    provider_failed: bool = False
 
 
 class StageRecord(_Strict):
@@ -78,6 +81,9 @@ class DirectorAttempt(_Strict):
     stage: Stage
     role: _Role
     index: int
+    # the plan ledger's line count when the marker was written: a dead attempt's lines are the
+    # ones after it (Task 7a fix round 1, review I1; a failed call's retry reuses its index)
+    ledger_lines: int = 0
 
 
 class LintRecord(_Strict):
