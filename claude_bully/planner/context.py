@@ -18,7 +18,9 @@ which holds the planner's responses after a revise round, is refused by both. No
 reads ``runs/`` or ``results/``.
 
 No model reads a real name or the owner's name in the harness's own text: every part of the
-planner message but the bundle's files is scrubbed (``scrub``, driven by the real-name list).
+planner message but the bundle's files is scrubbed (``scrub``, driven by the real-name list),
+and what the scrub leaves as written (a contract example, a fenced block) is real-name-free by
+construction, which a test holds.
 """
 
 import hashlib
@@ -36,7 +38,7 @@ from pydantic import BaseModel
 
 from claude_bully.analysis.hypotheses import load_register
 from claude_bully.config import Experiment
-from claude_bully.enums import Axis, DocumentKind, EventType, TriggerCategory
+from claude_bully.enums import Axis, DocumentKind, EventType, ProviderKind, TriggerCategory
 from claude_bully.environments.config import (
     DEFAULT_TOOLS,
     TIER_TOOLS,
@@ -52,7 +54,7 @@ from claude_bully.planner.bundle_lints import (
     PROVIDER_VALUE,
     premise_sheet_model,
 )
-from claude_bully.planner.lints import LINT_IDS, REAL_NAMES_PATH, load_patterns
+from claude_bully.planner.lints import LINT_IDS, REAL_NAMES_PATH, load_patterns, owner_names
 from claude_bully.planner.records import ExpectedEvents, ManifestEntry, ManifestKind, PlanRecord
 from claude_bully.planner.request import PlanRequest, Scope
 from claude_bully.strategies.bootstrap import ensure_registered, listed_strategies
@@ -75,6 +77,7 @@ __all__ = [
     "REVIEW_FILE",
     "SCRUB_WORDS",
     "SPEC_DOCS",
+    "TOOL_WORD",
     "ReviewGroup",
     "TaskPart",
     "bundle_so_far",
@@ -120,14 +123,18 @@ NOT_BUILT_LINES: Final[tuple[str, ...]] = (
 )
 
 _OVERLAY: Final = DATA_DIR / "worlds" / "overlay"
-# one shipped example per manifest kind; ``expected`` has none shipped, so EXPECTED_EXAMPLE
+# one shipped example per manifest kind; ``expected`` has none shipped, so EXPECTED_EXAMPLE. An
+# example is the shape the planner copies, so it is shown as written and holds no real name and
+# no exemption comment: the persona is the Twin's sheet, every key of the Captor's and a capture
+# schedule, never the Captor's, whose friend shares the target's display name (Task 6 fix round
+# 2, re-review R2; a test holds every example)
 CONTRACT_EXAMPLES: Final[Mapping[ManifestKind, Path]] = MappingProxyType(
     {
         "world_sheet": _OVERLAY / "world.yaml",
         "document": _OVERLAY / "corpus" / "quillmoor-canteen-menu.md",
         "ladder": _OVERLAY / "ladders" / "default.yaml",
         "premise_sheet": _OVERLAY / "premises" / "rescue.yaml",
-        "persona": DATA_DIR / "personas" / "captor.yaml",
+        "persona": DATA_DIR / "personas" / "twin.yaml",
         "config": CONFIGS_DIR / "environments" / "triggered_vs_scheduled.yaml",
     }
 )
@@ -185,17 +192,21 @@ CONFIRM_REPLY: Final = (
 # (spec section 6, the closed blindness rule; Task 6 review M1)
 REVIEW_FILE: Final = "review.md"
 
-# The planner message's size budget. Measured at 734477b: the default request (every scope) is
-# 173,127 characters with no contract and 193,728 with the config contract (Task 6 review M6);
-# about 25 percent headroom over the largest. A test holds every default message under it.
-MAX_CONTEXT_CHARS: Final = 250_000
+# The planner message's size budget (spec section 6). The default request (every scope) on the
+# good bundle measures about 195,000 characters with the largest contract; a realistic stage-2
+# bundle (the overlay reused, plan.md at the plan's 20,000 characters) measured 235,402 with the
+# config contract (Task 6 re-review N2). Tests hold every default message under it and the
+# realistic one under four fifths of it.
+MAX_CONTEXT_CHARS: Final = 300_000
 
 # The context scrub (Task 6 review I1). The harness's own text (the spec docs, the register,
-# the index, the contract examples, the request and the task) holds real names by design, and
-# no model may read one: each hit of data/denylists/real_names.txt, the project's one list, is
-# replaced by its section's neutral word, the project's name by PROJECT_WORD and the owner (the
-# name each spec doc's byline gives) by OWNER_WORD. A target's display_name and a role's
-# provider value are spared, as the repository's scan spares them.
+# the index, the request and the task) holds real names by design, and no model may read one:
+# each hit of data/denylists/real_names.txt, the project's one list, is replaced by its
+# section's neutral word, the project's name by PROJECT_WORD, a tool or product by TOOL_WORD and
+# the owner (the name each spec doc's byline gives, lints.owner_names) by OWNER_WORD. A target's
+# display_name and a role's provider value are spared, as the repository's scan spares them.
+# Code is not renamed inside (fix round 2): a contract example and a fenced block are shown as
+# written and hold no real name by construction.
 SCRUB_WORDS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "News outlets and wire services": "an outlet",
@@ -208,10 +219,25 @@ SCRUB_WORDS: Final[Mapping[str, str]] = MappingProxyType(
 )
 PROJECT_WORD: Final = "the harness"
 OWNER_WORD: Final = "the owner"
+# a tool or product: a model family run as a command (`claude -p`) or named with "Code" (Task 6
+# fix round 2, re-review N1: "Deliverables for Claude Code" reads "Deliverables for the CLI")
+TOOL_WORD: Final = "the CLI"
+_MODEL_WORD: Final = SCRUB_WORDS["Model families and assistants"]
+_TOOL_AFTER: Final = re.compile(r" (?:Code\b|-p\b)")
 _PROJECT_TAIL: Final = r"[ -]bully\b"
-# a spec doc's byline: `<date> · @<owner>`
-_BYLINE: Final = re.compile(r"·\s*@(\w+)\s*$", re.MULTILINE)
 _DISPLAY_NAME_VALUE: Final = re.compile(r"display_name:[ \t]*(\S[^\n]*)")
+# a provider value as a JSON string (a config schema's ProviderKind enum), the JSON twin of
+# PROVIDER_VALUE (Task 6 fix round 2: a schema is shown as generated)
+_PROVIDER_STRING: Final = re.compile(
+    '"(?:' + "|".join(re.escape(kind.value) for kind in ProviderKind) + ')"'
+)
+# What the scrub never edits (Task 6 fix round 2, re-review R2): a fenced block, a run of three
+# or more backticks to the same run on a line of its own (a contract's schema and example, a
+# doc's code), shown as written and real-name-free by construction; and the inside of a code
+# span that opens with a name, which goes whole or loses the name and its joiner (``scrub``).
+_FENCE: Final = re.compile(r"^(`{3,})[^\n]*\n.*?^\1[ \t]*$", re.MULTILINE | re.DOTALL)
+_CODE_SPAN: Final = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
+_POSSESSIVE_BEFORE: Final = re.compile(r"'s[ \t]+$")
 _ARTICLE_BEFORE: Final = re.compile(r"\b(?:a|an|the)[ \t]+$", re.IGNORECASE)
 _MODEL_NOUN_AFTER: Final = re.compile(r"[ \t]+models?\b", re.IGNORECASE)
 _VERSION_TAIL: Final = re.compile(r"(?:\.\d+)*(?:-[A-Za-z0-9.]+)*")
@@ -276,29 +302,36 @@ def _scrub_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
     return tuple((p, SCRUB_WORDS[s]) for p, s in zip(patterns, sections, strict=True))
 
 
-def owner_names(docs_dir: Path) -> frozenset[str]:
-    """The names the spec docs' bylines give (`<date> · @<owner>`), lowercased."""
-    return frozenset(
-        name.lower()
-        for path in sorted(docs_dir.glob("*.md"))
-        for name in _BYLINE.findall(path.read_text(encoding="utf-8"))
-    )
-
-
 def _overlaps(span: tuple[int, int], spans: Sequence[tuple[int, int]]) -> bool:
     return any(span[0] < end and start < span[1] for start, end in spans)
 
 
 def scrub(text: str, owners: Collection[str], spared_names: Collection[str] = ()) -> str:
     """``text`` with every real name replaced by a neutral word (``SCRUB_WORDS``,
-    ``PROJECT_WORD``, ``OWNER_WORD``). The word brings its own article, so an article right
-    before the name goes (and a model noun right after "a model": "a Claude model" reads "a
-    model"); a name that opens a line or a sentence opens it capitalized. A target's
-    ``display_name`` value, a role's provider value and each of ``spared_names`` (word-bounded:
-    the request's target display names, as the config scan spares them, so a target's model id
-    reads as written) are left as they are. The harness's text repeats from call to call, so a
-    scrubbed text is kept for the process."""
+    ``PROJECT_WORD``, ``OWNER_WORD``, and ``TOOL_WORD`` for a tool or product: a model family
+    followed by "Code" or run as a command, `` `claude -p` ``). The word brings its own
+    article, so an article right before the name goes (and a model noun right after "a model":
+    "a Claude model" reads "a model"; after a possessive the word's "the" goes too: "the
+    attempt's CLI session"); a name joined by a hyphen to a word loses the word's article
+    ("model-specific"); a name that opens a line or a sentence opens it capitalized.
+
+    Code is never renamed inside (Task 6 fix round 2, re-review R2): a fenced block is left as
+    written, and must be real-name-free by construction (a test holds it); a code span that
+    opens with a name goes whole for the word when the name is all of it or runs as a command
+    (`` a `claude -p` target `` reads "the CLI target"), and otherwise loses the name and its
+    joiner (`` `claude-defender` `` reads `` `defender` ``, `` `claude-bully analyze` `` reads
+    `` `analyze` ``); a name further inside a span (a log line's quoted value) is replaced in
+    place. A target's ``display_name`` value, a role's provider value (as YAML or as a JSON
+    string) and each of ``spared_names`` (word-bounded: the request's target display names, as
+    the config scan spares them, so a target's model id reads as written) are left as they are.
+    The harness's text repeats from call to call, so a scrubbed text is kept for the
+    process."""
     return _scrubbed(text, frozenset(owners), frozenset(n.lower() for n in spared_names))
+
+
+def _span_opened(spans: Sequence[tuple[int, int]], start: int) -> tuple[int, int] | None:
+    """The code span whose text opens at ``start`` (its opening backtick right before it)."""
+    return next((span for span in spans if span[0] + 1 == start), None)
 
 
 @lru_cache(maxsize=1)
@@ -312,8 +345,11 @@ def _project_patterns() -> tuple[re.Pattern[str], ...]:
 
 @lru_cache(maxsize=64)
 def _scrubbed(text: str, owners: frozenset[str], spared_names: frozenset[str]) -> str:
-    spared = [m.span(1) for m in _DISPLAY_NAME_VALUE.finditer(text)]
+    fences = [m.span() for m in _FENCE.finditer(text)]
+    spans = [m.span() for m in _CODE_SPAN.finditer(text) if not _overlaps(m.span(), fences)]
+    spared = [*fences, *(m.span(1) for m in _DISPLAY_NAME_VALUE.finditer(text))]
     spared += [m.span() for m in PROVIDER_VALUE.finditer(text)]
+    spared += [m.span() for m in _PROVIDER_STRING.finditer(text)]
     for name in spared_names:
         spared_name = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
         spared += [m.span() for m in spared_name.finditer(text)]
@@ -330,25 +366,45 @@ def _scrubbed(text: str, owners: frozenset[str], spared_names: frozenset[str]) -
     for start, _priority, end, word in sorted(found, key=lambda f: (f[0], f[1], -f[2])):
         if start < pos or _overlaps((start, end), spared):
             continue
+        span = _span_opened(spans, start)
+        whole = False
+        if span is not None:
+            tool = _TOOL_AFTER.match(text, end) if word == _MODEL_WORD else None
+            joiner = text[end : span[1] - 1]
+            if tool is None and len(joiner) > 1 and joiner[0] in "- ":
+                out.append(text[pos:start])  # the name and its joiner go; the rest stays code
+                pos = end + 1
+                continue
+            word = TOOL_WORD if tool is not None else word
+            start, end, whole = span[0], span[1], True  # the span goes whole
         before = text[pos:start]
         opens_at = start
         article = _ARTICLE_BEFORE.search(before)
         if article is not None:
             opens_at = pos + article.start()
             before = before[: article.start()]
-        if word == "a model":
-            # a family and its version ("fable-30.5-final"), then one product word ("Claude
-            # Code", "Fable 30.5 Final") go with the name
-            version = _VERSION_TAIL.match(text, end) if text[end - 1].isdigit() else None
-            end = version.end() if version is not None else end
-            product = _PRODUCT_WORD.match(text, end)
-            end = product.end() if product is not None else end
-            noun = _MODEL_NOUN_AFTER.match(text, end)
-            if noun is not None:  # "a Claude model" reads "a model"
-                word = "models" if noun.group(0).lower().endswith("s") else word
-                end = noun.end()
+        if word == _MODEL_WORD and not whole:
+            tool = _TOOL_AFTER.match(text, end)
+            if tool is not None:  # "Claude Code" reads "the CLI"
+                word, end = TOOL_WORD, tool.end()
+            else:
+                # a family and its version ("fable-30.5-final"), then one product word ("Fable
+                # 30.5 Final") go with the name
+                version = _VERSION_TAIL.match(text, end) if text[end - 1].isdigit() else None
+                end = version.end() if version is not None else end
+                product = _PRODUCT_WORD.match(text, end)
+                end = product.end() if product is not None else end
+                noun = _MODEL_NOUN_AFTER.match(text, end)
+                if noun is not None:  # "a Claude model" reads "a model"
+                    word = "models" if noun.group(0).lower().endswith("s") else word
+                    end = noun.end()
+        if word.startswith("the ") and _POSSESSIVE_BEFORE.search(before):
+            word = word[len("the ") :]  # "the attempt's CLI session"
+        if text[end : end + 1] == "-" and text[end + 1 : end + 2].isalpha():
+            word = word.split(" ", 1)[-1]  # "model-specific", "provider-compatible"
         line_head = text[text.rfind("\n", 0, opens_at) + 1 : opens_at]
-        if text[opens_at].isupper() and _LINE_OPENING.fullmatch(line_head):
+        opening = text[opens_at].isupper() or text[opens_at] == "`"
+        if opening and _LINE_OPENING.fullmatch(line_head):
             word = word[0].upper() + word[1:]
         out += [before, word]
         pos = end
@@ -557,8 +613,14 @@ def planner_message(
 ) -> str:
     """The planner's user message, spec section 6's eight parts in order. Every part but
     ``## Bundle so far`` is the harness's own text and is scrubbed of real names and the owner's
-    name (``scrub``; Task 6 review I1); the bundle's files are the planner's, pass
-    ``real_name_bundle``, and are shown as written."""
+    name (``scrub``; Task 6 review I1), its contract and fenced code left as written, which are
+    real-name-free by construction (fix round 2, re-review R2); the request's YAML is scrubbed
+    inside its fence, its targets' display names spared. The bundle's files are the planner's
+    and the owner's, shown as written so a quote stays exact. Nothing has name-checked them yet
+    when this message is built: a corpus document is real-name-checked on arrival in stage 2
+    (``lint_document``), every other file and ``plan.md`` only by ``real_name_bundle`` at stage 5
+    (fix round 2, re-review R1; running the scans before each reviewer and confirm call is Task
+    8's)."""
     request_yaml = yaml.safe_dump(
         request.model_dump(mode="json"), sort_keys=False, allow_unicode=True
     )
@@ -573,7 +635,7 @@ def planner_message(
     owners = owner_names(docs_dir)
     # the request's targets keep their display names and model ids (the config scan's spare)
     targets = [role.display_name for role in request.target_models]
-    parts = [_part("Request", scrub(f"```yaml\n{request_yaml}```", owners, targets))]
+    parts = [_part("Request", f"```yaml\n{scrub(request_yaml, owners, targets)}```")]
     harness_side = [
         ("What the harness can run", harness_capabilities()),
         ("Contracts", contracts_for(contract) if contract is not None else NO_CONTRACT),

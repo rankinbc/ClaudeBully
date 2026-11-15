@@ -2,9 +2,10 @@
 
 import json
 import re
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import get_args
+from typing import Final, get_args
 
 import pytest
 import yaml
@@ -17,7 +18,11 @@ from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS
 from claude_bully.paths import DATA_DIR, REPO_ROOT
 from claude_bully.planner import bundle_lints
 from claude_bully.planner.bundle import Bundle, BundlePathError, bundle_personas, plan_personas
-from claude_bully.planner.bundle_lints import BUNDLE_LINT_IDS, PROVIDER_VALUE
+from claude_bully.planner.bundle_lints import (
+    BUNDLE_LINT_IDS,
+    PROVIDER_VALUE,
+    config_display_names,
+)
 from claude_bully.planner.context import (
     ALWAYS_DOCS,
     CONTRACT_EXAMPLES,
@@ -79,14 +84,32 @@ OWNERS = frozenset(
 # the two spares the repository's scan allows: a role's provider value and a target's
 # display_name, each on its own key (tests/test_real_names.py)
 _DISPLAY_NAME = re.compile(r"(display_name:\s*)\S.*")
+# a provider value as a JSON string: the ProviderKind enum of a config's schema (Task 6 fix
+# round 2, R2: the schema is shown as generated)
+_PROVIDER_STRING = re.compile('"(?:' + "|".join(re.escape(k.value) for k in ProviderKind) + ')"')
+# the RoleConfig default display_name, which every config spares (config_display_names)
+DEFAULT_TARGET = str(RoleConfig.model_fields["display_name"].default)
+# a fenced block: a run of three or more backticks with its info string, then the same run
+# closing it on a line of its own (so a four-backtick fence holds a three-backtick one)
+_FENCE = re.compile(r"^(`{3,})[^\n]*\n(.*?)^\1[ \t]*$", re.M | re.S)
 
 
-def _real_name_hits(text: str) -> list[str]:
-    """The real-name scan of a built message, with the scan's two spares, plus the owner's
-    name, which no pattern in ``real_names.txt`` holds."""
+def _real_name_hits(text: str, names: Collection[str] = ()) -> list[str]:
+    """The real-name scan of a built message, with the scan's spares (a provider value, as YAML
+    or as a JSON string, a display_name value, and each of ``names`` word-bounded, as the config
+    scan spares a config's display names), plus the owner's name, which no pattern in
+    ``real_names.txt`` holds."""
     spared = _DISPLAY_NAME.sub(r"\1", PROVIDER_VALUE.sub("provider:", text))
+    spared = _PROVIDER_STRING.sub('""', spared)
+    for name in names:
+        spared = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "", spared, flags=re.IGNORECASE)
     hits = [m.group(0) for p in REAL_NAMES for m in p.finditer(spared)]
     return hits + [n for n in OWNERS if re.search(rf"\b{n}\b", spared, re.IGNORECASE)]
+
+
+def _fences(text: str) -> list[str]:
+    """The body of every fenced block of ``text``."""
+    return [m.group(2) for m in _FENCE.finditer(text)]
 
 
 def _is_clean(line: str) -> bool:
@@ -489,15 +512,20 @@ def test_the_owner_is_found_by_the_spec_docs_bylines() -> None:
 
 def _hits_by_message(messages: dict[str, str]) -> dict[str, list[str]]:
     """Each message's real-name hits, line by line (no pattern spans a line break); a line the
-    messages share is scanned once."""
-    by_line: dict[str, list[str]] = {}
+    messages share is scanned once. A fenced block's line is scanned through the config spare
+    (the default target's display name: every request here is the default's), since a contract
+    is shown as generated and a config's schema and example name the target (Task 6 fix round
+    2, R2); every other line with no name spared."""
+    by_line: dict[tuple[str, bool], list[str]] = {}
     out: dict[str, list[str]] = {}
     for name, text in messages.items():
         found: set[str] = set()
+        fenced = {line for block in _fences(text) for line in block.splitlines()}
         for line in text.splitlines():
-            if line not in by_line:
-                by_line[line] = _real_name_hits(line)
-            found.update(by_line[line])
+            key = (line, line in fenced)
+            if key not in by_line:
+                by_line[key] = _real_name_hits(line, (DEFAULT_TARGET,) if key[1] else ())
+            found.update(by_line[key])
         if found:
             out[name] = sorted(found)
     return out
@@ -545,7 +573,7 @@ def test_the_scrub_puts_neutral_words_where_the_names_were(
     ("text", "expected"),
     [
         ("# Claude Bully - Spec", "# The harness - Spec"),  # the project, opening a title
-        ("run `claude-bully analyze`", "run `the harness analyze`"),
+        ("run `claude-bully analyze`", "run `analyze`"),  # fix round 2: the joiner goes too
         ("Oct 20, 2026 · @Ownerly", "Oct 20, 2026 · the owner"),  # the byline
         ("a spec that Ownerly can overrule", "a spec that the owner can overrule"),
         ("an LLM built by Anthropic.", "an LLM built by the provider."),
@@ -553,7 +581,26 @@ def test_the_scrub_puts_neutral_words_where_the_names_were(
         ("about Claude models here", "about models here"),
         ("e.g. Fable 30.5 Final, then", "e.g. a model, then"),  # a version and a product word
         ("upstream: fable-30.5-final;", "upstream: a model;"),
-        ("Deliverables for Claude Code: one", "Deliverables for a model: one"),
+        # Task 6 fix round 2 (re-review R2, N1): a tool or product name reads "the CLI"
+        ("Deliverables for Claude Code: one", "Deliverables for the CLI: one"),
+        ("a Claude Code session", "the CLI session"),
+        # a code span that opens with a name is never renamed inside: a command goes whole, a
+        # name joined to more code goes with its joiner, a quoted value inside is scrubbed
+        ("a `claude -p` target's server", "the CLI target's server"),
+        ("the dead attempt's `claude -p` session", "the dead attempt's CLI session"),
+        ("Include a `claude-defender` module", "Include a `defender` module"),
+        ("). `claude-bully analyze --hypotheses` evaluates", "). `analyze --hypotheses` evaluates"),
+        (
+            'a line `WARN: query "Anthropic"; done` here',
+            'a line `WARN: query "the provider"; done` here',
+        ),
+        # a name joined by a hyphen to a word reads as the word's own compound, no article
+        ("not Claude-specific but", "not model-specific but"),
+        ("Anthropic and OpenAI-compatible targets", "The provider and provider-compatible targets"),
+        # a fenced block is shown as written, and a provider value as a JSON string is spared
+        ("```yaml\n# model: claude-opus-5-5\n```\n", "```yaml\n# model: claude-opus-5-5\n```\n"),
+        ("````md\nAsk Claude.\n```\nx\n```\n````\n", "````md\nAsk Claude.\n```\nx\n```\n````\n"),
+        ('"enum": ["anthropic", "claude_code"]', '"enum": ["anthropic", "claude_code"]'),
         (
             "Claude Bully is a harness. Anthropic ships",
             "The harness is a harness. The provider ships",
@@ -628,7 +675,8 @@ def test_every_default_planner_message_is_under_the_context_limit(
     tmp_path: Path, isolated_registry: None
 ) -> None:
     """The largest message is the default request (every scope) with the largest contract; the
-    review measured 173k to 194k characters at 734477b."""
+    review measured 173k to 194k characters at 734477b. The limit is a budget over a realistic
+    stage-2 bundle too (the test below)."""
     from claude_bully.planner.context import MAX_CONTEXT_CHARS
 
     messages = _all_messages(good_bundle(tmp_path), (DATA_DIR / "worlds",))
@@ -735,3 +783,172 @@ def test_the_reviewer_message_refuses_a_file_outside_the_grammar(
         reviewer_message(bundle, ReviewGroup("plan", (rel,), ()))
     with pytest.raises(BundlePathError):
         reviewer_message(bundle, ReviewGroup("plan", ("plan.md",), (rel,)))
+
+
+# ------------------------------------------------------------------ Task 6 fix round 2
+
+
+def test_the_owner_is_read_by_one_helper_in_the_lints_that_fails_closed(tmp_path: Path) -> None:
+    """Re-review R1 and N4: the context scrub and real_name_bundle read the owner from one
+    helper, which raises when no byline gives a name rather than scrub nobody."""
+    from claude_bully.planner import context, lints
+
+    assert lints.owner_names(DOCS) == OWNERS
+    assert context.owner_names is lints.owner_names  # one helper, not a copy
+    (tmp_path / "01-NOTES.md").write_text("# Notes\n\nNo byline here.\n", "utf-8")
+    with pytest.raises(ValueError, match="byline"):
+        lints.owner_names(tmp_path)
+
+
+def _contract_examples() -> list[tuple[str, Path | None]]:
+    """Every example a contract can show: one per kind, a premise sheet's per shipped sheet."""
+    premises = CONTRACT_EXAMPLES["premise_sheet"].parent
+    return [
+        *((kind, path) for kind, path in CONTRACT_EXAMPLES.items() if kind != "premise_sheet"),
+        *(("premise_sheet", path) for path in sorted(premises.glob("*.yaml"))),
+        ("expected", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    _contract_examples(),
+    ids=[f"{k}-{p.name if p else 'literal'}" for k, p in _contract_examples()],
+)
+def test_every_contract_example_is_real_name_free_by_construction(
+    kind: str, path: Path | None
+) -> None:
+    """Re-review R2: an example is the shape the planner copies, so it is never scrubbed and
+    holds no real name, no owner's name and no exemption comment; a config's text through the
+    config spare (its targets' display names, the default's among them), as the repository's
+    scan reads a config."""
+    from claude_bully.planner.context import scrub
+
+    text = EXPECTED_EXAMPLE if path is None else path.read_text("utf-8")
+    names = config_display_names(text) if kind == "config" else set()
+    assert "real-name-ok" not in text
+    assert scrub(text, OWNERS, names) == text
+    assert _real_name_hits(text, names) == []
+
+
+def test_every_contract_and_fenced_block_of_a_planner_message_is_shown_as_written(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review R2: contract examples and fenced code are not scrubbed. Each contract reaches the
+    message byte for byte, and every fenced block of each default message (no contract and each
+    kind's) is a fixed point of the scrub and holds no real name, the default target's display
+    name spared as the config scan spares it."""
+    from claude_bully.planner.context import scrub
+
+    bundle = good_bundle(tmp_path)
+    record = bundle.read_record()
+    request = PlanRequest(question="q")
+    names = {DEFAULT_TARGET, *(role.display_name for role in request.target_models)}
+    checked = 0
+    for kind, rel in [(None, None), *CONTRACT_PATHS.items()]:
+        entry = None if kind is None else ManifestEntry(path=rel, kind=kind, purpose="x")
+        message = planner_message(
+            request,
+            bundle,
+            record,
+            TaskPart("plan", "Write plan.md."),
+            contract=entry,
+            worlds_dir=DATA_DIR / "worlds",
+            docs_dir=DOCS,
+        )
+        if entry is not None:
+            assert contracts_for(entry) in message, kind
+        for block in _fences(message):
+            assert scrub(block, OWNERS, names) == block, (kind, block[:300])
+            assert _real_name_hits(block, names) == [], (kind, block[:300])
+            checked += 1
+    assert checked >= 2 * len(CONTRACT_PATHS)  # never a loop over no block
+
+
+# the scrub's words, and what a command, a path or a config key would hold of one
+_NEUTRAL: Final = "(?:the harness|the provider|a model|the CLI|the owner)"
+_CODE_SPAN: Final = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_GLUED: Final = re.compile(rf"\b{_NEUTRAL}(?:[-_/.]\w| -{{1,2}}\w)", re.IGNORECASE)
+
+
+def test_no_scrubbed_message_holds_a_mangled_command_path_or_config_key(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review N1: no neutral word stands inside a code span, glued to a path, an id or a key
+    by a hyphen, an underscore, a slash or a dot, or before a command's flag (the message's
+    fenced blocks are shown as written, the test above). A quoted value inside a code span
+    (docs/02's log line, `query "Anthropic"`) is the one place a word may stand in code, as the
+    log's own text."""
+    bundle = good_bundle(tmp_path)
+    message = planner_message(
+        PlanRequest(question="q"),
+        bundle,
+        bundle.read_record(),
+        TaskPart("plan", "Write plan.md."),
+        contract=None,
+        worlds_dir=DATA_DIR / "worlds",
+        docs_dir=DOCS,
+    )
+    prose = _FENCE.sub("", message)
+    word = re.compile(rf"\b{_NEUTRAL}\b", re.IGNORECASE)
+    quoted = re.compile(rf'"{_NEUTRAL}"', re.IGNORECASE)
+    in_code = [
+        m.group(0)
+        for m in _CODE_SPAN.finditer(prose)
+        if word.search(m.group(1)) and not quoted.search(m.group(1))
+    ]
+    assert in_code == []
+    assert [m.group(0) for m in _GLUED.finditer(prose)] == []
+    assert "Deliverables for the CLI" in message
+    assert "the CLI target's MCP server" in message  # docs/02's `claude -p` target
+    assert "`analyze --hypotheses`" in message  # docs/06's command, its program name gone
+
+
+def test_docs_04_keeps_its_successor_name_example_by_an_invented_name() -> None:
+    """Re-review N1: the authority premise needs the shape of a successor's name (a family, a
+    higher version, a tag); docs/04 gives it by an invented name, so it reaches the planner as
+    written."""
+    text = (DOCS / "04-AUTHORITY.md").read_text("utf-8")
+    successor = re.search(r'\(e\.g\. "([A-Z][a-z]+) (\d+\.\d+) ([A-Z][a-z]+)"\)', text)
+    assert successor is not None
+    family, version, tag = successor.groups()
+    assert _real_name_hits(successor.group(0)) == []
+    assert f"`upstream_model: {family.lower()}-{version}-{tag.lower()}`" in text
+    assert f"`upstream: {family.lower()}-{version}-{tag.lower()}`" in text
+    lines = [ln for ln in text.splitlines() if family.lower() in ln.lower()]
+    assert len(lines) == 3 and all(_real_name_hits(ln) == [] for ln in lines)
+
+
+def test_a_realistic_stage_2_message_leaves_a_fifth_of_the_context_limit(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review N2: the reused overlay (every document indexed) and a plan.md at the plan's
+    MAX_PLAN_CHARS (20,000, Task 7a) measured 235,402 characters with the config contract; the
+    limit keeps a fifth of itself over the larger of the two largest contracts."""
+    from claude_bully.planner.context import MAX_CONTEXT_CHARS
+
+    bundle = good_bundle(tmp_path)
+    overlay = DATA_DIR / "worlds" / "overlay"
+    for path in sorted(p for p in overlay.rglob("*") if p.suffix in (".md", ".yaml")):
+        bundle.write_file(
+            f"worlds/overlay/{path.relative_to(overlay).as_posix()}", path.read_text("utf-8")
+        )
+    filler = "The cells, the controls and the chart are as stated above. "
+    bundle.write_file("plan.md", (filler * (20_000 // len(filler) + 1))[:20_000])
+    record = bundle.read_record()
+    sizes = {}
+    for kind, rel in (("config", "config.yaml"), ("world_sheet", "worlds/overlay/world.yaml")):
+        entry = ManifestEntry(path=rel, kind=kind, purpose="x")  # type: ignore[arg-type]
+        sizes[kind] = len(
+            planner_message(
+                PlanRequest(question="q"),
+                bundle,
+                record,
+                TaskPart(f"file:{rel}", "Write it."),
+                contract=entry,
+                worlds_dir=DATA_DIR / "worlds",
+                docs_dir=DOCS,
+            )
+        )
+    assert max(sizes.values()) > 200_000, sizes  # the measure is the realistic one
+    assert max(sizes.values()) <= 0.8 * MAX_CONTEXT_CHARS, sizes

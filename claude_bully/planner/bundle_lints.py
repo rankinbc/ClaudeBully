@@ -136,6 +136,8 @@ from claude_bully.planner.lints import (
     LintResult,
     lint_world,
     load_patterns,
+    owner_names,
+    owner_pattern,
 )
 from claude_bully.planner.records import DryRunCell, ExpectedEvents, PlanRecord
 from claude_bully.runner.cells import CellSpec, expand_cells
@@ -449,6 +451,9 @@ BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
 _WORLDS: Final = "worlds"
 _CONFIG: Final = "config.yaml"
 _EXPECTED: Final = "expected.yaml"
+_PLAN: Final = "plan.md"
+# real_name_bundle's owner clause names the file and never the name (Task 6 fix round 2)
+OWNER_REASON: Final = "holds the owner's name"
 _FIXED_MODELS: Final = (_CONFIG, _EXPECTED)
 _OFF_GRAMMAR: Final = "outside the bundle's path grammar"
 
@@ -1057,23 +1062,41 @@ def _real_name_bundle(view: _View) -> list[LintResult]:
     """``real_name_bundle``: ``real_names.txt`` over the whole text (``_scan_texts``) of every
     file under ``worlds/`` and ``personas/``, ``config.yaml`` through the config spare (its
     provider values and its targets' display names, ``config_scan_text``; of its parsed values,
-    a ``provider`` value is left out) and ``expected.yaml``. ``plan.md``, ``review.md`` and
-    ``transcripts/`` are exempt for a plan in flight, since they quote; a checked-in bundle is
-    scanned whole by CI (R-scan-bundles)."""
+    a ``provider`` value is left out), ``expected.yaml`` and ``plan.md``, which reads through
+    the same spare, since a plan names the target it plans for (Task 6 fix round 2, re-review
+    R1: the owner edits plan.md by hand and the planner and the reviewer read it). Then the
+    owner clause: the owner's name (``owner_names``, read from the spec docs' bylines and on no
+    list) over the same files, with no spare, one ``OWNER_REASON`` fail per file that names it;
+    the result never holds the name, so a recorded result or a retry's fix list carries no
+    copy. ``review.md`` and ``transcripts/`` are exempt for a plan in flight, since they quote;
+    a checked-in bundle is scanned whole by CI (R-scan-bundles)."""
     patterns = load_patterns(REAL_NAMES_PATH)
     present = view.index()
     texts = {rel: view.scan_texts(rel) for rel in view.world_and_persona_files()}
+    owned = dict(texts)  # what the owner clause reads: the same files, nothing spared
+    names = config_display_names(view.scan_text(_CONFIG) if _CONFIG in present else "")
     if _CONFIG in present:
-        config = view.scan_text(_CONFIG)
-        names = config_display_names(config)
         spared = view.scan_texts(_CONFIG, frozenset({"provider"}))
         texts[_CONFIG] = [config_scan_text(text, names) for text in spared]
-    if _EXPECTED in present:
-        texts[_EXPECTED] = view.scan_texts(_EXPECTED)
-    return [
+        owned[_CONFIG] = view.scan_texts(_CONFIG)
+    for rel in (_EXPECTED, _PLAN):
+        if rel in present:
+            owned[rel] = view.scan_texts(rel)
+            texts[rel] = (
+                owned[rel]
+                if rel == _EXPECTED
+                else [config_scan_text(text, names) for text in owned[rel]]
+            )
+    found = [
         result
         for rel, scanned in texts.items()
         for result in _denylist_hits("real_name_bundle", rel, scanned, patterns, "a real name")
+    ]
+    owner = owner_pattern(owner_names())
+    return found + [
+        LintResult("real_name_bundle", "fail", rel, OWNER_REASON)
+        for rel, scanned in owned.items()
+        if any(owner.search(text) for text in scanned)
     ]
 
 

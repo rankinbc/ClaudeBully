@@ -390,6 +390,17 @@ LIKELY_WRONG: Final = "          likely_wrong: true\n"
 RARE_CAUGHT: Final = "        - event: inconsistency_caught\n          rate: rare\n"
 CONTROL_TRIGGERED: Final = "control__t0__s0__r1__emini_triggered"
 FRESH: Final = "fresh_world"
+# Task 6 fix round 2 (re-review R1): the owner, read here from the spec docs' bylines on its
+# own and never written down; real_name_bundle's owner clause reads the same bylines
+_BYLINE: Final = re.compile(r"·\s*@(\w+)\s*$", re.M)
+OWNER: Final = sorted(
+    {
+        name
+        for p in (REPO_ROOT / "docs").glob("0[1-7]-*.md")
+        for name in _BYLINE.findall(p.read_text("utf-8"))
+    }
+)[0]
+OWNER_REASON: Final = "holds the owner's name"
 
 
 def _hits(text: str, path: Path) -> list[str]:
@@ -636,6 +647,23 @@ POSITIVES_4B: Final[list[tuple[str, Callable[[Bundle], None], list[Reason]]]] = 
         _append(BODY_DOC, "\n# Source: The Verge\n\nOf the three outlets, one is local.\n"),
         [(BODY_DOC, "holds a real name: 'The Verge'")],
     ),
+    # Task 6 fix round 2 (re-review R1): the owner's name in a persona and in plan.md, and a real
+    # name in plan.md, which the owner may edit and the planner and the reviewer read
+    (
+        "real_name_bundle",
+        _edit(PERSONA, BACKSTORY, f"a bookkeeper who once met {OWNER} and takes"),
+        [(PERSONA, OWNER_REASON)],
+    ),
+    (
+        "real_name_bundle",
+        _append("plan.md", f"\nEdited by {OWNER} before the files were written.\n"),
+        [("plan.md", OWNER_REASON)],
+    ),
+    (
+        "real_name_bundle",
+        _append("plan.md", "\nCompare the Reuters wire's short paragraphs.\n"),
+        [("plan.md", "holds a real name: 'Reuters'")],
+    ),
     (
         "reserved_hosts",
         _edit(BODY_DOC, "https://pennetlanding-pier.example/cafe", "https://pennetferry.com/about"),
@@ -819,10 +847,23 @@ NEAR_MISSES_4B: Final[list[tuple[str, Callable[[Bundle], None]]]] = [
             _append(CONFIG, "# Claude answers in both arms\n"),
         ),
     ),
-    # exempt in the lint, since they quote (R-scan-bundles scans a checked-in bundle whole)
-    ("real_name_bundle", _append("plan.md", "\nCompare the Reuters wire's short paragraphs.\n")),
+    # exempt in the lint, since they quote (R-scan-bundles scans a checked-in bundle whole);
+    # plan.md left the exemption in Task 6's fix round 2 (re-review R1)
     ("real_name_bundle", _append("review.md", "\n1. note: the plan cites the Reuters style\n")),
     ("real_name_bundle", _raw("transcripts/review-reviewer-0.json", '{"reply": "Reuters"}\n')),
+    # the owner clause leaves the quoting files out too, and reads the name word-bounded; plan.md
+    # reads through the config spare (the target's display name and a provider value)
+    ("real_name_bundle", _append("review.md", f"\n1. note: {OWNER} asked for this plan\n")),
+    ("real_name_bundle", _raw("transcripts/plan-planner-0.json", f'{{"reply": "{OWNER}"}}\n')),
+    (
+        "real_name_bundle",
+        _edit(PERSONA, BACKSTORY, f"a bookkeeper from {OWNER}stead who takes"),
+    ),
+    (
+        "real_name_bundle",
+        _clean_append("plan.md", f"The {OWNER}wick Lane cafe opens at nine.", REAL_NAMES_PATH),
+    ),
+    ("real_name_bundle", _append("plan.md", "\nClaude is the target in both arms.\n")),
     # one letter off a listed outlet, and a listed name inside a longer word
     (
         "real_name_bundle",
@@ -1411,6 +1452,23 @@ def test_the_record_spare_drops_provider_values_and_display_names_only() -> None
     )
     spared = record_scan_text(text, {"claude"})
     assert "anthropic" not in spared and "Claude" not in spared and "Reuters" in spared
+
+
+@pytest.mark.parametrize("rel", [PERSONA, "plan.md", CONFIG, EXPECTED, SHEET])
+def test_the_owner_clause_fails_each_file_and_records_no_name(
+    rel: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Task 6 fix round 2 (re-review R1): the owner's name, in any case, fails every file the
+    lint reads, plan.md among them; the result names the file and never the name, so a recorded
+    lint result (plan.json, Task 9) and a retry's fix list carry no copy of it."""
+    bundle = good_bundle(tmp_path)
+    marker = "# " if rel.endswith(".yaml") else ""
+    bundle.write_file(rel, bundle.read_file(rel) + f"\n{marker}Signed, {OWNER.upper()}.\n")
+    found = [r for r in lint_bundle(bundle) if r.lint_id == "real_name_bundle"]
+    assert [(r.doc_id, r.severity, r.message, r.span) for r in found] == [
+        (rel, "fail", OWNER_REASON, None)
+    ]
+    assert OWNER.lower() not in repr(found).lower()
 
 
 def test_a_rung_expected_of_a_cell_with_no_environment_fails_expected_schema(

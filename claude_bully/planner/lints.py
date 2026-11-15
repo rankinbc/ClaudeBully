@@ -44,12 +44,16 @@ from claude_bully.enums import DocumentKind, Layer
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.world import Document, World
 from claude_bully.metrics.turn import sentences
-from claude_bully.paths import DATA_DIR
+from claude_bully.paths import DATA_DIR, REPO_ROOT
 from claude_bully.planner.second_person import classify
 
 Severity = Literal["fail", "warn"]
 
 REAL_NAMES_PATH: Final = DATA_DIR / "denylists" / "real_names.txt"
+# the spec documents, whose bylines name the owner (``owner_names``)
+SPEC_DOCS_DIR: Final = REPO_ROOT / "docs"
+# a spec doc's byline: `<date> · @<owner>`
+_BYLINE: Final = re.compile(r"·\s*@(\w+)\s*$", re.MULTILINE)
 BOUNDARY_PATH: Final = DATA_DIR / "denylists" / "boundary.txt"
 PREMISE_DENSITY_WARN: Final = 0.08
 DUPLICATE_NGRAM: Final = 8
@@ -114,6 +118,32 @@ def load_patterns(path: Path) -> tuple[re.Pattern[str], ...]:
     return tuple(
         re.compile(line, re.IGNORECASE) for line in lines if line and not line.startswith("#")
     )
+
+
+@cache
+def owner_names(docs_dir: Path = SPEC_DOCS_DIR) -> frozenset[str]:
+    """The owner's names, lowercased: each name a byline of a ``*.md`` file directly under
+    ``docs_dir`` gives (`<date> · @<owner>`). The name is on no checked-in list, so the context
+    scrub and ``real_name_bundle`` read it here, at run time, from one place (Task 6 fix round
+    2, re-review R1). Raises ``ValueError`` when no byline gives a name: an empty set would
+    scrub and fail nobody without a word (re-review N4)."""
+    names = frozenset(
+        name.lower()
+        for path in sorted(docs_dir.glob("*.md"))
+        for name in _BYLINE.findall(path.read_text(encoding="utf-8"))
+    )
+    if not names:
+        raise ValueError(
+            f"{docs_dir}: no spec document's byline (`<date> · @<owner>`) names the owner"
+        )
+    return names
+
+
+@cache
+def owner_pattern(owners: frozenset[str]) -> re.Pattern[str]:
+    """One case-insensitive pattern matching any of ``owners`` as a whole word."""
+    alternatives = "|".join(re.escape(name) for name in sorted(owners))
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
 
 
 def lint_context(
