@@ -64,7 +64,7 @@ from claude_bully.records import Turn, Usage
 from claude_bully.records_env import GeneratorFire, ResumeRecord, RungUnlock, ToolCall
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.runner import ProviderFactory, run_experiment
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.store import RunStore, parsed_lines
 
 # the model of each double, by role; the dry run's factory serves these four and refuses any other
 DRYRUN_MODELS: Final[Mapping[str, str]] = MappingProxyType(
@@ -155,6 +155,10 @@ _LAYER_NAMES: Final = frozenset(layer.value for layer in Layer)
 _WORLDS: Final = "worlds"
 _CONFIG: Final = "config.yaml"
 _RUN_PREFIX: Final = "dryrun-"
+# the file in the dry run's generated cache that names the run id owning it (M-1)
+CACHE_OWNER: Final = "OWNER"
+# a generator call's conversation id: <conv>/generator/<doc_id>/<attempt> (environments/generator)
+_GENERATOR_SEGMENT: Final = "/generator/"
 # the rep's environment runtime state directory (runner/env_turn.py: RunEnvironments.open)
 _RUNTIME_DIR: Final = "environment"
 # pair-judge calls a condition rep adds in a real run (spec section 10, ``estimated_calls``)
@@ -485,15 +489,16 @@ def dry_run_id(bundle: Bundle) -> str:
     return f"{_RUN_PREFIX}{bundle_hash(bundle.root)[:12]}"
 
 
-def _buried_hit(
+def _buried_hits(
     calls: Sequence[ToolCall],
     unlocks: Sequence[tuple[int, str]],
     layers: Mapping[str, Layer],
     found: tuple[World, LadderConfig] | None,
-) -> bool:
-    """A ``web_search`` result holding a buried document that no rung fired before that call's
+) -> set[str]:
+    """The buried documents a ``web_search`` result held that no rung fired before that call's
     turn names by id (R-buried). A rung fires after its turn's calls (``after_target_turn``), so
     an unlock recorded on the call's own turn named nothing the call could see."""
+    hits: set[str] = set()
     for call in calls:
         if call.tool != _SEARCH:
             continue
@@ -501,9 +506,8 @@ def _buried_hit(
         if found is not None:
             world, ladder = found
             named = named_by_id(ladder, world, [rung for turn, rung in unlocks if turn < call.turn])
-        if any(layers.get(i) is Layer.buried and i not in named for i in call.result_doc_ids):
-            return True
-    return False
+        hits |= {i for i in call.result_doc_ids if layers.get(i) is Layer.buried and i not in named}
+    return hits
 
 
 def _status(statuses: Sequence[CellStatus]) -> CellStatus:
@@ -531,7 +535,8 @@ def _dry_cell(
     statuses: list[CellStatus] = []
     fired_by_rep: list[list[str]] = []
     fetched: list[bool] = []
-    hit = resumed = False
+    hits: set[str] = set()
+    resumed = False
     generator: Counter[str] = Counter()
     failures: list[LintRecord] = []
     for rep in range(exp.repetitions):
@@ -542,7 +547,7 @@ def _dry_cell(
         calls = store.read_tool_calls(cell.cell_id, rep)
         layers = {d.id: d.layer for d in found[1].documents.values()} if found else {}
         layers |= {d.doc_id: d.layer for d in store.read_generated(cell.cell_id, rep)}
-        hit = hit or _buried_hit(calls, [(u.turn, u.rung) for u in unlocks], layers, world_ladder)
+        hits |= _buried_hits(calls, [(u.turn, u.rung) for u in unlocks], layers, world_ladder)
         fetched.append(
             any(
                 c.tool in _READS and c.status == "200" and c.layer_served is Layer.buried
@@ -569,7 +574,8 @@ def _dry_cell(
         rungs_fired=every,
         top_rung=top_rung_state(ladder, every),
         buried_fetched=all(fetched),
-        buried_search_hit=hit,
+        buried_search_hit=bool(hits),
+        buried_search_docs=sorted(hits),
         generator=dict(sorted(generator.items())),
         lint_failures=failures,
         estimated_calls=ledger_lines.get(cell.cell_id, 0) + pair_calls,
@@ -612,33 +618,72 @@ def _drop_dead_lines(store: RunStore) -> None:
     ledger, and every ``estimated_calls``, equal an unbroken run's (D-K12): a kill after a call
     returned, the first document of a fire among them, would otherwise count it twice. A rate
     limit's line goes the same way, since its pause marker is no turn of the call's role. The
-    lines are stub calls, so nothing paid for is lost."""
+    lines are stub calls, so nothing paid for is lost. The runtime's torn-tail rule
+    (``runner/store.parsed_lines``, as the plan ledger's resume applies it): a torn last line, an
+    append a hard kill cut short, is a dead call's line and goes; a last line with no newline
+    after it gets one, so the redo's first append is not glued to it; any other line that does
+    not parse is damage and raises naming it (Task 9's hard-kill sweep of stage 5). A generator
+    line is also owned by its rep's committed fire: its conversation id names the document
+    (``<conv>/generator/<doc_id>/<attempt>``), and a ``GeneratorFire`` whose plans hold that id
+    is the fire's commit, which a resume never redoes, though ``watched_through`` may lag it (a
+    kill inside the fire's cache put or the turn's state write; the same sweep)."""
     path = store.run_dir / LEDGER_FILE
-    if not path.exists():
+    parsed = parsed_lines(path)
+    if not parsed:
         return
-    raw_lines = [raw for raw in path.read_text(encoding="utf-8").splitlines() if raw.strip()]
-    # per unfinished rep, its written turns and watched_through; a complete rep owns every line
-    reps: dict[tuple[str, int], tuple[list[Turn], int] | None] = {}
+    # per unfinished rep, its written turns, watched_through and the documents its committed
+    # fires planned; a complete rep owns every line
+    reps: dict[tuple[str, int], tuple[list[Turn], int, set[str]] | None] = {}
     kept: list[str] = []
-    for raw in raw_lines:
-        line = LedgerLine.model_validate_json(raw)
+    for raw_bytes, value in parsed:
+        if value is None:  # the torn last line
+            continue
+        raw = raw_bytes.decode("utf-8")
+        line = LedgerLine.model_validate(value)
         cell_id, rep, turn = line.cell_id, line.rep, line.turn
         if cell_id is not None and rep is not None and turn is not None:
             key = (cell_id, rep)
             if key not in reps:
                 record = store.read_cell(cell_id) if store.has_cell(cell_id) else None
                 done = record is not None and record.rep_status.get(rep) is CellStatus.complete
-                reps[key] = (
-                    None
-                    if done
-                    else (store.read_turns(cell_id, rep), _watched_through(store, cell_id, rep))
-                )
+                reps[key] = None if done else _rep_owners(store, cell_id, rep)
             found = reps[key]
-            if found is not None and not _owner(line.role, turn).written(*found):
-                continue
+            if found is not None and not _owner(line.role, turn).written(found[0], found[1]):
+                if _fire_document(line.conversation_id) not in found[2]:
+                    continue
         kept.append(raw)
-    if len(kept) != len(raw_lines):
+    if len(kept) != len(parsed) or not path.read_bytes().endswith(b"\n"):
         write_atomic(path, "".join(f"{raw}\n" for raw in kept))
+
+
+def _rep_owners(store: RunStore, cell_id: str, rep: int) -> tuple[list[Turn], int, set[str]]:
+    """What owns an unfinished rep's ledger lines: its written turns, its ``watched_through``,
+    and the document ids its committed fires planned."""
+    fires = [r for r in store.read_trigger_records(cell_id, rep) if isinstance(r, GeneratorFire)]
+    planned = {plan.doc_id for fire in fires for plan in fire.plans}
+    return store.read_turns(cell_id, rep), _watched_through(store, cell_id, rep), planned
+
+
+def _fire_document(conversation_id: str) -> str | None:
+    """The document a generator call wrote, from its conversation id
+    (``<conv>/generator/<doc_id>/<attempt>``); None for any other call."""
+    _, sep, rest = conversation_id.partition(_GENERATOR_SEGMENT)
+    return rest.split("/", 1)[0] if sep else None
+
+
+def _own_cache(runs_root: Path, run_id: str) -> None:
+    """The run's generated cache (``dryrun/_cache``, ``GENERATED_CACHE_DIR`` under the runs
+    root) is owned by one run id, named in its ``OWNER`` file (Task 5 review M-1): it is removed
+    before a run whose directory does not exist yet, and before a resume when ``OWNER`` is
+    missing or names another id, so a resume reads only its own id's cache (a resume of id A
+    after a killed run of id B would otherwise read B's cached fires, ``cached`` where an
+    unbroken A records ``written``). Then ``OWNER`` names ``run_id``."""
+    cache = runs_root / CACHE_DIR
+    owner = cache / CACHE_OWNER
+    held = owner.read_text(encoding="utf-8").strip() if owner.is_file() else None
+    if held != run_id or not (runs_root / run_id).exists():
+        shutil.rmtree(cache, ignore_errors=True)
+        write_atomic(owner, f"{run_id}\n")
 
 
 def _remove_older(runs_root: Path, run_id: str) -> None:
@@ -653,22 +698,27 @@ def _remove_older(runs_root: Path, run_id: str) -> None:
 def dry_run(bundle: Bundle) -> list[DryRunCell]:
     """The bundle's dry run (spec section 10), inside ``plan_personas``: the stubbed config run
     under ``dryrun/<dry_run_id>/`` on ``dryrun_provider_factory``'s doubles against the
-    bundle's worlds, ``dryrun/_cache`` removed first when the run directory does not exist yet
-    (R-dryrun-pure: the generated cache lives under the runs root and would outlive an older
-    run); ``analyze_run`` with the judge off, to prove analysis loads; then one ``DryRunCell``
-    per cell, in ``expand_cells`` order. Every older ``dryrun-*`` directory and ``dryrun/_cache``
-    are removed and ``dryrun.jsonl`` is rewritten whole. A complete run is read again, never
-    asked again (K13); a killed one resumes (K12); a rate limit raises ``RateLimitExit`` and
-    writes nothing here, so the same call resumes. ``plan.json`` is the caller's."""
+    bundle's worlds, ``dryrun/_cache`` removed first unless it is this run id's own
+    (``_own_cache``; R-dryrun-pure: the generated cache lives under the runs root and would
+    outlive an older run, and a resume reads only its own id's cache, M-1); ``analyze_run``
+    with the judge off, to prove analysis loads; then one ``DryRunCell`` per cell, in
+    ``expand_cells`` order. Every older ``dryrun-*`` directory and ``dryrun/_cache`` are
+    removed and ``dryrun.jsonl`` is rewritten whole. A complete run is read again, never asked
+    again (K13); a killed one resumes (K12). A rate limit raises ``RateLimitExit`` and writes
+    nothing here, so the same call resumes, to the unbroken run's cells and generated documents
+    but not its records (Task 5 review M-5, the cell-level contract): the pause marker is a
+    turn, so every later turn index moves by one (trigger and tool call ids, and a rejected
+    fire's ``lint_failures`` doc id, ``<cell>/rep<k>/turn<n>``, the one cell field that can
+    differ). The doubles never rate-limit; only a test makes one. ``plan.json`` is the
+    caller's."""
     runs_root = bundle.root / DRYRUN_DIR
     run_id = dry_run_id(bundle)
     run_dir = runs_root / run_id
     with plan_personas(bundle_personas(bundle)):
         exp = stubbed_experiment(load_bundle_experiment(bundle))
-        if not run_dir.exists():
-            shutil.rmtree(runs_root / CACHE_DIR, ignore_errors=True)
-        else:
+        if run_dir.exists():
             _drop_dead_lines(RunStore(runs_root, run_id))
+        _own_cache(runs_root, run_id)
         run_experiment(
             exp,
             runs_root=runs_root,

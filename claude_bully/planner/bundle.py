@@ -390,6 +390,13 @@ def bundle_hash(root: Path) -> str:
     return hash_tree(root, exclude=HASH_EXCLUDES)
 
 
+def hashed_paths(root: Path) -> list[str]:
+    """Every file ``bundle_hash`` covers (all but ``HASH_EXCLUDES``), root-relative posix, in
+    path order; a link is neither followed nor listed (``plan diff``'s files)."""
+    files, _ = _tree(root, HASH_EXCLUDES)
+    return sorted(path.relative_to(root).as_posix() for path in files)
+
+
 def _stage_records(record: PlanRecord) -> list[StageRecord]:
     """Every stage record: the current ones, then each earlier review round's."""
     return [*record.stages, *(stage for round_ in record.rounds for stage in round_)]

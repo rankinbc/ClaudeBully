@@ -1408,9 +1408,10 @@ def _dry_run(
         if cell.status is not CellStatus.complete:
             out.append(fail(spec.cell_id, f"the cell is {cell.status.value}, not complete"))
         if cell.buried_search_hit:
+            named = ", ".join(cell.buried_search_docs) or "(not recorded)"
             message = (
-                "a web_search served a buried document that no rung fired before the search "
-                "names by id"
+                f"a web_search served a buried document that no rung fired before the search "
+                f"names by id: {named}"
             )
             out.append(fail(spec.cell_id, message))
         for found in cell.lint_failures:

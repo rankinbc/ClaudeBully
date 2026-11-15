@@ -2,15 +2,29 @@
 ``run``, ``analyze`` and Phase 5's ``plan``. A ``RateLimitExit`` has already written the pause
 marker and saved state, so re-running the action resumes; the helper sleeps ``retry_after_s``
 (or ``DEFAULT_WAIT_S`` when none was given) and re-runs it until the next wait would pass the
-ceiling, when it re-raises and the command exits 3 as before."""
+ceiling, when it re-raises and the command exits 3 as before.
+
+``WaitMinutes`` and ``RATE_LIMIT_EXIT_CODE`` live here, beside the helper, so ``cli.py`` and the
+``plan`` sub-app (``planner/cli.py``), which ``cli.py`` mounts, both import them from one module
+that imports neither (preflight Q46); ``cli.py`` re-exports them."""
 
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import Annotated, Final
+
+import typer
 
 from claude_bully.runner.runner import RateLimitExit
 
 DEFAULT_WAIT_S: Final = 15 * 60
+RATE_LIMIT_EXIT_CODE: Final = 3
+WaitMinutes = Annotated[
+    float | None,
+    typer.Option(
+        "--wait-on-rate-limit",
+        help="Wait inside the process for a rate window, up to this many minutes.",
+    ),
+]
 
 
 def wait_on_rate_limit[T](

@@ -30,6 +30,11 @@ its committed calls in order (``Director._call``): a committed call's answer is 
 its transcript by the call's pure ``parse``, never by a check that reads state, and a step
 with no write of its own (the world close) is decided afresh only past the last committed
 call, so every decision a resume makes is the one an unbroken plan made (Task 7b).
+
+Stage 5 (``Director.validate``, Task 9) makes no planner or reviewer call: the lints, the stub
+dry run and the bundle hash. ``Director.revalidate`` is ``plan validate`` and
+``Director.review_round`` is ``plan review``, which archives a finished round (D-rounds) and runs
+stages 3 to 5 again; ``planner/cli.py`` is the sub-app that drives them.
 """
 
 import hashlib
@@ -41,6 +46,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -66,15 +72,18 @@ from claude_bully.planner.bundle import (
     LEDGER,
     PLAN_FILE,
     STATE_DIR,
+    TRANSCRIPTS,
     Bundle,
     BundlePathError,
     Transcript,
     TranscriptAttempt,
+    bundle_hash,
     bundle_personas,
     commit_order,
     committed_outputs,
     is_plan_persona,
     kind_of,
+    named_transcripts,
     normalize_text,
     plan_personas,
     rematerialize_open_stage,
@@ -86,6 +95,7 @@ from claude_bully.planner.bundle_lints import (
     MIN_ANCHOR_DOCS,
     dry_run_refusals,
     environment_refusals,
+    lint_bundle,
     model_from_text,
     premise_sheet_model,
     review_scans,
@@ -102,6 +112,7 @@ from claude_bully.planner.context import (
     reviewer_message,
     unchanged_base_files,
 )
+from claude_bully.planner.dryrun import dry_run, dry_run_id
 from claude_bully.planner.lints import (
     LintContext,
     LintResult,
@@ -115,6 +126,7 @@ from claude_bully.planner.records import (
     DirectorAttempt,
     DirectorCall,
     ExpectedEvents,
+    LintRecord,
     ManifestEntry,
     ManifestKind,
     PlanRecord,
@@ -136,8 +148,7 @@ from claude_bully.providers.ledger import LedgerLine, activate, note_cached
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, _git_sha
 from claude_bully.runner.store import parsed_lines
-from claude_bully.strategies.base import all_strategies
-from claude_bully.strategies.bootstrap import ensure_registered
+from claude_bully.strategies.bootstrap import ensure_registered, listed_strategies
 from claude_bully.strategies.sheets import PersonaSheet
 
 DIRECTOR_CACHE_VERSION: Final = 1
@@ -885,9 +896,11 @@ class Director:
         if (bundle.root / PLAN_FILE).is_file():
             record = bundle.read_record()
             if record.request != request:
+                held, given = record.request.model_dump(), request.model_dump()
+                differs = ", ".join(k for k in given if held.get(k) != given[k])
                 raise DirectorError(
-                    f"{bundle.root} holds a plan for another request; give this one another "
-                    "slug, or continue that plan"
+                    f"{bundle.root} holds a plan for another request (it differs in {differs}); "
+                    "give this one another slug, or continue that plan"
                 )
             return cls(bundle, record, **kw)
         record = PlanRecord(
@@ -1123,12 +1136,19 @@ class Director:
             for rel, sha in inputs.items()
             if rel not in own and rel in owned and owned[rel] != sha
         }
+        # only an entry this stage adopted (its recorded input differed from its committing
+        # call's) can leave on a readopt; one an earlier stage adopted stays, as the unbroken
+        # open, which only adds, keeps it (Task 9's hard-kill sweep: plan.md edited before a
+        # review round, then revised in its stage 4, left edited when its stage 5 resumed)
+        adopted_here = {
+            rel for rel, sha in stage.inputs.items() if rel in owned and owned[rel] != sha
+        }
         # a path the stage itself writes keeps its membership as the stage found it (review I1:
         # an edit adopted at stage 4's open, of a file stage 4 then revises, stays adopted)
         edited = [
             rel
             for rel in self.record.edited
-            if rel not in stage.inputs or rel in differs or rel in own
+            if rel not in adopted_here or rel in differs or rel in own
         ]
         edited += sorted(differs - set(edited))
         if inputs != stage.inputs or edited != self.record.edited:
@@ -1156,12 +1176,12 @@ class Director:
             parsed = spec.parse(reply) if spec.parse is not None else spec.check(reply)[0]
         return Answer(call=call, parsed=parsed, provider_failed=call.provider_failed)
 
-    def _commit_stage(self, stage: StageRecord, *, failed: bool = False) -> None:
-        """The stage committed and the status it earned, or with ``failed`` the plan
-        ``failed`` (stage 4 with ``open_blocks > 0``), in one record write."""
+    def _commit_stage(self, stage: StageRecord, *, status: PlanStatus | None = None) -> None:
+        """The stage committed and the status it earned, or ``status`` (``failed`` for stage 4
+        with ``open_blocks > 0``, ``runnable`` for stage 5), in one record write."""
         stage.status = "committed"
         stage.finished_at = datetime.now(UTC)
-        self.record.status = "failed" if failed else _EARNED[stage.stage]
+        self.record.status = status or _EARNED[stage.stage]
         self.bundle.write_record(self.record)
 
     def _fail(self, stage: Stage, error: str) -> None:
@@ -1273,14 +1293,13 @@ class Director:
         A failed stage fails the plan and returns its record; a rate limit raises
         ``RateLimitExit`` with the stage left open. ``stop_after_plan`` stops at a stage 1
         committed before this run too (review M4: ``plan new`` again without ``--no-confirm``
-        never authors). A stage no task has built yet raises ``NotImplementedError`` before it
-        is touched (review N1). Each pass first clears what a hard kill inside a write left
+        never authors). Each pass first clears what a hard kill inside a write left
         (``_clear_hard_kill``, Task 7b fix round 1). A plan whose stage 4 committed with
-        ``open_blocks > 0`` is ``failed`` and goes no further, whatever ``through`` names: there
-        is no second revision call (docs/08: one pass); the owner edits the bundle and runs
-        ``plan review`` (Task 9; review m2)."""
-        revise = self._stage("revise")
-        if revise is not None and revise.status == "committed" and self.record.open_blocks > 0:
+        ``open_blocks > 0`` goes no further, whatever ``through`` names and whatever its status
+        (``failed``, or ``validated`` after a ``plan validate``; R-validate-status): there is no
+        second revision call (docs/08: one pass); the owner edits the bundle and runs ``plan
+        review`` (``held_by_open_blocks``; review m2)."""
+        if held_by_open_blocks(self.record):
             return self.record
         with activate(self.bundle.root / LEDGER):
             for stage in STAGES[: STAGES.index(through) + 1]:
@@ -1289,8 +1308,6 @@ class Director:
                     if stage == "plan" and stop_after_plan:
                         return self.record
                     continue
-                if not callable(getattr(self, stage, None)):
-                    raise NotImplementedError(f"stage {stage} is not built yet (Task 9)")
                 self._clear_hard_kill()  # before the stage is read, record or none (review I1)
                 if existing is not None:  # the first stage not committed: spec section 8
                     # first, while a committed error call still holds its index (R-marker)
@@ -1482,8 +1499,7 @@ class Director:
         ``layer`` on a document and on nothing else, a premise sheet's stem a strategy with a
         ``world_sheet``, a persona's stem no registered strategy's; ``config.yaml`` and
         ``expected.yaml`` listed."""
-        ensure_registered()
-        strategies = all_strategies()
+        strategies = listed_strategies()  # list-strategies' filter (Task 6), registered first
         out: list[str] = []
         seen: set[str] = set()
         for entry in entries:
@@ -1976,7 +1992,7 @@ class Director:
         self.bundle.write_file(REVIEW_FILE, render_review(findings, revised=True))
         self._checkpoint("rendered", "revise")
         self.record.open_blocks = sum(f.severity == "block" and f.open for f in findings)
-        self._commit_stage(stage, failed=self.record.open_blocks > 0)
+        self._commit_stage(stage, status="failed" if self.record.open_blocks > 0 else None)
 
     @staticmethod
     def _go_on(answer: Answer) -> None:
@@ -1984,6 +2000,190 @@ class Director:
         error (spec section 13)."""
         if answer.call.status == "error" and answer.provider_failed:
             raise DirectorError(f"the {answer.call.purpose} call failed: {answer.call.error}")
+
+    # ------------------------------------------------------------------ stage 5
+
+    def validate(self) -> None:
+        """Stage 5 (spec section 7): no planner or reviewer call. In order: the stage opened
+        with its ``inputs`` and the hand edits adopted, an earlier validate record replaced in
+        that same write (R-validate-status: one record per stage; an open one, a stage 5 killed
+        midway, is entered again); every ``write_atomic`` leftover removed (R-tmp); the static
+        lints (``lint_bundle`` with no dry run). When a ``schema`` or a ``ladder_walk`` result
+        fails there is no dry run (``dry_run`` raises on a ladder its own script cannot walk;
+        the Task 8 carry) and the ``dry_run`` lint's result names why; else the bundle's
+        denylist scans (``_scan_bundle``, the path stages 2 to 4 take before a call shows the
+        bundle: a hit fails the stage), the dry run (``dry_run``, a full stub run with its own
+        resume, K12), ``dry_run`` and ``dry_run_id`` written, the ``dryrun`` checkpoint (K13: a
+        rerun reads the complete dry run, never asks it again), and every lint with its cells.
+        Then the results, ``bundle_hash`` and the status are recorded, the marker cleared, and the
+        stage committed in one record write: ``runnable`` when no result fails and
+        ``open_blocks == 0``, else ``validated`` (an open block keeps a plan from ``runnable``,
+        whatever stage 5 finds)."""
+        last = self.record.stages[-1] if self.record.stages else None
+        if last is not None and last.stage == "validate" and last.status != "open":
+            self.record.stages.remove(last)  # written by _open_stage's record write
+        stage = self._open_stage("validate", adopt=True)
+        remove_leftovers(self.bundle)
+        static = lint_bundle(self.bundle)
+        blocked = _dry_run_blocked(static)
+        if blocked is None:
+            self._scan_bundle("the dry run")
+            cells = dry_run(self.bundle)
+            self.record.dry_run = cells
+            self.record.dry_run_id = dry_run_id(self.bundle)
+            self.bundle.write_record(self.record)
+            self._checkpoint("dryrun", "validate")
+            results = lint_bundle(self.bundle, dry_run=cells)
+        else:
+            self.record.dry_run, self.record.dry_run_id = [], None
+            results = [*static, LintResult("dry_run", "fail", "config.yaml", f"not run: {blocked}")]
+        self.record.lint_results = [LintRecord.of(result) for result in results]
+        try:
+            self.record.bundle_hash = bundle_hash(self.bundle.root)
+        except BundlePathError as exc:  # a link in the bundle: schema has failed on it too
+            raise DirectorError(str(exc)) from exc
+        self.bundle.clear_attempt()
+        runnable = not failures(results) and self.record.open_blocks == 0
+        self._commit_stage(stage, status="runnable" if runnable else "validated")
+
+    def revalidate(self) -> PlanRecord:
+        """``plan validate`` (spec section 7, "The commands' reach"): stage 5 again on the bundle
+        as it stands, in the plan's ledger, after ``run``'s hard-kill clear; an open validate
+        stage is resumed as ``run`` resumes it (the dead attempt, then the re-materialization), a
+        committed or failed one replaced (``validate``). Refused with ``DirectorError`` while a
+        stage before it is not committed: there is no bundle to validate, and a committed stage
+        5 there would let ``plan continue`` skip it. It runs whatever ``open_blocks`` holds, and
+        a plan with open blocks ends ``validated`` (R-validate-status). A failure fails the stage
+        and the plan, as in ``run``."""
+        for name in STAGES[: STAGES.index("validate")]:
+            found = self._stage(name)
+            if found is None or found.status != "committed":
+                raise DirectorError(
+                    f"stage {name} is not committed, so there is no bundle to validate yet; "
+                    "run plan continue"
+                )
+        with activate(self.bundle.root / LEDGER):
+            self._clear_hard_kill()
+            existing = self._stage("validate")
+            if existing is not None and existing.status == "open":
+                self._record_dead_attempt(existing)
+                rematerialize_open_stage(self.bundle, self.record, "validate")
+            try:
+                self.validate()
+            except DirectorError as exc:
+                self._fail("validate", str(exc))
+        return self.record
+
+    # ------------------------------------------------------------------ plan review
+
+    def review_round(self) -> None:
+        """``plan review`` (D-rounds): stages 3 to 5 again on an edited bundle. When the current
+        stages hold a committed ``review`` stage and the round has run out (``_round_finished``:
+        stage 5 committed or failed, or stage 4 holding open blocks), the round is archived in
+        three ordered writes:
+        (1) every transcript of the current review, revise and validate calls is copied to
+        ``transcripts/round-<n>/<same name>`` and ``review.md`` to
+        ``transcripts/review-<n>.md`` (``n = len(rounds) + 1``), then the ``archived``
+        checkpoint; (2) one record write moves those stage records into ``rounds``, each
+        call's ``transcript`` rewritten to its round path, and clears what the round left
+        (``review_counts``, ``open_blocks``, the lint results, the dry run, ``bundle_hash``),
+        the status back to the last committed stage's; (3) the old top-level transcripts go.
+        Otherwise (killed after (2), or a round in progress, which is resumed as ``plan
+        continue`` resumes it, so the same command after a kill or a rate limit ends as an
+        unbroken round does) only (3) runs, which is idempotent:
+        every top-level ``review-*``, ``revise-*`` or ``validate-*`` transcript no current call
+        names goes. A kill after (1) leaves the record naming files that still exist; a kill
+        after (2) leaves only (3) to do. Then ``run`` goes on through stage 5, the review stage
+        adopting the hand edits as it opens. Refused while stage 2 is not committed (there is
+        nothing to review). A dead attempt the last stage's marker names is recorded first, as
+        ``run`` records it, so an archived stage never hides one."""
+        author = self._stage("author")
+        if author is None or author.status != "committed":
+            raise DirectorError("stage author is not committed, so there is no bundle to review")
+        self._clear_hard_kill()
+        if self._round_finished():
+            self._record_dead_attempt(self.record.stages[-1])
+            self._archive_round()
+        self._drop_round_transcripts()
+        self.run(through="validate")
+
+    def _round_finished(self) -> bool:
+        """Whether the current round is one ``plan review`` archives: its review stage committed
+        and the round run out, stage 5 committed or failed, or stage 4 holding open blocks. A
+        round still in progress (killed or paused in stage 4 or 5, or between them) is resumed,
+        never archived, so ``plan review`` run again, or waited on in process after a rate
+        limit, ends as an unbroken round does (Task 9's hard-kill sweep)."""
+        review = self._stage("review")
+        if review is None or review.status != "committed":
+            return False
+        validate = self._stage("validate")
+        if validate is not None and validate.status in ("committed", "failed"):
+            return True
+        return held_by_open_blocks(self.record) > 0
+
+    def _archive_round(self) -> None:
+        """Writes (1) and (2) of ``review_round``."""
+        n = len(self.record.rounds) + 1
+        moved = [s for s in self.record.stages if s.stage in _ROUND_STAGES]
+        renamed: dict[str, str] = {}
+        for stage in moved:
+            for call in stage.calls:
+                to = f"{TRANSCRIPTS}/round-{n}/{call.transcript.rsplit('/', 1)[-1]}"
+                self.bundle.write_transcript(to, self.bundle.read_transcript(call.transcript))
+                renamed[call.transcript] = to
+        if (self.bundle.root / REVIEW_FILE).is_file():
+            text = self.bundle.read_file(REVIEW_FILE)
+            write_atomic(self.bundle.root / TRANSCRIPTS / f"review-{n}.md", text)
+        self._checkpoint("archived", "review")
+        for stage in moved:
+            for call in stage.calls:
+                call.transcript = renamed[call.transcript]
+        self.record.stages = [s for s in self.record.stages if s.stage not in _ROUND_STAGES]
+        self.record.rounds.append(moved)
+        self.record.review_counts, self.record.open_blocks = {}, 0
+        self.record.lint_results, self.record.dry_run = [], []
+        self.record.dry_run_id = self.record.bundle_hash = None
+        committed = [s.stage for s in self.record.stages if s.status == "committed"]
+        self.record.status = _EARNED[committed[-1]] if committed else "planned"
+        self.bundle.write_record(self.record)
+
+    def _drop_round_transcripts(self) -> None:
+        """Write (3) of ``review_round``: every top-level review, revise or validate transcript
+        that no call of the record names is removed."""
+        named = named_transcripts(self.record)
+        folder = self.bundle.root / TRANSCRIPTS
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            rel = f"{TRANSCRIPTS}/{path.name}"
+            if path.name.startswith(_ROUND_PREFIXES) and rel not in named:
+                path.unlink(missing_ok=True)
+
+
+# the stages a review round archives (D-rounds), and their transcripts' name prefixes
+_ROUND_STAGES: Final[frozenset[Stage]] = frozenset({"review", "revise", "validate"})
+_ROUND_PREFIXES: Final = tuple(f"{stage}-" for stage in sorted(_ROUND_STAGES))
+# a static lint whose failure keeps the dry run from running, and why (the Task 8 carry)
+_DRY_RUN_NEEDS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "schema": "the bundle does not load",
+        "ladder_walk": "a ladder's firing examples do not walk it to its top rung",
+    }
+)
+
+
+def _dry_run_blocked(results: Sequence[LintResult]) -> str | None:
+    """Why stage 5 runs no dry run, from the static lints' results; None when it can run."""
+    failed = {result.lint_id for result in failures(results)}
+    return next((why for lint_id, why in _DRY_RUN_NEEDS.items() if lint_id in failed), None)
+
+
+def held_by_open_blocks(record: PlanRecord) -> int:
+    """The open blocks that hold a plan at stage 4 (D-revise-error, R-validate-status): the
+    plan's ``open_blocks`` when its current revise stage is committed with blocks open, else 0.
+    Keyed on stage 4 and ``open_blocks``, never on the status, so a ``plan validate`` after the
+    failure (status ``validated``) still holds it; ``plan review`` is the way on."""
+    revise = _last_stage(record, "revise")
+    held = revise is not None and revise.status == "committed" and record.open_blocks > 0
+    return record.open_blocks if held else 0
 
 
 def _refuse_hits(found: Sequence[LintResult], what: str) -> None:

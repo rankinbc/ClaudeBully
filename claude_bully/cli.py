@@ -23,6 +23,7 @@ from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
 from claude_bully.doctor import default_out_dir, failed, run_live_checks, write_report
 from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
+from claude_bully.planner.cli import plan_app
 from claude_bully.providers.base import Message, ProviderError
 from claude_bully.providers.claude_code import clean_child_env, resolve_claude_command
 from claude_bully.providers.ledger import LEDGER_FILE, activate
@@ -30,6 +31,10 @@ from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
+
+# re-exported: both live in runner/wait.py, which the plan sub-app imports too (preflight Q46)
+from claude_bully.runner.wait import RATE_LIMIT_EXIT_CODE as RATE_LIMIT_EXIT_CODE
+from claude_bully.runner.wait import WaitMinutes as WaitMinutes
 from claude_bully.runner.wait import wait_on_rate_limit as wait_on_rate_limit_
 from claude_bully.strategies.bootstrap import listed_strategies
 
@@ -37,17 +42,10 @@ app = typer.Typer(
     help="Bully personas versus LLMs: measure behavioral drift.", no_args_is_help=True
 )
 console = Console()
+app.add_typer(plan_app, name="plan")
 
 RunsRoot = Annotated[Path, typer.Option(help="Where runs are written.")]
 ResultsRoot = Annotated[Path, typer.Option(help="Where promoted runs live.")]
-WaitMinutes = Annotated[
-    float | None,
-    typer.Option(
-        "--wait-on-rate-limit",
-        help="Wait inside the process for a rate window, up to this many minutes.",
-    ),
-]
-RATE_LIMIT_EXIT_CODE = 3
 # a chart link of results.md, ``![stem](name.png)`` with no directory in the target
 _CHART_LINK = re.compile(r"!\[([^\]]*)\]\(([^)/]+\.png)\)")
 

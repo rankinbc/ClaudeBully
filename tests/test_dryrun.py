@@ -35,6 +35,7 @@ from claude_bully.providers.stub import TurnEntry
 from claude_bully.runner.runner import RateLimitExit
 from claude_bully.runner.store import RunStore
 from tests.fixtures.bundle_fixtures import REPS_1, config_bundle, good_bundle, mutate
+from tests.fixtures.director_stub import DRYRUN_KILL_AT, dryrun_killing
 from tests.fixtures.generator_stub import MINI, MINI_ITEMS, mini_plans, mini_view, mini_writer
 from tests.fixtures.poisoned_well_stub import Recording
 from tests.helpers import WORLDS_DIR
@@ -179,6 +180,89 @@ def test_a_changed_bundle_gets_a_new_run_id_and_the_old_directory_goes(
 
 
 @pytest.mark.slow
+def test_a_torn_last_ledger_line_is_dropped_and_the_resume_goes_on(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 9's hard-kill sweep of stage 5: a process killed inside the dry run's own ledger
+    append leaves a torn last line (no newline). The resume drops it by the runtime's torn-tail
+    rule (``runner/store.parsed_lines``), as a dead call's line, and ends as an unbroken dry
+    run, its estimates counting no torn line; before, it raised parsing the fragment."""
+    clean = dry_run(good_bundle(tmp_path / "clean"))
+    bundle = good_bundle(tmp_path / "torn")
+    real = dryrun.dryrun_provider_factory
+    monkeypatch.setattr(dryrun, "dryrun_provider_factory", _killing("target", 3))
+    with pytest.raises(_Killed):
+        dry_run(bundle)
+    monkeypatch.setattr(dryrun, "dryrun_provider_factory", real)
+    ledger = bundle.root / "dryrun" / dry_run_id(bundle) / "ledger.jsonl"
+    last = ledger.read_bytes().rstrip(b"\r\n").rsplit(b"\n", 1)[-1]
+    with ledger.open("ab") as handle:
+        handle.write(last[: len(last) // 2])
+    assert _strip(dry_run(bundle)) == _strip(clean)
+    assert ledger.read_bytes().endswith(b"\n")
+
+
+@pytest.mark.slow
+def test_a_kill_after_a_fire_commits_keeps_the_fires_ledger_lines(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 9's hard-kill sweep of stage 5: a process killed inside the generated cache's put,
+    after the fire's ``GeneratorFire`` commit and before the turn's state write moves
+    ``watched_through``. The resume never redoes the committed fire, so its generator lines are
+    the fire's, not a dead attempt's: kept, the estimates equal an unbroken run's (before, the
+    two lines were dropped and ``estimated_calls`` came out two short)."""
+    from claude_bully.metrics.judge import JudgeCache
+
+    clean = dry_run(good_bundle(tmp_path / "clean"))
+    bundle = good_bundle(tmp_path / "put")
+    real_put = JudgeCache.put
+    fired = {"n": 0}
+
+    def dying_put(self: JudgeCache, key: str, value: dict[str, Any]) -> None:
+        if self.directory.name == "generated" and fired["n"] == 0:
+            fired["n"] += 1
+            raise _Killed
+        real_put(self, key, value)
+
+    monkeypatch.setattr(JudgeCache, "put", dying_put)
+    with pytest.raises(_Killed):
+        dry_run(bundle)
+    monkeypatch.setattr(JudgeCache, "put", real_put)
+    assert _strip(dry_run(bundle)) == _strip(clean)
+
+
+@pytest.mark.slow
+def test_a_resume_reads_only_its_own_ids_generated_cache(
+    tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 5 review M-1 (carried to Task 9): content A killed before its fire; the bundle
+    edited (id B) and B killed after its first cell's fire was cached; the edit reverted, so A's
+    directory exists. A's resume reads none of B's cache (``dryrun/_cache/OWNER`` names B), so
+    its fires are written as an unbroken A's are, never ``cached``."""
+    clean = dry_run(good_bundle(tmp_path / "clean"))
+    bundle = good_bundle(tmp_path / "ab")
+    real = dryrun.dryrun_provider_factory
+
+    def killed(at: int) -> None:
+        monkeypatch.setattr(dryrun, "dryrun_provider_factory", _killing("target", at))
+        with pytest.raises(_Killed):
+            dry_run(bundle)
+        monkeypatch.setattr(dryrun, "dryrun_provider_factory", real)
+
+    first = dry_run_id(bundle)
+    killed(3)  # A, before its fire
+    mutate(bundle, "plan.md", "\n", "\n\n")
+    assert dry_run_id(bundle) != first
+    killed(20)  # B, after the first cell's fire was cached
+    assert (bundle.root / "dryrun" / "_cache" / "OWNER").read_text(
+        "utf-8"
+    ) == f"{dry_run_id(bundle)}\n"
+    bundle.write_file("plan.md", bundle.read_file("plan.md").replace("\n\n", "\n", 1))
+    assert dry_run_id(bundle) == first
+    assert _strip(dry_run(bundle)) == _strip(clean)
+
+
+@pytest.mark.slow
 def test_a_dry_run_reruns_as_a_read_when_complete(tmp_path: Path, isolated_registry: None) -> None:
     bundle = good_bundle(tmp_path)
     first = dry_run(bundle)
@@ -204,38 +288,13 @@ class _Killed(BaseException):
     pass
 
 
-# the call of the role that dies: the triggered cell's generator fires once or twice
-KILL_AT = {"target": 3, "bully": 3, "generator": 1}
+KILL_AT = DRYRUN_KILL_AT
 
 
 def _killing(role: str, at: int) -> Any:
     """``dryrun_provider_factory`` with the ``at``-th call of ``role``'s double raising inside
-    the call, before it returns (one counter across the run, in its deterministic cell order)."""
-    real = dryrun.dryrun_provider_factory
-    calls = {"n": 0}
-
-    def killing(b: Bundle, exp: Any) -> Any:
-        inner = real(b, exp)
-
-        def factory(r: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> Any:
-            provider = inner(r, state_dir, with_mcp=with_mcp)
-            if r.model != dryrun.DRYRUN_MODELS[role]:
-                return provider
-
-            class Dying:
-                name = "stub"
-
-                def complete(self, *a: Any, **k: Any) -> Any:
-                    calls["n"] += 1
-                    if calls["n"] == at:
-                        raise _Killed
-                    return provider.complete(*a, **k)
-
-            return Dying()
-
-        return factory
-
-    return killing
+    the call: the shared ``dryrun_killing`` (Task 9's CLI suite kills the same way)."""
+    return dryrun_killing(role, at, error=_Killed)
 
 
 def _strip(cells: list[Any]) -> list[dict[str, Any]]:
@@ -460,8 +519,11 @@ def test_a_rate_limit_pauses_the_dry_run_and_the_same_call_resumes_it(
     """Phase 4's lesson: a rate limit pauses and never degrades. The dry run raises
     ``RateLimitExit`` and writes no ``dryrun.jsonl``; the same call resumes to the unbroken
     run's cells, its estimate counting no paused call (a generator limited at its second call,
-    the pair's seam document, after the first returned)."""
-    clean = dry_run(good_bundle(tmp_path / "clean"))
+    the pair's seam document, after the first returned). Task 5 review M-5, the cell-level
+    contract (``dry_run``'s docstring): the cells and the generated documents' bodies equal the
+    unbroken run's; the records do not, since the pause marker moves every later turn index."""
+    clean_bundle = good_bundle(tmp_path / "clean")
+    clean = dry_run(clean_bundle)
     bundle = good_bundle(tmp_path / "limited")
     real = dryrun.dryrun_provider_factory
     monkeypatch.setattr(dryrun, "dryrun_provider_factory", _limiting(role, at))
@@ -470,6 +532,11 @@ def test_a_rate_limit_pauses_the_dry_run_and_the_same_call_resumes_it(
     assert not (bundle.root / DRYRUN_FILE).exists()
     monkeypatch.setattr(dryrun, "dryrun_provider_factory", real)
     assert _strip(dry_run(bundle)) == _strip(clean)
+
+    def bodies(b: Bundle) -> dict[tuple[str, int], list[tuple[str, str]]]:
+        return {key: [(d["title"], d["body"]) for d in docs] for key, docs in _generated(b).items()}
+
+    assert bodies(bundle) == bodies(clean_bundle) and any(bodies(clean_bundle).values())
 
 
 @pytest.mark.slow
@@ -575,3 +642,5 @@ def test_a_stray_buried_search_hit_fails_and_the_shipped_overlay_passes(
     hits, found = results["planted"]
     assert hits and sorted(r.doc_id for r in found) == sorted(hits)
     assert all("buried document" in r.message for r in found)
+    # Task 5 review M-4: the cell records the document and the message names it
+    assert all(r.message.endswith(f"names by id: {STRAY_ID}") for r in found)

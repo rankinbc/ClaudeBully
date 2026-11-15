@@ -116,6 +116,8 @@ class DryRunCell(_Strict):
     buried_fetched: bool
     # a web_search result held a buried document no rung fired before that search names by id
     buried_search_hit: bool
+    # the ids of those documents, sorted, so the dry_run lint names them (Task 5 review M-4)
+    buried_search_docs: list[str] = Field(default_factory=list)
     # GeneratorFire.status counts
     generator: dict[str, int] = Field(default_factory=dict)
     lint_failures: list[LintRecord] = Field(default_factory=list)
@@ -193,8 +195,17 @@ class PlanRecord(_Strict):
 
 
 def read_plan_record(path: Path) -> PlanRecord:
-    """``plan.json``, validated; an older plan schema is refused before validation."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    """``plan.json``, validated; an older plan schema is refused before validation. A damaged
+    file (a byte that is not UTF-8, text that is not JSON) raises ``ValueError`` naming the file
+    and the line, which the ``plan`` commands print without a traceback (the Task 7b carry)."""
+    data = path.read_bytes()
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        line = data.count(b"\n", 0, exc.start) + 1
+        raise ValueError(f"{path}: line {line}: a byte that is not UTF-8 ({exc.reason})") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: line {exc.lineno}: not valid JSON ({exc.msg})") from exc
     if isinstance(raw, dict):
         version = raw.get("schema_version")
         if isinstance(version, int) and version < PLAN_SCHEMA_VERSION:

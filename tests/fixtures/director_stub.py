@@ -19,6 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+import pytest
 import yaml
 
 from claude_bully.config import RoleConfig
@@ -267,12 +268,13 @@ def dull(quote: str) -> str:
 def first_sentence(text: str) -> str:
     """The first sentence of a file's text, exactly as it stands (a line break kept): past a
     document's front matter, the first paragraph that is no heading or table row and holds a
-    sentence end."""
+    sentence end. A paragraph break may be CRLF: an owner's hand edit is shown as written, and
+    Python's text mode writes CRLF on Windows (Task 9's edited plan.md)."""
     body = text
     if text.startswith("---\n"):
         end = text.find("\n---\n", 4)
         body = text[end + 5 :] if end >= 0 else text
-    for paragraph in re.split(r"\n[ \t]*\n", body):
+    for paragraph in re.split(r"\r?\n[ \t]*\r?\n", body):
         stripped = paragraph.strip()
         if stripped and not stripped.startswith(("#", "|")):
             found = _SENTENCE.match(stripped)
@@ -482,17 +484,29 @@ def run_plan(
     reviewer_crash_at: str | None = None,
     kill: Kill | None = None,
     resume: bool = True,
+    via_cli: bool = False,
+    dryrun_kill: str | None = None,
 ) -> tuple[Bundle, PlanRecord]:
     """A plan of ``request`` on the doubles through ``through``, with ``kill`` as the
     checkpoint. The doubles not given are built from ``modes`` and the two crash keywords.
     After a ``Crash``, with ``resume``, the bundle is opened again with the same doubles (each
     crash fires once) and no checkpoint and run to ``through``; without, the crash is raised. A
     ``plans_root`` that already holds the slug is continued, as ``plan new`` on the same request
-    does."""
+    does.
+
+    With ``via_cli`` (Task 9; ``through`` must be ``validate``) the plan is driven through the
+    ``plan`` sub-app instead (``_run_via_cli``); ``dryrun_kill=<role>`` kills the dry run inside
+    that role's ``DRYRUN_KILL_AT``-th call (``dryrun_killing``, Task 5's ``_killing``)."""
     factory = StubFactory(
         planner or PlannerStub(modes=modes, crash_at=crash_at),
         reviewer or ReviewerStub(modes=modes, crash_at=reviewer_crash_at),
     )
+    if via_cli:
+        if through != "validate":
+            raise ValueError("plan new --no-confirm runs every stage: through='validate' only")
+        return _run_via_cli(plans_root, request, factory, kill, dryrun_kill, resume=resume)
+    if dryrun_kill is not None:
+        raise ValueError("dryrun_kill is the CLI suite's: pass via_cli=True")
     director = Director.new(
         request,
         plans_root=plans_root,
@@ -510,3 +524,98 @@ def run_plan(
         )
         record = director.run(through=through)
     return director.bundle, record
+
+
+# the call of each dry-run role's double a dry-run kill dies in: the triggered cell's generator
+# fires once or twice (Task 5's KILL_AT)
+DRYRUN_KILL_AT: Final[Mapping[str, int]] = MappingProxyType(
+    {"target": 3, "bully": 3, "generator": 1}
+)
+
+
+def dryrun_killing(role: str, at: int, *, error: type[BaseException] = Crash) -> Any:
+    """``dryrun_provider_factory`` with the ``at``-th call of ``role``'s double raising
+    ``error`` inside the call, before it returns (one counter across the run, in its
+    deterministic cell order): Task 5's ``_killing``, shared with the CLI suite (K12)."""
+    from claude_bully.planner import dryrun
+
+    real = dryrun.dryrun_provider_factory
+    calls = {"n": 0}
+
+    def killing(bundle: Bundle, exp: Any) -> Any:
+        inner = real(bundle, exp)
+
+        def factory(r: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> Any:
+            provider = inner(r, state_dir, with_mcp=with_mcp)
+            if r.model != dryrun.DRYRUN_MODELS[role]:
+                return provider
+
+            class Dying:
+                name = "stub"
+
+                def complete(self, *a: Any, **k: Any) -> Any:
+                    calls["n"] += 1
+                    if calls["n"] == at:
+                        raise error
+                    return provider.complete(*a, **k)
+
+            return Dying()
+
+        return factory
+
+    return killing
+
+
+def _run_via_cli(
+    plans_root: Path,
+    request: PlanRequest,
+    factory: StubFactory,
+    kill: Kill | None,
+    dryrun_kill: str | None,
+    *,
+    resume: bool,
+) -> tuple[Bundle, PlanRecord]:
+    """Task 9's CLI suite: ``plan new --request <file> --no-confirm`` through ``CliRunner``,
+    the request written as YAML beside ``plans_root``, with the sub-app's seams patched
+    (``PlanProviders`` the doubles, ``WORLDS_DIR`` the fixture worlds, ``PlanCheckpoint`` the
+    ``kill``, review Minor 1) and the dry run's factory killing with ``dryrun_kill``. After a
+    ``Crash``, with ``resume``, ``plan continue <bundle>`` with ``PlanCheckpoint`` set back to
+    None and the dry run's factory restored; the same doubles answer (each crash fires once). A
+    usage error or a rate-limit exit raises ``AssertionError`` with the output."""
+    from typer.testing import CliRunner
+
+    from claude_bully import cli
+    from claude_bully.planner import cli as plan_cli
+    from claude_bully.planner import dryrun
+    from claude_bully.planner.request import slug_for
+
+    plans_root.parent.mkdir(parents=True, exist_ok=True)
+    request_file = plans_root.with_name(f"{plans_root.name}.request.yaml")
+    dumped = yaml.safe_dump(request.model_dump(mode="json"), sort_keys=False)
+    request_file.write_text(dumped, encoding="utf-8")
+    root = plans_root / (request.slug or slug_for(request.question))
+    new = ["plan", "new", "--request", str(request_file), "--plans-root", str(plans_root)]
+    runner = CliRunner()
+    real = dryrun.dryrun_provider_factory
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(plan_cli, "PlanProviders", factory)
+        patch.setattr(plan_cli, "WORLDS_DIR", WORLDS_DIR)
+        patch.setattr(plan_cli, "PlanCheckpoint", kill)
+        if dryrun_kill is not None:
+            killing = dryrun_killing(dryrun_kill, DRYRUN_KILL_AT[dryrun_kill])
+            patch.setattr(dryrun, "dryrun_provider_factory", killing)
+        try:
+            result = runner.invoke(cli.app, [*new, "--no-confirm"], catch_exceptions=False)
+        except Crash:
+            if not resume:
+                raise
+            patch.setattr(plan_cli, "PlanCheckpoint", None)
+            patch.setattr(dryrun, "dryrun_provider_factory", real)
+            result = runner.invoke(cli.app, ["plan", "continue", str(root)], catch_exceptions=False)
+        else:  # a kill that never fires would compare two unbroken plans and pass
+            if kill is not None or dryrun_kill is not None:
+                raise AssertionError(f"the kill point was never reached: {kill or dryrun_kill}")
+    if result.exit_code not in (0, 1):
+        raise AssertionError(f"exit {result.exit_code}:\n{result.output}")
+    bundle = Bundle(root)
+    return bundle, bundle.read_record()

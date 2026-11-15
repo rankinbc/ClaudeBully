@@ -204,11 +204,14 @@ The dry run (`claude_bully/planner/dryrun.py`, built in Phase 5) runs the bundle
 
 **CLI:**
 
-- `claude-bully plan "<question>" [--targets ...] [--budget ...] [--scope ...] [--hypotheses ...] [--no-confirm]` — runs stages 1–5, stopping after stage 1 for approval unless `--no-confirm`.
-- `claude-bully plan review plans/<slug>` — re-runs the reviewer on an edited bundle.
-- `claude-bully plan validate plans/<slug>` — lints and dry run only.
-- `claude-bully plan diff plans/<a> plans/<b>` — what differs between two bundles, for iterating on a world.
+- `claude-bully plan new "<question>" [--targets a,b] [--budget max_turns,n,cells[,calls]] [--scope ...] [--hypotheses 2,9] [--constraint ...] [--request file.yaml] [--slug] [--world reuse|fresh] [--base-world] [--seed] [--no-confirm] [--plans-root plans/] [--wait-on-rate-limit MINUTES]` — runs stages 1–5, stopping after stage 1 for approval unless `--no-confirm`; on an existing slug with the same request it continues, with another request it is refused naming the fields that differ.
+- `claude-bully plan continue plans/<slug> [--wait-on-rate-limit MINUTES]` — resumes at the first stage not committed and runs through stage 5; a plan whose stage 4 committed with open blocks is refused without a call (`failed: <n> open block(s); edit the bundle and run plan review`).
+- `claude-bully plan review plans/<slug> [--wait-on-rate-limit MINUTES]` — re-runs the reviewer on an edited bundle: the last round's records and transcripts are archived under `transcripts/round-<n>/` (and `review.md` as `transcripts/review-<n>.md`), then stages 3, 4 and 5.
+- `claude-bully plan validate plans/<slug>` — lints and dry run only (stage 5 again on the bundle as it stands); no model call.
+- `claude-bully plan diff plans/<a> [plans/<b>] [--worlds-dir data/worlds]` — what differs between two bundles, for iterating on a world; with one bundle, each copied world against the shipped one, and whether that has moved since the copy.
 - `claude-bully run plans/<slug>/config.yaml` — unchanged; a bundle is just a config with its dependencies beside it.
+
+Built in Phase 5 Task 9 (`claude_bully/planner/cli.py`, mounted as `plan`). Each of `new`, `continue`, `review` and `validate` prints one line per dry-run cell (`<cell_id> <status> top_rung=<...> rungs=[...] calls>=<n>`) and `status <status>`. Exit codes: 0 when the plan is `runnable`, or when `new` stopped after stage 1 as asked; 1 for any other outcome (a plan not runnable, held by open blocks, a refusal, or a damaged record, printed as `error: <file>: line <n>: ...` with no traceback); 3 for a rate limit the wait did not cover (the same command resumes).
 
 **Records.** `PlanRecord` in the bundle: request, planner and reviewer model ids, stage timestamps, review counts, lint results, dry-run status, and a content hash of the final bundle that every run stamps so results can be traced to the exact plan.
 

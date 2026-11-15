@@ -798,6 +798,6 @@ def test_a_plan_with_an_open_block_goes_no_further_than_stage_4(
     again = Director.open(
         bundle.root, provider_factory=StubFactory(PlannerStub(), reviewer), worlds_dir=WORLDS_DIR
     )
-    after = again.run(through="validate")  # no NotImplementedError: validate is never reached
+    after = again.run(through="validate")  # validate is never reached
     assert after.status == "failed" and [s.stage for s in after.stages][-1] == "revise"
     assert comparable(after) == comparable(record)

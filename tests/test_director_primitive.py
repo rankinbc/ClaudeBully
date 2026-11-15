@@ -565,20 +565,3 @@ def test_stop_after_plan_on_a_committed_plan_stops(tmp_path: Path, isolated_regi
     again = Director.open(bundle.root, provider_factory=factory, worlds_dir=WORLDS_DIR)
     record = again.run(stop_after_plan=True)
     assert record.status == "planned" and [s.stage for s in record.stages] == ["plan"]
-
-
-@pytest.mark.slow  # a plan through stage 4
-def test_a_stage_not_built_yet_is_refused_before_it_opens(
-    tmp_path: Path, isolated_registry: None
-) -> None:
-    """Review N1: until Task 9 lands, a run past the revise stage names the stage it lacks."""
-    bundle, _ = run_plan(tmp_path, through="revise")
-    again = Director.open(
-        bundle.root,
-        provider_factory=StubFactory(PlannerStub(), ReviewerStub()),
-        worlds_dir=WORLDS_DIR,
-    )
-    with pytest.raises(NotImplementedError, match="stage validate"):
-        again.run(through="validate")
-    stages = [s.stage for s in bundle.read_record().stages]
-    assert stages == ["plan", "author", "review", "revise"]
