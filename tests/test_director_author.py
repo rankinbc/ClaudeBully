@@ -2,13 +2,18 @@
 """Phase 5 Task 7b: stage 2 on stubs, resume parity at K2, K3, K4 to K7 and the manifest's
 record and files points."""
 
+import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from claude_bully.enums import Layer
+from claude_bully.metrics.judge import JudgeCache
+from claude_bully.planner import bundle as bundle_module
 from claude_bully.planner import director as director_module
 from claude_bully.planner.bundle import Bundle, rematerialize_open_stage
 from claude_bully.planner.director import (
@@ -25,8 +30,9 @@ from claude_bully.planner.director import (
 from claude_bully.planner.lints import owner_names
 from claude_bully.planner.records import DirectorCall, ManifestEntry
 from claude_bully.planner.request import slug_for
+from claude_bully.providers.ledger import Ledger, LedgerLine
 from claude_bully.runner.runner import RateLimitExit
-from tests.fixtures.bundle_fixtures import GOOD, GOOD_MANIFEST
+from tests.fixtures.bundle_fixtures import BASE_WORLD, GOOD, GOOD_MANIFEST
 from tests.fixtures.director_stub import (
     REQUEST,
     Crash,
@@ -688,3 +694,284 @@ def test_a_copy_killed_midway_is_removed_and_made_again(
     bundle, record = run_plan(tmp_path / "patched", through="author", kill=patched)
     assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
     assert comparable(record) == comparable(clean)
+
+
+# ---------------------------------------------------------------- fix round 1 (the 7b review)
+
+
+def _leave_temp(path: Path, text: str) -> None:
+    """What a process killed outright inside ``write_atomic(path, text)`` leaves: its temp file
+    beside the target, half written, never renamed and never removed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, _ = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(text.encode("utf-8")[: max(1, len(text) // 2)])
+
+
+def _temps(root: Path) -> list[str]:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*.tmp"))
+
+
+def _opens(text: str, stage: str | None) -> bool:
+    """Whether a ``plan.json`` text is the write that creates the plan (``stage`` None) or the
+    one that opens ``stage``: its last stage record is that stage, open, with no call."""
+    stages = json.loads(text)["stages"]
+    if stage is None:
+        return not stages
+    last = stages[-1] if stages else None
+    return (
+        last is not None
+        and last["stage"] == stage
+        and last["status"] == "open"
+        and not last["calls"]
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("stage", [None, "plan", "author"])
+def test_a_kill_inside_the_write_that_opens_a_stage_leaves_no_temp_file(
+    stage: str | None, tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review I1: a hard kill inside the record write that creates the plan (7a's K1) or opens
+    a stage leaves that write's temp file and no record of the stage. Every pass of run()
+    removes it, so the resumed bundle holds nothing bundle_hash covers that an unbroken one
+    lacks."""
+    clean_bundle, clean = run_plan(tmp_path / "clean", through="author")
+    real = bundle_module.write_atomic
+    fired: list[Path] = []
+
+    def dying(path: Path, text: str) -> None:
+        if not fired and path.name == "plan.json" and _opens(text, stage):
+            fired.append(path)
+            _leave_temp(path, text)
+            raise Crash(f"killed inside the write that opens {stage}")
+        real(path, text)
+
+    monkeypatch.setattr(bundle_module, "write_atomic", dying)
+    with pytest.raises(Crash):
+        run_plan(tmp_path / "killed", through="author", resume=False)
+    monkeypatch.setattr(bundle_module, "write_atomic", real)
+    assert len(_temps(tmp_path / "killed")) == 1
+    bundle, record = run_plan(tmp_path / "killed", through="author")  # plan new again
+    assert _temps(tmp_path / "killed") == []
+    assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
+    assert comparable(record) == comparable(clean)
+
+
+def _ledger_ids(root: Path) -> list[tuple[str, str]]:
+    lines = (root / "ledger.jsonl").read_text("utf-8").splitlines()
+    parsed = [LedgerLine.model_validate_json(line) for line in lines]
+    return [(line.conversation_id.split("/", 2)[-1], line.status) for line in parsed]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("purpose", ["manifest", "file:config.yaml"])
+def test_a_torn_last_ledger_line_is_dropped_and_the_resume_goes_on(
+    purpose: str, tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M1 (re-graded Important) and the sweep's kills 22 and 93: a kill inside a ledger
+    append leaves a torn last line, half a record and no newline. The resume drops it by the
+    runtime's torn-tail rule (runner/store.py) and goes on, ending as an unbroken plan does,
+    the dead call redone: the manifest's ok line, and a timeout's line (the double times out
+    once)."""
+    index = 0 if purpose == "manifest" else INDEX["config.yaml"]
+    clean_bundle, clean = run_plan(tmp_path / "clean", through="author")
+    planner = PlannerStub(modes={} if purpose == "manifest" else {purpose: "timeout"})
+    real = Ledger.write
+    torn: list[str] = []
+
+    def tearing(self: Ledger, line: LedgerLine) -> None:
+        if not torn and f"/author/planner/{index}/" in line.conversation_id:
+            raw = line.model_dump_json()
+            torn.append(raw)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(raw[: len(raw) // 2])
+            raise Crash(f"killed inside the ledger line of {purpose}")
+        real(self, line)
+
+    monkeypatch.setattr(Ledger, "write", tearing)
+    with pytest.raises(Crash):
+        run_plan(tmp_path / "killed", through="author", planner=planner, resume=False)
+    monkeypatch.setattr(Ledger, "write", real)
+    assert not (tmp_path / "killed" / SLUG / "ledger.jsonl").read_bytes().endswith(b"\n")
+    bundle, record = run_plan(tmp_path / "killed", through="author", planner=planner)
+    assert record.status == "authored"
+    assert [(a.stage, a.role, a.index) for a in record.resumed] == [("author", "planner", index)]
+    assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
+    assert comparable(record) == comparable(clean)
+    assert _ledger_ids(bundle.root) == _ledger_ids(clean_bundle.root)
+
+
+@pytest.mark.parametrize("damage", ["not a record", "a cut record closed off"])
+def test_damage_in_the_middle_of_the_plan_ledger_still_raises(
+    damage: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M1's other half: only a torn last line is dropped. A line that does not parse in
+    the middle of the ledger, even a record cut short that a newline closed off, is damage, and
+    the resume raises naming the line before it writes anything."""
+    director = _planned(tmp_path)
+    ledger = director.bundle.root / "ledger.jsonl"
+    line = ledger.read_bytes()  # the plan call's one line, ended by its newline
+    bad = b"not json\n" if damage == "not a record" else line[: len(line) // 2] + b"\n"
+    ledger.write_bytes(bad + line + line[: len(line) // 2])  # damage, a record, a torn tail
+    before = director.bundle.read_record()
+    with pytest.raises(ValueError, match="ledger.jsonl: line 1 is not valid JSON"):
+        director.run(through="author")
+    assert director.bundle.read_record() == before
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("purpose", ["manifest", "file:worlds/mini/world.yaml"])
+def test_a_kill_inside_a_cache_put_leaves_no_temp_file(
+    purpose: str, tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep's cache-litter cases (kills 25 and 31, review N1): a hard kill inside the cache
+    put that follows a committed call leaves the put's temp file in the cache folder. The resume
+    removes the temp of each key a call of this plan committed; a temp beside a key no call of
+    this plan names (another plan's put in flight) is left alone."""
+    clean_bundle, clean = run_plan(tmp_path / "clean", through="author")
+    armed: list[bool] = []
+    real = JudgeCache.put
+
+    def dying(self: JudgeCache, key: str, value: dict[str, Any]) -> None:
+        if armed == [True]:
+            armed.append(False)  # once
+            _leave_temp(self.directory / f"{key}.json", json.dumps(value, indent=1))
+            raise Crash(f"killed inside the cache put of {purpose}")
+        real(self, key, value)
+
+    def checkpoint(step: str, called: str) -> None:
+        if (step, called) == ("files", purpose) and not armed:
+            armed.append(True)
+
+    monkeypatch.setattr(JudgeCache, "put", dying)
+    director = Director.new(
+        REQUEST,
+        plans_root=tmp_path / "killed",
+        provider_factory=StubFactory(PlannerStub(), ReviewerStub()),
+        worlds_dir=WORLDS_DIR,
+        checkpoint=checkpoint,
+    )
+    with pytest.raises(Crash):
+        director.run(through="author")
+    monkeypatch.setattr(JudgeCache, "put", real)
+    cache = tmp_path / "killed" / "_cache" / "director"
+    assert len(_temps(cache)) == 1
+    other = cache / f".{'0' * 64}.json.abcdefgh.tmp"
+    other.write_text("{}", "utf-8")
+    bundle, record = run_plan(tmp_path / "killed", through="author")
+    assert _temps(tmp_path / "killed") == [other.relative_to(tmp_path / "killed").as_posix()]
+    assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
+    assert comparable(record) == comparable(clean)
+    killed_keys, clean_keys = cache_keys(tmp_path / "killed"), cache_keys(tmp_path / "clean")
+    assert len(clean_keys - killed_keys) == 1 and killed_keys < clean_keys
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.slow
+def test_inputs_and_edited_are_re_recorded_after_a_plan_md_fix(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M2, case A, the designed recovery path: plan.md fails its scan, the owner puts the
+    planner's text back and continues. The record then says what the stage's calls read:
+    plan.md as its committing call wrote it, so it is not edited."""
+    planner = PlannerStub()
+    run_plan(tmp_path, through="plan", planner=planner)
+    plan_md = tmp_path / SLUG / "plan.md"
+    good = plan_md.read_bytes()
+    plan_md.write_bytes(good + b"\nThe guidelines say two reps.\n")
+    _, failed = run_plan(tmp_path, through="author", planner=planner)
+    assert failed.status == "failed" and failed.edited == ["plan.md"]
+    plan_md.write_bytes(good)
+    _, record = run_plan(tmp_path, through="author", planner=planner)
+    assert record.status == "authored" and record.edited == []
+    assert record.stages[1].inputs == {"plan.md": _sha(good)}
+
+
+@pytest.mark.slow
+def test_inputs_and_edited_are_re_recorded_after_an_edit_made_during_a_pause(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M2, case B: the owner edits plan.md while a rate limit holds stage 2 open. The
+    remaining calls see the edit, so the resume records it: ``edited`` names plan.md and
+    ``inputs`` holds the sha the next call reads."""
+    planner = PlannerStub(modes={f"file:{DOC1}": "rate_limit"})
+    with pytest.raises(RateLimitExit):
+        run_plan(tmp_path, through="author", planner=planner, resume=False)
+    assert Bundle(tmp_path / SLUG).read_record().edited == []
+    plan_md = tmp_path / SLUG / "plan.md"
+    plan_md.write_bytes(plan_md.read_bytes() + b"Owner note: two reps are enough.\n")
+    planner.calls.clear()
+    _, record = run_plan(tmp_path, through="author", planner=planner)
+    assert record.status == "authored" and record.edited == ["plan.md"]
+    assert record.stages[1].inputs == {"plan.md": _sha(plan_md.read_bytes())}
+    _, _, first = planner.calls[0]
+    assert f"call: file:{DOC1}" in first and "Owner note: two reps are enough." in first
+
+
+def _by_hand(tmp_path: Path) -> Director:
+    """A planned Director whose bundle holds the good bundle written by hand over the base
+    world's copy, so an arrival check runs with no call."""
+    director = _planned(tmp_path)
+    director._copy_worlds([BASE_WORLD])
+    for rel, text in _good_files().items():
+        director.bundle.write_file(rel, text)
+    return director
+
+
+def test_a_documents_front_matter_layer_must_be_its_manifest_entrys(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M3: the manifest's floor and filler share read the entries' layers, so a document
+    whose front matter says another layer fails its arrival check, naming both."""
+    director = _by_hand(tmp_path)
+    entry = next(e for e in GOOD_MANIFEST if e.path == DOC1)
+    assert entry.layer is not None
+    reply = json.dumps({"content": (GOOD / DOC1).read_text("utf-8")})
+    assert director._check_file(entry, reply)[1] == []
+    other = next(layer for layer in Layer if layer is not entry.layer)
+    _, found = director._check_file(entry.model_copy(update={"layer": other}), reply)
+    assert found == [
+        f"{DOC1}: its front matter's layer is {entry.layer.value}, but its manifest entry "
+        f"says {other.value}"
+    ]
+
+
+@pytest.mark.parametrize("gating", ["triggered", "scheduled"])
+def test_config_yaml_naming_a_ladder_its_world_lacks_fails_arrival_under_every_gating(
+    gating: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M4: the schema lint's ladder clause (Task 4a) runs at the config's arrival under
+    every gating, so a missing ladder is refused in stage 2, once, and not by stage 5 after the
+    review calls; the dry run checks the conditions whose environment passed."""
+    director = _by_hand(tmp_path)
+    entry = next(e for e in GOOD_MANIFEST if e.kind == "config")
+    good = (GOOD / "config.yaml").read_text("utf-8")
+    lines = good.split("\n")
+    at = lines.index(f"    gating: {gating}")
+    lines[at - 1] = lines[at - 1].replace("ladder: default", "ladder: nope")
+    _, found = director._check_file(entry, json.dumps({"content": "\n".join(lines)}))
+    assert found == [f"config.yaml: environment 'mini_{gating}': world 'mini' has no ladder 'nope'"]
+    assert director._check_file(entry, json.dumps({"content": good}))[1] == []
+
+
+@pytest.mark.parametrize(("documents", "reviews"), [(25, 3), (26, 4), (50, 4), (51, 5)])
+def test_the_budget_counts_the_review_calls_a_chunked_corpus_makes(
+    documents: int, reviews: int, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M5: the budget counts one corpus call per REVIEW_CHUNK_DOCS (25) documents, then
+    the lines and plan groups, so a chunked corpus's plan is refused at its manifest."""
+    entries = _fresh(documents, documents // 3 + 1)
+    total = 1 + 1 + len(entries) + reviews  # the plan call, the manifest, its files, the reviews
+    fresh = REQUEST.model_copy(
+        update={"world": "fresh", "base_world": None, "max_director_calls": total}
+    )
+    director = _planned(tmp_path, request=fresh)
+    reply = json.dumps({"files": [e.model_dump(mode="json") for e in entries]})
+    assert director._check_manifest(reply, made=1)[1] == []
+    director.record.request = fresh.model_copy(update={"max_director_calls": total - 1})
+    (refused,) = director._check_manifest(reply, made=1)[1]
+    assert f"and {reviews} review calls make {total}" in refused

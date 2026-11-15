@@ -102,7 +102,7 @@ def drop_dead_attempts(path: Path, produced: Collection[int], *, closed_torn: bo
 
     Kept lines are written back byte for byte, through a temp file and a rename; a file with
     nothing to drop is not touched."""
-    parsed = _parsed_lines(path, closed_torn=closed_torn)
+    parsed = parsed_lines(path, closed_torn=closed_torn)
     return _keep_only(path, parsed, [_turn_in(record, produced) for _, record in parsed])
 
 
@@ -111,11 +111,12 @@ def _turn_in(record: Any, produced: Collection[int]) -> bool:
     return isinstance(turn, int) and turn in produced
 
 
-def _parsed_lines(path: Path, *, closed_torn: bool = False) -> list[tuple[bytes, Any]]:
+def parsed_lines(path: Path, *, closed_torn: bool = False) -> list[tuple[bytes, Any]]:
     """Each non-blank line of a JSONL file with its value; the torn last line (no newline after
     it) has the value None, and with ``closed_torn`` so does a record cut short that a later
     line closed off (``mcp_server.torn_line``). Any other line that does not parse raises, as
-    in ``drop_dead_attempts``."""
+    in ``drop_dead_attempts``. The runtime's torn-tail rule, which the Director's resume also
+    applies to the plan ledger (Phase 5 Task 7b fix round 1)."""
     if not path.exists():
         return []
     lines = path.read_bytes().split(b"\n")
@@ -161,7 +162,7 @@ def drop_uncommitted_generation(
     lists. A fire's ``GeneratorFire`` is written last, so a fire that died before it is dropped
     whole and redone. Other records are kept as ``drop_dead_attempts`` keeps them; a torn last
     line is dropped. Returns the lines dropped per file name, non-zero only."""
-    trigger_lines = _parsed_lines(triggers)
+    trigger_lines = parsed_lines(triggers)
     committed = {
         doc_id
         for _, rec in trigger_lines
@@ -182,7 +183,7 @@ def drop_uncommitted_generation(
             return written and all(d in committed for d in rec.get("docs_unlocked", []))
         return True
 
-    generated_lines = _parsed_lines(generated)
+    generated_lines = parsed_lines(generated)
     dropped = {
         triggers.name: _keep_only(
             triggers, trigger_lines, [keep_record(r) for _, r in trigger_lines]
@@ -318,7 +319,7 @@ class RunStore:
         judge that failed then and answers now), so the rewatch's pairs stand alone (P54; the
         final review's M1). Every other line is kept byte for byte. Returns the lines dropped."""
         path = self._stream_path(cell_id, rep, TRIGGERS_STREAM)
-        lines = _parsed_lines(path)
+        lines = parsed_lines(path)
         keep = [
             not (isinstance(r, dict) and r.get("type") == "contradiction" and r.get("turn") == turn)
             for _, r in lines

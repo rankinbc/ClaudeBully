@@ -83,7 +83,7 @@ _FIXED_KINDS: Final[dict[str, ManifestKind | None]] = {
 }
 # atomic.write_atomic's temp file beside its target, ".<name>.<mkstemp's 8 characters>.tmp",
 # which a process killed outright leaves behind (R-tmp); no grammar or harness file has the shape
-_LEFTOVER: Final = re.compile(r"\..+\.[a-z0-9_]{8}\.tmp")
+_LEFTOVER: Final = re.compile(r"\.(?P<target>.+)\.[a-z0-9_]{8}\.tmp")
 # the files no resume removes: the owner's plan and the rendered review (spec section 8)
 _ALWAYS_OWNED: Final = frozenset({"plan.md", "review.md"})
 
@@ -463,6 +463,24 @@ def remove_leftovers(bundle: Bundle) -> list[str]:
         if _LEFTOVER.fullmatch(path.name):
             path.unlink(missing_ok=True)
             removed.append(path.relative_to(bundle.root).as_posix())
+    return removed
+
+
+def remove_leftovers_of(folder: Path, targets: Collection[str]) -> list[str]:
+    """Remove each ``write_atomic`` leftover directly in ``folder`` whose target's name is one
+    of ``targets`` (R-tmp); the names removed. For a folder that plans share, the Director's
+    cache: a leftover beside a name not in ``targets`` may be another process's write in
+    flight, so it is left alone (Task 7b fix round 1, the sweep's cache-litter cases)."""
+    if not folder.is_dir():
+        return []
+    removed = []
+    for path in sorted(folder.iterdir()):
+        match = _LEFTOVER.fullmatch(path.name)
+        if match is None or match["target"] not in targets or _is_link(path):
+            continue
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            removed.append(path.name)
     return removed
 
 

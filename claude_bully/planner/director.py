@@ -34,9 +34,10 @@ call, so every decision a resume makes is the one an unbroken plan made (Task 7b
 
 import hashlib
 import json
+import math
 import os
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,11 +77,14 @@ from claude_bully.planner.bundle import (
     normalize_text,
     plan_personas,
     rematerialize_open_stage,
+    remove_leftovers,
+    remove_leftovers_of,
     world_of,
 )
 from claude_bully.planner.bundle_lints import (
     MIN_ANCHOR_DOCS,
     dry_run_refusals,
+    environment_refusals,
     model_from_text,
     plan_scans,
     premise_sheet_model,
@@ -117,6 +121,7 @@ from claude_bully.providers.base import (
 from claude_bully.providers.ledger import LedgerLine, activate, note_cached
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, _git_sha
+from claude_bully.runner.store import parsed_lines
 from claude_bully.strategies.base import all_strategies
 from claude_bully.strategies.bootstrap import ensure_registered
 from claude_bully.strategies.sheets import PersonaSheet
@@ -147,9 +152,15 @@ PLAN_TASK: Final = (
     "else: it is written to the bundle as you send it."
 )
 
-# the review calls a manifest's budget counts beside its file calls, one per review group (the
-# brief's "the three review calls"; a corpus over REVIEW_CHUNK_DOCS documents makes more)
-REVIEW_CALLS: Final = 3
+# stage 3's chunking rule (spec section 7): one reviewer call per group, the corpus in chunks of
+# at most REVIEW_CHUNK_DOCS documents; the manifest's budget counts the calls it implies
+# (``review_calls``, Task 7b fix round 1, review M5)
+REVIEW_CHUNK_DOCS: Final = 25
+REVIEW_GROUPS: Final = ("corpus", "lines", "plan")
+_LINES_KINDS: Final[frozenset[ManifestKind]] = frozenset(
+    {"world_sheet", "ladder", "persona", "premise_sheet"}
+)
+_PLAN_KINDS: Final[frozenset[ManifestKind]] = frozenset({"config", "expected"})
 WORLDS: Final = "worlds"
 FIXED_ENTRIES: Final = ("config.yaml", "expected.yaml")
 
@@ -368,6 +379,37 @@ def author_order(manifest: Sequence[ManifestEntry]) -> list[ManifestEntry]:
     for kind in _LATER_KINDS:
         ordered += [e for e in manifest if e.kind == kind]
     return ordered
+
+
+def review_calls(paths: Iterable[str]) -> int:
+    """The reviewer calls stage 3 makes over a bundle holding ``paths`` (spec section 7, stage
+    3, ``REVIEW_GROUPS``): one per chunk of at most ``REVIEW_CHUNK_DOCS`` documents (``corpus``),
+    one for the world sheets, ladders, personas and premise sheets (``lines``), and one for
+    ``plan.md``, ``config.yaml`` and ``expected.yaml`` (``plan``); a group with no file makes
+    none, and a path outside the grammar, or ``review.md``, is in no group."""
+    documents = 0
+    groups: set[str] = set()
+    for rel in set(paths):
+        try:
+            kind = kind_of(rel)
+        except BundlePathError:
+            continue
+        if kind == "document":
+            documents += 1
+        elif kind in _LINES_KINDS:
+            groups.add("lines")
+        elif kind in _PLAN_KINDS or rel == "plan.md":
+            groups.add("plan")
+    return math.ceil(documents / REVIEW_CHUNK_DOCS) + len(groups)
+
+
+def _world_files(root: Path, name: str) -> list[tuple[str, Path]]:
+    """Each file under a world's folder ``root``, as its bundle path under ``worlds/<name>/``
+    beside its own path, in path order."""
+    return [
+        (f"{WORLDS}/{name}/{path.relative_to(root).as_posix()}", path)
+        for path in sorted(p for p in root.rglob("*") if p.is_file())
+    ]
 
 
 _ARRIVAL_MODELS: Final[Mapping[ManifestKind, type[BaseModel]]] = {
@@ -591,9 +633,12 @@ class Director:
         second record of it can take an earlier call's index and transcript (Task 1 review M1;
         a resume reopens a failed stage in place). With ``adopt``, a new record holds the sha of
         every grammar file present (``inputs``) and the plan adopts the hand edits it finds
-        (``_adopt_edits``), in the record write that opens the stage, before anything else."""
+        (``_adopt_edits``), in the record write that opens the stage, before anything else; an
+        open record entered again re-records them (``_readopt``)."""
         last = self.record.stages[-1] if self.record.stages else None
         if last is not None and last.stage == stage and last.status == "open":
+            if adopt:
+                self._readopt(last)
             return last
         if self._stage(stage) is not None:
             raise DirectorError(f"stage {stage} has a record already; a stage is opened once")
@@ -609,13 +654,38 @@ class Director:
         """``edited`` gains each path present whose sha differs from the one its last committing
         call recorded, or, for a file no call wrote, from ``base_files`` (spec section 8: a
         committed stage's files are the owner's to edit, and the next stage adopts them)."""
-        owned = dict(self.record.base_files)
-        for stage in commit_order(self.record):
-            for call in stage.calls:
-                owned.update(call.outputs)
+        owned = self._owned()
         for rel, sha in present.items():
             if rel in owned and owned[rel] != sha and rel not in self.record.edited:
                 self.record.edited.append(rel)
+
+    def _owned(self, *, besides: StageRecord | None = None) -> dict[str, str]:
+        """Each committed path to the sha its last committing call recorded, or, for a file no
+        call wrote, ``base_files``'; the calls of ``besides`` left out."""
+        owned = dict(self.record.base_files)
+        for stage in commit_order(self.record):
+            if stage is not besides:
+                for call in stage.calls:
+                    owned.update(call.outputs)
+        return owned
+
+    def _readopt(self, stage: StageRecord) -> None:
+        """Review M2: a stage entered again (a resume after a kill or a pause, a continue after
+        a failure) re-records what it opened with, so the record says what its next call reads:
+        ``inputs`` holds each of its paths as it now is (one the resume removed left out), and
+        ``edited`` holds one of them exactly when it differs from its committing call's sha (a
+        plan.md put back after a failed scan leaves it; an edit made during a pause joins it).
+        Other entries of ``edited`` stay. One record write, only when either changed."""
+        present = self.bundle.index()
+        inputs = {rel: present[rel] for rel in stage.inputs if rel in present}
+        owned = self._owned(besides=stage)
+        differs = {rel for rel, sha in inputs.items() if rel in owned and owned[rel] != sha}
+        edited = [rel for rel in self.record.edited if rel not in stage.inputs or rel in differs]
+        edited += sorted(differs - set(edited))
+        if inputs != stage.inputs or edited != self.record.edited:
+            stage.inputs = inputs
+            self.record.edited = edited
+            self.bundle.write_record(self.record)
 
     def _call(self, stage: StageRecord, index: int, spec: CallSpec) -> Answer:
         """The answer to the stage's call at ``index``: asked when the stage has not reached it,
@@ -698,6 +768,30 @@ class Director:
         if len(kept) != len(raw):
             write_atomic(self.bundle.root / LEDGER, "".join(f"{line}\n" for line in kept))
 
+    def _clear_hard_kill(self) -> None:
+        """What a process killed outright inside a write leaves, cleared on every pass of
+        ``run`` before a stage is read (Task 7b fix round 1): every ``write_atomic`` temp in the
+        bundle (R-tmp; a kill inside the write that creates the plan or opens a stage leaves no
+        record that would reach ``rematerialize_open_stage``, review I1); a torn last ledger
+        line (``_drop_torn_ledger_tail``, review M1); and in the shared cache, the temp of each
+        put a committed call of this plan names, never another plan's (``remove_leftovers_of``)."""
+        remove_leftovers(self.bundle)
+        self._drop_torn_ledger_tail()
+        keys = {f"{call.cache_key}.json" for call in self._all_calls() if call.cache_key}
+        remove_leftovers_of(self.cache.directory, keys)
+
+    def _drop_torn_ledger_tail(self) -> None:
+        """The runtime's torn-tail rule on the plan ledger (``runner/store.parsed_lines``): the
+        last line, with no newline after it, that does not parse is a ledger append a kill cut
+        short, and the ledger is rewritten without it (``write_atomic``, whose own leftover the
+        next pass removes), so the next append is not glued to it. Any other line that does not
+        parse is damage, and the ``ValueError`` naming it is raised before anything is
+        written."""
+        path = self.bundle.root / LEDGER
+        lines = parsed_lines(path)
+        if lines and lines[-1][1] is None:
+            write_atomic(path, "".join(f"{raw.decode('utf-8')}\n" for raw, _ in lines[:-1]))
+
     def _reopen_failed(self, stage: StageRecord) -> None:
         """The failed-stage ruling: the stage's last call, when it is an ``error``, leaves
         ``calls`` (its transcript moved under ``transcripts/failed/``, numbered past an earlier
@@ -719,7 +813,8 @@ class Director:
         ``RateLimitExit`` with the stage left open. ``stop_after_plan`` stops at a stage 1
         committed before this run too (review M4: ``plan new`` again without ``--no-confirm``
         never authors). A stage no task has built yet raises ``NotImplementedError`` before it
-        is touched (review N1)."""
+        is touched (review N1). Each pass first clears what a hard kill inside a write left
+        (``_clear_hard_kill``, Task 7b fix round 1)."""
         with activate(self.bundle.root / LEDGER):
             for stage in STAGES[: STAGES.index(through) + 1]:
                 existing = self._stage(stage)
@@ -729,6 +824,7 @@ class Director:
                     continue
                 if not callable(getattr(self, stage, None)):
                     raise NotImplementedError(f"stage {stage} is not built yet (Tasks 8 and 9)")
+                self._clear_hard_kill()  # before the stage is read, record or none (review I1)
                 if existing is not None:  # the first stage not committed: spec section 8
                     # first, while a committed error call still holds its index (R-marker)
                     self._record_dead_attempt(existing)
@@ -816,7 +912,7 @@ class Director:
         manifest: list[ManifestEntry] = answer.parsed
         self._copy_worlds(self._shipped(manifest))
         order = author_order(manifest)
-        self.say(f"the manifest implies {len(order) + REVIEW_CALLS} calls")
+        self.say(f"the manifest implies {len(order) + self._review_calls(manifest)} calls")
         last = {world_of(e.path): i for i, e in enumerate(order) if e.kind in _WORLD_KINDS}
         dropped: list[str] = []
         index = 1
@@ -865,8 +961,7 @@ class Director:
                 source = load_world(name, self.worlds_dir)
             except (ValueError, OSError) as exc:
                 raise DirectorError(f"the reused world {name!r} does not load: {exc}") from exc
-            for path in sorted(p for p in source.root.rglob("*") if p.is_file()):
-                rel = f"{WORLDS}/{name}/{path.relative_to(source.root).as_posix()}"
+            for rel, path in _world_files(source.root, name):
                 try:
                     files[rel] = self.bundle.write_file(rel, path.read_text(encoding="utf-8"))
                 except BundlePathError as exc:
@@ -983,16 +1078,29 @@ class Director:
         return out
 
     def _budget_failures(self, entries: Sequence[ManifestEntry], made: int) -> list[str]:
-        """The calls made before the manifest, the manifest call, one call per entry and
-        ``REVIEW_CALLS`` past ``max_director_calls`` refuse the manifest (spec section 13)."""
+        """The calls made before the manifest, the manifest call, one call per entry and the
+        review calls the bundle implies (``_review_calls``) past ``max_director_calls`` refuse
+        the manifest (spec section 13). Repairs, revise and confirm calls are not counted;
+        ``_check_ceiling`` refuses any call past the limit."""
         limit = self.record.request.max_director_calls
-        total = made + 1 + len(entries) + REVIEW_CALLS
+        reviews = self._review_calls(entries)
+        total = made + 1 + len(entries) + reviews
         if total <= limit:
             return []
         return [
             f"the plan would pass max_director_calls ({limit}): {made} calls made, the manifest "
-            f"call, its {len(entries)} file calls and {REVIEW_CALLS} review calls make {total}"
+            f"call, its {len(entries)} file calls and {reviews} review calls make {total}"
         ]
+
+    def _review_calls(self, entries: Sequence[ManifestEntry]) -> int:
+        """``review_calls`` over the bundle the manifest makes (review M5): ``plan.md``, the
+        base copy, each shipped world the manifest names that is still to be copied, and the
+        manifest's paths."""
+        paths = {"plan.md", *self.record.base_files, *(e.path for e in entries)}
+        for name in self._shipped(entries):
+            if name not in self.record.base_worlds:
+                paths.update(rel for rel, _ in _world_files(self.worlds_dir / name, name))
+        return review_calls(paths)
 
     # ------------------------------------------------------------------ the files
 
@@ -1033,7 +1141,7 @@ class Director:
         ``run --dry-run`` would give (``_config_arrival``)."""
         try:
             if entry.kind == "document":
-                return self._document_arrival(entry.path, text)
+                return self._document_arrival(entry, text)
             if entry.kind == "config":
                 return self._config_arrival(text)
             if entry.kind == "premise_sheet":
@@ -1061,15 +1169,24 @@ class Director:
             out.setdefault(doc.id, doc)
         return out
 
-    def _document_arrival(self, rel: str, text: str) -> list[str]:
-        """``parse_document``, then ``lint_document`` with a ``LintContext`` over the world's
-        documents present and this one, its cast, premise terms and clock from the world's sheet
-        as written; ``links_resolve`` waits for the close."""
+    def _document_arrival(self, entry: ManifestEntry, text: str) -> list[str]:
+        """``parse_document``; its front matter's ``layer`` the entry's (review M3: the
+        manifest's floor and filler share read the entries' layers; an entry made for a reused
+        world's file has none to match); then ``lint_document`` with a ``LintContext`` over the
+        world's documents present and this one, its cast, premise terms and clock from the
+        world's sheet as written; ``links_resolve`` waits for the close."""
+        rel = entry.path
         doc = parse_document(text, rel)
+        layer: list[str] = []
+        if entry.layer is not None and doc.layer is not entry.layer:
+            layer = [
+                f"{rel}: its front matter's layer is {doc.layer.value}, but its manifest entry "
+                f"says {entry.layer.value}"
+            ]
         world = str(world_of(rel))
         sheet_rel = f"{WORLDS}/{world}/world.yaml"
         if sheet_rel not in self.bundle.index():
-            return [f"{rel}: its world's sheet {sheet_rel} is not written"]
+            return [*layer, f"{rel}: its world's sheet {sheet_rel} is not written"]
         sheet = model_from_text(WorldSheet, self.bundle.read_file(sheet_rel))
         documents = self._world_documents(world, besides=rel)
         documents[doc.id] = doc
@@ -1079,24 +1196,33 @@ class Director:
             premise_terms=tuple(sheet.premise_terms),
             start=sheet.clock.world_date,
         )
-        return [
+        return layer + [
             f"{r.lint_id}: {r.message}" + (f" ({r.span!r})" if r.span else "")
             for r in failures(lint_document(doc, ctx))
             if r.lint_id != "links_resolve"
         ]
 
     def _config_arrival(self, text: str) -> list[str]:
-        """Step 5: ``Experiment``, ``expand_cells`` and ``run_experiment(dry_run=True)`` against
-        the bundle's worlds (``dry_run_refusals``, its runs root a temporary directory,
-        preflight Q39), inside ``plan_personas(bundle_personas(bundle))``."""
+        """Step 5: ``Experiment``, ``expand_cells``, the ``schema`` lint's environment clause
+        under every gating (``environment_refusals``, review M4: the dry run reads no ladder
+        under ``triggered``), then ``run_experiment(dry_run=True)`` against the bundle's worlds
+        over the conditions whose environment passed (``dry_run_refusals``, its runs root a
+        temporary directory, preflight Q39), inside ``plan_personas(bundle_personas(bundle))``.
+        """
         experiment = model_from_text(Experiment, text)
+        worlds = self.bundle.root / WORLDS
         personas = bundle_personas(self.bundle)
         with plan_personas(personas):
             try:
                 expand_cells(experiment)
             except (ValueError, KeyError) as exc:
                 return [f"config.yaml: its cells do not expand: {exc}"]
-            refusals = dry_run_refusals(experiment, self.bundle.root / WORLDS)
+            refusals, failed = environment_refusals(experiment, worlds)
+            checked = [c for c in experiment.conditions if c.environment not in failed]
+            if len(checked) < len(experiment.conditions):
+                experiment = experiment.model_copy(update={"conditions": checked})
+            if checked:
+                refusals += dry_run_refusals(experiment, worlds)
         return [f"config.yaml: {refusal}" for refusal in refusals]
 
     def _drop(

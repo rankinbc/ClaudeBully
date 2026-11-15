@@ -888,6 +888,26 @@ def _environments(
     return bad
 
 
+def environment_refusals(experiment: Experiment, worlds_dir: Path) -> tuple[list[str], set[str]]:
+    """``schema``'s environment clause (``_environments``) run alone over the worlds under
+    ``worlds_dir``, under every gating: stage 2's ``config.yaml`` arrival reads it beside
+    ``dry_run_refusals``, since ``run --dry-run`` reads no ladder under ``triggered`` gating
+    (Task 7b fix round 1, review M4). Its messages (a ``skipped:`` one for an environment whose
+    world does not load), and the environments that failed or could not be checked."""
+    names: list[str] = []
+    if worlds_dir.is_dir():
+        names = sorted(p.name for p in worlds_dir.iterdir() if p.is_dir())
+    worlds: dict[str, World] = {}
+    for name in names:
+        try:
+            worlds[name] = load_world(name, worlds_dir)
+        except (ValueError, OSError):
+            continue
+    out: list[LintResult] = []
+    bad = _environments(experiment, names, worlds, out)
+    return [result.message for result in out], set(bad)
+
+
 def dry_run_refusals(experiment: Experiment, worlds_dir: Path) -> list[str]:
     """What ``run_experiment(dry_run=True)`` refuses: nothing, or, since it stops at its first
     refusal, each condition's own refusal run alone (the whole run's when none refuses alone).
