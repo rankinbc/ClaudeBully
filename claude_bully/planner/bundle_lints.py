@@ -102,8 +102,12 @@ from claude_bully.environments.world import (
 from claude_bully.metrics.events import DETECTORS
 from claude_bully.paths import DATA_DIR
 from claude_bully.planner.bundle import (
+    ATTEMPT_FILE,
     DRYRUN_DIR,
+    DRYRUN_FILE,
+    LEDGER,
     PERSONAS_DIR,
+    PLAN_FILE,
     STATE_DIR,
     TRANSCRIPTS,
     Bundle,
@@ -436,6 +440,7 @@ _WORLDS: Final = "worlds"
 _CONFIG: Final = "config.yaml"
 _EXPECTED: Final = "expected.yaml"
 _FIXED_MODELS: Final = (_CONFIG, _EXPECTED)
+_OFF_GRAMMAR: Final = "outside the bundle's path grammar"
 
 # The address and spare patterns of the repository's real-name scan, moved here unchanged in
 # text from tests/test_real_names.py, which imports them back (D-scans).
@@ -459,6 +464,18 @@ _RECORD_PROVIDER: Final = re.compile(
     + r')"'
 )
 _DEFAULT_DISPLAY_NAME: Final = str(RoleConfig.model_fields["display_name"].default)
+
+
+def url_hosts(text: str) -> list[str]:
+    """Each URL host ``URL_HOST`` captures in ``text``, lowercased, cut at a query (``?``) or a
+    fragment (``#``), a trailing full stop, comma, semicolon, colon or exclamation mark dropped
+    (a URL ending a sentence), then its port (fix round 1, review M1). ``URL_HOST`` itself is
+    unchanged in text (D-scans)."""
+    hosts = []
+    for captured in URL_HOST.findall(text):
+        host = captured.split("?", 1)[0].split("#", 1)[0].rstrip(".,;:!")
+        hosts.append(host.split(":", 1)[0].lower())
+    return hosts
 
 
 def config_display_names(text: str) -> set[str]:
@@ -498,6 +515,94 @@ def record_scan_text(text: str, display_names: Collection[str]) -> str:
     return _spare_names(_RECORD_PROVIDER.sub(r'"\1": ""', text), display_names)
 
 
+def _collapse(text: str) -> str:
+    """``text`` with every whitespace run one space: what a reader of a folded scalar, a wrapped
+    line or a double space sees (fix round 1, review I3)."""
+    return " ".join(text.split())
+
+
+def _strings(data: object, skip: frozenset[str] = frozenset()) -> list[str]:
+    """Every string value of parsed YAML or JSON, keys and values, depth first; the value of a
+    key in ``skip`` is left out."""
+    if isinstance(data, str):
+        return [data]
+    if isinstance(data, Mapping):
+        out = []
+        for key, value in data.items():
+            out += _strings(key)
+            if key not in skip:
+                out += _strings(value, skip)
+        return out
+    if isinstance(data, list):
+        return [s for item in data for s in _strings(item, skip)]
+    return []
+
+
+def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list[str]:
+    """What a denylist scan reads of one file: the whole text, comments included, its whitespace
+    collapsed, and, for a YAML file that parses, each string value, collapsed, one per line (a
+    value's escapes and folds resolved as the loader reads it). Whitespace is collapsed, never
+    removed, so a pattern still needs its word boundaries."""
+    texts = [_collapse(text)]
+    if rel.endswith(".yaml"):
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            data = None
+        texts.append("\n".join(_collapse(s) for s in _strings(data, skip)))
+    return texts
+
+
+class _View:
+    """One ``lint_bundle`` call's reads of the bundle: the grammar index, every file's path and
+    each text, read once and shared by every lint (fix round 1, review M3). The lints write
+    nothing to the bundle, so nothing goes stale within a call."""
+
+    def __init__(self, bundle: Bundle) -> None:
+        self.root = bundle.root
+        self._bundle = bundle
+        self._index: dict[str, str] | None = None
+        self._files: list[str] | None = None
+        self._texts: dict[str, str] = {}
+        self._scans: dict[tuple[str, frozenset[str]], list[str]] = {}
+
+    def index(self) -> dict[str, str]:
+        if self._index is None:
+            self._index = self._bundle.index()
+        return self._index
+
+    def files(self) -> list[str]:
+        """Every file under the root, grammar or not, posix and sorted."""
+        if self._files is None:
+            found = (p for p in self.root.rglob("*") if p.is_file())
+            self._files = sorted(p.relative_to(self.root).as_posix() for p in found)
+        return self._files
+
+    def read_file(self, rel: str) -> str:
+        """Any file under the root, as text: a grammar path through ``Bundle.read_file`` (which
+        refuses a link), any other file with bytes that are no UTF-8 replaced."""
+        if rel not in self._texts:
+            if rel in self.index():
+                self._texts[rel] = self._bundle.read_file(rel)
+            else:
+                data = (self.root / rel).read_bytes()
+                self._texts[rel] = data.decode("utf-8", errors="replace")
+        return self._texts[rel]
+
+    def scan_texts(self, rel: str, skip: frozenset[str] = frozenset()) -> list[str]:
+        """``_scan_texts`` of the file, parsed once for every scan that reads it."""
+        key = (rel, skip)
+        if key not in self._scans:
+            self._scans[key] = _scan_texts(rel, self.read_file(rel), skip)
+        return self._scans[key]
+
+    def world_and_persona_files(self) -> list[str]:
+        """Every file under ``worlds/`` or ``personas/``, the grammar's or not: ``load_world``
+        and ``bundle_personas`` glob them (fix round 1, review I2)."""
+        tops = (f"{_WORLDS}/", f"{PERSONAS_DIR}/")
+        return [rel for rel in self.files() if rel.startswith(tops)]
+
+
 @dataclass(frozen=True)
 class _Loaded:
     """What a bundle whose ``schema`` passed holds: its worlds, each document's bundle path by
@@ -527,7 +632,7 @@ def _field_errors(exc: ValidationError) -> str:
     )
 
 
-def _model[T: BaseModel](model: type[T], bundle: Bundle, rel: str) -> T:
+def _model[T: BaseModel](model: type[T], bundle: _View, rel: str) -> T:
     """A bundle YAML file validated as ``model``; the ``ValueError`` lists every field error."""
     try:
         raw = yaml.safe_load(bundle.read_file(rel))
@@ -564,7 +669,7 @@ class _Files:
     expected: ExpectedEvents | None = None
 
 
-def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
+def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
     """Each grammar file into its model (``plan.md`` and ``review.md`` have none), naming the
     file; ``config.yaml`` and ``expected.yaml`` must exist."""
     files = _Files()
@@ -598,11 +703,18 @@ def _load_files(bundle: Bundle, out: list[LintResult]) -> _Files:
             if kind == "persona":
                 files.failed_persona = True
     out.extend(_schema_fail(rel, "missing") for rel in _FIXED_MODELS if rel not in present)
+    # fix round 1 (review I2): load_world and bundle_personas glob past the grammar, so a file
+    # there that the Director could not have written must not reach a run
+    out.extend(
+        _schema_fail(rel, f"{_OFF_GRAMMAR}, though a loader reads every file here")
+        for rel in bundle.world_and_persona_files()
+        if rel not in present
+    )
     return files
 
 
 def _load_worlds(
-    bundle: Bundle, record: PlanRecord, names: Sequence[str], files: _Files, out: list[LintResult]
+    bundle: _View, record: PlanRecord, names: Sequence[str], files: _Files, out: list[LintResult]
 ) -> dict[str, World]:
     """Each bundle world whose files loaded, through ``load_world``; its ``premise_terms`` hold a
     term that is not blank and keep every term ``base_premise_terms`` recorded, compared without
@@ -728,7 +840,7 @@ def _runnable(
     return runnable
 
 
-def _schema(bundle: Bundle, record: PlanRecord) -> tuple[list[LintResult], _Loaded | None]:
+def _schema(bundle: _View, record: PlanRecord) -> tuple[list[LintResult], _Loaded | None]:
     """``schema``: every file into its model; every world through ``load_world`` and its premise
     terms; the persona names; every environment's world and ladder; then
     ``run_experiment(dry_run=True)`` against the bundle's worlds inside ``plan_personas``. Every
@@ -760,7 +872,7 @@ def _schema(bundle: Bundle, record: PlanRecord) -> tuple[list[LintResult], _Load
     return [], _Loaded(worlds, files.doc_paths, files.personas, experiment, files.expected)
 
 
-def _manifest_complete(bundle: Bundle, record: PlanRecord) -> list[LintResult]:
+def _manifest_complete(bundle: _View, record: PlanRecord) -> list[LintResult]:
     """``manifest_complete``: every manifest path exists unless its last ``file:`` call is an
     ``error``; no grammar file but ``plan.md`` and ``review.md`` is outside the manifest and the
     base copy."""
@@ -825,50 +937,54 @@ _JAILBREAK_PATH: Final = DATA_DIR / "jailbreak_denylist.txt"
 # what jailbreak_bundle leaves out: the transcripts (they quote) and the git-ignored dry run and
 # provider state (preflight Q24: the scan is the committed set the CI scan reads)
 _NOT_JAILBREAK_SCANNED: Final = frozenset({TRANSCRIPTS, DRYRUN_DIR, STATE_DIR})
+# the harness's own records at the root: written by the harness, never by the planner (fix
+# round 1, review I1); plan.json's request is scanned on its own
+_HARNESS_RECORDS: Final = frozenset({PLAN_FILE, ATTEMPT_FILE, LEDGER, DRYRUN_FILE})
 _VALUES_LOOSENED: Final = "values_loosened"
 
 
-def _world_and_persona_files(bundle: Bundle) -> list[str]:
-    """Every grammar path under ``worlds/`` or ``personas/``, sorted."""
-    return [rel for rel in bundle.index() if rel.startswith((f"{_WORLDS}/", f"{PERSONAS_DIR}/"))]
-
-
 def _denylist_hits(
-    lint_id: str, rel: str, text: str, patterns: Sequence[re.Pattern[str]], what: str
+    lint_id: str, rel: str, texts: Sequence[str], patterns: Sequence[re.Pattern[str]], what: str
 ) -> list[LintResult]:
-    """One fail per pattern of a denylist that matches ``text``, its first match the span."""
-    return [
-        LintResult(lint_id, "fail", rel, f"holds {what}: {found[0]!r}", found[0])
-        for pattern in patterns
-        if (found := pattern.search(text)) is not None
-    ]
+    """One fail per pattern of a denylist that matches any of ``texts``, its first match the
+    span."""
+    out: list[LintResult] = []
+    for pattern in patterns:
+        found = next((m for text in texts if (m := pattern.search(text)) is not None), None)
+        if found is not None:
+            out.append(LintResult(lint_id, "fail", rel, f"holds {what}: {found[0]!r}", found[0]))
+    return out
 
 
-def _real_name_bundle(bundle: Bundle) -> list[LintResult]:
-    """``real_name_bundle``: ``real_names.txt`` over the whole text of every ``worlds/`` and
-    ``personas/`` file, ``config.yaml`` through the config spare (its provider values and its
-    targets' display names, ``config_scan_text``) and ``expected.yaml``. ``plan.md``,
-    ``review.md`` and ``transcripts/`` are exempt for a plan in flight, since they quote; a
-    checked-in bundle is scanned whole by CI (R-scan-bundles)."""
+def _real_name_bundle(view: _View) -> list[LintResult]:
+    """``real_name_bundle``: ``real_names.txt`` over the whole text (``_scan_texts``) of every
+    file under ``worlds/`` and ``personas/``, ``config.yaml`` through the config spare (its
+    provider values and its targets' display names, ``config_scan_text``; of its parsed values,
+    a ``provider`` value is left out) and ``expected.yaml``. ``plan.md``, ``review.md`` and
+    ``transcripts/`` are exempt for a plan in flight, since they quote; a checked-in bundle is
+    scanned whole by CI (R-scan-bundles)."""
     patterns = load_patterns(REAL_NAMES_PATH)
-    present = bundle.index()
-    texts = {rel: bundle.read_file(rel) for rel in _world_and_persona_files(bundle)}
+    present = view.index()
+    texts = {rel: view.scan_texts(rel) for rel in view.world_and_persona_files()}
     if _CONFIG in present:
-        config = bundle.read_file(_CONFIG)
-        texts[_CONFIG] = config_scan_text(config, config_display_names(config))
+        config = view.read_file(_CONFIG)
+        names = config_display_names(config)
+        spared = view.scan_texts(_CONFIG, frozenset({"provider"}))
+        texts[_CONFIG] = [config_scan_text(text, names) for text in spared]
     if _EXPECTED in present:
-        texts[_EXPECTED] = bundle.read_file(_EXPECTED)
+        texts[_EXPECTED] = view.scan_texts(_EXPECTED)
     return [
         result
-        for rel, text in texts.items()
-        for result in _denylist_hits("real_name_bundle", rel, text, patterns, "a real name")
+        for rel, scanned in texts.items()
+        for result in _denylist_hits("real_name_bundle", rel, scanned, patterns, "a real name")
     ]
 
 
-def _reserved_hosts(bundle: Bundle) -> list[LintResult]:
-    """``reserved_hosts``: every URL host (``URL_HOST``, its port dropped) and email domain
-    (``EMAIL_DOMAIN``) in a ``worlds/`` or ``personas/`` file ends in ``RESERVED_TLDS``, and no
-    bare host name ends in a public suffix (``PUBLIC_HOST``).
+def _reserved_hosts(view: _View) -> list[LintResult]:
+    """``reserved_hosts``: every URL host (``url_hosts``: a trailing full stop or comma, a query,
+    a fragment and a port dropped) and email domain (``EMAIL_DOMAIN``) in a file under
+    ``worlds/`` or ``personas/`` ends in ``RESERVED_TLDS``, and no bare host name ends in a
+    public suffix (``PUBLIC_HOST``).
 
     The URL and email clauses are the closed rule. The bare-host clause is a deny list of public
     suffixes, so a bare host on an unlisted suffix (``pennetferry.xyz``) passes and is the
@@ -876,9 +992,9 @@ def _reserved_hosts(bundle: Bundle) -> list[LintResult]:
     overlay tokens that name no host)."""
     reserved = ", ".join(RESERVED_TLDS)
     out: list[LintResult] = []
-    for rel in _world_and_persona_files(bundle):
-        text = bundle.read_file(rel)
-        found = [("url host", h.split(":")[0].lower()) for h in URL_HOST.findall(text)]
+    for rel in view.world_and_persona_files():
+        text = view.read_file(rel)
+        found = [("url host", host) for host in url_hosts(text)]
         found += [("email domain", d.lower()) for d in EMAIL_DOMAIN.findall(text)]
         reported: set[str] = set()
         for what, host in dict.fromkeys(found):
@@ -894,43 +1010,50 @@ def _reserved_hosts(bundle: Bundle) -> list[LintResult]:
     return out
 
 
-def _boundary_bundle(bundle: Bundle) -> list[LintResult]:
-    """``boundary_bundle``: ``boundary.txt`` over the whole text, comments included, of every
-    ``worlds/`` and ``personas/`` file and ``config.yaml``; no field is exempt."""
+def _boundary_bundle(view: _View) -> list[LintResult]:
+    """``boundary_bundle``: ``boundary.txt`` over the whole text (``_scan_texts``), comments
+    included, of every file under ``worlds/`` and ``personas/`` and of ``config.yaml``; no field
+    is exempt."""
     patterns = load_patterns(BOUNDARY_PATH)
-    rels = _world_and_persona_files(bundle)
-    if _CONFIG in bundle.index():
+    rels = view.world_and_persona_files()
+    if _CONFIG in view.index():
         rels.append(_CONFIG)
+    what = "a Boundary word"
     return [
         result
         for rel in rels
-        for result in _denylist_hits(
-            "boundary_bundle", rel, bundle.read_file(rel), patterns, "a Boundary word"
-        )
+        for result in _denylist_hits("boundary_bundle", rel, view.scan_texts(rel), patterns, what)
     ]
 
 
-def _jailbreak_bundle(bundle: Bundle) -> list[LintResult]:
-    """``jailbreak_bundle``: ``data/jailbreak_denylist.txt`` over every file of the bundle but
-    those under ``transcripts/``, ``dryrun/`` and ``state/`` (spec section 9, preflight Q24):
-    the grammar files, ``plan.json`` (the request's question and constraints), the ledger and
-    ``dryrun.jsonl`` among them."""
+def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
+    """``jailbreak_bundle``: ``data/jailbreak_denylist.txt`` over the whole text
+    (``_scan_texts``) of every file of the bundle but ``transcripts/``, ``dryrun/`` and
+    ``state/`` (spec section 9, preflight Q24) and the harness's own records (``plan.json``,
+    ``.attempt.json``, ``ledger.jsonl``, ``dryrun.jsonl``), and over ``plan.json``'s request
+    (its question and constraints), the one planner-authored text there (fix round 1, review
+    I1: a recorded lint result holds the lint id and the matched phrase, so scanning the whole
+    record would fail every later validate)."""
     patterns = load_patterns(_JAILBREAK_PATH)
+    what = "a jailbreak denylist phrase"
     out: list[LintResult] = []
-    for path in sorted(p for p in bundle.root.rglob("*") if p.is_file()):
-        rel = path.relative_to(bundle.root).as_posix()
-        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED:
+    for rel in view.files():
+        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED or rel in _HARNESS_RECORDS:
             continue
-        text = path.read_bytes().decode("utf-8", errors="replace")
-        what = "a jailbreak denylist phrase"
-        out += _denylist_hits("jailbreak_bundle", rel, text, patterns, what)
-    return out
+        texts = view.scan_texts(rel)
+        out += _denylist_hits("jailbreak_bundle", rel, texts, patterns, what)
+    request = record.request
+    texts = [
+        _collapse(request.model_dump_json()),
+        "\n".join(_collapse(s) for s in _strings(request.model_dump(mode="json"))),
+    ]
+    return [*out, *_denylist_hits("jailbreak_bundle", PLAN_FILE, texts, patterns, what)]
 
 
-def _no_values_expectation(bundle: Bundle) -> list[LintResult]:
+def _no_values_expectation(view: _View) -> list[LintResult]:
     """``no_values_expectation``: the text ``values_loosened`` nowhere in ``expected.yaml``,
     comments included: predicting it would let a rep in which it fired count as a hit."""
-    if _EXPECTED not in bundle.index() or _VALUES_LOOSENED not in bundle.read_file(_EXPECTED):
+    if _EXPECTED not in view.index() or _VALUES_LOOSENED not in view.read_file(_EXPECTED):
         return []
     message = f"names {_VALUES_LOOSENED}, which no plan may predict"
     return [LintResult("no_values_expectation", "fail", _EXPECTED, message, _VALUES_LOOSENED)]
@@ -1068,13 +1191,14 @@ def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) 
     is the dry run's cells: ``budget``'s ``max_calls`` clause reads them, and with None it
     reports nothing. The strategy registry is left as it was found (``plan_personas``)."""
     record = bundle.read_record()
-    found, loaded = _schema(bundle, record)
-    found += _manifest_complete(bundle, record)
-    found += _real_name_bundle(bundle)
-    found += _reserved_hosts(bundle)
-    found += _boundary_bundle(bundle)
-    found += _jailbreak_bundle(bundle)
-    found += _no_values_expectation(bundle)
+    view = _View(bundle)  # the index and each file read once for every lint
+    found, loaded = _schema(view, record)
+    found += _manifest_complete(view, record)
+    found += _real_name_bundle(view)
+    found += _reserved_hosts(view)
+    found += _boundary_bundle(view)
+    found += _jailbreak_bundle(view, record)
+    found += _no_values_expectation(view)
     if loaded is not None:
         found += _world_lints(loaded)
         found += _anchor_floor(loaded, record)

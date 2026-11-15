@@ -30,9 +30,9 @@ from claude_bully.planner.bundle_lints import (
     PROVIDER_VALUE,
     PUBLIC_HOST,
     RESERVED_TLDS,
-    URL_HOST,
     config_display_names,
     config_scan_text,
+    url_hosts,
 )
 from tests.test_guardrails import load_denylist, scan
 
@@ -418,7 +418,7 @@ def test_world_addresses_use_reserved_top_level_domains(name: str, worlds_dir: P
     texts = [yaml.safe_dump(world.sheet.model_dump(mode="json"))]
     for doc in world.documents.values():
         texts.append(f"{doc.url or ''}\n{doc.title}\n{doc.body}")
-    hosts = {h.lower() for text in texts for h in URL_HOST.findall(text)}
+    hosts = {h for text in texts for h in url_hosts(text)}
     hosts |= {d.lower() for text in texts for d in EMAIL_DOMAIN.findall(text)}
     assert hosts
     for host in hosts:
