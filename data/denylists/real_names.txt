@@ -10,6 +10,10 @@
 # may narrow a pattern: "the verge" spares "on the verge of tears", and "gemini" spares an
 # invented hyphenated place such as "Gemini-Ridge" (its model ids are their own line).
 #
+# Each section's heading names its kind: the Director's context scrub (claude_bully/planner/
+# context.py: SCRUB_WORDS) puts one neutral word per section where a hit was, so a new section
+# needs its word there too.
+#
 # News outlets and wire services
 \bnew york times\b
 \bnytimes\b
@@ -51,12 +55,11 @@
 \ble monde\b
 \bder spiegel\b
 \bagence france-presse\b
-# AI labs and model families
+# AI labs
 \banthropic\b
 \bopenai\b
 \bdeepmind\b
 \bmistral\b
-\bmixtral\b
 \bcohere\b
 \bhugging ?face\b
 \bstability ai\b
@@ -66,6 +69,9 @@
 \binflection ai\b
 \bscale ai\b
 \bxai\b
+\bnvidia\b
+# Model families and assistants
+\bmixtral\b
 \bclaude\b
 \bchatgpt\b
 \bgpt-?\d\w*\b
@@ -79,7 +85,6 @@
 \bdall-?e\b
 \bdeepseek\b
 \bqwen\b
-\bnvidia\b
 \bcortana\b
 \bsiri\b
 # Large tech brands and platforms

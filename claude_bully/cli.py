@@ -31,9 +31,7 @@ from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.wait import wait_on_rate_limit as wait_on_rate_limit_
-from claude_bully.strategies.base import all_strategies
-from claude_bully.strategies.composed import Composed
-from claude_bully.strategies.factory import ensure_registered
+from claude_bully.strategies.bootstrap import listed_strategies
 
 app = typer.Typer(
     help="Bully personas versus LLMs: measure behavioral drift.", no_args_is_help=True
@@ -169,15 +167,7 @@ def list_strategies(
     names: Annotated[bool, typer.Option("--names", help="One name per line.")] = False,
 ) -> None:
     """Every registered strategy."""
-    ensure_registered()
-    rows = sorted(
-        (
-            c
-            for c in all_strategies().values()
-            if not issubclass(c, Composed) and not c.name.startswith("_")
-        ),
-        key=lambda c: (c.axis.value, c.name),
-    )
+    rows = sorted(listed_strategies().values(), key=lambda c: (c.axis.value, c.name))
     if names:
         for cls in rows:
             typer.echo(cls.name)

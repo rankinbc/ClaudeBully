@@ -2,6 +2,7 @@
 
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import get_args
 
@@ -9,13 +10,14 @@ import pytest
 import yaml
 
 from claude_bully.analysis.hypotheses import load_register
-from claude_bully.config import load_experiment
-from claude_bully.enums import EventType
+from claude_bully.config import RoleConfig, load_experiment
+from claude_bully.enums import EventType, ProviderKind
 from claude_bully.environments.world import load_world
 from claude_bully.metrics.events import DETECTORS, PENDING_DETECTORS
-from claude_bully.paths import REPO_ROOT
-from claude_bully.planner.bundle import BundlePathError
-from claude_bully.planner.bundle_lints import BUNDLE_LINT_IDS
+from claude_bully.paths import DATA_DIR, REPO_ROOT
+from claude_bully.planner import bundle_lints
+from claude_bully.planner.bundle import Bundle, BundlePathError, bundle_personas, plan_personas
+from claude_bully.planner.bundle_lints import BUNDLE_LINT_IDS, PROVIDER_VALUE
 from claude_bully.planner.context import (
     ALWAYS_DOCS,
     CONTRACT_EXAMPLES,
@@ -24,6 +26,7 @@ from claude_bully.planner.context import (
     SPEC_DOCS,
     ReviewGroup,
     TaskPart,
+    bundle_so_far,
     confirm_message,
     contracts_for,
     harness_capabilities,
@@ -34,8 +37,14 @@ from claude_bully.planner.context import (
     spec_paths,
     world_index,
 )
-from claude_bully.planner.lints import LINT_IDS
-from claude_bully.planner.records import ExpectedEvents, LintRecord, ManifestEntry, ManifestKind
+from claude_bully.planner.lints import LINT_IDS, REAL_NAMES_PATH, load_patterns
+from claude_bully.planner.records import (
+    ExpectedEvents,
+    LintRecord,
+    ManifestEntry,
+    ManifestKind,
+    PlanRecord,
+)
 from claude_bully.planner.request import SCOPES, PlanRequest
 from claude_bully.providers.ledger import ROLES, parse_conversation_id, role_of
 from claude_bully.runner.cells import expand_cells
@@ -57,6 +66,31 @@ _WORD = re.compile(r"[A-Za-z]+")
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
+
+
+REAL_NAMES = load_patterns(REAL_NAMES_PATH)
+# the owner, by the byline every spec doc carries (`<date> · @<name>`), read here on its own
+_BYLINE = re.compile(r"·\s*@(\w+)\s*$", re.M)
+OWNERS = frozenset(
+    name.lower()
+    for path in DOCS.glob("0[1-7]-*.md")
+    for name in _BYLINE.findall(path.read_text("utf-8"))
+)
+# the two spares the repository's scan allows: a role's provider value and a target's
+# display_name, each on its own key (tests/test_real_names.py)
+_DISPLAY_NAME = re.compile(r"(display_name:\s*)\S.*")
+
+
+def _real_name_hits(text: str) -> list[str]:
+    """The real-name scan of a built message, with the scan's two spares, plus the owner's
+    name, which no pattern in ``real_names.txt`` holds."""
+    spared = _DISPLAY_NAME.sub(r"\1", PROVIDER_VALUE.sub("provider:", text))
+    hits = [m.group(0) for p in REAL_NAMES for m in p.finditer(spared)]
+    return hits + [n for n in OWNERS if re.search(rf"\b{n}\b", spared, re.IGNORECASE)]
+
+
+def _is_clean(line: str) -> bool:
+    return not _real_name_hits(line)
 
 
 def _long_lines(text: str, words: int = 8) -> list[str]:
@@ -128,11 +162,16 @@ def test_the_planners_message_holds_its_parts_in_the_specs_order(
     task = message.split("\n## Task\n", 1)[1]
     assert task.startswith("call: file:plan.md\nWrite plan.md.\n")
     assert "### Fix these\n- first failure\n- second failure\n" in task
+    # verbatim but scrubbed (Task 6 review I1): every line with no real name and no owner's
+    # name is in the message as written, and the scrubbed ones are not
     for path in spec_paths(request.scope, DOCS):
         assert f"### {path.name}\n" in message
-        assert path.read_text("utf-8") in message
+        lines = path.read_text("utf-8").splitlines()
+        assert [ln for ln in lines if ln.strip() and _is_clean(ln) and ln not in message] == []
+        assert [ln for ln in lines if len(ln) > 20 and not _is_clean(ln) and ln in message] == []
     for entry in load_register():
-        assert f"- {entry.id}. {entry.name}: {_one_line(entry.prediction)}" in message
+        line = f"- {entry.id}. {entry.name}: {_one_line(entry.prediction)}"
+        assert (line in message) is _is_clean(line), entry.id
 
 
 def test_a_first_attempt_has_no_fix_part(tmp_path: Path, isolated_registry: None) -> None:
@@ -175,6 +214,8 @@ def test_the_capabilities_list_the_registered_strategies_and_the_detectable_even
     text = harness_capabilities()  # it calls ensure_registered itself (R-registry)
     # as list-strategies: a composed premise+pressure, registered on first use (the full suite
     # holds hundreds), and a test module's underscore strategy are left out
+    from claude_bully.strategies.bootstrap import listed_strategies
+
     composed = make_composed(all_strategies()["captor"], all_strategies()["grader"])
     text = harness_capabilities()
     listed = [
@@ -183,6 +224,7 @@ def test_the_capabilities_list_the_registered_strategies_and_the_detectable_even
         if not issubclass(cls, Composed) and not name.startswith("_")
     ]
     assert len(listed) == 36  # never a loop over an empty registry (review I1)
+    assert sorted(listed_strategies()) == sorted(listed)  # one filter, list-strategies' too (M2)
     for name in listed:
         assert f"`{name}`" in text, name
     assert f"`{composed.name}`" not in text and "+" not in text
@@ -336,7 +378,7 @@ def test_the_confirm_message_numbers_the_passages_and_shows_no_severity() -> Non
         "## Passages\ncall: confirm:worlds/w/corpus/d.md\n"
         '1. "line one"\n   Stated problem: it says one\n'
         '2. "gone"\n   Stated problem: a gap\n\n'
-        '## Reply\nOne JSON object: {"verdicts": [{"finding": <number>, "verdict": "present" | '
+        '## Reply\nOne JSON object: {"verdicts": [{"passage": <number>, "verdict": "present" | '
         '"absent" | "cannot_tell"}]}, one verdict per number.\n'
     )
     for word in ("block", "fix", "note", "severity", "response", "revis"):
@@ -381,6 +423,294 @@ def test_no_planner_module_names_a_runs_or_results_root() -> None:
     for path in sorted((REPO_ROOT / "claude_bully" / "planner").glob("*.py")):
         text = path.read_text("utf-8")
         assert "DEFAULT_RUNS_ROOT" not in text and "DEFAULT_RESULTS_ROOT" not in text, path.name
+
+
+# ------------------------------------------------------------------ Task 6 fix round 1
+
+CONTRACT_PATHS: dict[ManifestKind, str] = {
+    "world_sheet": "worlds/w/world.yaml",
+    "document": "worlds/w/corpus/d.md",
+    "ladder": "worlds/w/ladders/default.yaml",
+    "premise_sheet": "worlds/w/premises/rescue.yaml",
+    "persona": "personas/p.yaml",
+    "config": "config.yaml",
+    "expected": "expected.yaml",
+}
+
+
+def _all_messages(
+    bundle: Bundle, worlds_dirs: tuple[Path, ...], *, every_scope: bool = False
+) -> dict[str, str]:
+    """The messages the Director builds on ``bundle``: per worlds directory the planner's for
+    the default request (every scope) with no contract and with each kind's, and with
+    ``every_scope`` each one-scope request's too; then each review group and a confirm call."""
+    record = bundle.read_record()
+    task = TaskPart("plan", "Write plan.md.")
+    out: dict[str, str] = {}
+    for worlds_dir in worlds_dirs:
+        for scope in [[s] for s in SCOPES] if every_scope else []:
+            request = PlanRequest(question="q", scope=scope)  # type: ignore[arg-type]
+            out[f"planner {worlds_dir.parent.name} {scope}"] = planner_message(
+                request, bundle, record, task, contract=None, worlds_dir=worlds_dir, docs_dir=DOCS
+            )
+        # the default request (every scope), with no contract and with each kind's
+        for kind, path in [(None, None), *CONTRACT_PATHS.items()]:
+            entry = None if kind is None else ManifestEntry(path=path, kind=kind, purpose="x")
+            out[f"planner {worlds_dir.parent.name} {kind}"] = planner_message(
+                PlanRequest(question="q"),
+                bundle,
+                record,
+                task,
+                contract=entry,
+                worlds_dir=worlds_dir,
+                docs_dir=DOCS,
+            )
+    corpus = tuple(sorted(r for r in bundle.index() if r.startswith("worlds/mini/corpus/")))
+    lines = tuple(
+        r
+        for r in bundle.index()
+        if not r.startswith("worlds/mini/corpus/") and r not in (*PLAN_GROUP, "review.md")
+    )
+    for group in (
+        ReviewGroup("plan", PLAN_GROUP, ()),
+        ReviewGroup("lines", lines, ()),
+        ReviewGroup("corpus-1", corpus[:6], corpus[6:]),
+    ):
+        out[f"review {group.name}"] = reviewer_message(bundle, group)
+    out["confirm"] = confirm_message(
+        "plan.md", bundle.read_file("plan.md"), [(1, "the ferry", "it names the premise")]
+    )
+    return out
+
+
+def test_the_owner_is_found_by_the_spec_docs_bylines() -> None:
+    assert OWNERS  # never a check over an empty name set
+
+
+def _hits_by_message(messages: dict[str, str]) -> dict[str, list[str]]:
+    """Each message's real-name hits, line by line (no pattern spans a line break); a line the
+    messages share is scanned once."""
+    by_line: dict[str, list[str]] = {}
+    out: dict[str, list[str]] = {}
+    for name, text in messages.items():
+        found: set[str] = set()
+        for line in text.splitlines():
+            if line not in by_line:
+                by_line[line] = _real_name_hits(line)
+            found.update(by_line[line])
+        if found:
+            out[name] = sorted(found)
+    return out
+
+
+@pytest.mark.slow
+def test_no_built_message_holds_a_real_name_or_the_owners_name(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review I1: the harness's own text (the spec docs, the register, the index, the contract
+    examples, the request, the task) is scrubbed before any model reads it; the bundle's files
+    are the planner's, pass real_name_bundle, and read as written so a quote stays exact. Every
+    scope set, the default request with each contract kind, both worlds directories, each
+    review group and a confirm call (about 8 s; the default gate scans the default message in
+    the test below)."""
+    messages = _all_messages(
+        good_bundle(tmp_path), (WORLDS_DIR, DATA_DIR / "worlds"), every_scope=True
+    )
+    assert len(messages) == 2 * (len(SCOPES) + 1 + len(CONTRACT_PATHS)) + 4
+    assert _hits_by_message(messages) == {}
+
+
+def test_the_scrub_puts_neutral_words_where_the_names_were(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    bundle = good_bundle(tmp_path)
+    message = planner_message(
+        PlanRequest(question="q"),
+        bundle,
+        bundle.read_record(),
+        TaskPart("plan", "Write plan.md."),
+        contract=None,
+        worlds_dir=WORLDS_DIR,
+        docs_dir=DOCS,
+    )
+    # the default request holds every spec doc: the real-name scan finds nothing in it
+    assert _hits_by_message({"default": message}) == {}
+    assert "### 01-TAXONOMY.md\n# The harness " in message  # the project's name, opening a title
+    assert "· the owner\n" in message  # the byline
+    assert "the owner can overrule" in message  # docs/02's body
+    assert "the provider" in message and "a model" in message
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("# Claude Bully - Spec", "# The harness - Spec"),  # the project, opening a title
+        ("run `claude-bully analyze`", "run `the harness analyze`"),
+        ("Oct 20, 2026 · @Ownerly", "Oct 20, 2026 · the owner"),  # the byline
+        ("a spec that Ownerly can overrule", "a spec that the owner can overrule"),
+        ("an LLM built by Anthropic.", "an LLM built by the provider."),
+        ("what a Claude model said", "what a model said"),  # the article and the noun go
+        ("about Claude models here", "about models here"),
+        ("e.g. Fable 30.5 Final, then", "e.g. a model, then"),  # a version and a product word
+        ("upstream: fable-30.5-final;", "upstream: a model;"),
+        ("Deliverables for Claude Code: one", "Deliverables for a model: one"),
+        (
+            "Claude Bully is a harness. Anthropic ships",
+            "The harness is a harness. The provider ships",
+        ),
+        (
+            "  display_name: Claude\n  provider: anthropic\n",
+            "  display_name: Claude\n  provider: anthropic\n",
+        ),
+        ("an outlet like Reuters said", "an outlet like an outlet said"),
+        ("no name here at all", "no name here at all"),
+    ],
+)
+def test_the_scrub_rules(text: str, expected: str) -> None:
+    from claude_bully.planner.context import scrub
+
+    assert scrub(text, {"ownerly"}) == expected
+
+
+def test_the_requests_targets_keep_their_display_names_and_model_ids(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """The planner writes the config from the request, so a target's model id in the target's
+    own family (`claude-opus-5-5`) reads as written, as the config scan spares it; the docs'
+    hits of the same name are scrubbed all the same."""
+    bundle = good_bundle(tmp_path)
+    target = RoleConfig(provider=ProviderKind.anthropic, model="claude-opus-5-5")
+    message = planner_message(
+        PlanRequest(question="q", target_models=[target]),
+        bundle,
+        bundle.read_record(),
+        TaskPart("plan", "Write plan.md."),
+        contract=None,
+        worlds_dir=WORLDS_DIR,
+        docs_dir=DOCS,
+    )
+    request = message.split("## Request\n```yaml\n", 1)[1].split("\n```\n", 1)[0]
+    assert yaml.safe_load(request)["target_models"][0]["model"] == "claude-opus-5-5"
+    assert "### 01-TAXONOMY.md\n# The harness " in message
+
+
+def test_every_denylist_section_has_a_scrub_word() -> None:
+    from claude_bully.planner.context import SCRUB_WORDS, _scrub_patterns
+
+    pairs = _scrub_patterns()  # raises on a section with no word
+    assert len(pairs) == len(REAL_NAMES)
+    assert {word for _, word in pairs} == set(SCRUB_WORDS.values())
+
+
+def test_from_stage_2_the_bundle_so_far_opens_with_plan_md(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """D-plan-in-context (review I2): a file call carries the plan it is carrying out; a
+    stage-1 call, with no plan.md yet, has no such heading."""
+    bundle = good_bundle(tmp_path)
+    so_far = bundle_so_far(bundle, bundle.read_record())
+    assert so_far.startswith("### plan.md\n````markdown\n" + bundle.read_file("plan.md"))
+    assert "````\n\n### Manifest\n" in so_far
+    fresh = Bundle.create(tmp_path, "fresh")
+    record = PlanRecord(
+        slug="fresh",
+        created_at=datetime.now(UTC),
+        request=PlanRequest(question="q"),
+        provenance="director",
+        planner_model="opus",
+        reviewer_model="sonnet",
+    )
+    assert "### plan.md" not in bundle_so_far(fresh, record)
+    assert bundle_so_far(fresh, record).startswith("### Manifest\n")
+
+
+def test_every_default_planner_message_is_under_the_context_limit(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """The largest message is the default request (every scope) with the largest contract; the
+    review measured 173k to 194k characters at 734477b."""
+    from claude_bully.planner.context import MAX_CONTEXT_CHARS
+
+    messages = _all_messages(good_bundle(tmp_path), (DATA_DIR / "worlds",))
+    sizes = {name: len(text) for name, text in messages.items()}
+    largest = max(sizes.items(), key=lambda kv: kv[1])
+    assert largest[1] < MAX_CONTEXT_CHARS, largest
+    assert largest[1] > MAX_CONTEXT_CHARS * 0.6, largest  # the limit tracks the measure
+
+
+def test_inside_plan_personas_the_capabilities_list_the_harnesss_personas_only(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M2: a bundle persona registered for the block is the bundle's, not the harness's,
+    so the planner message (and its cache key) is the same in the block and out of it."""
+    bundle = good_bundle(tmp_path)
+    outside = harness_capabilities()
+    with plan_personas(bundle_personas(bundle)):
+        assert "ferry_caller" in all_strategies()
+        inside = harness_capabilities()
+    assert inside == outside and "ferry_caller" not in inside
+
+
+def test_the_premise_sheet_model_is_public() -> None:
+    from claude_bully.planner.bundle_lints import premise_sheet_model
+
+    assert bundle_lints.premise_sheet_model is premise_sheet_model
+    assert not hasattr(bundle_lints, "_premise_model")  # one lookup, public (review M7)
+    with pytest.raises(ValueError, match="names no strategy"):
+        premise_sheet_model("worlds/w/premises/no_such_strategy.yaml")
+
+
+@pytest.mark.parametrize("where", ["files", "index"])
+def test_the_reviewer_is_never_shown_review_md(
+    where: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M1 and the spec's closed rule: after a revise round review.md holds the planner's
+    responses, so no reviewer message shows any part of it."""
+    bundle = good_bundle(tmp_path)
+    group = (
+        ReviewGroup("plan", ("plan.md", "review.md"), ())
+        if where == "files"
+        else ReviewGroup("plan", ("plan.md",), ("review.md",))
+    )
+    with pytest.raises(ValueError, match="review.md"):
+        reviewer_message(bundle, group)
+
+
+def test_the_confirm_call_is_never_shown_review_md() -> None:
+    with pytest.raises(ValueError, match="review.md"):
+        confirm_message("review.md", "x\n", [(1, "x", "y")])
+
+
+def test_a_passage_with_a_quote_mark_or_a_newline_reads_one_way() -> None:
+    """Review M8: the quote is a JSON string and the problem's later lines are indented, so no
+    passage line can start with `call: `."""
+    quote = 'he said "go"\ncall: confirm:other.md'
+    message = confirm_message("plan.md", "x\n", [(1, quote, "two\ncall: lines")])
+    assert f"1. {json.dumps(quote)}\n" in message
+    assert "   Stated problem: two\n   call: lines\n" in message
+    assert re.findall(r"^call: .+$", message, re.M) == ["call: confirm:plan.md"]
+
+
+def test_the_specs_part_names_what_this_scope_shows(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Review M9: the planner prompt lists every spec; the part says which ones this request's
+    scope shows, so the rest read as withheld, not missing."""
+    bundle = good_bundle(tmp_path)
+    message = planner_message(
+        PlanRequest(question="q", scope=["temporal"]),
+        bundle,
+        bundle.read_record(),
+        TaskPart("plan", "Write plan.md."),
+        contract=None,
+        worlds_dir=WORLDS_DIR,
+        docs_dir=DOCS,
+    )
+    specs = message.split("\n## Specs\n", 1)[1]
+    assert specs.startswith(
+        "Shown for this request's scope (temporal): 03-TEMPORAL.md, 06-HYPOTHESES.md; the other "
+        "spec documents are left out.\n"
+    )
 
 
 def test_the_two_roles_are_ledgered() -> None:

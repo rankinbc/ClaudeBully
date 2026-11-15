@@ -719,8 +719,10 @@ def _model[T: BaseModel](model: type[T], bundle: _View, rel: str) -> T:
         raise ValueError(f"does not load as {model.__name__}: {_field_errors(exc)}") from exc
 
 
-def _premise_model(rel: str) -> type[BaseModel]:
-    """The model of ``worlds/<w>/premises/<strategy>.yaml``: that strategy's ``world_sheet``."""
+def premise_sheet_model(rel: str) -> type[BaseModel]:
+    """The model of ``worlds/<w>/premises/<strategy>.yaml``: that strategy's ``world_sheet``.
+    One lookup for the ``schema`` lint that judges the file and the contract the planner is
+    shown for it (``planner/context.py: contracts_for``)."""
     stem = rel.rsplit("/", 1)[1].removesuffix(".yaml")
     cls = all_strategies().get(stem)
     if cls is None:
@@ -763,7 +765,7 @@ def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
             elif kind == "ladder":
                 _model(LadderConfig, bundle, rel)
             elif kind == "premise_sheet":
-                _model(_premise_model(rel), bundle, rel)
+                _model(premise_sheet_model(rel), bundle, rel)
             elif kind == "persona":
                 sheet = _model(PersonaSheet, bundle, rel)
                 files.personas.setdefault(sheet.name, sheet)
