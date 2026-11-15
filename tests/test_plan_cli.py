@@ -551,3 +551,144 @@ def test_a_review_round_killed_in_stage_5_keeps_an_edit_an_earlier_stage_adopted
     held, unbroken = Bundle(b).read_record(), Bundle(a).read_record()
     assert "plan.md" in unbroken.edited and held.edited == unbroken.edited
     assert comparable(held) == comparable(unbroken) and hashed_files(b) == hashed_files(a)
+
+
+# ------------------------------------------------------------------------------ fix round 1
+
+
+def test_a_planted_bug_in_a_plan_command_keeps_its_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stubs: object
+) -> None:
+    """Fix round 1 (review I1): the plan commands print only a damaged record
+    (``DamagedRecordError``) or a refusal (``DirectorError``) as ``error:``. A ``ValueError`` of
+    a defect reaches the caller as itself, with the frame that raised it, not as ``SystemExit``."""
+    import traceback
+
+    from claude_bully.planner import director as director_module
+    from tests.fixtures.bundle_fixtures import good_bundle
+
+    def planted_bug(*args: object, **kwargs: object) -> object:
+        return int("not-a-number")
+
+    bundle = good_bundle(tmp_path)
+    monkeypatch.setattr(director_module, "lint_bundle", planted_bug)
+    result = runner.invoke(cli.app, ["plan", "validate", str(bundle.root)])
+    assert result.exit_code != 0
+    assert type(result.exception) is ValueError, result.output
+    assert "error:" not in result.output
+    assert result.exc_info is not None
+    frames = [frame.name for frame in traceback.extract_tb(result.exc_info[2])]
+    assert "planted_bug" in frames
+
+
+def test_a_schema_invalid_plan_json_is_named_with_its_file_and_field(
+    tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 1 (review I1, P1c): a plan.json that is valid JSON but fails ``PlanRecord``
+    prints the file and the field, with no traceback, and exits 1."""
+    from tests.fixtures.bundle_fixtures import good_bundle
+
+    bundle = good_bundle(tmp_path)
+    data = json.loads((bundle.root / "plan.json").read_text("utf-8"))
+    data["open_blocks"] = "three"
+    (bundle.root / "plan.json").write_text(json.dumps(data, indent=2), "utf-8")
+    for command in ("validate", "continue", "review"):
+        result = runner.invoke(cli.app, ["plan", command, str(bundle.root)])
+        assert result.exit_code == 1 and isinstance(result.exception, SystemExit), command
+        assert "error: " in result.output and "plan.json: field open_blocks: " in result.output
+        assert str(bundle.root) in result.output, command
+
+
+@pytest.mark.slow  # stages 1 and 2 on the doubles
+def test_plan_new_again_without_no_confirm_on_an_authored_plan_prints_the_stop(
+    tmp_path: Path, stubs: tuple[PlannerStub, ReviewerStub]
+) -> None:
+    """Fix round 1 (review m1): `plan new` again without --no-confirm on a slug past stage 1
+    but not runnable stops as asked (D-exit): it prints the stop message and exits 0, and runs
+    no stage."""
+    import yaml
+
+    from tests.fixtures.director_stub import run_plan
+
+    planner, reviewer = stubs
+    plans = tmp_path / "plans"
+    bundle, record = run_plan(plans, through="author")
+    assert record.status == "authored"
+    held = bundle.read_record().stages
+    request_file = tmp_path / "request.yaml"
+    request_file.write_text(yaml.safe_dump(REQUEST.model_dump(mode="json")), "utf-8")
+    argv = ["plan", "new", "--request", str(request_file), "--plans-root", str(plans)]
+    result = runner.invoke(cli.app, argv)
+    assert result.exit_code == 0, result.output
+    assert "stopped after stage 1: review " in result.output and "plan continue" in result.output
+    assert "status authored" in result.output
+    assert bundle.read_record().stages == held
+    assert planner.calls == [] and reviewer.calls == []
+
+
+@pytest.mark.slow  # a dry run
+def test_a_blocked_dry_run_leaves_no_dryrun_jsonl_of_the_last_one(
+    tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 1 (review m2): a stage 5 that runs no dry run (here a ladder its script cannot
+    walk) removes the last dry run's dryrun.jsonl, so nothing reads cells for content the bundle
+    no longer holds (spec sections 10 and 15: dryrun.jsonl equals ``PlanRecord.dry_run``)."""
+    from tests.fixtures.bundle_fixtures import good_bundle, mutate
+
+    bundle = good_bundle(tmp_path)
+    first = runner.invoke(cli.app, ["plan", "validate", str(bundle.root)])
+    assert first.exit_code == 0, first.output
+    assert (bundle.root / "dryrun.jsonl").read_text("utf-8").strip()
+    rel = "worlds/mini/ladders/default.yaml"
+    mutate(bundle, rel, "- Who is Dag Quenby?", "- Dag Quenby works nights.")
+    blocked = runner.invoke(cli.app, ["plan", "validate", str(bundle.root)])
+    assert blocked.exit_code == 1 and "status validated" in blocked.output, blocked.output
+    assert bundle.read_record().dry_run == []
+    assert not (bundle.root / "dryrun.jsonl").exists()
+    mutate(bundle, rel, "- Dag Quenby works nights.", "- Who is Dag Quenby?")
+    again = runner.invoke(cli.app, ["plan", "validate", str(bundle.root)])
+    assert again.exit_code == 0, again.output
+    cells = (bundle.root / "dryrun.jsonl").read_text("utf-8").splitlines()
+    assert len(cells) == len(bundle.read_record().dry_run) > 0
+
+
+@pytest.mark.parametrize(
+    ("argv", "named"),
+    [
+        (["plan", "diff", "{missing}"], "BUNDLE"),
+        (["plan", "diff", "{good}", "{missing}"], "OTHER"),
+        (
+            ["plan", "new", "q?", "--request", "{missing}/r.yaml", "--plans-root", "{tmp}"],
+            "request",
+        ),
+    ],
+)
+def test_a_missing_path_is_a_usage_error_with_no_traceback(
+    argv: list[str], named: str, tmp_path: Path, stubs: object
+) -> None:
+    """Fix round 1 (review m3): a missing bundle or request file is a usage error naming the
+    argument (exit 2), never a raw ``FileNotFoundError``."""
+    from tests.fixtures.bundle_fixtures import good_bundle
+
+    good = good_bundle(tmp_path / "g")
+    subs = {
+        "missing": str(tmp_path / "nowhere"),
+        "good": str(good.root),
+        "tmp": str(tmp_path / "p"),
+    }
+    result = runner.invoke(cli.app, [a.format(**subs) for a in argv])
+    assert result.exit_code == 2 and isinstance(result.exception, SystemExit), result.output
+    assert named in result.output and "nowhere" in result.output
+    assert not (tmp_path / "p").exists()
+
+
+def test_plan_new_help_holds_no_home_folder_name() -> None:
+    """Fix round 1 (review m4): the --plans-root default is shown as its expression, never as
+    the machine's absolute path, which holds the login's home folder name."""
+    from claude_bully.paths import REPO_ROOT
+
+    result = runner.invoke(cli.app, ["plan", "new", "--help"], env={"COLUMNS": "400"})
+    assert result.exit_code == 0, result.output
+    assert Path.home().name not in result.output
+    assert str(REPO_ROOT) not in result.output and REPO_ROOT.as_posix() not in result.output
+    assert "<repo>/plans" in result.output

@@ -69,6 +69,7 @@ from claude_bully.metrics.judge import JudgeCache
 from claude_bully.paths import REPO_ROOT
 from claude_bully.planner.bundle import (
     CACHE_DIR,
+    DRYRUN_FILE,
     LEDGER,
     PLAN_FILE,
     STATE_DIR,
@@ -2010,7 +2011,9 @@ class Director:
         midway, is entered again); every ``write_atomic`` leftover removed (R-tmp); the static
         lints (``lint_bundle`` with no dry run). When a ``schema`` or a ``ladder_walk`` result
         fails there is no dry run (``dry_run`` raises on a ladder its own script cannot walk;
-        the Task 8 carry) and the ``dry_run`` lint's result names why; else the bundle's
+        the Task 8 carry), the ``dry_run`` lint's result names why, and an earlier dry run's
+        ``dryrun.jsonl`` is removed, so the file never shows cells the record does not hold
+        (spec sections 10 and 15; Task 9 fix round 1, review m2); else the bundle's
         denylist scans (``_scan_bundle``, the path stages 2 to 4 take before a call shows the
         bundle: a hit fails the stage), the dry run (``dry_run``, a full stub run with its own
         resume, K12), ``dry_run`` and ``dry_run_id`` written, the ``dryrun`` checkpoint (K13: a
@@ -2034,8 +2037,9 @@ class Director:
             self.bundle.write_record(self.record)
             self._checkpoint("dryrun", "validate")
             results = lint_bundle(self.bundle, dry_run=cells)
-        else:
+        else:  # the last dry run's dryrun.jsonl goes with its cells (review m2); its run stays
             self.record.dry_run, self.record.dry_run_id = [], None
+            (self.bundle.root / DRYRUN_FILE).unlink(missing_ok=True)
             results = [*static, LintResult("dry_run", "fail", "config.yaml", f"not run: {blocked}")]
         self.record.lint_results = [LintRecord.of(result) for result in results]
         try:

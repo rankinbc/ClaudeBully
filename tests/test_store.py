@@ -207,6 +207,10 @@ def test_drop_dead_attempts_drops_a_torn_final_line_and_no_other_unparsable_one(
         with pytest.raises(ValueError, match=rf"line {line}\b") as caught:
             drop_dead_attempts(path, {1, 3})
         assert str(path) in str(caught.value), where
+        # Phase 5 Task 9 fix round 1 (review I1): the named type the plan commands catch
+        from claude_bully.runner.store import DamagedRecordError
+
+        assert isinstance(caught.value, DamagedRecordError), where
         assert path.read_bytes() == content, where  # nothing was rewritten
     assert not list(tmp_path.glob(".*.tmp"))
 

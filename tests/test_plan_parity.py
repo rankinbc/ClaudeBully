@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.director_stub import Kill, cache_keys, comparable, hashed_files, run_plan
+from tests.fixtures.director_stub import (
+    Kill,
+    cache_keys,
+    comparable,
+    hashed_files,
+    ledger_ids,
+    run_plan,
+    transcript_bytes,
+)
 from tests.test_director_author import DOC1, DOC3, REPAIRED
 from tests.test_director_review import _doc1
 
@@ -53,6 +61,10 @@ def test_every_kill_point_resumes_to_the_unbroken_bundle(
         )
         assert record.status == clean.status == "runnable"
         assert hashed_files(bundle.root) == hashed_files(clean_bundle.root)
+        # fix round 1 (review m5): what HASH_EXCLUDES leaves out of the hashed files, the
+        # plan ledger's (conversation id, status) lines and every transcript's bytes
+        assert ledger_ids(bundle.root) == ledger_ids(clean_bundle.root)
+        assert transcript_bytes(bundle.root) == transcript_bytes(clean_bundle.root)
         assert record.bundle_hash == clean.bundle_hash
         assert comparable(record, ignore_dry_run_resume=point == "K12") == comparable(
             clean, ignore_dry_run_resume=point == "K12"

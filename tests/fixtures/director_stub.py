@@ -25,7 +25,7 @@ import yaml
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
 from claude_bully.environments.world import parse_document
-from claude_bully.planner.bundle import CACHE_DIR, HASH_EXCLUDES, Bundle
+from claude_bully.planner.bundle import CACHE_DIR, HASH_EXCLUDES, LEDGER, TRANSCRIPTS, Bundle
 from claude_bully.planner.director import DIRECTOR_CACHE, Director, author_order
 from claude_bully.planner.records import PlanRecord, Stage
 from claude_bully.planner.request import PlanBudget, PlanRequest
@@ -38,7 +38,7 @@ from claude_bully.providers.base import (
     RateLimitError,
     ToolSpec,
 )
-from claude_bully.providers.ledger import wrap
+from claude_bully.providers.ledger import LedgerLine, wrap
 from claude_bully.records import Usage
 from tests.fixtures.bundle_fixtures import BASE_WORLD, GOOD, GOOD_MANIFEST
 from tests.helpers import WORLDS_DIR
@@ -464,6 +464,24 @@ def hashed_files(root: Path) -> dict[str, bytes]:
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*"))
         if path.is_file() and path.relative_to(root).parts[0] not in HASH_EXCLUDES
+    }
+
+
+def ledger_ids(root: Path) -> list[tuple[str, str]]:
+    """The plan ledger as parity compares it: each line's conversation id less its run prefix,
+    with its status, in file order."""
+    lines = (root / LEDGER).read_text("utf-8").splitlines()
+    parsed = [LedgerLine.model_validate_json(line) for line in lines if line.strip()]
+    return [(line.conversation_id.split("/", 2)[-1], line.status) for line in parsed]
+
+
+def transcript_bytes(root: Path) -> dict[str, bytes]:
+    """Every file under ``transcripts/`` (the archived rounds included), path to bytes."""
+    folder = root / TRANSCRIPTS
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
     }
 
 

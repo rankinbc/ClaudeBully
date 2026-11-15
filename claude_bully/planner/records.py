@@ -11,11 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claude_bully.enums import CellStatus, EventType, Layer
 from claude_bully.planner.lints import LintResult, Severity
 from claude_bully.planner.request import PlanRequest
+from claude_bully.runner.store import DamagedRecordError
 
 PLAN_SCHEMA_VERSION: Final = 1
 
@@ -196,21 +197,31 @@ class PlanRecord(_Strict):
 
 def read_plan_record(path: Path) -> PlanRecord:
     """``plan.json``, validated; an older plan schema is refused before validation. A damaged
-    file (a byte that is not UTF-8, text that is not JSON) raises ``ValueError`` naming the file
-    and the line, which the ``plan`` commands print without a traceback (the Task 7b carry)."""
+    file raises ``DamagedRecordError`` (a ``ValueError``) naming the file: with the line for a
+    byte that is not UTF-8 or text that is not JSON, with the first failing field (and how many
+    more) for JSON that is not a ``PlanRecord``. The ``plan`` commands print it without a
+    traceback (the Task 7b carry; Task 9 fix round 1, review I1)."""
     data = path.read_bytes()
     try:
         raw = json.loads(data.decode("utf-8"))
     except UnicodeDecodeError as exc:
         line = data.count(b"\n", 0, exc.start) + 1
-        raise ValueError(f"{path}: line {line}: a byte that is not UTF-8 ({exc.reason})") from exc
+        raise DamagedRecordError(
+            f"{path}: line {line}: a byte that is not UTF-8 ({exc.reason})"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{path}: line {exc.lineno}: not valid JSON ({exc.msg})") from exc
+        raise DamagedRecordError(f"{path}: line {exc.lineno}: not valid JSON ({exc.msg})") from exc
     if isinstance(raw, dict):
         version = raw.get("schema_version")
         if isinstance(version, int) and version < PLAN_SCHEMA_VERSION:
-            raise ValueError(
+            raise DamagedRecordError(
                 f"{path.name}: plan schema version {version}; re-run with this version "
                 f"(this code reads plan schema version {PLAN_SCHEMA_VERSION} only)"
             )
-    return PlanRecord.model_validate(raw)
+    try:
+        return PlanRecord.model_validate(raw)
+    except ValidationError as exc:
+        first, *rest = exc.errors()
+        field = ".".join(str(part) for part in first["loc"]) or "(the record)"
+        more = f" (and {len(rest)} more)" if rest else ""
+        raise DamagedRecordError(f"{path}: field {field}: {first['msg']}{more}") from exc

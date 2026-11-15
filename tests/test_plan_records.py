@@ -312,3 +312,27 @@ def test_a_v3_run_record_without_a_plan_reads_and_one_with_it_round_trips() -> N
     assert full.plan == stamp
     with pytest.raises(ValidationError):
         PlanStamp.model_validate({"slug": "s", "extra": 1})
+
+
+def test_a_damaged_plan_json_raises_the_named_damaged_record_error(tmp_path: Path) -> None:
+    """Phase 5 Task 9 fix round 1 (review I1): every damage ``read_plan_record`` finds raises
+    ``DamagedRecordError`` naming the file, with the line, or the field for a file that parses
+    but fails ``PlanRecord``; the plan commands catch that type alone."""
+    from claude_bully.runner.store import DamagedRecordError
+
+    good = _record().model_dump_json(indent=2)
+    schema_invalid = {**json.loads(good), "open_blocks": "three"}
+    older = {**json.loads(good), "schema_version": 0}
+    cases = {
+        "line 1: a byte that is not UTF-8": good.encode().replace(b"{", b"{\xff", 1),
+        "line 2: not valid JSON": b"{\n  nope\n",
+        "field open_blocks: ": json.dumps(schema_invalid, indent=2).encode(),
+        "plan schema version 0": json.dumps(older).encode(),
+    }
+    path = tmp_path / "plan.json"
+    for want, data in cases.items():
+        path.write_bytes(data)
+        with pytest.raises(DamagedRecordError, match=want) as caught:
+            read_plan_record(path)
+        assert "plan.json" in str(caught.value), want
+        assert isinstance(caught.value, ValueError), want  # every except ValueError still holds

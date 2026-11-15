@@ -7,9 +7,11 @@ call a model (``new``, ``continue``, ``review``) run the Director through
 the wait happens in the process, without it the command exits ``RATE_LIMIT_EXIT_CODE`` and the
 same command resumes. Each of the four plan commands prints one line per dry-run cell
 (``cell_line``) and ``status <status>``, and exits 0 when the plan is ``runnable``, or when
-``new`` stopped after stage 1 as asked (D-exit); 1 otherwise. A damaged harness record (a
-``ValueError`` naming the file and the line) or a refusal (``DirectorError``) is printed as
-``error: <message>`` and exits 1, never as a traceback.
+``new`` stopped after stage 1 as asked (D-exit); 1 otherwise. A damaged harness record
+(``runner/store.DamagedRecordError``, naming the file and the line or the field) or a refusal
+(``DirectorError``) is printed as ``error: <message>`` and exits 1, never as a traceback; every
+other exception keeps its traceback (Task 9 fix round 1, review I1). A missing bundle or request
+file is a usage error (exit 2).
 
 The Director is built with three module-level seams, read at call time, which tests
 monkeypatch: ``PlanProviders`` (the ``ProviderFactory``, ``build_provider`` in production),
@@ -40,6 +42,7 @@ from claude_bully.planner.records import DryRunCell, PlanRecord
 from claude_bully.planner.request import PlanRequest, load_plan_request, parse_budget
 from claude_bully.providers.base import ProviderFactory, build_provider
 from claude_bully.runner.runner import RateLimitExit
+from claude_bully.runner.store import DamagedRecordError
 from claude_bully.runner.wait import RATE_LIMIT_EXIT_CODE, WaitMinutes
 from claude_bully.runner.wait import wait_on_rate_limit as wait_on_rate_limit_
 
@@ -52,6 +55,8 @@ plan_app = typer.Typer(
 )
 
 BundleDir = Annotated[Path, typer.Argument(help="The plan's directory, plans/<slug>.")]
+# the default as its expression: the absolute path would print the login's home folder (review m4)
+PLANS_ROOT_SHOWN: Final = "<repo>/plans"
 _NO_FILE: Final = "/dev/null"
 
 
@@ -188,18 +193,24 @@ def _director(director: Callable[..., Director], *args: Any, **kw: Any) -> Direc
     )
 
 
-def _opened(root: Path) -> Director:
+def _a_plan(root: Path, param_hint: str = "BUNDLE") -> Path:
+    """``root``, when it holds a ``plan.json``; else a usage error naming it (exit 2)."""
     if not (root / PLAN_FILE).is_file():
-        raise typer.BadParameter(f"{root} holds no {PLAN_FILE}", param_hint="BUNDLE")
-    return _director(Director.open, root)
+        raise typer.BadParameter(f"{root} holds no {PLAN_FILE}", param_hint=param_hint)
+    return root
+
+
+def _opened(root: Path) -> Director:
+    return _director(Director.open, _a_plan(root))
 
 
 @contextmanager
 def _plan_errors() -> Iterator[None]:
-    """A refusal or a damaged record, printed with no traceback; exit 1."""
+    """A refusal or a damaged record, printed with no traceback; exit 1. Nothing else is
+    caught: a ``ValueError`` of a defect keeps its traceback (review I1)."""
     try:
         yield
-    except (DirectorError, ValueError) as exc:
+    except (DirectorError, DamagedRecordError) as exc:
         typer.echo(f"error: {exc}")
         raise typer.Exit(code=1) from None
 
@@ -263,7 +274,12 @@ def new(
         list[str] | None, typer.Option(help="A free-text constraint. Repeatable.")
     ] = None,
     request: Annotated[
-        Path | None, typer.Option(help="A request YAML file; each flag given overrides it.")
+        Path | None,
+        typer.Option(
+            help="A request YAML file; each flag given overrides it.",
+            exists=True,
+            dir_okay=False,
+        ),
     ] = None,
     slug: Annotated[str | None, typer.Option(help="The plan's directory name.")] = None,
     world: Annotated[str | None, typer.Option(help="reuse or fresh.")] = None,
@@ -272,7 +288,9 @@ def new(
     no_confirm: Annotated[
         bool, typer.Option("--no-confirm", help="Go on past stage 1 without stopping.")
     ] = False,
-    plans_root: Annotated[Path, typer.Option(help="Where plans are written.")] = DEFAULT_PLANS_ROOT,
+    plans_root: Annotated[
+        Path, typer.Option(help="Where plans are written.", show_default=PLANS_ROOT_SHOWN)
+    ] = DEFAULT_PLANS_ROOT,
     wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Plan a new bundle: stages 1 to 5, stopping after stage 1 unless --no-confirm.
@@ -300,7 +318,9 @@ def new(
         director = _director(Director.new, plan_request, plans_root=plans_root)
         _refuse_open_blocks(director.record)
         record = _drive(lambda: director.run(stop_after_plan=not no_confirm), wait_on_rate_limit)
-    if not no_confirm and record.status == "planned":
+    # stopped after stage 1 as asked, this run's or an earlier one's (D-exit; review m1): any
+    # status but runnable and failed (a plan held by open blocks was refused above)
+    if not no_confirm and record.status not in ("runnable", "failed"):
         _stopped(director)
         return
     _finish(record)
@@ -362,9 +382,10 @@ def diff(
     With one bundle, each copied world is diffed against <worlds-dir>/<name> after a line
     saying whether the shipped world has moved since the copy.
     """
+    _a_plan(bundle)
     with _plan_errors():
         if other is not None:
-            text = bundle_diff(bundle, other)
+            text = bundle_diff(bundle, _a_plan(other, "OTHER"))
         else:
             text = world_diff(Bundle(bundle), worlds_dir or WORLDS_DIR)
     typer.echo(text, nl=False)

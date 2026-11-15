@@ -58,6 +58,15 @@ WATCH_TYPES: Final = frozenset({"quirk", "chain", "contradiction"})
 COMMITTED_STATUSES: Final = frozenset({"written", "cached"})
 
 
+class DamagedRecordError(ValueError):
+    """A harness record on disk that does not read back: a line of a JSONL stream that is not
+    a torn last line (``parsed_lines``), or a ``plan.json`` that is not UTF-8, not JSON, of an
+    older plan schema or not a ``PlanRecord`` (``planner/records.read_plan_record``). The message
+    names the file and the line, or the field. A ``ValueError``, so every caller that catches
+    one still catches it; the ``plan`` commands catch this type alone and print it without a
+    traceback, so a ``ValueError`` of a defect keeps its own (Phase 5 Task 9 fix round 1)."""
+
+
 def _checked(raw: Any, source: Path) -> Any:
     """``raw`` unchanged, unless it is a record from an older schema version."""
     if isinstance(raw, dict):
@@ -114,9 +123,10 @@ def _turn_in(record: Any, produced: Collection[int]) -> bool:
 def parsed_lines(path: Path, *, closed_torn: bool = False) -> list[tuple[bytes, Any]]:
     """Each non-blank line of a JSONL file with its value; the torn last line (no newline after
     it) has the value None, and with ``closed_torn`` so does a record cut short that a later
-    line closed off (``mcp_server.torn_line``). Any other line that does not parse raises, as
-    in ``drop_dead_attempts``. The runtime's torn-tail rule, which the Director's resume also
-    applies to the plan ledger (Phase 5 Task 7b fix round 1)."""
+    line closed off (``mcp_server.torn_line``). Any other line that does not parse raises
+    ``DamagedRecordError`` naming the file and the line, as in ``drop_dead_attempts``. The
+    runtime's torn-tail rule, which the Director's resume also applies to the plan ledger
+    (Phase 5 Task 7b fix round 1)."""
     if not path.exists():
         return []
     lines = path.read_bytes().split(b"\n")
@@ -131,7 +141,7 @@ def parsed_lines(path: Path, *, closed_torn: bool = False) -> list[tuple[bytes, 
             if number == len(lines) or (closed_torn and torn_line(line)):
                 out.append((line, None))
                 continue
-            raise ValueError(
+            raise DamagedRecordError(
                 f"{path}: line {number} is not valid JSON ({exc}); it is not a torn last line, "
                 "so it is not dropped"
             ) from exc
