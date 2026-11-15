@@ -485,7 +485,7 @@ def config_display_names(text: str) -> set[str]:
     review I1). Text that is no YAML mapping gives the default alone."""
     try:
         data = yaml.safe_load(text)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, ValueError):  # a ValueError: a value the loader refuses, a date
         data = None
     targets = data.get("targets") if isinstance(data, dict) else None
     return {_DEFAULT_DISPLAY_NAME.lower()} | {
@@ -530,21 +530,25 @@ def _collapse(text: str) -> str:
     return "\n".join(paragraph for paragraph in paragraphs if paragraph)
 
 
-def _strings(data: object, skip: frozenset[str] = frozenset()) -> list[str]:
+def _strings(
+    data: object, skip: frozenset[str] = frozenset(), open_: frozenset[int] = frozenset()
+) -> list[str]:
     """Every string value of parsed YAML or JSON, keys and values, depth first; the value of a
-    key in ``skip`` is left out."""
+    key in ``skip`` is left out. A mapping or list met again inside itself (a YAML anchor that
+    holds its own alias) is read once (``open_``, the ids being read)."""
     if isinstance(data, str):
         return [data]
+    if not isinstance(data, Mapping | list) or id(data) in open_:
+        return []
+    inside = open_ | {id(data)}
     if isinstance(data, Mapping):
-        out = []
+        out: list[str] = []
         for key, value in data.items():
             out += _strings(key)
             if key not in skip:
-                out += _strings(value, skip)
+                out += _strings(value, skip, inside)
         return out
-    if isinstance(data, list):
-        return [s for item in data for s in _strings(item, skip)]
-    return []
+    return [s for item in data for s in _strings(item, skip, inside)]
 
 
 def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list[str]:
@@ -556,7 +560,7 @@ def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list
     if rel.endswith(".yaml"):
         try:
             data = yaml.safe_load(text)
-        except yaml.YAMLError:
+        except (yaml.YAMLError, ValueError):  # a ValueError: a value the loader refuses, a date
             data = None
         texts.append("\n".join(_collapse(s) for s in _strings(data, skip)))
     return texts
@@ -672,9 +676,12 @@ def _field_errors(exc: ValidationError) -> str:
 
 def _model[T: BaseModel](model: type[T], bundle: _View, rel: str) -> T:
     """A bundle YAML file validated as ``model``; the ``ValueError`` lists every field error."""
+    text = bundle.read_file(
+        rel
+    )  # read apart: its ValueErrors (bad bytes, a link) say what they are
     try:
-        raw = yaml.safe_load(bundle.read_file(rel))
-    except yaml.YAMLError as exc:
+        raw = yaml.safe_load(text)
+    except (yaml.YAMLError, ValueError) as exc:  # a ValueError: a value the loader refuses
         raise ValueError(f"invalid YAML: {exc}") from exc
     try:
         return model.model_validate(raw)

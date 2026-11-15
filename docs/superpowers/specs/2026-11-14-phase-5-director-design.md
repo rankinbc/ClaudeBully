@@ -269,6 +269,8 @@ Every lint here is a closed check: a schema, a denylist, a count, a set relation
 | `budget` | `turn_budget <= budget.max_turns`, `repetitions <= budget.n_per_cell`, `len(expand_cells(exp)) <= budget.max_cells`, and when `max_calls` is set, the sum of `DryRunCell.estimated_calls` is at most it | fail |
 | `dry_run` | Section 10's condition | fail |
 
+The three denylist scans (`real_name_bundle`, `boundary_bundle`, `jailbreak_bundle`) read each blank-line-separated paragraph of a file on its own, its whitespace collapsed, so a name or phrase wrapped across lines of one paragraph or a folded scalar is caught. Residual: a phrase split by a blank line passes the bundle lints. That holds for the real-name, Boundary and jailbreak patterns alike (a pattern is not matched across a paragraph break, and the multi-word jailbreak phrases are the ones it leaves), and it is the price of keeping the two lookahead true positives across a paragraph break (`the verge` then `of`, `rule` then `out`). A deliberate split is the planner gaming its own lint, which the reviewer stage reads; the raw text of such a file matches no pattern either, so no later scan of the same patterns closes it [refined in Task 4b's re-review: M-1].
+
 `BUNDLE_LINT_IDS` lists them. A test asserts every id has a positive, a negative and a near-miss fixture under `tests/fixtures/bundles/`, as `test_every_lint_id_is_covered_by_a_fixture` (`tests/test_lints.py`) does for Phase 3's.
 
 The lints task runs `lint_world_lines` over the overlay and the two fixture worlds before any fixture is written. A fail-severity result on a shipped world is a finding for the controller: the world is fixed, or the lint is narrowed by a recorded ruling. It is not known today that every shipped world passes `clock_rule`.
@@ -372,7 +374,7 @@ From HANDOFF ("Lessons recorded in the ledger") and the Phase 4 ledger's rulings
 
 **Fail closed on non-negotiable 3.** Phase 4 re-graded a dropped `values_loosened` flag to Important twice and ruled that a stale flag keeps its rep out. Here:
 
-- `boundary_bundle` scans whole files, with no list of exempt fields to get wrong; `jailbreak_bundle` scans every bundle file but `transcripts/` and `review.md` [refined in Task 4b's re-review: R1].
+- `boundary_bundle` scans whole files, with no list of exempt fields to get wrong; `jailbreak_bundle` scans every bundle file but `transcripts/` and `review.md` [refined in Task 4b's re-review: R1]. All three denylist scans read one paragraph at a time, so a phrase split by a blank line passes them (section 9) [refined in Task 4b's re-review: M-1].
 - A review the harness cannot validate fails the stage. An empty reply is not a clean review; only an explicit zero summary is.
 - A block is open until three things agree, and `cannot_tell`, a missing verdict or a failed confirm call leave it open.
 - `run` refuses a bundle that is not `runnable`, and one whose hash moved.

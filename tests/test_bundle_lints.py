@@ -23,6 +23,7 @@ from claude_bully.planner.bundle_lints import (
     PUBLIC_HOST,
     RESERVED_TLDS,
     WORLD_LINT_IDS,
+    config_display_names,
     lint_bundle,
     record_scan_text,
     url_hosts,
@@ -1570,6 +1571,71 @@ def test_a_file_that_is_no_utf8_fails_schema_naming_it_and_raises_nothing(
     assert "not valid UTF-8" in named[0].message and "0xe9" in named[0].message, named[0].message
     warns = [r.message for r in results if r.lint_id == "schema" and r.severity == "warn"]
     assert all(message.startswith("skipped: ") for message in warns), warns
+
+
+# round 3 (re-review NEW-1, probe p15 E): a YAML value PyYAML refuses with a plain ValueError (an
+# impossible date, a timestamp with a 25th hour) in each kind of .yaml file, the grammar's, one
+# outside it and one no lint reads as a model; with whether the file's own schema fail names it
+YAML_VALUE_FAULTS: Final = [
+    pytest.param(SHEET, "\nzz_date: 2026-13-45\n", True, id="world-sheet"),
+    pytest.param(PERSONA, "\nzz_date: 2026-02-30\n", True, id="persona"),
+    pytest.param(CONFIG, "\n# fine\nzz: 2026-13-45\n", True, id="config"),
+    pytest.param(EXPECTED, "\nzz: 2026-13-45\n", True, id="expected"),
+    pytest.param(LADDER, "\nzz: 9999-12-31T25:61:61Z\n", True, id="ladder"),
+    pytest.param(OFF_LADDER, "zz: 2026-13-45\n", True, id="off-grammar-ladder"),
+    pytest.param("scratch.yaml", "zz: 2026-13-45\n", False, id="stray-root-file"),
+]
+
+
+@pytest.mark.parametrize(("rel", "text", "named"), YAML_VALUE_FAULTS)
+def test_a_yaml_value_the_loader_refuses_is_a_schema_fail_never_an_exception(
+    rel: str, text: str, named: bool, tmp_path: Path, isolated_registry: None
+) -> None:
+    """The scans (``_scan_texts``, ``config_display_names``) read a file the loader cannot
+    parse as text alone, as they do for a YAML syntax error; ``schema`` names the file."""
+    bundle = good_bundle(tmp_path)
+    path = bundle.root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.read_bytes() if path.exists() else b""
+    path.write_bytes(old + text.encode())
+    results = lint_bundle(bundle)  # no ValueError
+    schema = [r for r in results if r.lint_id == "schema" and r.severity == "fail"]
+    assert (rel in [r.doc_id for r in schema]) is named, [(r.doc_id, r.message) for r in schema]
+
+
+def test_the_scans_still_read_the_text_of_a_file_with_a_yaml_value_the_loader_refuses(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """A real name beside the impossible date is found: the scan falls back to the raw text."""
+    bundle = good_bundle(tmp_path)
+    _append(PERSONA, "\nzz_date: 2026-13-45\n# a Reuters stringer\n")(bundle)
+    results = lint_bundle(bundle)
+    found = [r for r in results if r.lint_id == "real_name_bundle" and r.severity == "fail"]
+    assert [(r.doc_id, r.span) for r in found] == [(PERSONA, "Reuters")]
+    assert PERSONA in [r.doc_id for r in results if r.lint_id == "schema" and r.severity == "fail"]
+
+
+def test_the_config_spare_names_ignore_a_config_the_loader_refuses() -> None:
+    assert config_display_names("zz: 2026-13-45\n") == config_display_names("")
+
+
+# a self-referencing anchor builds a list holding itself: the parsed-values walk must end
+@pytest.mark.parametrize(
+    ("rel", "text"),
+    [
+        pytest.param(SHEET, "\nzz: &x [*x]\n", id="world-sheet"),
+        pytest.param(CONFIG, "\nzz: &x {k: *x}\n", id="config"),
+        pytest.param("scratch.yaml", "zz: &x [*x]\n", id="stray-root-file"),
+    ],
+)
+def test_a_yaml_value_that_holds_itself_is_no_exception(
+    rel: str, text: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    bundle = good_bundle(tmp_path)
+    path = bundle.root / rel
+    old = path.read_bytes() if path.exists() else b""
+    path.write_bytes(old + text.encode())
+    lint_bundle(bundle)
 
 
 def test_a_review_that_quotes_a_phrase_the_planner_removed_passes_jailbreak_bundle(
