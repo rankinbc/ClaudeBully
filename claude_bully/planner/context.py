@@ -259,11 +259,23 @@ class TaskPart:
 @dataclass(frozen=True)
 class ReviewGroup:
     """One reviewer call: its name (``call: review:<name>``), the bundle files it reads in
-    full, and the unchanged base files it is shown by one index line each."""
+    full, and the unchanged base files it is shown by one index line each
+    (``unchanged_base_files``)."""
 
     name: str
     files: tuple[str, ...]
     index: tuple[str, ...]
+
+
+def unchanged_base_files(
+    base_files: Collection[str], manifest: Sequence[ManifestEntry]
+) -> list[str]:
+    """The files of the base copy that no manifest entry names, in path order: a review
+    group's ``index``, shown by one line each and never reviewed in full, so they make no
+    review call (the manifest's budget, Task 7b fix round 2; Task 8's ``review_groups``). A
+    patched base file is an entry, so it is reviewed."""
+    named = {entry.path for entry in manifest}
+    return sorted(rel for rel in base_files if rel not in named)
 
 
 def load_director_prompt(name: str) -> str:

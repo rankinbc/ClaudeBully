@@ -95,6 +95,7 @@ from claude_bully.planner.context import (
     load_director_prompt,
     planner_message,
     prompt_hashes,
+    unchanged_base_files,
 )
 from claude_bully.planner.lints import LintContext, failures, lint_document, lint_world
 from claude_bully.planner.records import (
@@ -740,10 +741,13 @@ class Director:
         self.bundle.clear_attempt()
 
     def _ledger_raw(self) -> list[str]:
+        """The plan ledger's non-blank lines, split on ``\\n`` alone as ``parsed_lines`` splits
+        (fix round 2, re-review N-B: ``splitlines`` also splits on U+2028, U+2029 and U+0085,
+        which a provider's error text can carry raw); each line's bytes kept."""
         path = self.bundle.root / LEDGER
         if not path.is_file():
             return []
-        return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [line for line in path.read_bytes().decode("utf-8").split("\n") if line.strip()]
 
     def _ledger_lines(self) -> int:
         """The plan ledger's line count, which a marker records (``ledger_lines``)."""
@@ -784,13 +788,20 @@ class Director:
         """The runtime's torn-tail rule on the plan ledger (``runner/store.parsed_lines``): the
         last line, with no newline after it, that does not parse is a ledger append a kill cut
         short, and the ledger is rewritten without it (``write_atomic``, whose own leftover the
-        next pass removes), so the next append is not glued to it. Any other line that does not
+        next pass removes), so the next append is not glued to it. A last line that parses but
+        has no newline (a cut between a record and its newline, a full disk) gets its newline
+        the same way, its bytes kept (fix round 2, re-review N-A). Any other line that does not
         parse is damage, and the ``ValueError`` naming it is raised before anything is
         written."""
         path = self.bundle.root / LEDGER
         lines = parsed_lines(path)
-        if lines and lines[-1][1] is None:
-            write_atomic(path, "".join(f"{raw.decode('utf-8')}\n" for raw, _ in lines[:-1]))
+        if not lines:
+            return
+        if lines[-1][1] is None:
+            lines = lines[:-1]
+        elif path.read_bytes().endswith(b"\n"):
+            return
+        write_atomic(path, "".join(f"{raw.decode('utf-8')}\n" for raw, _ in lines))
 
     def _reopen_failed(self, stage: StageRecord) -> None:
         """The failed-stage ruling: the stage's last call, when it is an ``error``, leaves
@@ -1093,14 +1104,14 @@ class Director:
         ]
 
     def _review_calls(self, entries: Sequence[ManifestEntry]) -> int:
-        """``review_calls`` over the bundle the manifest makes (review M5): ``plan.md``, the
-        base copy, each shipped world the manifest names that is still to be copied, and the
-        manifest's paths."""
-        paths = {"plan.md", *self.record.base_files, *(e.path for e in entries)}
-        for name in self._shipped(entries):
-            if name not in self.record.base_worlds:
-                paths.update(rel for rel, _ in _world_files(self.worlds_dir / name, name))
-        return review_calls(paths)
+        """``review_calls`` over the files the review reads in full (review M5; re-review
+        M5-new): the bundle the manifest makes less its unchanged base files, which a review
+        group shows by index line only (``context.unchanged_base_files``, ``ReviewGroup.index``).
+        That leaves ``plan.md`` and the manifest's paths; a shipped world still to be copied
+        adds only unchanged base files, so it adds no call."""
+        base = set(self.record.base_files)
+        paths = {"plan.md", *base, *(e.path for e in entries)}
+        return review_calls(paths - set(unchanged_base_files(base, entries)))
 
     # ------------------------------------------------------------------ the files
 

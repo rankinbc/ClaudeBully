@@ -28,7 +28,7 @@ from claude_bully.planner.director import (
     parse_manifest,
 )
 from claude_bully.planner.lints import owner_names
-from claude_bully.planner.records import DirectorCall, ManifestEntry
+from claude_bully.planner.records import DirectorAttempt, DirectorCall, ManifestEntry
 from claude_bully.planner.request import slug_for
 from claude_bully.providers.ledger import Ledger, LedgerLine
 from claude_bully.runner.runner import RateLimitExit
@@ -975,3 +975,73 @@ def test_the_budget_counts_the_review_calls_a_chunked_corpus_makes(
     director.record.request = fresh.model_copy(update={"max_director_calls": total - 1})
     (refused,) = director._check_manifest(reply, made=1)[1]
     assert f"and {reviews} review calls make {total}" in refused
+
+
+# ---------------------------------------------------------------- fix round 2 (the re-review)
+
+
+def test_the_budget_counts_no_review_call_for_an_unchanged_base_file(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review M5-new (re-graded Important): an unchanged base file is shown to the reviewer
+    by one index line (``ReviewGroup.index``), never reviewed, so it makes no review call. The
+    shipped overlay (46 documents) reused with 2 new documents is one corpus chunk and the plan
+    group: 2 review calls, and the plan fits at max_director_calls 8 (the plan call, the
+    manifest, its 4 files, 2 reviews); one call less refuses it."""
+    request = REQUEST.model_copy(update={"base_world": "overlay", "max_director_calls": 8})
+    director = Director.new(
+        request,
+        plans_root=tmp_path,
+        provider_factory=StubFactory(PlannerStub(), ReviewerStub()),
+        say=lambda _: None,
+    )
+    director.run(through="plan")
+    director._copy_worlds(["overlay"])
+    corpus = [rel for rel in director.record.base_files if "/corpus/" in rel]
+    assert len(corpus) > director_module.REVIEW_CHUNK_DOCS
+    entries = [
+        _entry("worlds/overlay/corpus/zz-new-a.md", "document", Layer.filler),
+        _entry("worlds/overlay/corpus/zz-new-b.md", "document", Layer.seam),
+        _entry("config.yaml", "config"),
+        _entry("expected.yaml", "expected"),
+    ]
+    assert director._review_calls(entries) == 2
+    reply = json.dumps({"files": [e.model_dump(mode="json") for e in entries]})
+    assert director._check_manifest(reply, made=1)[1] == []
+    director.record.request = request.model_copy(update={"max_director_calls": 7})
+    (refused,) = director._check_manifest(reply, made=1)[1]
+    assert "and 2 review calls make 8" in refused
+
+
+def test_a_complete_last_ledger_line_with_no_newline_gets_its_newline(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """Re-review N-A: a last ledger line that parses but has no newline (a cut between the
+    record and its newline, or a full disk) is closed off before the next append, which would
+    otherwise glue a second record onto it; the record's bytes are kept."""
+    director = _planned(tmp_path)
+    ledger = director.bundle.root / "ledger.jsonl"
+    whole = ledger.read_bytes()
+    record = whole.rstrip(b"\r\n")
+    ledger.write_bytes(record)
+    director._clear_hard_kill()
+    assert ledger.read_bytes() == record + b"\n"
+    [line] = [raw for raw in ledger.read_bytes().split(b"\n") if raw.strip()]
+    assert LedgerLine.model_validate_json(line) == LedgerLine.model_validate_json(whole)
+
+
+def test_the_plan_ledger_splits_on_newlines_only(tmp_path: Path, isolated_registry: None) -> None:
+    """Re-review N-B: a provider error can carry U+2028, U+2029 or U+0085, which pydantic
+    writes raw; the ledger is read by "\\n" alone, as the runtime's ``parsed_lines`` reads, so
+    such a line is one line, counted once and validated whole."""
+    director = _planned(tmp_path)
+    ledger = director.bundle.root / "ledger.jsonl"
+    line = LedgerLine.model_validate_json(ledger.read_bytes())
+    odd = line.model_copy(update={"error": "broken at the\x85seams"})
+    raw = odd.model_dump_json()
+    assert " " in raw and "\x85" in raw  # written raw, not escaped
+    ledger.write_bytes(f"{raw}\n".encode())
+    assert director._ledger_lines() == 1
+    dead = DirectorAttempt(stage="author", role="planner", index=0, ledger_lines=0)
+    director._drop_dead_lines(dead)  # validates the line whole; the plan call's line stays
+    assert ledger.read_bytes() == f"{raw}\n".encode()
