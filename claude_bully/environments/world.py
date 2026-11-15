@@ -297,11 +297,32 @@ def _validate[T: BaseModel](model: type[T], raw: Any, source: Path | str) -> T:
         raise ValueError(f"{source}: {field}: {first['msg']}") from exc
 
 
+# what ``yaml.safe_load`` raises on text it cannot build, beside a ``ValueError`` (an impossible
+# date, which passes through as itself): a ``YAMLError``; an explicit core tag on a malformed
+# scalar (``!!bool maybe`` a ``KeyError``, ``!!timestamp abc`` an ``AttributeError``, ``!!int ''``
+# an ``IndexError``); and nesting deeper than the stack (a ``RecursionError``). Each loader of an
+# authored file turns them into a ``ValueError`` naming the file (Phase 5 Task 5, the Task 4b
+# re-review's NEW-2)
+YAML_BUILD_ERRORS: Final[tuple[type[Exception], ...]] = (
+    yaml.YAMLError,
+    KeyError,
+    AttributeError,
+    IndexError,
+    TypeError,
+    RecursionError,
+)
+
+
+def yaml_error_text(exc: BaseException) -> str:
+    """What a loader says of ``exc``: a YAML error's own text, else its class and text."""
+    return str(exc) if isinstance(exc, yaml.YAMLError) else f"{type(exc).__name__}: {exc}"
+
+
 def _load_yaml(text: str, source: Path | str) -> Any:
     try:
         return yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"{source}: invalid YAML: {exc}") from exc
+    except YAML_BUILD_ERRORS as exc:
+        raise ValueError(f"{source}: invalid YAML: {yaml_error_text(exc)}") from exc
 
 
 def load_yaml_model[T: BaseModel](model: type[T], path: Path) -> T:

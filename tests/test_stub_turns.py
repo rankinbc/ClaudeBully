@@ -16,6 +16,7 @@ from claude_bully.providers.stub import (
     ScriptedResponder,
     ScriptedTurns,
     StubProvider,
+    TurnEntry,
     load_stub_script,
     parse_stub_script,
 )
@@ -154,6 +155,49 @@ def test_the_reasoning_key_is_accepted_on_both_shapes() -> None:
 )
 def test_a_bad_turns_script_is_refused(bad: Any) -> None:
     with pytest.raises(ValueError):
+        parse_stub_script(bad)
+
+
+def test_a_turns_script_needs_a_non_empty_default() -> None:
+    """Task 2's assumed rule, pinned (Task 5 carry): ``default`` is required and non-empty, in a
+    parsed script and in a ``ScriptedTurns`` built in code; ``by_cell`` may be absent."""
+    with pytest.raises(ValueError, match="needs 'default'"):
+        parse_stub_script({"mode": "turns", "by_cell": {"a*": [{"reply": "x"}]}})
+    with pytest.raises(ValueError, match="default must be a non-empty list"):
+        parse_stub_script({"mode": "turns", "default": []})
+    with pytest.raises(ValueError, match="every entry list must be non-empty"):
+        ScriptedTurns([], [])
+    with pytest.raises(ValueError, match="every entry list must be non-empty"):
+        ScriptedTurns([("a*", [])], [TurnEntry(reply="x")])
+    assert isinstance(
+        parse_stub_script({"mode": "turns", "default": [{"reply": "x"}]}), ScriptedTurns
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [{"match": "x", "reply": "y", "reasoning": 3}],
+        [
+            {
+                "match": "x",
+                "tool": {"name": "web_search"},
+                "reply_after_tool": "y",
+                "reasoning": None,
+            }
+        ],
+        {"mode": "turns", "default": [{"reply": "x", "reasoning": ["a list"]}]},
+        {
+            "mode": "turns",
+            "by_cell": {"a*": [{"reply": "x", "reasoning": {"k": "v"}}]},
+            "default": [{"reply": "x"}],
+        },
+    ],
+)
+def test_a_reasoning_value_that_is_no_string_is_refused(bad: Any) -> None:
+    """Task 2's assumed rule, pinned (Task 5 carry): ``reasoning`` is a string on a rule and on a
+    turns entry, or absent."""
+    with pytest.raises(ValueError, match="'reasoning' must be a string"):
         parse_stub_script(bad)
 
 

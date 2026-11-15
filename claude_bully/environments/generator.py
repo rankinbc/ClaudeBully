@@ -727,6 +727,14 @@ def writer_prompt(
     return "\n\n".join(parts)
 
 
+def plan_from_prompt(prompt: str) -> dict[str, Any]:
+    """The plan JSON of a writer prompt: the fenced block under ``PLAN_HEADING``."""
+    section = prompt.split(PLAN_HEADING, 1)[1]
+    start = section.index("```json") + len("```json")
+    end = section.index("```", start)
+    return dict(json.loads(section[start:end]))
+
+
 def _fix_message(failure: LintFailure) -> str:
     """A failure as a retry's Fix list says it: the LLM lint's ``no verdict`` (recorded as such)
     becomes something the generator can act on (``NO_VERDICT_FIX``)."""

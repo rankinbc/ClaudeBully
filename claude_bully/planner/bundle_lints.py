@@ -32,8 +32,9 @@ reviewer's.
 for an outlet, ``<world>`` for the boilerplate, the sheet's clock and the layer and seam counts,
 and a document's id for a document.
 
-``lint_bundle(bundle)`` runs, over one plan bundle (``planner/bundle.py``), every lint of
-``BUNDLE_LINT_IDS`` but ``dry_run`` (Task 5's), every result kept, warns included (R-good-warn):
+``lint_bundle(bundle, *, dry_run=None)`` runs, over one plan bundle (``planner/bundle.py``), every
+lint of ``BUNDLE_LINT_IDS``, ``dry_run`` only with the dry run's cells, every result kept, warns
+included (R-good-warn):
 
 - ``schema`` (fail): every grammar file loads into its model with no unknown field (the world
   sheet, ``parse_document``, ``LadderConfig``, a premise's ``world_sheet``, ``PersonaSheet``,
@@ -66,6 +67,11 @@ and a document's id for a document.
   documents. ``expected_schema``, ``control_presence`` and ``budget`` (fail): set relations and
   counts over the cells ``expand_cells`` gives, inside ``plan_personas``; ``budget``'s
   ``max_calls`` clause only when the dry run's cells are given.
+- ``dry_run`` (fail, Task 5), only with the dry run's cells (``planner/dryrun.py``), which it
+  reads with the config and nothing else: an empty dry run; a cell with no line or not
+  ``complete``; a buried search hit (R-buried); a generated fire's lint failure; no cell with a
+  ladder to climb reaching its top rung (D-A9: a Poisoned Well ladder too); a cell's dry-run
+  script longer than its target turns, with both counts.
 
 The real-name scan's address patterns and config spare live here too (D-scans):
 ``RESERVED_TLDS``, ``URL_HOST``, ``EMAIL_DOMAIN``, ``PUBLIC_HOST``, ``PROVIDER_VALUE``,
@@ -86,18 +92,20 @@ from pydantic import BaseModel, ValidationError
 
 from claude_bully.analysis.hypotheses import load_register
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig
-from claude_bully.enums import DocumentKind, Layer, ProviderKind, TriggerCategory
+from claude_bully.enums import CellStatus, DocumentKind, Layer, ProviderKind, TriggerCategory
 from claude_bully.environments.config import LadderConfig, RungConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.dating import asserts_current_date, unmovable_dates
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.triggers import TriggerWatcher, WatchContext
 from claude_bully.environments.world import (
+    YAML_BUILD_ERRORS,
     Document,
     World,
     WorldSheet,
     load_world,
     parse_document,
+    yaml_error_text,
 )
 from claude_bully.metrics.events import DETECTORS
 from claude_bully.paths import DATA_DIR
@@ -131,6 +139,7 @@ from claude_bully.planner.lints import (
 )
 from claude_bully.planner.records import DryRunCell, ExpectedEvents, PlanRecord
 from claude_bully.runner.cells import CellSpec, expand_cells
+from claude_bully.runner.env_turn import cell_turn_plan
 from claude_bully.runner.runner import run_experiment
 from claude_bully.strategies.base import all_strategies
 from claude_bully.strategies.bootstrap import ensure_registered
@@ -479,13 +488,18 @@ def url_hosts(text: str) -> list[str]:
     return hosts
 
 
+# every exception yaml.safe_load raises on text it cannot load (Task 4b's re-review, NEW-1 and
+# NEW-2): a scan reads such a file as text alone, and schema names it
+_YAML_REFUSED: Final[tuple[type[Exception], ...]] = (*YAML_BUILD_ERRORS, ValueError)
+
+
 def config_display_names(text: str) -> set[str]:
     """The names a config's text spares: the ``RoleConfig`` default ``display_name`` and every
     one its ``targets`` give, lowercased; never another role's (Phase 4 Task 14 fix round 1,
     review I1). Text that is no YAML mapping gives the default alone."""
     try:
         data = yaml.safe_load(text)
-    except (yaml.YAMLError, ValueError):  # a ValueError: a value the loader refuses, a date
+    except _YAML_REFUSED:  # a value the loader refuses (a date, a tag) or cannot nest
         data = None
     targets = data.get("targets") if isinstance(data, dict) else None
     return {_DEFAULT_DISPLAY_NAME.lower()} | {
@@ -551,6 +565,18 @@ def _strings(
     return [s for item in data for s in _strings(item, skip, inside)]
 
 
+def _holds_itself(data: object, open_: frozenset[int] = frozenset()) -> bool:
+    """Whether parsed YAML holds a mapping or list inside itself (an anchor holding its own
+    alias); a node shared by two branches is no cycle (``open_``, the ids being read)."""
+    if not isinstance(data, Mapping | list):
+        return False
+    if id(data) in open_:
+        return True
+    inside = open_ | {id(data)}
+    values = data.values() if isinstance(data, Mapping) else data
+    return any(_holds_itself(value, inside) for value in values)
+
+
 def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list[str]:
     """What a denylist scan reads of one file: the whole text, comments included, its whitespace
     collapsed, and, for a YAML file that parses, each string value, collapsed, one per line (a
@@ -560,7 +586,7 @@ def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list
     if rel.endswith(".yaml"):
         try:
             data = yaml.safe_load(text)
-        except (yaml.YAMLError, ValueError):  # a ValueError: a value the loader refuses, a date
+        except _YAML_REFUSED:  # a value the loader refuses (a date, a tag) or cannot nest
             data = None
         texts.append("\n".join(_collapse(s) for s in _strings(data, skip)))
     return texts
@@ -681,8 +707,12 @@ def _model[T: BaseModel](model: type[T], bundle: _View, rel: str) -> T:
     )  # read apart: its ValueErrors (bad bytes, a link) say what they are
     try:
         raw = yaml.safe_load(text)
-    except (yaml.YAMLError, ValueError) as exc:  # a ValueError: a value the loader refuses
-        raise ValueError(f"invalid YAML: {exc}") from exc
+    except _YAML_REFUSED as exc:  # a value the loader refuses (a date, a tag) or cannot nest
+        raise ValueError(f"invalid YAML: {yaml_error_text(exc)}") from exc
+    if _holds_itself(raw):
+        # NEW-3: an Any field (a condition's params, a persona's intent_meta) takes it, and the
+        # run's record, a model_dump, cannot be written from it
+        raise ValueError("a YAML anchor holds its own alias, a value no record can be written from")
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
@@ -1236,32 +1266,90 @@ def _budget(
     return [LintResult("budget", "fail", _CONFIG, message) for message in out]
 
 
+def _dry_run(
+    loaded: _Loaded, cells: Sequence[CellSpec], dry_run: Sequence[DryRunCell]
+) -> list[LintResult]:
+    """``dry_run`` (spec section 10's condition, A9 and R-buried), from the dry run's cells and
+    the config alone: a dry run with no cell; a cell ``expand_cells`` gives that holds no line,
+    or whose status is not ``complete``; a ``buried_search_hit``; a generated fire's lint
+    failure; no cell with a ladder to climb (an environment whose gating is not ``none``, a
+    Poisoned Well ladder held to it like any other) reaching its ladder's top rung; and, per
+    such cell, a dry-run script longer than the cell's target turns, since even a perfect
+    walker cannot climb that ladder in that budget. ``doc_id`` is the cell id, or
+    ``config.yaml`` for the run as a whole."""
+    from claude_bully.planner.dryrun import cell_script  # dryrun imports this module
+
+    def fail(doc_id: str, message: str) -> LintResult:
+        return LintResult("dry_run", "fail", doc_id, message)
+
+    if not dry_run:
+        return [fail(_CONFIG, "the dry run holds no cell")]
+    exp = loaded.experiment
+    by_id = {cell.cell_id: cell for cell in dry_run}
+    out: list[LintResult] = []
+    laddered: list[str] = []
+    for spec in cells:
+        cell = by_id.get(spec.cell_id)
+        env = exp.environments.get(spec.condition.environment or "")
+        if env is not None and env.gating != "none":
+            laddered.append(spec.cell_id)
+            try:
+                script = len(cell_script(spec, exp, loaded.worlds))
+            except ValueError:  # a ladder walk_lines cannot walk: ladder_walk's failure
+                script = 0
+            turns = len(cell_turn_plan(exp, spec).slots)
+            if script > turns:
+                message = f"the dry-run script is {script} target turns; the cell has {turns} turns"
+                out.append(fail(spec.cell_id, message))
+        if cell is None:
+            out.append(fail(spec.cell_id, "the dry run holds no line for the cell"))
+            continue
+        if cell.status is not CellStatus.complete:
+            out.append(fail(spec.cell_id, f"the cell is {cell.status.value}, not complete"))
+        if cell.buried_search_hit:
+            message = (
+                "a web_search served a buried document that no rung fired before the search "
+                "names by id"
+            )
+            out.append(fail(spec.cell_id, message))
+        for found in cell.lint_failures:
+            message = f"a generated fire was rejected: {found.lint_id}: {found.message}"
+            out.append(fail(found.doc_id, message))
+    if laddered and not any(by_id.get(c) and by_id[c].top_rung == "reached" for c in laddered):
+        out.append(fail(_CONFIG, "no cell with a ladder to climb reached its ladder's top rung"))
+    return out
+
+
 def _set_lints(
     loaded: _Loaded, record: PlanRecord, dry_run: Sequence[DryRunCell] | None
 ) -> list[LintResult]:
-    """``expected_schema``, ``control_presence`` and ``budget`` over the cells
-    ``expand_cells`` gives, inside ``plan_personas`` (a condition may name a bundle persona)."""
+    """``expected_schema``, ``control_presence``, ``budget`` and, with the dry run's cells,
+    ``dry_run`` over the cells ``expand_cells`` gives, inside ``plan_personas`` (a condition may
+    name a bundle persona)."""
     with plan_personas(loaded.personas):
         cells = expand_cells(loaded.experiment)
     return [
         *_expected_schema(loaded, cells),
         *_control_presence(loaded, cells),
         *_budget(loaded, record, cells, dry_run),
+        *(_dry_run(loaded, cells, dry_run) if dry_run is not None else []),
     ]
 
 
 def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) -> list[LintResult]:
-    """Every lint of ``BUNDLE_LINT_IDS`` but ``dry_run`` (Task 5's) over ``bundle`` (spec
-    section 9), every result kept, warns included (R-good-warn): ``schema``,
+    """Every lint of ``BUNDLE_LINT_IDS`` over ``bundle`` (spec section 9), ``dry_run`` only
+    with the dry run's cells, every result kept, warns included (R-good-warn): ``schema``,
     ``manifest_complete``, the four denylist scans and ``no_values_expectation`` (whole text,
     run whatever ``schema`` found), then Phase 3's lints and the world-level lints per bundle
     world and ``bully_line`` over the personas' ``fallback_lines``, then ``anchor_floor``,
-    ``expected_schema``, ``control_presence`` and ``budget``. When ``schema`` fails, every lint
-    that needs a loaded model reports nothing (the schema failure is the finding), but for a
-    failure that is only a file under ``worlds/`` or ``personas/`` outside the grammar: the
-    grammar files loaded, so their lints run beside it. ``dry_run``
-    is the dry run's cells: ``budget``'s ``max_calls`` clause reads them, and with None it
-    reports nothing. The strategy registry is left as it was found (``plan_personas``)."""
+    ``expected_schema``, ``control_presence``, ``budget`` and ``dry_run``. When ``schema``
+    fails, every lint that needs a loaded model reports nothing (the schema failure is the
+    finding), but for a failure that is only a file under ``worlds/`` or ``personas/`` outside
+    the grammar: the grammar files loaded, so their lints run beside it. ``dry_run`` is the dry
+    run's cells:
+    ``budget``'s ``max_calls`` clause and the ``dry_run`` lint read them, and with None neither
+    reports anything (an empty list fails ``dry_run``). The strategy registry is left as it was
+    found (``plan_personas``)."""
     record = bundle.read_record()
     view = _View(bundle)  # the index and each file read once for every lint
     found, loaded = _schema(view, record)

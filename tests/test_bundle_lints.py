@@ -8,11 +8,13 @@ import sys
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
+from claude_bully.config import load_experiment
 from claude_bully.enums import Layer
+from claude_bully.environments.corpus import CorpusIndex
 from claude_bully.environments.dating import unmovable_dates
 from claude_bully.environments.world import load_world, parse_document, world_hash
 from claude_bully.paths import DATA_DIR, REPO_ROOT
@@ -28,6 +30,7 @@ from claude_bully.planner.bundle_lints import (
     record_scan_text,
     url_hosts,
 )
+from claude_bully.planner.dryrun import dry_run
 from claude_bully.planner.lints import (
     BOUNDARY_PATH,
     REAL_NAMES_PATH,
@@ -43,6 +46,7 @@ from claude_bully.planner.records import (
     PlanRecord,
 )
 from claude_bully.planner.request import PlanBudget, PlanRequest
+from claude_bully.runner.cells import expand_cells
 from claude_bully.strategies import base
 from claude_bully.strategies.base import all_strategies
 from tests.fixtures.bundle_fixtures import GOOD_MANIFEST, GOOD_WARNINGS, good_bundle, mutate
@@ -1690,6 +1694,265 @@ def test_the_max_calls_clause_reads_the_dry_runs_estimate(
     ]
     expected = [(CONFIG, f"the dry run estimates {calls} calls, over the request's max_calls 40")]
     assert found == (expected if fails else []), found
+
+
+def test_an_empty_dry_run_passes_max_calls_and_fails_the_dry_run_lint(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """The Task 4b review's M2: ``dry_run=[]`` sums to 0 calls, so ``budget`` passes it with
+    ``max_calls`` set; that is harmless only because ``dry_run`` fails a dry run with no cell."""
+    bundle = good_bundle(tmp_path)
+    _request(max_calls=1)(bundle)
+    results = lint_bundle(bundle, dry_run=[])
+    assert [r for r in results if r.lint_id == "budget"] == []
+    assert [(r.doc_id, r.message) for r in results if r.lint_id == "dry_run"] == [
+        (CONFIG, "the dry run holds no cell")
+    ]
+
+
+# ------------------------------------------------------------- dry_run (Task 5, preflight Q20)
+
+TRIGGERED_CELL: Final = "ferry_triggered__t0"
+SCHEDULED_CELL: Final = "ferry_scheduled__t0"
+CONTROL_SCHEDULED: Final = "control__t0__s0__r1__emini_scheduled"
+REJECTED: Final = LintRecord(
+    lint_id="no_duplicate_fact",
+    severity="fail",
+    doc_id=f"{TRIGGERED_CELL}/rep0/turn9",
+    message="repeats 'gen-9-1': 9 of its 39 word 8-grams",
+)
+Cells = Callable[[Bundle], list[DryRunCell]]
+
+
+def _cells(**changes: dict[str, object]) -> Cells:
+    """A dry run's cells for the bundle's config, built here (the lint reads only the cells and
+    the config): one per cell ``expand_cells`` gives, complete, the top reached for a cell with a
+    ladder to climb and ``not_applicable`` otherwise; ``changes`` by cell id, ``"*"`` for all."""
+
+    def cells(bundle: Bundle) -> list[DryRunCell]:
+        with plan_personas(bundle_personas(bundle)):
+            exp = load_experiment(bundle.root / CONFIG)
+            specs = expand_cells(exp)
+        out = []
+        for spec in specs:
+            env = exp.environments.get(spec.condition.environment or "")
+            laddered = env is not None and env.gating != "none"
+            fields: dict[str, object] = {
+                "cell_id": spec.cell_id,
+                "status": "complete",
+                "rungs_fired": ["fragment", "first_crumb", "the_log"] if laddered else [],
+                "top_rung": "reached" if laddered else "not_applicable",
+                "buried_fetched": laddered,
+                "buried_search_hit": False,
+                "estimated_calls": 30,
+                "resumed_after_dead_attempt": False,
+            }
+            fields |= changes.get("*", {}) | changes.get(spec.cell_id, {})
+            out.append(DryRunCell.model_validate(fields))
+        return out
+
+    return cells
+
+
+def _leaky_dry_run(bundle: Bundle) -> list[DryRunCell]:
+    """A real dry run with search patched to serve every visible buried document (R-buried's
+    regression), as ``tests/test_dryrun.py`` patches it."""
+    real = CorpusIndex.searchable
+
+    def leaky(self: CorpusIndex, doc: Any, state: Any) -> bool:
+        return self.visible(doc, state) if doc.layer is Layer.buried else real(self, doc, state)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(CorpusIndex, "searchable", leaky)
+        return dry_run(bundle)
+
+
+THE_LOG_UNLOCKS: Final = "    unlocks:\n      - buried\n"
+# (change, the cells, fails, near-miss, a substring of every fail message)
+DRY_RUN_CASES: Final[list[Any]] = [
+    pytest.param(None, _cells(), False, False, "", id="negative"),
+    # ------------------------------------------------------------------------- positives
+    pytest.param(
+        None, _cells(**{TRIGGERED_CELL: {"status": "aborted"}}), True, False, "aborted", id="p1"
+    ),
+    pytest.param(None, lambda bundle: [], True, False, "no cell", id="p2-empty"),
+    pytest.param(
+        None,
+        _cells(**{TRIGGERED_CELL: {"generator": {"rejected": 1}, "lint_failures": [REJECTED]}}),
+        True,
+        False,
+        "a generated fire was rejected: no_duplicate_fact",
+        id="p3-lints",
+    ),
+    pytest.param(
+        None, _cells(**{"*": {"top_rung": "not_reached"}}), True, False, "top rung", id="p4"
+    ),
+    pytest.param(  # the script is 8 target turns in 5 (the brief's budget case, a real run)
+        _edit(CONFIG, "turn_budget: 12", "turn_budget: 4"),
+        dry_run,
+        True,
+        False,
+        "the dry-run script is 8 target turns; the cell has 5 turns",
+        id="p5-budget-run",
+        marks=pytest.mark.slow,
+    ),
+    pytest.param(
+        None, _leaky_dry_run, True, False, "buried document", id="p6-leaky", marks=pytest.mark.slow
+    ),
+    # ------------------------------------------------------------------------ near-misses
+    pytest.param(  # the controls not reached beside the conditions that are
+        None,
+        _cells(**{c: {"top_rung": "not_reached"} for c in (CONTROL_TRIGGERED, CONTROL_SCHEDULED)}),
+        False,
+        True,
+        "",
+        id="n1-one-reached",
+    ),
+    pytest.param(  # a gating: none environment, not_applicable, beside a laddered one
+        _edit(CONFIG, TRIGGERED_LADDER, NO_GATING_LADDER), _cells(), False, True, "", id="n2"
+    ),
+    pytest.param(  # a fire rejected for the cap, no lint failure
+        None,
+        _cells(**{TRIGGERED_CELL: {"generator": {"rejected": 1, "written": 1}}}),
+        False,
+        True,
+        "",
+        id="n3-cap",
+    ),
+    pytest.param(  # the_log names its new buried document by id: searchable by design
+        _edit(LADDER, THE_LOG_UNLOCKS, THE_LOG_UNLOCKS + "      - rota-overtime-sheet\n"),
+        dry_run,
+        False,
+        True,
+        "",
+        id="n4-by-id-run",
+        marks=pytest.mark.slow,
+    ),
+    pytest.param(  # a resumed dead attempt, complete
+        None, _cells(**{"*": {"resumed_after_dead_attempt": True}}), False, True, "", id="n5"
+    ),
+    pytest.param(  # the script is 8 target turns in 8, the cell's (turn_budget 6 gives 7)
+        _edit(CONFIG, "turn_budget: 12", "turn_budget: 7"), _cells(), False, True, "", id="n6"
+    ),
+    pytest.param(  # a read the world refused: the condition reads the climb, not the fetch
+        None, _cells(**{"*": {"buried_fetched": False}}), False, True, "", id="n7-unfetched"
+    ),
+    pytest.param(  # a plain condition with no environment, not_applicable
+        _third_condition("intake_turns: 3"), _cells(), False, True, "", id="n8-plain"
+    ),
+]
+
+
+@pytest.mark.parametrize(("change", "cells", "fails", "near_miss", "reason"), DRY_RUN_CASES)
+def test_a_dry_run_lint_case(
+    change: Mutate,
+    cells: Cells,
+    fails: bool,
+    near_miss: bool,
+    reason: str,
+    tmp_path: Path,
+    isolated_registry: None,
+) -> None:
+    """Preflight Q20: the ``dry_run`` lint's cases, each through ``lint_bundle`` with the cells
+    (built here where the lint's reading is the case, a real dry run where the run is)."""
+    bundle = good_bundle(tmp_path)
+    if change is not None:
+        change(bundle)
+    results = lint_bundle(bundle, dry_run=cells(bundle))
+    found = [(r.doc_id, r.message) for r in results if r.lint_id == "dry_run"]
+    assert bool(found) is fails, (near_miss, found)
+    assert all(reason in message for _, message in found), found
+    assert [r for r in results if r.lint_id == "schema"] == []  # the case reaches the lint
+
+
+def test_the_dry_run_lint_has_a_positive_a_negative_and_more_than_half_near_misses() -> None:
+    kinds = [(p.values[2], p.values[3]) for p in DRY_RUN_CASES]
+    assert {(True, False), (False, False), (False, True)} <= set(kinds)
+    assert sum(1 for _, near in kinds if near) > len(kinds) / 2
+
+
+@pytest.mark.parametrize(
+    ("rel", "text"),
+    [
+        pytest.param(SHEET, "\nzz: !!bool maybe\n", id="sheet-bool-tag"),
+        pytest.param(PERSONA, "\nzz: !!timestamp abc\n", id="persona-timestamp-tag"),
+        pytest.param(CONFIG, "\nzz: !!int ''\n", id="config-int-tag"),
+        pytest.param(EXPECTED, "\nzz: " + "[" * 2000 + "]" * 2000 + "\n", id="expected-deep"),
+        pytest.param(LADDER, "\nzz: !!bool maybe\n", id="ladder-bool-tag"),
+        pytest.param(OFF_LADDER, "zz: !!timestamp abc\n", id="off-grammar-ladder"),
+        pytest.param("scratch.yaml", "zz: !!int ''\n", id="stray-root-file"),
+    ],
+)
+def test_a_yaml_tag_or_nesting_the_loader_cannot_build_is_a_schema_fail_never_an_exception(
+    rel: str, text: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """The Task 4b re-review's NEW-2 (probe p19): an explicit core tag on a malformed scalar
+    (``KeyError``, ``AttributeError``, ``IndexError`` inside ``safe_load``) or nesting past the
+    stack (``RecursionError``) at each load site ``lint_bundle`` reaches is a ``schema`` fail
+    naming the file (none for a stray root file, which no model reads), never an exception."""
+    bundle = good_bundle(tmp_path)
+    path = bundle.root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.read_bytes() if path.exists() else b""
+    path.write_bytes(old + text.encode())
+    schema = [r for r in lint_bundle(bundle) if r.lint_id == "schema" and r.severity == "fail"]
+    assert (rel in [r.doc_id for r in schema]) is (rel != "scratch.yaml"), schema
+
+
+def test_a_document_front_matter_tag_the_loader_cannot_build_is_a_schema_fail(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """NEW-2's ``world.py`` load site: a corpus document's front matter, read by
+    ``parse_document`` and ``load_world``."""
+    bundle = good_bundle(tmp_path)
+    mutate(bundle, BODY_DOC, "---\nid:", "---\nzz: !!bool maybe\nid:")
+    schema = [r for r in lint_bundle(bundle) if r.lint_id == "schema" and r.severity == "fail"]
+    assert [r.doc_id for r in schema] == [BODY_DOC]
+    assert "invalid YAML: KeyError" in schema[0].message, schema[0].message
+
+
+@pytest.mark.parametrize(
+    ("rel", "old", "new"),
+    [
+        pytest.param(
+            CONFIG,
+            "    seeding_turns: 0\n",
+            "    seeding_turns: 0\n    params: &x {k: *x}\n",
+            id="params",
+        ),
+        pytest.param(
+            PERSONA,
+            "name: ferry_caller\n",
+            "name: ferry_caller\nintent_meta: &x {k: *x}\n",
+            id="intent_meta",
+        ),
+    ],
+)
+def test_a_yaml_anchor_holding_itself_in_an_any_field_fails_schema(
+    rel: str, old: str, new: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    """The Task 4b re-review's NEW-3: an ``Any`` field (a condition's ``params``, a persona's
+    ``intent_meta``) takes a cyclic value the run cannot ``model_dump``, so it fails ``schema``
+    before the dry run, as a fail and never an exception."""
+    bundle = good_bundle(tmp_path)
+    mutate(bundle, rel, old, new)
+    schema = [r for r in lint_bundle(bundle) if r.lint_id == "schema" and r.severity == "fail"]
+    assert [r.doc_id for r in schema] == [rel]
+    assert "a YAML anchor holds its own alias" in schema[0].message
+
+
+def test_a_shared_yaml_anchor_that_holds_no_cycle_still_loads(
+    tmp_path: Path, isolated_registry: None
+) -> None:
+    """A node two branches share (an anchor used twice) is no cycle: the persona loads."""
+    bundle = good_bundle(tmp_path)
+    mutate(
+        bundle,
+        PERSONA,
+        "name: ferry_caller\n",
+        "name: ferry_caller\nintent_meta: {a: &x {k: 1}, b: *x}\n",
+    )
+    assert [r for r in lint_bundle(bundle) if r.lint_id == "schema"] == []
 
 
 def test_the_good_bundle_passes_every_lint(tmp_path: Path, isolated_registry: None) -> None:

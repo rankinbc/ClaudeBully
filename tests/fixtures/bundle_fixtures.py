@@ -1,5 +1,6 @@
 """The good fixture bundle (Phase 5 Task 4a): the base of every bundle lint's fixtures, the
-director stub's bundle (Task 7b) and the dry run's (Task 5).
+director stub's bundle (Task 7b) and the dry run's (Task 5); ``config_bundle`` (Task 5), a bundle on
+the overlay for a shipped config.
 
 ``tests/fixtures/bundles/good/`` holds the files a plan authors: ``plan.md``, ``config.yaml``,
 ``expected.yaml``, one persona, and the mini world's patched files and six new documents.
@@ -9,6 +10,7 @@ committed in stage ``plan``, the manifest in one record write, every manifest fi
 stage ``author`` through ``write_manual``, ``review.md`` rendered with no finding and the review
 and revise stages committed with no call."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -156,6 +158,52 @@ def good_bundle(plans_root: Path, *, slug: str = "good") -> Bundle:
         )
     record.review_counts = {"block": 0, "fix": 0, "note": 0}
     record.status = "authored"
+    bundle.write_record(record)
+    return bundle
+
+
+# a shipped config's three repetitions cut to one, for a dry run that proves the paths once
+REPS_1: Final = ("repetitions: 3\n", "repetitions: 1\n")
+OVERLAY: Final = "overlay"
+
+
+def config_bundle(
+    plans_root: Path,
+    config: Path,
+    *,
+    slug: str = "cfg",
+    edits: Sequence[tuple[str, str]] = (),
+) -> Bundle:
+    """A bundle on the overlay for a shipped ``config`` (R-buried: the dry run reaches the
+    overlay here, before Task 12's example): the overlay copied as the base world, a one-line
+    ``plan.md``, and ``config``'s text with each ``(old, new)`` edit applied (each ``old`` must
+    occur once) written as ``config.yaml`` through ``write_manual``; no persona and no
+    ``expected.yaml``, which the dry run does not read."""
+    text = config.read_text(encoding="utf-8")
+    for old, new in edits:
+        assert text.count(old) == 1, (config.name, old)
+        text = text.replace(old, new)
+    bundle = Bundle.create(plans_root, slug)
+    record = PlanRecord(
+        slug=slug,
+        created_at=datetime.now(UTC),
+        request=_REQUEST.model_copy(update={"base_world": OVERLAY}, deep=True),
+        provenance="manual",
+        planner_model=_REQUEST.planner_model.model,
+        reviewer_model=_REQUEST.reviewer_model.model,
+    )
+    bundle.write_manual(record, "plan.md", f"# The dry run of {config.name}\n", stage="plan")
+    _close(record)
+    source = load_world(OVERLAY)
+    for path in sorted(p for p in source.root.rglob("*") if p.is_file()):
+        rel = f"worlds/{OVERLAY}/{path.relative_to(source.root).as_posix()}"
+        record.base_files[rel] = bundle.write_file(rel, path.read_text(encoding="utf-8"))
+    record.base_worlds[OVERLAY] = world_hash(source)
+    record.base_premise_terms[OVERLAY] = list(source.sheet.premise_terms)
+    record.manifest = [ManifestEntry(path="config.yaml", kind="config", purpose=config.name)]
+    bundle.write_record(record)
+    bundle.write_manual(record, "config.yaml", text, stage="author")
+    _close(record)
     bundle.write_record(record)
     return bundle
 

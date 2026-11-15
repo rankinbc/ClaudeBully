@@ -32,13 +32,13 @@ from claude_bully.config import RoleConfig
 from claude_bully.enums import Layer
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.generator import (
-    PLAN_HEADING,
     CorpusView,
     DocPlanner,
     DocWriter,
     FireRequest,
     eligible_items,
 )
+from claude_bully.environments.generator import plan_from_prompt as plan_of
 from claude_bully.environments.harvest import HARVEST_HEADER
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics.judge import JudgeCache
@@ -181,14 +181,6 @@ def mini_writer(
 
 
 # ------------------------------------------------------------------ the writer stub (Task 6)
-
-
-def plan_of(prompt: str) -> dict[str, Any]:
-    """The plan JSON of a writer prompt: the fenced block under ``PLAN_HEADING``."""
-    section = prompt.split(PLAN_HEADING, 1)[1]
-    start = section.index("```json") + len("```json")
-    end = section.index("```", start)
-    return dict(json.loads(section[start:end]))
 
 
 def generator_reply(plan: dict[str, Any]) -> dict[str, Any]:
