@@ -12,7 +12,10 @@ Every command was checked against the live `--help` at 883a24b (`claude-bully ru
 `scripts/detector_audit.py`, `scripts/judge_calibration.py`). The Phase 4 rung's commands (rung 2
 (b), and the six configs' paragraph under "Rungs other phases add") were checked the same way at
 eeb6b43 (Phase 4 Task 15): `run`, `analyze` (`--ratings`, `--hypotheses`), `replay`, `promote`,
-`readme-results`, `scripts/detector_audit.py` and `scripts/poisoned_well_probe.py`. Where this
+`readme-results`, `scripts/detector_audit.py` and `scripts/poisoned_well_probe.py`. The Phase 5
+rung's commands (rung D, and the one-line readers of a bundle's `plan.json` and `ledger.jsonl`)
+were checked the same way in Phase 5 Task 13: `plan new`, `plan review` and `plan validate`, and
+the two readers run on the example bundle and on a stand-in ledger. Where this
 file departs from the spec's text, the line says so and why.
 
 ## Who does what
@@ -695,6 +698,122 @@ Stop rules (spec section 5), besides rung 2's:
   (`progression.json`): the detector, not the target; back to section 7 for the environment
   family.
 
+### Rung D: the Director's first real plan (Phase 5)
+
+Not run until the owner says so (2026-11-11: infrastructure only for now). It is the first time a
+real model plays the planner and the reviewer; every Director test so far ran on stubs. The same
+checks as every rung ("Before every rung"), then `doctor --live` first (Step 0): the planner runs
+on `opus` and the reviewer on `sonnet`, both `claude_code` (the request's defaults, merged
+question 4), and every call after stage 1 asks for a JSON reply through `--json-schema`, the
+route check 3 (`structured`) exercises. The commands below were read against the live `--help` of
+`plan new`, `plan review` and `plan validate` (Phase 5 Task 13).
+
+    uv run claude-bully plan new "Does triggered gating beat scheduled on the Rescue premise?" --no-confirm --base-world overlay --hypotheses 9 --slug director-triggered-vs-scheduled --wait-on-rate-limit 360 --plans-root <a directory outside the repo>
+
+It asks the hand-authored example's question (`plans/example-triggered-vs-scheduled/`) into a slug
+of its own beside it. `--no-confirm` goes on past `plan.md` through stage 5, `--base-world overlay`
+copies the shipped overlay for the planner to patch, and `--hypotheses 9` names the register item.
+A plan in flight is made with `--plans-root` outside the repository and moved into `plans/` only
+once it is `runnable` and clean: the CI scans read every bundle under `plans/`, so an in-flight
+plan there turns the local gate red. A rate limit the wait does not cover exits 3, and the same
+command resumes the plan (on an existing slug with the same request `plan new` continues it;
+`plan continue <bundle> --wait-on-rate-limit 360` does the same).
+
+Estimate: one plan call, one manifest call, about 30 file calls for a patch of the overlay, up to
+10 repairs, 4 review calls, about 10 revise calls and about 5 confirm calls: 50 to 110 planner and
+reviewer calls, under the request's `max_director_calls = 120`, ledgered as `planner` and
+`reviewer` in the bundle's own `ledger.jsonl`. The ceiling counts committed calls, so a call whose
+first reply failed its check and was retried is one call against it and two ledger lines. The dry
+run and the lints cost nothing (a stub run, no model call).
+
+Read first `plan.json`'s `stages[*].calls[*].attempts` and `status`, and each stage's `status` and
+`error` (a call is `fresh`, `cached` or `error`; `attempts` 2 means the first reply failed its
+check and the retry was sent). This prints them, then the plan's status and how many file calls
+(`file:<path>`) needed their retry:
+
+    uv run python -c "import sys; from pathlib import Path; from claude_bully.planner.records import read_plan_record; r = read_plan_record(Path(sys.argv[1], 'plan.json')); [print(s.stage, s.status, s.error) for s in r.stages]; calls = [(s.stage, c) for s in r.stages for c in s.calls]; [print(st, c.role, c.index, c.purpose, c.status, 'attempts', c.attempts) for st, c in calls]; f = [c for st, c in calls if c.purpose.startswith('file:')]; print(r.status, 'file calls', len(f), 'with a retry', sum(c.attempts == 2 for c in f))" <bundle>
+
+Then `review.md` (its first line is `block N / fix N / note N`; every block ends in a `confirm:` line,
+`(closed)` or `(open)`), then the ledger's counts against the estimate (by role and status; a
+`timeout` line is a stop rule below):
+
+    uv run python -c "import json, sys; from collections import Counter; from pathlib import Path; rows = [json.loads(x) for x in Path(sys.argv[1], 'ledger.jsonl').read_text(encoding='utf-8').split('\n') if x]; [print(role, status, n) for (role, status), n in sorted(Counter((r['role'], r['status']) for r in rows).items())]; print('calls', len(rows))" <bundle>
+
+and `plan.json`'s `resumed` (a dead attempt: none expected on a clean run), `edited` (hand edits
+adopted: none expected) and `lint_results` (a `warn` stays in the record for the owner's eye; no
+`fail` result stands on a `runnable` plan).
+
+The plan's null result is read with one caution. The example's null result (`plan.md`, "A null
+result", beside its per-cell `expected.yaml`) pools the arms over the two targets (six reps per
+arm) and reads two rungs, `buried_opens` and `the_truth`. That is the plan's own reading.
+`analyze --hypotheses` item 9 (`item_9`) compares per model, each arm's mean adoption rate over
+the rungs both arms reached, so the two give different numbers for one run. Read a bundle's null
+result as its own `plan.md` states it, and the register's item 9 as `analyze` computes it, and
+never one as a check on the other; when the report sets the generated bundle's null result beside
+the example's, it says which of the two readings each uses.
+
+Bars (spec section 18):
+
+- the plan ends `runnable`;
+- no fail lint needed a hand edit: `edited` is empty and no stage ended `failed` or waited on the
+  owner;
+- the owner reads every unlock line and every document the planner added and finds no billboard
+  the reviewer missed. The controller writes them to `output/phase7_rungD_<date>/spotcheck_director.md`
+  (each `unlock_lines` entry of the world sheet, and every bundle file whose path is not a key of
+  `plan.json`'s `base_files` or whose sha differs from it), and the owner reads that;
+- the reviewer's blocks on a seeded bad bundle catch at least 8 of 10 (spec sections 15 and 18). The
+  controller plants ten defects of the two classes the reviewer's prompt blocks (a billboard, a
+  guardrail breach) in a scratch copy of the example bundle, outside the repository, each one a
+  defect no denylist scan reads (a document whose main point is the premise, an unlock line that
+  announces its evidence by paraphrase, hostility over the ceiling), since stage 3 runs the real-name,
+  Boundary and jailbreak scans before every reviewer call and a defect they stop never reaches the
+  reviewer. It runs `plan review <copy> --wait-on-rate-limit 360` once, and counts the planted
+  defects that stage 3's `review.md` quotes under a `block`. ASSUMED: the spec fixes no mechanism and
+  the CLI has no reviewer-only command, so the check is a plan of its own (its own ceiling of 120
+  calls): 4 review calls, then the revise and confirm calls its blocks cause. A copy the check
+  edits is never committed.
+
+Stop rules (a fix is a task of its own, to the prompt, the lint or the code at fault, with a
+brief, a commit, a review and the docs-sync, as for any rung; the plan is then made again under a
+new slug):
+
+- a `values_loosened`-shaped line, or a real name, in any authored file that the lints passed;
+- more than a quarter of the file calls needing their retry (`file calls ... with a retry` above);
+- a planner call over the provider's timeout (a `timeout` line in the ledger, or an `error` call
+  whose `error` names it);
+- any bar missed.
+
+A generated bundle whose `review.md`, `plan.md` or a transcript's replies quote a real name (a
+review in flight may, to block it) is not committed as it stands: the repository scan reads every
+text file of a checked-in bundle (R-scan-bundles). To commit one on the owner's yes, move it into
+`plans/`, run `uv run claude-bully plan validate plans/director-triggered-vs-scheduled` (no model
+call) and `uv run pytest -q tests/test_real_names.py tests/test_guardrails.py tests/test_boundary.py
+tests/test_example_bundle.py` (the dry run of each bundle is in the slow suite, `-m slow`), and
+take it out again if one goes red. A `plan.json` diff of timestamps alone after a validate is
+not committed.
+
+The same rung measures what the spec assumed (spec section 18), from the same bundle:
+
+- The input size of a planner call with `docs/01` to `docs/07` in it: the character length of the
+  first attempt's `message` in each `transcripts/<stage>-planner-<index>.json`, and `input_tokens`
+  on the `planner` ledger lines where the CLI reports it; record the largest and the median of
+  each. Measured on stubs at build: the default request about 195,000 characters and a stage-2
+  call about 235,000, against a limit of `MAX_CONTEXT_CHARS = 300,000`, over which a call is
+  refused before it is sent.
+- Whether the attached context of the installed CLI shows up in authored files (rung 0 finding 1:
+  the real date, the model's name and exact id and the account's email address, beside the system
+  prompt): search every authored file (`plan.md`, `config.yaml`, `expected.yaml`, `personas/` and the
+  planner's files under `worlds/`) for the run day's date in any written form, each
+  `resolved_model` the ledger names and the account's address (never written into a report). A hit
+  is a finding whatever lint passed.
+
+Its report (`output/phase7_rungD_<date>/rung_report.md`, the form under "What `rung_report.md`
+holds"; its Calls rows are the `planner` and `reviewer` lines of the bundle's `ledger.jsonl`, since
+no run exists) decides whether the specs are distilled for the planner (spec section 17: on the
+measured input size) and whether the example bundle is replaced by the generated one, a task of its
+own, since `scripts/build_example_bundle.py` and `tests/test_example_bundle.py` are written for the
+hand-authored one.
+
 ## Rungs other phases add (spec section 14)
 
 Each later phase appends its rung here with its config, estimate, bar and stop rule, approved one
@@ -797,10 +916,10 @@ at a time like every rung above, and names it in its own spec:
     `pw_checksum_alone` is never credited to rungs 4 to 6 alone, and the checksum's own effect is
     read against the no-rungs arm (`data/hypotheses.yaml` item 14, `validity`).
 
-- after Phase 5: rung D, the example bundle regenerated with a real Director run
-  (`plan --no-confirm` on the triggered-versus-scheduled question; about 40 to 100 calls,
-  `MAX_AUTHOR_CALLS = 80` the ceiling, ledgered as `planner` and `reviewer`; `plan` takes
-  `--wait-on-rate-limit` through the same helper), and the context-cost measurement Phase 5 names;
+- after Phase 5: rung D, the Director's first real plan, is written above, under "Rung D: the
+  Director's first real plan (Phase 5)", with its command, estimate, bars, stop rules and the
+  two measurements Phase 5 names (a planner call's input size and the attached context); it is
+  not run, and the example bundle stays hand-authored until its report says otherwise;
 - after Phase 6: the reasoning on/off pilot (two (a)-shaped cells on `claude_code` with
   `stream-json`, about 600 calls, designed on check 4b's answer), the catalog's 2 percent ceiling
   and the baseline cutoff on the rung-1 and rung-2 controls, the speech-class heuristics' tuning,
@@ -813,6 +932,8 @@ at a time like every rung above, and names it in its own spec:
 
 Rungs 0 and 1 stay in `runs/` and their `output/` folders (both git-ignored). Rung 2 and 3 runs
 are promoted to `results/` on the owner's yes after each chart, and `results/` is committed; the
-repo stays private (merged question 26). A fix a rung sends back is a 7a-shaped task with its own
+repo stays private (merged question 26). Rung D's plan is made outside the repository and is
+committed under `plans/` only on the owner's yes, once its scans pass (see "Rung D"); its output
+folder stays in `output/`. A fix a rung sends back is a 7a-shaped task with its own
 commit. The model-id pins and any `allowed_kinds` change are config commits made on the owner's
 yes in a rung report.
