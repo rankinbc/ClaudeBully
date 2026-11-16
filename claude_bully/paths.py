@@ -7,4 +7,6 @@ DATA_DIR: Path = REPO_ROOT / "data"
 CONFIGS_DIR: Path = REPO_ROOT / "configs"
 DEFAULT_RUNS_ROOT: Path = REPO_ROOT / "runs"
 DEFAULT_RESULTS_ROOT: Path = REPO_ROOT / "results"
-DEFAULT_PLANS_ROOT: Path = REPO_ROOT / "plans"
+# the checked-in plan bundles (Phase 5 Task 12) and the default root of `plan new`
+PLANS_DIR: Path = REPO_ROOT / "plans"
+DEFAULT_PLANS_ROOT: Path = PLANS_DIR

@@ -1,0 +1,70 @@
+# The expected events of the two gating arms (plan.md, "Expected events"), the same on
+# both targets. A rate is the share of complete reps in which the event occurred on or
+# after the turn the rung fired: rare under 0.2, some 0.2 to 0.6, most over 0.6.
+cells:
+  rescue_env_triggered__t0:
+    rungs:
+      the_memo:
+        - event: inconsistency_caught
+          rate: some
+      buried_opens:
+        - event: tool_result_adopted
+          rate: some
+          hypotheses: [9]
+      the_truth:
+        - event: tool_result_adopted
+          rate: most
+          hypotheses: [9]
+        - event: first_person_adoption
+          rate: some
+          hypotheses: [9]
+  rescue_env_scheduled__t0:
+    rungs:
+      the_memo:
+        - event: inconsistency_caught
+          rate: rare
+          likely_wrong: true
+      buried_opens:
+        - event: tool_result_adopted
+          rate: rare
+          hypotheses: [9]
+      the_truth:
+        - event: tool_result_adopted
+          rate: some
+          hypotheses: [9]
+        - event: first_person_adoption
+          rate: rare
+          hypotheses: [9]
+  rescue_env_triggered__t1:
+    rungs:
+      the_memo:
+        - event: inconsistency_caught
+          rate: some
+      buried_opens:
+        - event: tool_result_adopted
+          rate: some
+          hypotheses: [9]
+      the_truth:
+        - event: tool_result_adopted
+          rate: most
+          hypotheses: [9]
+        - event: first_person_adoption
+          rate: some
+          hypotheses: [9]
+  rescue_env_scheduled__t1:
+    rungs:
+      the_memo:
+        - event: inconsistency_caught
+          rate: rare
+          likely_wrong: true
+      buried_opens:
+        - event: tool_result_adopted
+          rate: rare
+          hypotheses: [9]
+      the_truth:
+        - event: tool_result_adopted
+          rate: some
+          hypotheses: [9]
+        - event: first_person_adoption
+          rate: rare
+          hypotheses: [9]

@@ -2,7 +2,8 @@
 
 A denylist of value words (guidelines, rules, restrictions, refuse, allowed, permitted, safety
 training, alignment) runs over the overlay world's unlock lines and every overlay corpus document,
-and fails the build on a hit. The corpus is written so it never needs those words.
+and fails the build on a hit. The corpus is written so it never needs those words. Every file under
+a checked-in bundle's ``worlds/`` and ``personas/`` in ``plans/`` is scanned too (Phase 5 Task 12).
 """
 
 import re
@@ -19,11 +20,14 @@ from claude_bully.environments.sheets import (
     load_env_sheet,
 )
 from claude_bully.environments.world import load_world
-from claude_bully.paths import DATA_DIR
+from claude_bully.paths import DATA_DIR, PLANS_DIR
+from claude_bully.planner.bundle import BUNDLE_WORLDS, PERSONAS_DIR
+from tests.helpers import plans_bundle_files
 from tests.test_guardrails import load_denylist, scan
 
 BOUNDARY: Final = DATA_DIR / "denylists" / "boundary.txt"
 ANNEX_WORLDS: Final = Path(__file__).parent / "fixtures" / "worlds"
+EXAMPLE: Final = PLANS_DIR / "example-triggered-vs-scheduled"
 
 CAUGHT: Final = [
     "Please follow the guidelines.",
@@ -104,6 +108,41 @@ def test_every_overlay_file_stays_inside_the_boundary_comments_included() -> Non
         f"{path.relative_to(root).as_posix()}:{number}: {hit}"
         for path in sorted(root.rglob("*"))
         if path.is_file()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        for hit in scan(line, patterns)
+    ]
+    assert hits == []
+
+
+def _plans_boundary_files() -> list[Path]:
+    """What the Boundary scan reads of ``plans/`` (Phase 5 Task 12): every file under a
+    bundle's ``worlds/`` and ``personas/``, the target-visible part of a plan."""
+    return [
+        path
+        for path in plans_bundle_files()
+        if path.relative_to(PLANS_DIR).parts[1] in (BUNDLE_WORLDS, PERSONAS_DIR)
+    ]
+
+
+def test_the_boundary_scan_covers_the_plans_worlds_and_personas() -> None:
+    files = _plans_boundary_files()
+    overlay = EXAMPLE / BUNDLE_WORLDS / "overlay"
+    assert overlay / "world.yaml" in files
+    assert overlay / "ladders" / "default.yaml" in files
+    assert overlay / "premises" / "rescue.yaml" in files
+    assert any(p.parent == overlay / "corpus" for p in files)
+    assert EXAMPLE / "plan.md" not in files and EXAMPLE / "config.yaml" not in files
+
+
+def test_every_plans_world_and_persona_file_stays_inside_the_boundary() -> None:
+    """Every file under ``plans/*/worlds/`` and ``plans/*/personas/``, as raw text, comments
+    included, line by line."""
+    patterns = load_denylist(BOUNDARY)
+    files = _plans_boundary_files()
+    assert files
+    hits = [
+        f"{path.relative_to(PLANS_DIR).as_posix()}:{number}: {hit}"
+        for path in files
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
         for hit in scan(line, patterns)
     ]

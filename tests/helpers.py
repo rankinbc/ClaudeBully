@@ -5,7 +5,7 @@ import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
@@ -14,6 +14,8 @@ from claude_bully.enums import Axis, Phase, ProviderKind, Speaker
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import McpState
+from claude_bully.paths import PLANS_DIR
+from claude_bully.planner.bundle import BUNDLE_WORLDS, DRYRUN_DIR, PLAN_FILE, STATE_DIR
 from claude_bully.records import Conversation, Turn
 from claude_bully.records_env import IdleTurnInfo
 
@@ -157,6 +159,41 @@ def redacted_thinking_block(data: str) -> SimpleNamespace:
 
 
 WORLDS_DIR = Path(__file__).parent / "fixtures" / "worlds"
+
+# the git-ignored part of a bundle under plans/ (.gitignore): the dry run and the provider state
+_PLANS_IGNORED: Final = frozenset({DRYRUN_DIR, STATE_DIR})
+
+
+def plans_bundles(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    """Every bundle under ``plans/`` (Phase 5 Task 12): a directory holding a ``plan.json``,
+    in name order; none when there is no ``plans/``."""
+    if not plans_dir.is_dir():
+        return []
+    return sorted(p for p in plans_dir.iterdir() if (p / PLAN_FILE).is_file())
+
+
+def plans_bundle_files(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    """Every committed file of every bundle under ``plans/``: all but the git-ignored
+    ``dryrun/`` and ``state/`` (what the repository scans read, R-scan-bundles)."""
+    return sorted(
+        path
+        for root in plans_bundles(plans_dir)
+        for path in root.rglob("*")
+        if path.is_file() and path.relative_to(root).parts[0] not in _PLANS_IGNORED
+    )
+
+
+def plans_world_dirs(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    """Every world directory of every bundle under ``plans/``: ``<bundle>/worlds/<name>``."""
+    return sorted(
+        world
+        for root in plans_bundles(plans_dir)
+        if (root / BUNDLE_WORLDS).is_dir()
+        for world in (root / BUNDLE_WORLDS).iterdir()
+        if world.is_dir()
+    )
+
+
 # the annex documents that state a date near its world date (dating.dated_documents)
 ANNEX_DATED = ("annex-notice", "annex-relay")
 

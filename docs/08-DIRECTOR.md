@@ -39,6 +39,8 @@ Everything the Director produces is data the harness validates. It cannot change
 
 The bundle is self-contained: `claude-bully run plans/<slug>/config.yaml` needs nothing else.
 
+The example bundle, `plans/example-triggered-vs-scheduled/` (built in Phase 5 Task 12), is hand-authored for now: `provenance: manual` in its `plan.json`, every file committed as a `manual` call with no Director call, built by `scripts/build_example_bundle.py` on a byte copy of the overlay and `configs/environments/triggered_vs_scheduled.yaml`, and validated `runnable` by the same lints and dry run as any plan. Rung D of the 7b runbook, the Director's first real plan, asks the same question and regenerates it (C22); its report decides whether the hand-authored example is replaced. Every committed file of a bundle under `plans/` is under the repository's real-name, reserved-host, jailbreak and Boundary scans (R-scan-bundles), so a bundle whose `review.md`, `plan.md` or a transcript's reply quotes a real name is not committed as it stands.
+
 ## Process
 
 Five stages, each a separate agent call or harness step, each leaving a file in the bundle. The planner never sees the reviewer's prompt and the reviewer never sees the planner's reasoning; they exchange only the bundle.
