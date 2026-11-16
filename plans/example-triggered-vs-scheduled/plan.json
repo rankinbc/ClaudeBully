@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "slug": "example-triggered-vs-scheduled",
- "created_at": "2026-11-16T06:21:22.365045Z",
+ "created_at": "2026-11-16T14:05:19.583796Z",
  "request": {
   "question": "Does triggered gating beat scheduled on the Rescue premise?",
   "target_models": [
@@ -215,8 +215,8 @@
  "stages": [
   {
    "stage": "plan",
-   "started_at": "2026-11-16T06:21:22.368406Z",
-   "finished_at": "2026-11-16T06:21:22.388732Z",
+   "started_at": "2026-11-16T14:05:19.583796Z",
+   "finished_at": "2026-11-16T14:05:19.597110Z",
    "inputs": {},
    "calls": [
     {
@@ -224,7 +224,7 @@
      "index": 0,
      "purpose": "file:plan.md",
      "outputs": {
-      "plan.md": "cf07e7647bdca175d228fef8e59145d896f3aa9c964e0ce9b0d9795dd021020f"
+      "plan.md": "54218c77ae14d3f15a565e05b0597a0fa0c68b0a5eb24062706dbf23fa8d3a9a"
      },
      "cache_key": "",
      "status": "manual",
@@ -240,8 +240,8 @@
   },
   {
    "stage": "author",
-   "started_at": "2026-11-16T06:21:22.877247Z",
-   "finished_at": "2026-11-16T06:21:22.906279Z",
+   "started_at": "2026-11-16T14:05:19.957098Z",
+   "finished_at": "2026-11-16T14:05:19.996320Z",
    "inputs": {},
    "calls": [
     {
@@ -280,8 +280,8 @@
   },
   {
    "stage": "review",
-   "started_at": "2026-11-16T06:21:22.906279Z",
-   "finished_at": "2026-11-16T06:21:22.906279Z",
+   "started_at": "2026-11-16T14:05:20.001601Z",
+   "finished_at": "2026-11-16T14:05:20.001601Z",
    "inputs": {},
    "calls": [],
    "status": "committed",
@@ -289,8 +289,8 @@
   },
   {
    "stage": "revise",
-   "started_at": "2026-11-16T06:21:22.906279Z",
-   "finished_at": "2026-11-16T06:21:22.906279Z",
+   "started_at": "2026-11-16T14:05:20.001601Z",
+   "finished_at": "2026-11-16T14:05:20.001601Z",
    "inputs": {},
    "calls": [],
    "status": "committed",
@@ -298,12 +298,12 @@
   },
   {
    "stage": "validate",
-   "started_at": "2026-11-16T06:21:52.037706Z",
-   "finished_at": "2026-11-16T06:22:05.893386Z",
+   "started_at": "2026-11-16T14:05:20.016607Z",
+   "finished_at": "2026-11-16T14:05:49.579486Z",
    "inputs": {
     "config.yaml": "0d81b67ce21ff46c1a84528a06256d66ee1f0f7d691588b723e54ecccdc40da1",
     "expected.yaml": "e7e2bcbe3cfe1c35861fd7390fe65d9f90a6819a2de4eb22146cab1e16d30a3d",
-    "plan.md": "cf07e7647bdca175d228fef8e59145d896f3aa9c964e0ce9b0d9795dd021020f",
+    "plan.md": "54218c77ae14d3f15a565e05b0597a0fa0c68b0a5eb24062706dbf23fa8d3a9a",
     "review.md": "f3fad6230271189a3039664e4cfa5b7b9046a2b1c438bfc1adcda0213eb1893e",
     "worlds/overlay/corpus/assistant-config.md": "55bdbde3c634ea694cee21084af34e4e114ad1b55fce46138ea7f4a1afcc29bf",
     "worlds/overlay/corpus/cpo-about.md": "fe536b476994cc8092f2ce22ebb63969111696372ab0bb80b2242ca535fc2c0a",
@@ -537,7 +537,7 @@
    "resumed_after_dead_attempt": false
   }
  ],
- "dry_run_id": "dryrun-7aa9f4b625d1",
- "bundle_hash": "7aa9f4b625d118735b57e9774ea27645fd4c8e2b7c802464106743ccf7b619e3",
+ "dry_run_id": "dryrun-d3befe4a9a05",
+ "bundle_hash": "d3befe4a9a055527eebdad6d27b913a1c86932d681ee53b29a52b9c3016b7b8a",
  "status": "runnable"
 }

@@ -22,7 +22,8 @@ from claude_bully.environments.sheets import (
 from claude_bully.environments.world import load_world
 from claude_bully.paths import DATA_DIR, PLANS_DIR
 from claude_bully.planner.bundle import BUNDLE_WORLDS, PERSONAS_DIR
-from tests.helpers import plans_bundle_files
+from claude_bully.planner.bundle_lints import collapse_paragraphs
+from tests.helpers import plans_bundle_files, plans_bundle_of, plans_rel
 from tests.test_guardrails import load_denylist, scan
 
 BOUNDARY: Final = DATA_DIR / "denylists" / "boundary.txt"
@@ -114,14 +115,30 @@ def test_every_overlay_file_stays_inside_the_boundary_comments_included() -> Non
     assert hits == []
 
 
-def _plans_boundary_files() -> list[Path]:
+def _plans_boundary_files(plans_dir: Path = PLANS_DIR) -> list[Path]:
     """What the Boundary scan reads of ``plans/`` (Phase 5 Task 12): every file under a
     bundle's ``worlds/`` and ``personas/``, the target-visible part of a plan."""
     return [
         path
-        for path in plans_bundle_files()
-        if path.relative_to(PLANS_DIR).parts[1] in (BUNDLE_WORLDS, PERSONAS_DIR)
+        for path in plans_bundle_files(plans_dir)
+        if path.relative_to(plans_bundle_of(path, plans_dir)).parts[0]
+        in (BUNDLE_WORLDS, PERSONAS_DIR)
     ]
+
+
+def plans_boundary_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
+    """Every Boundary term in a file the scan reads under ``plans_dir``: line by line, comments
+    included, and over the whole text folded (fix round 1, review I1: a term wrapped across a
+    line is read as a reader reads it, as ``boundary_bundle`` reads it)."""
+    patterns = load_denylist(BOUNDARY)
+    hits: list[str] = []
+    for path in _plans_boundary_files(plans_dir):
+        rel = plans_rel(path, plans_dir)
+        text = path.read_text(encoding="utf-8")
+        lines = enumerate(text.splitlines(), start=1)
+        hits += [f"{rel}:{number}: {hit}" for number, line in lines for hit in scan(line, patterns)]
+        hits += [f"{rel} (folded): {hit}" for hit in scan(collapse_paragraphs(text), patterns)]
+    return hits
 
 
 def test_the_boundary_scan_covers_the_plans_worlds_and_personas() -> None:
@@ -136,17 +153,47 @@ def test_the_boundary_scan_covers_the_plans_worlds_and_personas() -> None:
 
 def test_every_plans_world_and_persona_file_stays_inside_the_boundary() -> None:
     """Every file under ``plans/*/worlds/`` and ``plans/*/personas/``, as raw text, comments
-    included, line by line."""
-    patterns = load_denylist(BOUNDARY)
-    files = _plans_boundary_files()
-    assert files
-    hits = [
-        f"{path.relative_to(PLANS_DIR).as_posix()}:{number}: {hit}"
-        for path in files
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
-        for hit in scan(line, patterns)
-    ]
-    assert hits == []
+    included."""
+    assert _plans_boundary_files()
+    assert plans_boundary_hits() == []
+
+
+_TERM: Final = "the guidelines say"
+_DOC: Final = "worlds/overlay/corpus/cpo-about.md"
+
+
+def _append(path: Path, text: str) -> None:
+    path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+def _persona(root: Path, text: str) -> None:
+    (root / PERSONAS_DIR).mkdir()
+    (root / PERSONAS_DIR / "p.yaml").write_text(f"name: p\n{text}", encoding="utf-8")
+
+
+BOUNDARY_PLANTS: Final = {
+    "a corpus document": lambda r: _append(r / _DOC, f"\n{_TERM}\n"),
+    "a corpus document wrapped": lambda r: _append(r / _DOC, "\nits safety\ntraining\n"),
+    "a world.yaml comment": lambda r: _append(r / "worlds/overlay/world.yaml", f"# {_TERM}\n"),
+    "a persona file": lambda r: _persona(r, f"# {_TERM}\n"),
+}
+
+
+def test_the_boundary_scan_passes_the_example_as_copied(plans_copy: Path) -> None:
+    assert plans_boundary_hits(plans_copy) == []
+
+
+@pytest.mark.parametrize("where", sorted(BOUNDARY_PLANTS))
+def test_a_boundary_term_planted_in_a_plans_bundle_is_caught(plans_copy: Path, where: str) -> None:
+    """Review M1 and I1: the scan body on a copy of the example, a term wrapped across a line
+    included."""
+    BOUNDARY_PLANTS[where](plans_copy / EXAMPLE.name)
+    assert plans_boundary_hits(plans_copy), where
+
+
+def test_a_boundary_term_in_plan_md_is_out_of_the_scan(plans_copy: Path) -> None:
+    _append(plans_copy / EXAMPLE.name / "plan.md", f"\n{_TERM}\n")
+    assert plans_boundary_hits(plans_copy) == []
 
 
 def test_the_world_generator_persona_stays_inside_the_boundary() -> None:

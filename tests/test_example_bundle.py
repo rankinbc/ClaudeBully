@@ -22,8 +22,10 @@ from claude_bully.planner.bundle_lints import lint_bundle
 from claude_bully.planner.dryrun import dry_run
 from claude_bully.planner.records import DryRunCell
 from scripts.build_example_bundle import SLUG, build
+from tests.helpers import plans_bundles
 
-BUNDLES: Final = sorted(p for p in PLANS_DIR.iterdir() if (p / "plan.json").is_file())
+# every bundle under plans/, none when there is no plans/ (review N1: the shared helper)
+BUNDLES: Final = plans_bundles()
 EXAMPLE: Final = PLANS_DIR / "example-triggered-vs-scheduled"
 OVERLAY: Final = "overlay"
 
@@ -149,3 +151,14 @@ def test_the_script_rebuilds_over_its_own_bundle_and_refuses_any_other(tmp_path:
     with pytest.raises(FileExistsError, match="not a bundle"):
         build(other, validate=False)
     assert (other / SLUG / "notes.md").is_file()
+
+
+def test_the_script_refuses_an_overlay_it_cannot_copy_byte_for_byte(tmp_path: Path) -> None:
+    """Review N2: the copy is checked against the shipped bytes as it is written, so a world
+    file stored with CRLF (which ``Bundle.write_file`` writes LF) is refused, never normalized."""
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR / OVERLAY, worlds / OVERLAY)
+    doc = worlds / OVERLAY / "corpus" / "cpo-about.md"
+    doc.write_bytes(doc.read_bytes().replace(b"\n", b"\r\n"))
+    with pytest.raises(ValueError, match="differs from the shipped bytes"):
+        build(tmp_path / "plans", validate=False, worlds_dir=worlds)

@@ -1,7 +1,9 @@
 """Shared builders for tests."""
 
 import copy
+import json
 import shutil
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +17,14 @@ from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import McpState
 from claude_bully.paths import PLANS_DIR
-from claude_bully.planner.bundle import BUNDLE_WORLDS, DRYRUN_DIR, PLAN_FILE, STATE_DIR
+from claude_bully.planner.bundle import (
+    BUNDLE_WORLDS,
+    DRYRUN_DIR,
+    PLAN_FILE,
+    STATE_DIR,
+    TRANSCRIPTS,
+)
+from claude_bully.planner.bundle_lints import collapse_paragraphs
 from claude_bully.records import Conversation, Turn
 from claude_bully.records_env import IdleTurnInfo
 
@@ -181,6 +190,67 @@ def plans_bundle_files(plans_dir: Path = PLANS_DIR) -> list[Path]:
         for path in root.rglob("*")
         if path.is_file() and path.relative_to(root).parts[0] not in _PLANS_IGNORED
     )
+
+
+def plans_bundle_of(path: Path, plans_dir: Path = PLANS_DIR) -> Path:
+    """The bundle under ``plans_dir`` that holds ``path``."""
+    return plans_dir / path.relative_to(plans_dir).parts[0]
+
+
+def plans_rel(path: Path, plans_dir: Path = PLANS_DIR) -> str:
+    """``path`` as a scan names it: ``plans/<slug>/<rel>``, wherever ``plans_dir`` is."""
+    return f"plans/{path.relative_to(plans_dir).as_posix()}"
+
+
+def is_plans_transcript(path: Path, plans_dir: Path = PLANS_DIR) -> bool:
+    """A transcript of a bundle under ``plans_dir``: a ``.json`` file under its
+    ``transcripts/``."""
+    rel = path.relative_to(plans_bundle_of(path, plans_dir))
+    return path.suffix == ".json" and rel.parts[0] == TRANSCRIPTS
+
+
+def json_strings(value: Any) -> list[str]:
+    """Every string a parsed JSON value holds, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*json_strings(k), *json_strings(v))]
+    if isinstance(value, list):
+        return [s for v in value for s in json_strings(v)]
+    return []
+
+
+def record_strings(path: Path) -> list[str]:
+    """The strings a JSON record holds, decoded (an escaped line break would hide a word
+    boundary from a scan of the raw text): a ``.json`` file whole, a ``.jsonl`` file line by
+    line. A torn last line of a ``.jsonl`` (a write a kill cut short, which the harness
+    tolerates) is left to the raw scan; any other line that is not JSON raises ``ValueError``
+    naming the file and the line (review N3)."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix != ".jsonl":
+        return json_strings(json.loads(text))
+    lines = text.splitlines()
+    found: list[str] = []
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            found += json_strings(json.loads(line))
+        except json.JSONDecodeError as exc:
+            if number == len(lines) and not text.endswith("\n"):
+                continue  # the torn last line
+            raise ValueError(f"{path}: line {number}: not JSON ({exc.msg})") from exc
+    return found
+
+
+def folded(texts: Iterable[str]) -> list[str]:
+    """Each text and its paragraphs folded (``bundle_lints.collapse_paragraphs``, the bundle
+    lints' own fold, Task 4b review I3): a scan over ``plans/`` reads both, so a phrase wrapped
+    across a line is read as a reader reads it (Task 12 review I1)."""
+    out: list[str] = []
+    for text in texts:
+        out += [text, collapse_paragraphs(text)]
+    return out
 
 
 def plans_world_dirs(plans_dir: Path = PLANS_DIR) -> list[Path]:

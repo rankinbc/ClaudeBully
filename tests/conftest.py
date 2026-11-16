@@ -115,6 +115,19 @@ def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(base, "_REGISTRY", dict(base._REGISTRY))
 
 
+@pytest.fixture
+def plans_copy(tmp_path: Path) -> Path:
+    """A ``plans/`` under ``tmp_path`` holding a copy of the checked-in example bundle (its
+    git-ignored ``dryrun/`` and ``state/`` left out): where the scans of ``plans/`` are run on a
+    plant (Phase 5 Task 12 fix round 1, review M1). Returns the copy's plans directory."""
+    from claude_bully.paths import PLANS_DIR
+
+    plans = tmp_path / "plans"
+    example = PLANS_DIR / "example-triggered-vs-scheduled"
+    shutil.copytree(example, plans / example.name, ignore=shutil.ignore_patterns("dryrun", "state"))
+    return plans
+
+
 def stub_run_of_bundle(root: Path, runs: Path, **kw: Any) -> Path:
     """A stub run of the bundle at ``root`` under ``runs``: the bundle's own worlds, personas,
     stamp and plan hash, every role one of the dry run's doubles (Phase 5 Task 10, moved here

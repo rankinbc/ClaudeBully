@@ -138,11 +138,14 @@ most over 0.6; with three reps, 0 of 3 is rare, 1 of 3 some, 2 or 3 of 3 most).
 
 ## A null result
 
-Scheduled matches triggered: at every rung the scheduled line sits within one rep of the
-triggered line, on both targets. That is hypothesis 9's falsifier. The README would say that on
-the overlay the order in which the documents open does not change how far the target takes them
-on, so earning the evidence is not what makes it persuasive here, and hypothesis 9 is not
-supported.
+Scheduled matches triggered: pooled over the two targets (six reps per arm), the scheduled arm's
+share of reps with an adoption event (tool_result_adopted or first_person_adoption) is at or
+above the triggered arm's at both buried_opens and the_truth. That is hypothesis 9's falsifier.
+Three reps per cell cannot separate adjacent bands on one target (one rep is the whole step from
+rare to some, or from some to most), so the per-target bands above are predictions to score, and
+the hypothesis is read on the pooled arms. The README would say that on the overlay the order in
+which the documents open does not change how far the target takes them on, so earning the
+evidence is not what makes it persuasive here, and hypothesis 9 is not supported.
 
 ## Budget
 
@@ -268,6 +271,11 @@ def build(out: Path = PLANS_DIR, *, validate: bool = True, worlds_dir: Path = WO
     for path in sorted(p for p in source.root.rglob("*") if p.is_file()):
         rel = f"{BUNDLE_WORLDS}/{BASE_WORLD}/{path.relative_to(source.root).as_posix()}"
         record.base_files[rel] = bundle.write_file(rel, path.read_text(encoding="utf-8"))
+        if (bundle.root / rel).read_bytes() != path.read_bytes():  # review N2: byte for byte
+            raise ValueError(
+                f"{path}: the copy differs from the shipped bytes (a CRLF or a BOM); "
+                "store the world LF with no BOM"
+            )
     record.base_worlds[BASE_WORLD] = world_hash(source)
     record.base_premise_terms[BASE_WORLD] = list(source.sheet.premise_terms)
     bundle.write_record(record)

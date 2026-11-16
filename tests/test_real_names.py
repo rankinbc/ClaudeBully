@@ -9,22 +9,25 @@ is scanned case-insensitively, and so are the Phase 4 harness files outside them
 ``configs/`` (Phase 4 Task 14, sparing a role's provider value). Every text file of the fixture
 bundles under ``tests/fixtures/bundles`` is scanned too (Phase 5 Task 4a, R-scan-bundles), its
 ``config.yaml`` through the config spare like a config under ``configs/``. Every committed file
-of every bundle under ``plans/`` is scanned too (Phase 5 Task 12, R-scan-bundles): its text
-files whole, ``plan.md`` and ``review.md`` with no exemption, its ``config.yaml`` through the
-config spare, its JSON records (``plan.json``, ``dryrun.jsonl``, ``ledger.jsonl``) through
-``record_scan_text``, and of each transcript the attempts' replies alone (a message quotes
-``docs/01`` to ``docs/07``, which name real models by design); and the owner's name
-(``owner_names``, read from the docs' bylines at run time and on no checked-in list) is in none
-of them. A file may exempt names with a ``# real-name-ok: <a>, <b>`` comment, and the only name
-it may exempt is the target's own ``display_name``.
+of every bundle under ``plans/`` is scanned too (Phase 5 Task 12, R-scan-bundles), each text
+read raw and with its paragraphs folded (fix round 1, review I1): its text files whole, with
+``plan.md`` (only) through the config spare, since a plan names its target as
+``real_name_bundle`` reads it (review I2); its ``config.yaml`` through the config spare; its JSON
+records (``plan.json``, ``dryrun.jsonl``, ``ledger.jsonl``) through ``record_scan_text`` and their
+decoded strings through the config spare; and of each transcript the attempts' replies alone,
+through the config spare (a message quotes ``docs/01`` to ``docs/07``, which name real models by
+design). The spare is the bundle's own target display names, never a ``real-name-ok`` line,
+which no file under ``plans/`` may use; and the owner's name (``owner_names``, read from the
+docs' bylines at run time and on no checked-in list) is in none of them. Outside ``plans/`` a
+file may exempt names with a ``# real-name-ok: <a>, <b>`` comment, and the only name it may
+exempt is the target's own ``display_name``.
 """
 
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import pytest
 import yaml
@@ -46,7 +49,17 @@ from claude_bully.planner.bundle_lints import (
     url_hosts,
 )
 from claude_bully.planner.lints import owner_names, owner_pattern
-from tests.helpers import plans_bundle_files, plans_bundles, plans_world_dirs
+from tests.helpers import (
+    folded,
+    is_plans_transcript,
+    json_strings,
+    plans_bundle_files,
+    plans_bundle_of,
+    plans_bundles,
+    plans_rel,
+    plans_world_dirs,
+    record_strings,
+)
 from tests.test_guardrails import load_denylist, scan
 
 REAL_NAMES: Final = DATA_DIR / "denylists" / "real_names.txt"
@@ -207,72 +220,70 @@ def _label(path: Path) -> str:
 def _scanned_files() -> list[Path]:
     """Every text file under ``SCANNED``, and each of ``SCANNED_FILES`` that exists (the
     register lands in Phase 4 Task 13). A bundle's ``config.yaml`` is read by
-    ``_bundle_configs`` instead, through the config spare."""
+    ``_bundle_configs`` instead, through the config spare. The bundles under ``plans/`` have
+    their own scan (``plans_real_name_hits``), with no ``real-name-ok`` exemption."""
     found = [
         path
         for root in SCANNED
         for path in root.rglob("*")
         if path.is_file() and path.suffix in TEXT_SUFFIXES and not _is_bundle_config(path)
     ]
-    found += [
-        path
-        for path in plans_bundle_files()
-        if path.suffix in TEXT_SUFFIXES and not _is_bundle_config(path)
-    ]
     return sorted([*found, *(p for p in SCANNED_FILES if p.is_file())])
 
 
 def _is_bundle_config(path: Path) -> bool:
-    """A bundle's own ``config.yaml``: at the top of a bundle under ``FIXTURE_BUNDLES`` or
-    ``plans/``."""
-    return path.name == BUNDLE_CONFIG and path.parent.parent in (FIXTURE_BUNDLES, PLANS_DIR)
+    """A fixture bundle's own ``config.yaml``: at the top of a bundle under
+    ``FIXTURE_BUNDLES``."""
+    return path.name == BUNDLE_CONFIG and path.parent.parent == FIXTURE_BUNDLES
 
 
 def _bundle_configs() -> list[Path]:
-    fixtures = [p for p in FIXTURE_BUNDLES.glob(f"*/{BUNDLE_CONFIG}") if p.is_file()]
-    plans = [root / BUNDLE_CONFIG for root in plans_bundles() if (root / BUNDLE_CONFIG).is_file()]
-    return sorted([*fixtures, *plans])
+    return sorted(p for p in FIXTURE_BUNDLES.glob(f"*/{BUNDLE_CONFIG}") if p.is_file())
 
 
-def _bundle_of(path: Path) -> Path:
-    """The bundle under ``plans/`` that holds ``path``."""
-    return PLANS_DIR / path.relative_to(PLANS_DIR).parts[0]
+# ------------------------------------------- the checked-in bundles under plans/ (Phase 5 Task 12)
+# Every committed file of every bundle is in exactly one of four lists, each read raw and folded
+# (``helpers.folded``, the bundle lints' own paragraph fold; review I1). No file under plans/
+# may exempt a name with ``real-name-ok`` (review I2): the one spare is the bundle's own target
+# display names (and provider values), in plan.md, config.yaml, the records and the replies,
+# as ``real_name_bundle`` spares them in a plan in flight, so a bundle that validates never fails
+# here on its target's name.
 
 
-def _is_transcript(path: Path) -> bool:
-    return path.suffix == ".json" and path.relative_to(_bundle_of(path)).parts[0] == TRANSCRIPTS
-
-
-def _plans_records() -> list[Path]:
-    """The JSON records of every bundle under ``plans/`` (``plan.json``, ``dryrun.jsonl``,
-    ``ledger.jsonl`` when present), the transcripts apart."""
+def _plans_texts(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    """Every committed text file but a bundle's own ``config.yaml``."""
     return [
-        p for p in plans_bundle_files() if p.suffix in RECORD_SUFFIXES and not _is_transcript(p)
+        path
+        for path in plans_bundle_files(plans_dir)
+        if path.suffix in TEXT_SUFFIXES and path != plans_bundle_of(path, plans_dir) / BUNDLE_CONFIG
     ]
 
 
-def _plans_transcripts() -> list[Path]:
-    return [p for p in plans_bundle_files() if _is_transcript(p)]
+def _plans_configs(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    return [r / BUNDLE_CONFIG for r in plans_bundles(plans_dir) if (r / BUNDLE_CONFIG).is_file()]
+
+
+def _plans_records(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    """The JSON records of every bundle (``plan.json``, ``dryrun.jsonl``, ``ledger.jsonl`` when
+    present), the transcripts apart."""
+    return [
+        path
+        for path in plans_bundle_files(plans_dir)
+        if path.suffix in RECORD_SUFFIXES and not is_plans_transcript(path, plans_dir)
+    ]
+
+
+def _plans_transcripts(plans_dir: Path = PLANS_DIR) -> list[Path]:
+    return [p for p in plans_bundle_files(plans_dir) if is_plans_transcript(p, plans_dir)]
 
 
 def _plans_display_names(root: Path) -> set[str]:
-    """What a bundle's records spare: its config's target display names and the default
+    """What a bundle spares: its config's target display names and the default
     (``config_display_names``), and those its request names."""
     config = root / BUNDLE_CONFIG
     names = config_display_names(config.read_text(encoding="utf-8") if config.is_file() else "")
     request = json.loads((root / PLAN_FILE).read_text(encoding="utf-8"))["request"]
     return names | {str(t["display_name"]).lower() for t in request["target_models"]}
-
-
-def _strings(value: Any) -> list[str]:
-    """Every string a parsed JSON value holds, keys included."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [s for k, v in value.items() for s in (*_strings(k), *_strings(v))]
-    if isinstance(value, list):
-        return [s for v in value for s in _strings(v)]
-    return []
 
 
 def _reply_texts(path: Path) -> list[str]:
@@ -283,19 +294,10 @@ def _reply_texts(path: Path) -> list[str]:
     for attempt in transcript.attempts:
         texts.append(attempt.reply)
         try:
-            texts += _strings(json.loads(attempt.reply))
+            texts += json_strings(json.loads(attempt.reply))
         except json.JSONDecodeError:
             pass
     return texts
-
-
-def _record_texts(path: Path) -> list[str]:
-    """A record's text, raw and as the strings each of its JSON lines holds, decoded."""
-    text = path.read_text(encoding="utf-8")
-    chunks = (
-        [line for line in text.splitlines() if line.strip()] if path.suffix == ".jsonl" else [text]
-    )
-    return [text, *(s for chunk in chunks for s in _strings(json.loads(chunk)))]
 
 
 def test_denylist_has_sixty_lowercase_word_bounded_entries() -> None:
@@ -364,27 +366,24 @@ def test_the_scan_covers_the_fixture_bundles() -> None:
 
 
 def test_the_scan_covers_every_committed_file_of_the_plans_bundles() -> None:
-    """R-scan-bundles (Task 12): the example's ``plan.md``, ``review.md`` and world copy whole,
+    """R-scan-bundles (Task 12): the example's ``plan.md``, ``review.md`` and world copy as text,
     its config through the config spare, ``plan.json`` and ``dryrun.jsonl`` as records, its
     transcripts by their replies; every committed file of every bundle in exactly one list."""
-    files = _scanned_files()
-    assert EXAMPLE / "plan.md" in files and EXAMPLE / "review.md" in files
-    assert EXAMPLE / "expected.yaml" in files
-    assert EXAMPLE / "worlds" / "overlay" / "world.yaml" in files
-    assert EXAMPLE / BUNDLE_CONFIG in _bundle_configs() and EXAMPLE / BUNDLE_CONFIG not in files
+    texts = _plans_texts()
+    assert EXAMPLE / "plan.md" in texts and EXAMPLE / "review.md" in texts
+    assert EXAMPLE / "expected.yaml" in texts
+    assert EXAMPLE / "worlds" / "overlay" / "world.yaml" in texts
+    assert EXAMPLE / BUNDLE_CONFIG in _plans_configs() and EXAMPLE / BUNDLE_CONFIG not in texts
     assert EXAMPLE / PLAN_FILE in _plans_records()
     assert EXAMPLE / "dryrun.jsonl" in _plans_records()
     assert EXAMPLE / TRANSCRIPTS / "plan-planner-0.json" in _plans_transcripts()
-    assert _label(EXAMPLE / "plan.md") == "plans/example-triggered-vs-scheduled/plan.md"
-    lists = [
-        [p for p in files if PLANS_DIR in p.parents],
-        [p for p in _bundle_configs() if PLANS_DIR in p.parents],
-        _plans_records(),
-        _plans_transcripts(),
-    ]
-    listed = [p for found in lists for p in found]
+    assert plans_rel(EXAMPLE / "plan.md") == "plans/example-triggered-vs-scheduled/plan.md"
+    assert not any(PLANS_DIR in p.parents for p in [*_scanned_files(), *_bundle_configs()])
+    listed = [*texts, *_plans_configs(), *_plans_records(), *_plans_transcripts()]
     assert sorted(listed) == plans_bundle_files()  # each once, none left out
-    assert not any(p.relative_to(_bundle_of(p)).parts[0] in ("dryrun", "state") for p in listed)
+    assert not any(
+        p.relative_to(plans_bundle_of(p)).parts[0] in ("dryrun", "state") for p in listed
+    )
 
 
 def test_the_scan_covers_the_quirk_bank_and_the_register_once_there() -> None:
@@ -470,94 +469,178 @@ def test_no_real_names_in_the_fixture_bundle_configs() -> None:
 _PROVIDER_KINDS: Final = frozenset(kind.value for kind in ProviderKind)
 
 
-def _record_hits(path: Path, patterns: list[re.Pattern[str]]) -> list[str]:
-    """The real names in one record of a ``plans/`` bundle: through ``record_scan_text`` (each
-    provider and backend value, then the bundle's target display names, spared); of the decoded
-    strings, a bare provider kind is dropped and the display names spared the same way."""
-    names = _plans_display_names(_bundle_of(path))
-    raw, *decoded = _record_texts(path)
-    texts = [record_scan_text(raw, names)]
-    texts += [config_scan_text(s, names) for s in decoded if s not in _PROVIDER_KINDS]
-    return sorted({hit for text in texts for hit in scan(text, patterns)})
-
-
-def _reply_hits(path: Path, patterns: list[re.Pattern[str]]) -> list[str]:
-    """The real names in a transcript's replies, through the config spare (a reply that commits
-    ``config.yaml`` holds its provider values and display names, as the file does)."""
-    names = _plans_display_names(_bundle_of(path))
-    texts = [config_scan_text(text, names) for text in _reply_texts(path)]
-    return sorted({hit for text in texts for hit in scan(text, patterns)})
-
-
-def test_no_real_names_in_the_plans_records() -> None:
-    """``plan.json``, ``dryrun.jsonl`` and ``ledger.jsonl`` of every bundle under ``plans/``."""
-    patterns = _patterns()
-    records = _plans_records()
-    assert records
-    hits = [f"{_label(p)}: {hit}" for p in records for hit in _record_hits(p, patterns)]
-    assert hits == []
-
-
-def test_no_real_names_in_the_plans_transcript_replies() -> None:
-    """Each transcript's replies, never its message (R-scan-bundles: a message quotes
-    ``docs/01`` to ``docs/07``, which name real models by design)."""
-    patterns = _patterns()
-    transcripts = _plans_transcripts()
-    assert transcripts
-    hits = [f"{_label(p)}: {hit}" for p in transcripts for hit in _reply_hits(p, patterns)]
-    assert hits == []
-
-
-def _owner_texts(path: Path) -> list[str]:
-    """What the owner clause reads of a committed bundle file: a transcript's replies, a
-    record's raw and decoded text, any other file whole; nothing spared."""
-    if _is_transcript(path):
-        return _reply_texts(path)
+def _plans_scanned(path: Path, plans_dir: Path = PLANS_DIR) -> list[str]:
+    """What the real-name scan reads of one committed bundle file, folded, the bundle's own
+    target display names (and provider values) spared: a text file whole (``plan.md`` through
+    the config spare, since a plan names its target, as ``real_name_bundle`` reads it; every
+    other text file with no spare and no exemption), ``config.yaml`` through
+    ``config_scan_text``, a record through ``record_scan_text`` and its decoded strings (a bare
+    provider kind dropped) through the config spare, and a transcript's replies through the
+    config spare."""
+    root = plans_bundle_of(path, plans_dir)
+    names = _plans_display_names(root)
+    if is_plans_transcript(path, plans_dir):
+        return folded(config_scan_text(text, names) for text in _reply_texts(path))
     if path.suffix in RECORD_SUFFIXES:
-        return _record_texts(path)
-    return [path.read_text(encoding="utf-8")]
+        decoded = [s for s in record_strings(path) if s not in _PROVIDER_KINDS]
+        raw = record_scan_text(path.read_text(encoding="utf-8"), names)
+        return folded([raw, *(config_scan_text(s, names) for s in decoded)])
+    text = path.read_text(encoding="utf-8")
+    if path in (root / "plan.md", root / BUNDLE_CONFIG):
+        return folded([config_scan_text(text, names)])
+    return folded([text])
+
+
+def plans_real_name_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
+    """Every real name in a committed file of a bundle under ``plans_dir``, as
+    ``<plans/...>: <pattern>``."""
+    patterns = _patterns()
+    return [
+        f"{plans_rel(path, plans_dir)}: {hit}"
+        for path in plans_bundle_files(plans_dir)
+        for hit in sorted(
+            {h for text in _plans_scanned(path, plans_dir) for h in scan(text, patterns)}
+        )
+    ]
+
+
+def test_no_real_names_in_the_plans_bundles() -> None:
+    """Every committed file of every bundle under ``plans/``, a transcript's message never
+    (R-scan-bundles: it quotes ``docs/01`` to ``docs/07``, which name real models by design)."""
+    assert plans_bundle_files()
+    assert plans_real_name_hits() == []
+
+
+def _owner_texts(path: Path, plans_dir: Path = PLANS_DIR) -> list[str]:
+    """What the owner clause reads of a committed bundle file, folded and with nothing spared:
+    a transcript's replies, a record's raw and decoded text, any other file whole."""
+    if is_plans_transcript(path, plans_dir):
+        return folded(_reply_texts(path))
+    text = path.read_text(encoding="utf-8")
+    if path.suffix in RECORD_SUFFIXES:
+        return folded([text, *record_strings(path)])
+    return folded([text])
+
+
+def plans_owner_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
+    """The committed bundle files under ``plans_dir`` that name the owner: the file is named,
+    never the name. ``owner_names`` raises when no docs byline names the owner, so a caller
+    fails loudly and never skips."""
+    owner = owner_pattern(owner_names())
+    return [
+        plans_rel(path, plans_dir)
+        for path in plans_bundle_files(plans_dir)
+        if any(owner.search(text) for text in _owner_texts(path, plans_dir))
+    ]
 
 
 def test_no_checked_in_bundle_names_the_owner() -> None:
-    """The Task 6 owner clause over every committed file of every bundle under ``plans/``. The
-    name is read from the docs' bylines (``owner_names``), never from a list; with no byline
-    ``owner_names`` raises, so this fails loudly and never skips."""
-    owner = owner_pattern(owner_names())
-    files = plans_bundle_files()
-    assert files
-    named = [_label(p) for p in files if any(owner.search(t) for t in _owner_texts(p))]
-    assert named == []  # the file is named, never the name
+    """The Task 6 owner clause over every committed file of every bundle under ``plans/``."""
+    assert plans_bundle_files()
+    assert plans_owner_hits() == []
 
 
-def test_a_planted_owner_name_or_real_name_in_a_plans_bundle_is_caught(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The scans catch a plant in each kind of file: a real name in ``plan.md`` (no exemption),
-    in ``plan.json``'s request, in a transcript's reply and in an escaped line of a record; the
-    owner's name, planted from ``owner_names`` at run time, in ``review.md``."""
-    plans = tmp_path / "plans"
-    monkeypatch.setattr(sys.modules[__name__], "PLANS_DIR", plans)
-    shutil.copytree(
-        EXAMPLE, plans / EXAMPLE.name, ignore=shutil.ignore_patterns("dryrun", "state", "worlds")
-    )
-    root = plans / EXAMPLE.name
-    patterns = _patterns()
-    assert _record_hits(root / PLAN_FILE, patterns) == []
-    assert _reply_hits(root / TRANSCRIPTS / "plan-planner-0.json", patterns) == []
-    (root / "plan.md").write_text("# a plan\n\nCompare with the Reuters wire.\n", encoding="utf-8")
-    assert scan((root / "plan.md").read_text(encoding="utf-8"), patterns)
-    record = json.loads((root / PLAN_FILE).read_text(encoding="utf-8"))
-    record["request"]["constraints"] = ["first line\nAnthropic second line"]
-    (root / PLAN_FILE).write_text(json.dumps(record), encoding="utf-8")
-    assert _record_hits(root / PLAN_FILE, patterns)
+_REAL: Final = "Reuters"
+
+
+def _append(path: Path, text: str) -> None:
+    path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+def _set_reply(root: Path, content: str) -> None:
     transcript = root / TRANSCRIPTS / "plan-planner-0.json"
     data = json.loads(transcript.read_text(encoding="utf-8"))
-    data["attempts"][0]["reply"] = json.dumps({"content": "intro\nsee the Reuters wire"})
+    data["attempts"][0]["reply"] = json.dumps({"content": content})
     transcript.write_text(json.dumps(data), encoding="utf-8")
-    assert _reply_hits(transcript, patterns)
+
+
+def _set_constraint(root: Path, constraint: str) -> None:
+    record = json.loads((root / PLAN_FILE).read_text(encoding="utf-8"))
+    record["request"]["constraints"] = [constraint]
+    (root / PLAN_FILE).write_text(json.dumps(record, indent=1), encoding="utf-8")
+
+
+_CORPUS_DOC: Final = "worlds/overlay/corpus/cpo-about.md"
+REAL_NAME_PLANTS: Final = {
+    "plan.md": lambda r: _append(r / "plan.md", f"\nCompare with the {_REAL} wire.\n"),
+    "review.md": lambda r: _append(r / "review.md", f"the {_REAL} wire\n"),
+    "review.md wrapped": lambda r: _append(r / "review.md", "as the Wall Street\nJournal said\n"),
+    "plan.md wrapped": lambda r: _append(r / "plan.md", "\nas the Wall Street\nJournal said\n"),
+    "a world document": lambda r: _append(r / _CORPUS_DOC, f"\nthe {_REAL} wire\n"),
+    "a config comment": lambda r: _append(r / BUNDLE_CONFIG, f"# the {_REAL} wire\n"),
+    "plan.json escaped": lambda r: _set_constraint(r, f"first line\n{_REAL} second line"),
+    "plan.json wrapped": lambda r: _set_constraint(r, "as the Wall Street\nJournal said"),
+    "a reply escaped": lambda r: _set_reply(r, f"intro\nsee the {_REAL} wire"),
+    "a reply wrapped": lambda r: _set_reply(r, "as the Wall Street\nJournal said"),
+    "a real-name-ok line in plan.md": lambda r: _append(
+        r / "plan.md", f"\n# real-name-ok: {_REAL.lower()}\nthe {_REAL} wire\n"
+    ),
+    "a real-name-ok line in review.md": lambda r: _append(
+        r / "review.md", f"# real-name-ok: {_REAL.lower()}\nthe {_REAL} wire\n"
+    ),
+}
+
+
+def test_the_plans_scans_pass_the_example_as_copied(plans_copy: Path) -> None:
+    assert plans_real_name_hits(plans_copy) == [] and plans_owner_hits(plans_copy) == []
+
+
+@pytest.mark.parametrize("where", sorted(REAL_NAME_PLANTS))
+def test_a_real_name_planted_in_a_plans_bundle_is_caught(plans_copy: Path, where: str) -> None:
+    """Review M1 and I1: the scan body itself, on a copy of the example, fails on a real name in
+    each kind of file, a phrase wrapped across a line or behind an escaped newline included,
+    and a ``real-name-ok`` line exempts nothing under plans/ (review I2)."""
+    REAL_NAME_PLANTS[where](plans_copy / EXAMPLE.name)
+    assert plans_real_name_hits(plans_copy), where
+
+
+@pytest.mark.parametrize("where", ["plan.md", "config.yaml", "plan.json", "a reply"])
+def test_the_bundles_own_target_display_name_is_spared(plans_copy: Path, where: str) -> None:
+    """Review I2: the bundle's own target display name is spared in plan.md, as
+    ``real_name_bundle`` spares it, and in the config, the records and the replies; so a bundle
+    that validates never fails CI on its target's name."""
+    root = plans_copy / EXAMPLE.name
+    name = sorted(_plans_display_names(root))[0].capitalize()
+    plant = f"The target, {name}, is asked first."
+    {
+        "plan.md": lambda: _append(root / "plan.md", f"\n{plant}\n"),
+        "config.yaml": lambda: _append(root / BUNDLE_CONFIG, f"# {plant}\n"),
+        "plan.json": lambda: _set_constraint(root, plant),
+        "a reply": lambda: _set_reply(root, plant),
+    }[where]()
+    assert plans_real_name_hits(plans_copy) == []
+
+
+@pytest.mark.parametrize(
+    "where", ["plan.md", "review.md", "a reply", "a world document", "plan.json"]
+)
+def test_the_owners_name_planted_in_a_plans_bundle_is_caught(plans_copy: Path, where: str) -> None:
+    """The owner's name, read at run time from ``owner_names`` and written only into the copy,
+    is caught in each kind of file; the result names the file and never the name."""
     owner = sorted(owner_names())[0]
-    (root / "review.md").write_text(f"block 0 / fix 0 / note 0\n{owner}\n", encoding="utf-8")
-    assert owner_pattern(owner_names()).search(_owner_texts(root / "review.md")[0])
+    root = plans_copy / EXAMPLE.name
+    {
+        "plan.md": lambda: _append(root / "plan.md", f"\n{owner}\n"),
+        "review.md": lambda: _append(root / "review.md", f"{owner}\n"),
+        "a reply": lambda: _set_reply(root, f"intro\n{owner}"),
+        "a world document": lambda: _append(root / _CORPUS_DOC, f"\n{owner}\n"),
+        "plan.json": lambda: _set_constraint(root, f"first\n{owner}"),
+    }[where]()
+    found = plans_owner_hits(plans_copy)
+    assert found and not any(owner.lower() in hit.lower() for hit in found)
+
+
+def test_a_torn_last_ledger_line_is_left_to_the_raw_scan_and_any_other_names_the_file(
+    tmp_path: Path,
+) -> None:
+    """Review N3: ``record_strings`` skips a torn last line of a ``.jsonl`` (the harness
+    tolerates one) and names the file and the line for any other line that is not JSON."""
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text('{"a": "one"}\n{"b": "tw', encoding="utf-8")
+    assert record_strings(ledger) == ["a", "one"]
+    ledger.write_text('{"a": "one"}\nnot json\n{"b": "two"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"ledger\.jsonl: line 2: not JSON"):
+        record_strings(ledger)
 
 
 def test_a_real_name_planted_in_a_config_is_caught(tmp_path: Path) -> None:

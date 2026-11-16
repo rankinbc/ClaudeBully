@@ -538,13 +538,14 @@ def record_scan_text(text: str, display_names: Collection[str]) -> str:
 _PARAGRAPH_BREAK: Final = re.compile(r"\n\s*\n")
 
 
-def _collapse(text: str) -> str:
+def collapse_paragraphs(text: str) -> str:
     """``text`` with the whitespace of each paragraph (a blank-line-separated block) collapsed to
     single spaces, the paragraphs on their own lines: what a reader of a folded scalar, a wrapped
     line or a double space sees (fix round 1, review I3). A pattern reads one paragraph at a
     time, so a list's lookahead (``the verge`` not before ``of``) holds across a wrapped line but
     not across a blank one: a heading that ends ``The Verge`` and a paragraph that opens ``Of``
-    stay two sentences (fix round 2, re-review M-A)."""
+    stay two sentences (fix round 2, re-review M-A). Public since Phase 5 Task 12 fix round 1
+    (review I1): the repository's scans of ``plans/`` read it beside the raw text."""
     paragraphs = (" ".join(paragraph.split()) for paragraph in _PARAGRAPH_BREAK.split(text))
     return "\n".join(paragraph for paragraph in paragraphs if paragraph)
 
@@ -587,13 +588,13 @@ def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list
     collapsed, and, for a YAML file that parses, each string value, collapsed, one per line (a
     value's escapes and folds resolved as the loader reads it). Whitespace is collapsed, never
     removed, so a pattern still needs its word boundaries."""
-    texts = [_collapse(text)]
+    texts = [collapse_paragraphs(text)]
     if rel.endswith(".yaml"):
         try:
             data = yaml.safe_load(text)
         except _YAML_REFUSED:  # a value the loader refuses (a date, a tag) or cannot nest
             data = None
-        texts.append("\n".join(_collapse(s) for s in _strings(data, skip)))
+        texts.append("\n".join(collapse_paragraphs(s) for s in _strings(data, skip)))
     return texts
 
 
@@ -1199,8 +1200,8 @@ def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
         out += _denylist_hits("jailbreak_bundle", rel, texts, patterns, what)
     request = record.request
     texts = [
-        _collapse(request.model_dump_json()),
-        "\n".join(_collapse(s) for s in _strings(request.model_dump(mode="json"))),
+        collapse_paragraphs(request.model_dump_json()),
+        "\n".join(collapse_paragraphs(s) for s in _strings(request.model_dump(mode="json"))),
     ]
     return [*out, *_denylist_hits("jailbreak_bundle", PLAN_FILE, texts, patterns, what)]
 
