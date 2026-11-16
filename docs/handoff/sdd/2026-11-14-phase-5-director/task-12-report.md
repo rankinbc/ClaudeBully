@@ -217,3 +217,132 @@ The record holds no lint result at all, not even a warn.
 - The plans scans also read a developer's local `plans/`. Any directory there holding a `plan.json` is scanned, such as a rung-D plan in flight, and can fail locally. That is intended under R-scan-bundles, but it is worth knowing before rung D runs.
 - `plan.json` carries `created_at` and the stage timestamps, so every rebuild or `plan validate` changes it even when nothing else moved. `bundle_hash` excludes it.
 - The reader-eye review of plan.md and expected.yaml (spec section 14) is the task reviewer's. The likely-wrong call is scheduled `the_memo` `inconsistency_caught: rare`, on the reasoning that a document the target did not ask for may be read more warily.
+
+## Fix round 1
+
+One commit, e191082, on 8c70416. Author rankinbc1@gmail.com, with the Opus 5.5 trailer. Not pushed.
+
+### What was fixed
+
+- **I1: the scans read raw and folded text.**
+  - `bundle_lints._collapse` is now the public `collapse_paragraphs`. The three package call sites use it, and no copy was made.
+  - New helpers in `tests/helpers.py`:
+    - `folded(texts)`: each text plus its `collapse_paragraphs` fold;
+    - `record_strings(path)`: a JSON record's decoded strings;
+    - `json_strings`, `plans_bundle_of`, `plans_rel` and `is_plans_transcript`.
+  - What each scan over `plans/` reads now:
+    - **Real-name and owner scans:** every text raw and folded. JSON records and transcript replies are read raw, with their decoded strings folded.
+    - **Jailbreak scan:** raw and folded, plus a JSON record's decoded strings folded. Before, it read the raw file only.
+    - **Boundary scan:** line by line, plus the whole file folded.
+- **I2: one display-name rule for lint and CI.**
+  - `plan.md` under `plans/` is read through `config_scan_text` with the bundle's own target display names, the same rule as `real_name_bundle` and the replies.
+  - Every other text file, `review.md` included, is read with no spare.
+  - The `plans/` bundles are out of `_scanned_files`, so no `# real-name-ok:` line is honored under `plans/`. That exemption stays for `data/` and the fixtures.
+  - Spec section 12 row 2 and its "As planned" line are corrected, and so are the module docstring, docs/00 section F and HANDOFF item 14.
+- **M1: plant tests run each scan body.**
+  - Each scan body is now a function of the plans directory: `plans_real_name_hits`, `plans_owner_hits`, `plans_jailbreak_hits` and `plans_boundary_hits`. The CI tests call them on `plans/`.
+  - A new `conftest.plans_copy` fixture copies the example into tmp. The plant tests run the same bodies on that copy:
+    - **Real names (12 plants):** plan.md and review.md, each straight and wrapped; a world document; a config comment; plan.json escaped and wrapped; a reply escaped and wrapped; a `real-name-ok` line in plan.md and one in review.md.
+    - **Display-name spare (4):** plan.md, the config, plan.json and a reply.
+    - **Owner (5 files):** the result never holds the name.
+    - **Jailbreak (6):** review.md straight and wrapped, plan.md wrapped, plan.json straight and escaped, and an expected.yaml comment. A further test shows the transcripts stay out of scope.
+    - **Boundary (4):** a corpus document straight and wrapped, a world.yaml comment, and a persona file. A further test shows plan.md stays out of scope.
+  - Each plant group has a clean-copy baseline.
+- **M2: a plan in flight under `plans/` turns the gate red.** The HANDOFF "Repository" bullet now says a plan in flight is made with `plan new --plans-root <outside the repo>` and moved into `plans/` once it is runnable and clean. It applies to rung D too. The spec's "As planned" notes it as a carry to Task 13's runbook.
+- **M3: the null result.** plan.md's null result is now read on the arms pooled over the two targets, six reps per arm. Hypothesis 9 is falsified when scheduled is at or above triggered on the adoption events at both `buried_opens` and `the_truth`. plan.md now also says that three reps per cell cannot separate adjacent bands on one target, so the per-target bands are predictions to score. The bundle is rebuilt:
+  - `plan.md`, its transcript and `plan.json` changed;
+  - `dryrun.jsonl` and the other files are unchanged;
+  - status `runnable`.
+- **M4: timestamp-only diffs.** The HANDOFF bullet says a `plan.json` diff of timestamps alone, after `plan validate` or a rebuild that moved nothing else, is not committed.
+- **N1.** `tests/test_example_bundle.py` lists its bundles through `helpers.plans_bundles`.
+- **N2.** The script checks each copied world file against the shipped bytes as it writes it, and raises `ValueError` on a file it would normalize, such as a CRLF or a BOM. A new test plants a CRLF overlay copy.
+- **N3.** `record_strings` leaves a torn last `.jsonl` line to the raw scan. Any other line that is not JSON raises `ValueError` naming the file and the line. A new test covers both.
+
+### RED
+
+Evidence is in probes-task12-fix1/.
+
+1. **On 8c70416, the review's probes 08, 09 and 24 to 27 all passed** (`red-probes-on-8c70416.txt`). That confirms the old behavior was wrong:
+   - the display name in plan.md failed the scan;
+   - a `real-name-ok` line exempted a name;
+   - the wrapped and escaped plants were missed.
+2. **The new tests with the fix turned off** (`red-new-tests-fold-off.txt`). A probe plugin replaced `folded` with the identity, emptied the Boundary fold and read plan.md with no spare. Result: 9 failed, 24 passed. The failures were the four wrapped real-name plants, the plan.md display-name spare, the three wrapped or escaped jailbreak plants, and the wrapped Boundary plant.
+3. **N2 against the 8c70416 script** (`red-n2-old-script.txt`): `DID NOT RAISE ValueError`.
+
+The review's own probe file no longer imports, because it names the old test functions and the module globals it patched. The plant tests above cover each of its cases.
+
+### GREEN and gate
+
+- **Covering tests:** the four scan and bundle files with `-m "slow or not slow" -W error` gave 181 passed in 77 s.
+- **ruff:** format --check and check are clean.
+- **mypy:** both runs are clean on 130 files.
+- **Fast suite** (`pytest -q -W error`): 10755 passed, 11 skipped, 215 deselected, 0 warnings. It was 10719 before; the 36 new tests are the plants, baselines, scope checks and N2/N3 tests.
+- **Slow suite** (`pytest -q -m slow`): 215 passed.
+
+### ASSUMED
+
+- ASSUMED: `review.md` stays strict, with no display-name spare. The ruling names `plan.md` only. A Director review that quotes the target's name would therefore still fail CI; HANDOFF and docs/08 already say such a review is not committed as it stands.
+- ASSUMED: a bundle's `config.yaml` is now spared with the bundle's display names (its config's and its request's) rather than its config's alone. This is a superset, and it is the same set the records and replies use.
+- ASSUMED: the M2 runbook line itself belongs to Task 13. This round puts it in HANDOFF and marks it as a carry in the spec.
+
+### Concerns
+
+- `test_bundle_lints.py` alone runs past the 300 s focused-run limit, so it was covered by the full gate rather than a focused run. It only depends on the rename.
+- The probe plugin that produced RED step 2 lives in the scratchpad and is not committed. Its output is in `probes-task12-fix1/`.
+
+## Fix round 2
+
+One commit, 1dda514, on e191082. Author rankinbc1@gmail.com, with the Opus 5.5 trailer. Not pushed.
+
+The invariant this round restores: a bundle that passes `plan validate` never fails CI.
+
+### What was fixed
+
+- **N-3: `review.md` spares the bundle's own target display names.**
+  - `review.md` is now read for real names through `config_scan_text` with `_plans_display_names`, the same way `plan.md` is (`tests/test_real_names.py: _plans_scanned`).
+  - Nothing else is spared there: the owner clause (`_owner_texts`), the jailbreak scan and every other real name stay strict, and `real-name-ok` is still ignored under `plans/`.
+- **N-1: CI keeps parity with the lints.**
+  - A new helper, `tests/helpers.py: lint_parity_hits(text, patterns)`, now reads every text in every scan over `plans/`: real-name, owner, jailbreak and Boundary.
+  - A pattern hits when either:
+    - it matches the folded text (`collapse_paragraphs`, the lints' own fold); or
+    - it matches the raw text at a place its negative lookaheads do not spare once that wrap is folded. Concretely, the pattern with its `(?!...)` groups removed (`_without_negative_lookaheads`, which balances parentheses) matches the locally folded text there, and the whole pattern does not.
+  - Effect: "the verge" wrapped or double-spaced before "of", and "rule" wrapped before "out", pass CI as they pass `lint_bundle`. A raw match that folding alone would hide, such as a literal double space, is still caught.
+  - The Boundary scan's per-line read is gone, because a per-line read can never spare a lookahead across a line break.
+  - The `helpers.folded` function from round 1 is replaced by `lint_parity_hits`.
+- **N-2: records split on the line feed alone.** `record_strings` splits a `.jsonl` with `text.split("\n")`, as `_ledger_numbered` does, so a raw U+2028 inside a valid line is text. The torn-last-line rule is unchanged.
+- **Docs:** spec section 12 row 2 and a "Task 12 fix round 2" block in "As planned", docs/00 section F, and HANDOFF item 14.
+
+### Tests, RED then GREEN
+
+The new tests:
+
+- `test_review_md_quoting_the_bundles_own_target_display_name_passes`: a `display_name: <name>` quote passes, and a second real name in the same file fails.
+- `test_a_lookahead_spare_across_a_wrap_passes_ci_as_it_passes_the_lint`: wrapped, double-spaced and one-line cases, each also checked against `lint_bundle`'s `real_name_bundle`.
+- `test_the_name_wrapped_where_no_spare_applies_still_fails`: two cases.
+- `test_the_raw_read_still_catches_what_folding_hides`: a synthetic double-space pattern, a trailing lookahead, and the mid-pattern lookahead shape of `boundary.txt`.
+- `test_a_raw_line_separator_inside_a_record_line_is_no_error`.
+- In `tests/test_boundary.py`:
+  - `test_rule_out_wrapped_passes_ci_as_it_passes_the_lint`: wrapped and one-line cases, each also checked against `lint_bundle`'s `boundary_bundle`;
+  - `test_rules_wrapped_where_no_spare_applies_still_fails`.
+
+RED on e191082 (`probes-task12-fix1/red-round2-on-e191082.txt`): 6 failed, 5 passed.
+
+- The six failures are: the review.md quote, the verge wrapped and double-spaced, the raw-read helper (absent), the U+2028 line, and rule/out wrapped.
+- The five passes are the controls that hold either way: one line, the two still-fails cases, and the rules still-fails case.
+
+GREEN:
+
+- **Covering tests:** the four covering files with `-m "slow or not slow" -W error` gave 192 passed (`green-round2.txt`).
+- **ruff:** format --check and check are clean.
+- **mypy:** both runs are clean on 130 files.
+- **Fast suite** (`pytest -q -W error`): 10766 passed, 11 skipped, 215 deselected, 0 warnings. It was 10755; 11 tests were added.
+- **Slow suite** (`pytest -q -m slow`): 215 passed.
+
+### ASSUMED
+
+- ASSUMED: "raw where no lookahead spares a wrap" is checked per match, on a window of the raw text from the match start to 64 characters past its end. The lists' lookaheads read at most a few characters (" of", " out", "-x"). A lookahead that read further than 64 characters would be judged on a cut window.
+- ASSUMED: the owner and jailbreak scans also go through `lint_parity_hits`. Their patterns have no lookahead, so this changes nothing for them except that the raw and folded reads come from one helper.
+
+### Concerns
+
+- None new. The N-4 Nit (the pooled null against `item_9`'s per-model reading) and the M2 runbook line stay with Task 13 and the final review, per the ruling.
