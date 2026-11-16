@@ -11,7 +11,13 @@ import pytest
 from claude_bully.paths import DATA_DIR, PLANS_DIR
 from claude_bully.planner.bundle import TRANSCRIPTS
 from claude_bully.strategies.sheets import load_persona_sheets, load_pressure_sheets
-from tests.helpers import folded, plans_bundle_files, plans_bundle_of, plans_rel, record_strings
+from tests.helpers import (
+    lint_parity_hits,
+    plans_bundle_files,
+    plans_bundle_of,
+    plans_rel,
+    record_strings,
+)
 
 DENYLIST = DATA_DIR / "jailbreak_denylist.txt"
 EXAMPLE = PLANS_DIR / "example-triggered-vs-scheduled"
@@ -78,13 +84,13 @@ def _plans_jailbreak_files(plans_dir: Path = PLANS_DIR) -> list[Path]:
 
 
 def _plans_jailbreak_texts(path: Path) -> list[str]:
-    """A file's text raw and folded, and a JSON record's decoded strings folded too, as the
-    real-name scan reads them (fix round 1, review I1: a phrase wrapped across a line, or behind
-    an escaped newline, is read as a reader reads it)."""
+    """A file's text, and a JSON record's decoded strings too, as the real-name scan reads
+    them (fix round 1, review I1: a phrase behind an escaped newline is read as a reader reads
+    it); each is read by ``lint_parity_hits``, folded and raw (fix round 2, re-review N-1)."""
     texts = [path.read_text(encoding="utf-8")]
     if path.suffix in (".json", ".jsonl"):
         texts += record_strings(path)
-    return folded(texts)
+    return texts
 
 
 def plans_jailbreak_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
@@ -94,7 +100,7 @@ def plans_jailbreak_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
         f"{plans_rel(path, plans_dir)}: {hit}"
         for path in _plans_jailbreak_files(plans_dir)
         for hit in sorted(
-            {h for text in _plans_jailbreak_texts(path) for h in scan(text, patterns)}
+            {h for text in _plans_jailbreak_texts(path) for h in lint_parity_hits(text, patterns)}
         )
     ]
 

@@ -10,11 +10,13 @@ is scanned case-insensitively, and so are the Phase 4 harness files outside them
 bundles under ``tests/fixtures/bundles`` is scanned too (Phase 5 Task 4a, R-scan-bundles), its
 ``config.yaml`` through the config spare like a config under ``configs/``. Every committed file
 of every bundle under ``plans/`` is scanned too (Phase 5 Task 12, R-scan-bundles), each text
-read raw and with its paragraphs folded (fix round 1, review I1): its text files whole, with
-``plan.md`` (only) through the config spare, since a plan names its target as
-``real_name_bundle`` reads it (review I2); its ``config.yaml`` through the config spare; its JSON
-records (``plan.json``, ``dryrun.jsonl``, ``ledger.jsonl``) through ``record_scan_text`` and their
-decoded strings through the config spare; and of each transcript the attempts' replies alone,
+read as the bundle lints read it, folded, and raw where no lookahead spares a wrap
+(``helpers.lint_parity_hits``; fix round 1, review I1; fix round 2, re-review N-1): its text
+files whole, with ``plan.md`` and ``review.md`` through the config spare, since a plan names
+its target as ``real_name_bundle`` reads it and the review quotes it (review I2, re-review
+N-3); its ``config.yaml`` through the config spare; its JSON records (``plan.json``,
+``dryrun.jsonl``, ``ledger.jsonl``) through ``record_scan_text`` and their decoded strings
+through the config spare; and of each transcript the attempts' replies alone,
 through the config spare (a message quotes ``docs/01`` to ``docs/07``, which name real models by
 design). The spare is the bundle's own target display names, never a ``real-name-ok`` line,
 which no file under ``plans/`` may use; and the owner's name (``owner_names``, read from the
@@ -35,7 +37,7 @@ import yaml
 from claude_bully.enums import ProviderKind
 from claude_bully.environments.world import load_world
 from claude_bully.paths import CONFIGS_DIR, DATA_DIR, PLANS_DIR, REPO_ROOT
-from claude_bully.planner.bundle import PLAN_FILE, TRANSCRIPTS, Transcript
+from claude_bully.planner.bundle import PLAN_FILE, TRANSCRIPTS, Bundle, Transcript
 
 # the address patterns and the config spare live in the package since Phase 5 Task 4b (D-scans)
 from claude_bully.planner.bundle_lints import (
@@ -45,14 +47,15 @@ from claude_bully.planner.bundle_lints import (
     RESERVED_TLDS,
     config_display_names,
     config_scan_text,
+    lint_bundle,
     record_scan_text,
     url_hosts,
 )
 from claude_bully.planner.lints import owner_names, owner_pattern
 from tests.helpers import (
-    folded,
     is_plans_transcript,
     json_strings,
+    lint_parity_hits,
     plans_bundle_files,
     plans_bundle_of,
     plans_bundles,
@@ -242,12 +245,12 @@ def _bundle_configs() -> list[Path]:
 
 
 # ------------------------------------------- the checked-in bundles under plans/ (Phase 5 Task 12)
-# Every committed file of every bundle is in exactly one of four lists, each read raw and folded
-# (``helpers.folded``, the bundle lints' own paragraph fold; review I1). No file under plans/
-# may exempt a name with ``real-name-ok`` (review I2): the one spare is the bundle's own target
-# display names (and provider values), in plan.md, config.yaml, the records and the replies,
-# as ``real_name_bundle`` spares them in a plan in flight, so a bundle that validates never fails
-# here on its target's name.
+# Every committed file of every bundle is in exactly one of four lists, each text read as the
+# bundle lints read it, folded and raw (``helpers.lint_parity_hits``; review I1, re-review N-1).
+# No file under plans/ may exempt a name with ``real-name-ok`` (review I2): the one spare is the
+# bundle's own target display names (and provider values), in plan.md, review.md, config.yaml,
+# the records and the replies, as ``real_name_bundle`` spares them in a plan in flight, so a
+# bundle that validates never fails here on its target's name (re-review N-3).
 
 
 def _plans_texts(plans_dir: Path = PLANS_DIR) -> list[Path]:
@@ -470,36 +473,41 @@ _PROVIDER_KINDS: Final = frozenset(kind.value for kind in ProviderKind)
 
 
 def _plans_scanned(path: Path, plans_dir: Path = PLANS_DIR) -> list[str]:
-    """What the real-name scan reads of one committed bundle file, folded, the bundle's own
-    target display names (and provider values) spared: a text file whole (``plan.md`` through
-    the config spare, since a plan names its target, as ``real_name_bundle`` reads it; every
-    other text file with no spare and no exemption), ``config.yaml`` through
-    ``config_scan_text``, a record through ``record_scan_text`` and its decoded strings (a bare
-    provider kind dropped) through the config spare, and a transcript's replies through the
-    config spare."""
+    """What the real-name scan reads of one committed bundle file, the bundle's own target
+    display names (and provider values) spared: a text file whole (``plan.md`` and
+    ``review.md`` through the config spare, since a plan names its target as
+    ``real_name_bundle`` reads it and the review quotes ``plan.md`` and ``config.yaml``, fix
+    round 2, re-review N-3; every other text file with no spare and no exemption),
+    ``config.yaml`` through ``config_scan_text``, a record through ``record_scan_text`` and its
+    decoded strings (a bare provider kind dropped) through the config spare, and a transcript's
+    replies through the config spare. Each text is read by ``lint_parity_hits``."""
     root = plans_bundle_of(path, plans_dir)
     names = _plans_display_names(root)
     if is_plans_transcript(path, plans_dir):
-        return folded(config_scan_text(text, names) for text in _reply_texts(path))
+        return [config_scan_text(text, names) for text in _reply_texts(path)]
     if path.suffix in RECORD_SUFFIXES:
         decoded = [s for s in record_strings(path) if s not in _PROVIDER_KINDS]
         raw = record_scan_text(path.read_text(encoding="utf-8"), names)
-        return folded([raw, *(config_scan_text(s, names) for s in decoded)])
+        return [raw, *(config_scan_text(s, names) for s in decoded)]
     text = path.read_text(encoding="utf-8")
-    if path in (root / "plan.md", root / BUNDLE_CONFIG):
-        return folded([config_scan_text(text, names)])
-    return folded([text])
+    if path in (root / "plan.md", root / "review.md", root / BUNDLE_CONFIG):
+        return [config_scan_text(text, names)]
+    return [text]
 
 
 def plans_real_name_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
     """Every real name in a committed file of a bundle under ``plans_dir``, as
-    ``<plans/...>: <pattern>``."""
+    ``<plans/...>: <pattern>``, each text read as the lints read it (``lint_parity_hits``)."""
     patterns = _patterns()
     return [
         f"{plans_rel(path, plans_dir)}: {hit}"
         for path in plans_bundle_files(plans_dir)
         for hit in sorted(
-            {h for text in _plans_scanned(path, plans_dir) for h in scan(text, patterns)}
+            {
+                h
+                for text in _plans_scanned(path, plans_dir)
+                for h in lint_parity_hits(text, patterns)
+            }
         )
     ]
 
@@ -512,14 +520,15 @@ def test_no_real_names_in_the_plans_bundles() -> None:
 
 
 def _owner_texts(path: Path, plans_dir: Path = PLANS_DIR) -> list[str]:
-    """What the owner clause reads of a committed bundle file, folded and with nothing spared:
-    a transcript's replies, a record's raw and decoded text, any other file whole."""
+    """What the owner clause reads of a committed bundle file, with nothing spared (in
+    ``review.md`` too): a transcript's replies, a record's raw and decoded text, any other file
+    whole. Each text is read by ``lint_parity_hits``."""
     if is_plans_transcript(path, plans_dir):
-        return folded(_reply_texts(path))
+        return _reply_texts(path)
     text = path.read_text(encoding="utf-8")
     if path.suffix in RECORD_SUFFIXES:
-        return folded([text, *record_strings(path)])
-    return folded([text])
+        return [text, *record_strings(path)]
+    return [text]
 
 
 def plans_owner_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
@@ -530,7 +539,7 @@ def plans_owner_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
     return [
         plans_rel(path, plans_dir)
         for path in plans_bundle_files(plans_dir)
-        if any(owner.search(text) for text in _owner_texts(path, plans_dir))
+        if any(lint_parity_hits(text, [owner]) for text in _owner_texts(path, plans_dir))
     ]
 
 
@@ -628,6 +637,75 @@ def test_the_owners_name_planted_in_a_plans_bundle_is_caught(plans_copy: Path, w
     }[where]()
     found = plans_owner_hits(plans_copy)
     assert found and not any(owner.lower() in hit.lower() for hit in found)
+
+
+def test_review_md_quoting_the_bundles_own_target_display_name_passes(plans_copy: Path) -> None:
+    """Fix round 2 (re-review N-3): ``review.md`` quotes ``config.yaml`` and ``plan.md``, where
+    the target's display name is legal, so its real-name read spares the bundle's own target
+    display names (and nothing else), as ``plan.md``'s does: a bundle that validates never fails
+    CI on a reviewer's quote of its targets block."""
+    root = plans_copy / EXAMPLE.name
+    name = sorted(_plans_display_names(root))[0].capitalize()
+    _append(root / "review.md", f'\n## config.yaml\n- [1] note: "display_name: {name}" kept\n')
+    assert plans_real_name_hits(plans_copy) == []
+    _append(root / "review.md", f"- [2] note: the {_REAL} wire\n")
+    assert plans_real_name_hits(plans_copy), "another real name in review.md still fails"
+
+
+# fix round 2 (re-review N-1): the lints read the folded text, where a lookahead spare holds
+# across a wrapped line ("the verge" not before " of"); CI matches them, and still fails the
+# same name wrapped where no spare applies
+LOOKAHEAD_SPARED: Final = {
+    "wrapped": "\nThe archive was on the verge\nof closing.\n",
+    "double-spaced": "\nThe archive was on the verge  of closing.\n",
+    "one line": "\nThe archive was on the verge of closing.\n",
+}
+
+
+@pytest.mark.parametrize("how", sorted(LOOKAHEAD_SPARED))
+def test_a_lookahead_spare_across_a_wrap_passes_ci_as_it_passes_the_lint(
+    plans_copy: Path, isolated_registry: None, how: str
+) -> None:
+    root = plans_copy / EXAMPLE.name
+    _append(root / _CORPUS_DOC, LOOKAHEAD_SPARED[how])
+    assert plans_real_name_hits(plans_copy) == []
+    found = [r for r in lint_bundle(Bundle(root)) if r.lint_id == "real_name_bundle"]
+    assert found == []  # the lint agrees
+
+
+@pytest.mark.parametrize(
+    "text", ["\nwe read The Verge\nyesterday.\n", "\nas The Verge\n\nOf note.\n"]
+)
+def test_the_name_wrapped_where_no_spare_applies_still_fails(plans_copy: Path, text: str) -> None:
+    _append(plans_copy / EXAMPLE.name / _CORPUS_DOC, text)
+    assert plans_real_name_hits(plans_copy)
+
+
+def test_the_raw_read_still_catches_what_folding_hides() -> None:
+    """``lint_parity_hits``: a pattern that hits the folded text hits; a raw match hits unless a
+    negative lookahead spares it once its wrap is folded; so a match that folding alone would
+    hide (here a literal double space, which the fold squashes) is still caught raw."""
+    from tests.helpers import lint_parity_hits
+
+    spaced = re.compile(r"\bfoo  bar\b", re.IGNORECASE)
+    assert lint_parity_hits("a foo  bar b", [spaced]) == [spaced.pattern]
+    spared = re.compile(r"\bfoo\b(?! bar\b)", re.IGNORECASE)
+    assert lint_parity_hits("a foo\nbar b", [spared]) == []
+    assert lint_parity_hits("a foo\nbaz b", [spared]) == [spared.pattern]
+    middle = re.compile(r"\bfoos?(?! bar\b)\b", re.IGNORECASE)  # boundary.txt's shape
+    assert lint_parity_hits("the foos\nbar", [middle]) == []
+    assert lint_parity_hits("the foos\nbaz", [middle]) == [middle.pattern]
+
+
+def test_a_raw_line_separator_inside_a_record_line_is_no_error(tmp_path: Path) -> None:
+    """Fix round 2 (re-review N-2): records split on ``\\n`` alone, as the harness writes them
+    and as the Director's ``_ledger_numbered`` reads them; a raw U+2028 inside a JSON string of a
+    valid line is text, never a line break."""
+    ledger = tmp_path / "ledger.jsonl"
+    line = json.dumps({"error": "first second"}, ensure_ascii=False)
+    assert " " in line
+    ledger.write_text(f"{line}\n{line}\n", encoding="utf-8")
+    assert record_strings(ledger) == ["error", "first second"] * 2
 
 
 def test_a_torn_last_ledger_line_is_left_to_the_raw_scan_and_any_other_names_the_file(

@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 import shutil
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
@@ -225,11 +226,15 @@ def record_strings(path: Path) -> list[str]:
     boundary from a scan of the raw text): a ``.json`` file whole, a ``.jsonl`` file line by
     line. A torn last line of a ``.jsonl`` (a write a kill cut short, which the harness
     tolerates) is left to the raw scan; any other line that is not JSON raises ``ValueError``
-    naming the file and the line (review N3)."""
+    naming the file and the line (review N3). Lines are split on ``\n`` alone, as the harness
+    writes them and the Director's ``_ledger_numbered`` reads them: a raw U+2028 or U+0085 inside
+    a JSON string is text, never a line break (fix round 2, re-review N-2)."""
     text = path.read_text(encoding="utf-8")
     if path.suffix != ".jsonl":
         return json_strings(json.loads(text))
-    lines = text.splitlines()
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()  # the empty string after the closing newline
     found: list[str] = []
     for number, line in enumerate(lines, start=1):
         if not line.strip():
@@ -243,14 +248,52 @@ def record_strings(path: Path) -> list[str]:
     return found
 
 
-def folded(texts: Iterable[str]) -> list[str]:
-    """Each text and its paragraphs folded (``bundle_lints.collapse_paragraphs``, the bundle
-    lints' own fold, Task 4b review I3): a scan over ``plans/`` reads both, so a phrase wrapped
-    across a line is read as a reader reads it (Task 12 review I1)."""
+def _without_negative_lookaheads(pattern: str) -> str:
+    """``pattern`` with every negative lookahead group ``(?!...)`` taken out, its parentheses
+    balanced (an escaped character is skipped, so an escaped parenthesis is not one)."""
     out: list[str] = []
-    for text in texts:
-        out += [text, collapse_paragraphs(text)]
-    return out
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("(?!", i):
+            depth, i = 1, i + 3
+            while i < len(pattern) and depth:
+                if pattern[i] == "\\":
+                    i += 2
+                    continue
+                depth += {"(": 1, ")": -1}.get(pattern[i], 0)
+                i += 1
+            continue
+        out.append(pattern[i])
+        i += 1
+    return "".join(out)
+
+
+# the context a negative lookahead reads past a raw match (" of", " out", "-x" in the lists)
+_LOOKAHEAD_REACH: Final = 64
+
+
+def lint_parity_hits(text: str, patterns: Iterable[re.Pattern[str]]) -> list[str]:
+    """The patterns that hit ``text`` as the bundle lints read it, and as a reader does. A
+    pattern hits when it matches the text folded (``bundle_lints.collapse_paragraphs``, the
+    lints' own fold, Task 4b review I3; Task 12 review I1), or when it matches the raw text at a
+    place its negative lookaheads do not spare once the wrap there is folded. So a phrase a
+    lookahead spares across a wrapped line ("the verge" before "of", "rule" before "out") passes
+    here as it passes the lint (fix round 2, re-review N-1: a bundle that validates never fails
+    CI), and a match that folding alone would hide is still caught raw."""
+    folded_text = collapse_paragraphs(text)
+    hits: list[str] = []
+    for pattern in patterns:
+        if pattern.search(folded_text):
+            hits.append(pattern.pattern)
+            continue
+        bare = re.compile(_without_negative_lookaheads(pattern.pattern), pattern.flags)
+        for match in pattern.finditer(text):
+            local = collapse_paragraphs(text[match.start() : match.end() + _LOOKAHEAD_REACH])
+            if pattern.match(local) is None and bare.match(local) is not None:
+                continue  # a lookahead spares it once the wrap is folded, as in the lint
+            hits.append(pattern.pattern)
+            break
+    return hits
 
 
 def plans_world_dirs(plans_dir: Path = PLANS_DIR) -> list[Path]:

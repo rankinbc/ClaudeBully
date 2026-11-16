@@ -21,9 +21,9 @@ from claude_bully.environments.sheets import (
 )
 from claude_bully.environments.world import load_world
 from claude_bully.paths import DATA_DIR, PLANS_DIR
-from claude_bully.planner.bundle import BUNDLE_WORLDS, PERSONAS_DIR
-from claude_bully.planner.bundle_lints import collapse_paragraphs
-from tests.helpers import plans_bundle_files, plans_bundle_of, plans_rel
+from claude_bully.planner.bundle import BUNDLE_WORLDS, PERSONAS_DIR, Bundle
+from claude_bully.planner.bundle_lints import lint_bundle
+from tests.helpers import lint_parity_hits, plans_bundle_files, plans_bundle_of, plans_rel
 from tests.test_guardrails import load_denylist, scan
 
 BOUNDARY: Final = DATA_DIR / "denylists" / "boundary.txt"
@@ -127,18 +127,17 @@ def _plans_boundary_files(plans_dir: Path = PLANS_DIR) -> list[Path]:
 
 
 def plans_boundary_hits(plans_dir: Path = PLANS_DIR) -> list[str]:
-    """Every Boundary term in a file the scan reads under ``plans_dir``: line by line, comments
-    included, and over the whole text folded (fix round 1, review I1: a term wrapped across a
-    line is read as a reader reads it, as ``boundary_bundle`` reads it)."""
+    """Every Boundary term in a file the scan reads under ``plans_dir``, comments included,
+    read as ``boundary_bundle`` reads it, folded, and raw where no lookahead spares a wrap
+    (``lint_parity_hits``; fix round 1, review I1: a term wrapped across a line is caught; fix
+    round 2, re-review N-1: "rule" wrapped before "out" is spared, as the lint spares it, which
+    a per-line read never could)."""
     patterns = load_denylist(BOUNDARY)
-    hits: list[str] = []
-    for path in _plans_boundary_files(plans_dir):
-        rel = plans_rel(path, plans_dir)
-        text = path.read_text(encoding="utf-8")
-        lines = enumerate(text.splitlines(), start=1)
-        hits += [f"{rel}:{number}: {hit}" for number, line in lines for hit in scan(line, patterns)]
-        hits += [f"{rel} (folded): {hit}" for hit in scan(collapse_paragraphs(text), patterns)]
-    return hits
+    return [
+        f"{plans_rel(path, plans_dir)}: {hit}"
+        for path in _plans_boundary_files(plans_dir)
+        for hit in lint_parity_hits(path.read_text(encoding="utf-8"), patterns)
+    ]
 
 
 def test_the_boundary_scan_covers_the_plans_worlds_and_personas() -> None:
@@ -152,8 +151,7 @@ def test_the_boundary_scan_covers_the_plans_worlds_and_personas() -> None:
 
 
 def test_every_plans_world_and_persona_file_stays_inside_the_boundary() -> None:
-    """Every file under ``plans/*/worlds/`` and ``plans/*/personas/``, as raw text, comments
-    included."""
+    """Every file under ``plans/*/worlds/`` and ``plans/*/personas/``, comments included."""
     assert _plans_boundary_files()
     assert plans_boundary_hits() == []
 
@@ -189,6 +187,27 @@ def test_a_boundary_term_planted_in_a_plans_bundle_is_caught(plans_copy: Path, w
     included."""
     BOUNDARY_PLANTS[where](plans_copy / EXAMPLE.name)
     assert plans_boundary_hits(plans_copy), where
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["\nNobody could rule\nout a second copy.\n", "\nNobody could rule out a second copy.\n"],
+    ids=["wrapped", "one line"],
+)
+def test_rule_out_wrapped_passes_ci_as_it_passes_the_lint(
+    plans_copy: Path, isolated_registry: None, text: str
+) -> None:
+    """Fix round 2 (re-review N-1): ``rule`` not before `` out`` is spared across a wrapped line
+    by the lint's folded read, so CI spares it too; a per-line read never could."""
+    root = plans_copy / EXAMPLE.name
+    _append(root / _DOC, text)
+    assert plans_boundary_hits(plans_copy) == []
+    assert [r for r in lint_bundle(Bundle(root)) if r.lint_id == "boundary_bundle"] == []
+
+
+def test_rules_wrapped_where_no_spare_applies_still_fails(plans_copy: Path) -> None:
+    _append(plans_copy / EXAMPLE.name / _DOC, "\nthe house rules\nchanged.\n")
+    assert plans_boundary_hits(plans_copy)
 
 
 def test_a_boundary_term_in_plan_md_is_out_of_the_scan(plans_copy: Path) -> None:
