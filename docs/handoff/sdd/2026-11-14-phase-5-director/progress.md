@@ -198,3 +198,8 @@ Task 11: re-review round 1 (sonnet, task-11-rereview-round1.md): I1 FIXED (no ru
 Task 11: fix round 1/5 (5 addressed, 0 open; commits 0c2829f..8f57428).
 carry to the final fix wave: the note's fourth reason `stale` (from ReadBack.stale_reps/stale_kinds), and the three notes.
 Task 11: complete (commits 7c91808..8f57428, review clean after 1 fix round). Pushed.
+Task 12: BASE 72ed8f0; implementer dispatched (opus, task-12-brief.md, task-12-carries.md, report task-12-report.md).
+Task 12: implementer agent id a25f882a6060f0aee.
+Task 12: implementer DONE at a9b3856 (opus; gate 10719 passed, 11 skipped, 215 deselected, slow 215; goldens unchanged; RED shown). Bundle 63 files, 134,641 bytes, no ledger.jsonl; plan validate exit 0, runnable; 8 cells reach the_truth. ASSUMED: request adds target_models (sonnet, opus); four cells per target (8); CI never reads a transcript's message (spec section 12). Concerns: reserved-host test ids are world paths; the scans read any local plans/ bundle; plan.json timestamps change on rebuild or validate; the live A6 drift probe was refused by the auto-mode classifier (byte-compare test covers it). The safety classifier was unavailable during the implementer's run; controller verified the commit is local only (origin at 72ed8f0) and the report matches.
+Task 12: review dispatched (opus, review-72ed8f0..a9b3856.diff, task-12-review.md).
+Task 12: review stopped by the controller at the owner's stopping point (2026-11-16, 'Get to a stopping point and commit and push'); a9b3856 pushed unreviewed; resume with the Task 12 review (HANDOFF next step 1).
