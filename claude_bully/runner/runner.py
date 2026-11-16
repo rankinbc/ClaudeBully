@@ -52,6 +52,7 @@ from claude_bully.environments.idle import (
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
 from claude_bully.paths import DATA_DIR
+from claude_bully.planner.bundle import BundleRefused, recorded_plan_personas
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
@@ -66,6 +67,7 @@ from claude_bully.records import (
     CapturedResponse,
     CellRecord,
     Conversation,
+    PlanStamp,
     RunRecord,
     Turn,
     chat_text,
@@ -767,12 +769,65 @@ def run_experiment(
     console: Console | None = None,
     worlds_dir: Path = DEFAULT_WORLDS_DIR,
     sandbox_base: Path | None = None,
+    plan_hash: str | None = None,
+    plan: PlanStamp | None = None,
 ) -> RunSummary:
     """Run (or resume) ``exp``. ``sandbox_base`` is where claude -p environment targets get their
-    private sandbox root (default: the system temp directory)."""
+    private sandbox root (default: the system temp directory).
+
+    A run on a plan bundle (spec section 11) passes the bundle's ``plan_hash`` and its ``plan``
+    stamp, which a new ``RunRecord`` carries. The plan's personas (``plan``'s, else those the
+    existing run record's ``plan`` recorded, so a resume needs no ``plans/``) are registered for
+    the call alone, before ``expand_cells`` (preflight Q50; ``recorded_plan_personas``). A
+    resume whose run records another ``plan_hash`` than the one given raises ``BundleRefused``
+    (a ``ValueError``) before anything is written. A plain call is unchanged."""
     ensure_registered()
     run_id = run_id or exp.name
     store = RunStore(runs_root, run_id)
+    existing = store.read_run() if store.exists() else None
+    if existing is not None and plan_hash is not None and existing.plan_hash != plan_hash:
+        raise BundleRefused(
+            f"the run's plan_hash {_short_hash(existing.plan_hash)} is not the bundle's "
+            f"{_short_hash(plan_hash)}; start a new run"
+        )
+    recorded = plan if plan is not None else existing.plan if existing is not None else None
+    with recorded_plan_personas(recorded.personas if recorded is not None else {}):
+        return _run_experiment(
+            exp,
+            store=store,
+            only=only,
+            max_cells=max_cells,
+            dry_run=dry_run,
+            provider_factory=provider_factory,
+            console=console,
+            worlds_dir=worlds_dir,
+            sandbox_base=sandbox_base,
+            plan_hash=plan_hash,
+            stamp=plan,
+        )
+
+
+def _short_hash(digest: str | None) -> str:
+    return digest[:12] if digest is not None else "(none)"
+
+
+def _run_experiment(
+    exp: Experiment,
+    *,
+    store: RunStore,
+    only: str | None,
+    max_cells: int | None,
+    dry_run: bool,
+    provider_factory: ProviderFactory,
+    console: Console | None,
+    worlds_dir: Path,
+    sandbox_base: Path | None,
+    plan_hash: str | None,
+    stamp: PlanStamp | None,
+) -> RunSummary:
+    """``run_experiment``'s body, with the plan's personas registered."""
+    run_id = store.run_id
+    runs_root = store.root
     cells = expand_cells(exp)
     if only:
         cells = [c for c in cells if fnmatch.fnmatch(c.cell_id, only)]
@@ -818,6 +873,8 @@ def run_experiment(
             target_system_prompt=load_target_system(exp.targets[0].display_name, exp.defender),
             bully_framing=framing,
             world_hashes=environments.world_hashes(),
+            plan_hash=plan_hash,
+            plan=stamp,
         )
         store.write_run(run_record)
 

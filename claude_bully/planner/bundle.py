@@ -7,7 +7,8 @@ is written LF without a BOM, and the sha256 a call records is of the text as wri
 (D-write_file). The harness's own files (``plan.json``, ``.attempt.json``, the transcripts) are
 outside the grammar and have their own writers here. ``materialize`` and
 ``rematerialize_open_stage`` write committed files back from the transcripts, the second being
-spec section 8's resume rule for the open stage."""
+spec section 8's resume rule for the open stage. ``load_bundle_for_run`` and
+``register_plan_personas`` are ``run``'s side of a bundle (spec section 11)."""
 
 import hashlib
 import json
@@ -19,8 +20,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Self
+from typing import Any, Final, Self
 
+import yaml
 from pydantic import BaseModel, ConfigDict
 
 from claude_bully.atomic import replace, write_atomic
@@ -37,6 +39,7 @@ from claude_bully.planner.records import (
     validated_record,
 )
 from claude_bully.planner.request import WINDOWS_DEVICE_STEMS
+from claude_bully.records import PlanStamp
 from claude_bully.runner.store import DamagedRecordError
 from claude_bully.strategies import base as strategy_base
 from claude_bully.strategies.bootstrap import ensure_registered
@@ -45,6 +48,7 @@ from claude_bully.strategies.sheets import PersonaSheet
 
 PLAN_FILE: Final = "plan.json"
 PERSONAS_DIR: Final = "personas"
+BUNDLE_WORLDS: Final = "worlds"
 ATTEMPT_FILE: Final = ".attempt.json"
 TRANSCRIPTS: Final = "transcripts"
 LEDGER: Final = "ledger.jsonl"
@@ -570,3 +574,116 @@ def plan_personas(sheets: Mapping[str, PersonaSheet]) -> Iterator[None]:
                 strategy_base._REGISTRY.pop(name, None)
             else:
                 strategy_base._REGISTRY[name] = previous
+
+
+# ------------------------------------------------------------------------------ run on a bundle
+
+
+class BundleRefused(ValueError):  # noqa: N818 - the name is the specified interface
+    """A bundle ``run`` will not run: not ``runnable``, changed since stage 5 stamped it, beside
+    a ``--worlds-dir`` that is not its own, or not the bundle a run being resumed was made from.
+    Raised before anything is written."""
+
+
+@dataclass(frozen=True)
+class BundleRun:
+    """What ``run`` reads from a runnable, unchanged bundle: its record, its worlds directory,
+    its personas by name and the stamp the run record carries (``RunRecord.plan``)."""
+
+    record: PlanRecord
+    worlds_dir: Path
+    personas: dict[str, PersonaSheet]
+    stamp: PlanStamp
+
+
+def _not_runnable(record: PlanRecord) -> str:
+    """Why ``record`` is not runnable: its first failing lint result, else its open blocks,
+    else that stage 5 has not run."""
+    failing = next((r for r in record.lint_results if r.severity == "fail"), None)
+    if failing is not None:
+        return f"{failing.lint_id} {failing.doc_id}: {failing.message}"
+    if record.open_blocks:
+        return f"{record.open_blocks} open block(s)"
+    return "stage 5 has not run"
+
+
+def load_bundle_for_run(root: Path) -> BundleRun:
+    """The bundle at ``root`` as ``run`` reads it (spec section 11). Raises ``BundleRefused``
+    for a status other than ``runnable`` (``bundle <slug> is <status>, not runnable:
+    <reason>``) and for a bundle whose ``bundle_hash`` is no longer the one stage 5 stamped;
+    ``DamagedRecordError`` for a ``plan.json`` that does not read back. Writes nothing."""
+    bundle = Bundle(root)
+    record = bundle.read_record()
+    if record.status != "runnable":
+        raise BundleRefused(
+            f"bundle {record.slug} is {record.status}, not runnable: {_not_runnable(record)}"
+        )
+    if bundle_hash(root) != record.bundle_hash:
+        raise BundleRefused("bundle changed since it was validated; run `plan validate` again")
+    personas = bundle_personas(bundle)
+    expected = yaml.safe_load((root / "expected.yaml").read_bytes().decode("utf-8"))
+    stamp = PlanStamp(
+        slug=record.slug,
+        personas={name: sheet.model_dump(mode="json") for name, sheet in personas.items()},
+        expected=expected,
+    )
+    return BundleRun(record, root / BUNDLE_WORLDS, personas, stamp)
+
+
+def bundle_worlds_dir(root: Path, worlds_dir: Path | None) -> Path:
+    """The bundle's ``worlds/``, the worlds it validated (review Focus 5). An explicit
+    ``worlds_dir`` that does not resolve to it raises ``BundleRefused`` naming both."""
+    own = root / BUNDLE_WORLDS
+    if worlds_dir is not None and worlds_dir.resolve() != own.resolve():
+        raise BundleRefused(
+            f"--worlds-dir {worlds_dir} is not the bundle's worlds directory {own}; "
+            "a bundle runs on the worlds it validated"
+        )
+    return own
+
+
+def _new_plan_sheets(personas: Mapping[str, Mapping[str, Any]]) -> dict[str, PersonaSheet]:
+    """The recorded sheets ``personas`` names that are not yet registered, validated. After
+    ``ensure_registered()`` (R-registry: a fresh process has loaded no coded strategy yet), a
+    name registered with an equal sheet is left out; one registered with another sheet, or with
+    none (a coded strategy), raises ``ValueError`` naming the name and both sources, as does a
+    sheet recorded under a name that is not its own."""
+    ensure_registered()
+    sheets: dict[str, PersonaSheet] = {}
+    for name, dumped in personas.items():
+        sheet = PersonaSheet.model_validate(dumped)
+        if sheet.name != name:
+            raise ValueError(f"plan persona {name!r}: the recorded sheet is named {sheet.name!r}")
+        registered = strategy_base._REGISTRY.get(name)
+        if registered is None:
+            sheets[name] = sheet
+            continue
+        own = getattr(registered, "sheet", None)
+        if not isinstance(own, PersonaSheet) or own.model_dump(mode="json") != sheet.model_dump(
+            mode="json"
+        ):
+            raise ValueError(
+                f"plan persona {name!r}: the plan's recorded sheet is not the sheet of the "
+                f"registered strategy {name!r} ({registered.__module__}.{registered.__qualname__})"
+            )
+    return sheets
+
+
+def register_plan_personas(personas: Mapping[str, Mapping[str, Any]]) -> None:
+    """Register each recorded persona sheet (``PlanStamp.personas``) as a phased premise
+    (``make_phased_premise``), for the rest of the process: ``run``'s CLI on a bundle and
+    ``load_run`` of a run made from one, so ``analyze`` needs no ``plans/``. A name already
+    registered with an equal sheet is left alone; with another sheet, or as a coded strategy,
+    it is a ``ValueError`` naming both (``_new_plan_sheets``)."""
+    for sheet in _new_plan_sheets(personas).values():
+        _PLAN_CLASSES.add(make_phased_premise(sheet))
+
+
+@contextmanager
+def recorded_plan_personas(personas: Mapping[str, Mapping[str, Any]]) -> Iterator[None]:
+    """The recorded personas registered for the block alone (``run_experiment``'s span; the
+    Task 10 carry, R-registry): the refusals of ``register_plan_personas``, then the scoped
+    ``plan_personas`` over the names not already registered with an equal sheet, so the block
+    removes only what it registered, exceptions included."""
+    with plan_personas(_new_plan_sheets(personas)):
+        yield

@@ -23,14 +23,22 @@ from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
 from claude_bully.doctor import default_out_dir, failed, run_live_checks, write_report
 from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
+from claude_bully.planner.bundle import (
+    PLAN_FILE,
+    BundleRefused,
+    BundleRun,
+    bundle_worlds_dir,
+    load_bundle_for_run,
+    register_plan_personas,
+)
 from claude_bully.planner.cli import plan_app
 from claude_bully.providers.base import Message, ProviderError
 from claude_bully.providers.claude_code import clean_child_env, resolve_claude_command
 from claude_bully.providers.ledger import LEDGER_FILE, activate
 from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.cells import expand_cells
-from claude_bully.runner.runner import RateLimitExit, run_experiment
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.runner import DEFAULT_WORLDS_DIR, RateLimitExit, run_experiment
+from claude_bully.runner.store import DamagedRecordError, RunStore
 
 # re-exported: both live in runner/wait.py, which the plan sub-app imports too (preflight Q46)
 from claude_bully.runner.wait import RATE_LIMIT_EXIT_CODE as RATE_LIMIT_EXIT_CODE
@@ -68,8 +76,26 @@ def run(
     dry_run: Annotated[bool, typer.Option(help="List cells and exit.")] = False,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
     wait_on_rate_limit: WaitMinutes = None,
+    worlds_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--worlds-dir",
+            help="Where the worlds live (default data/worlds). Beside a plan bundle, only "
+            "the bundle's own worlds/.",
+        ),
+    ] = None,
 ) -> None:
-    """Run (or resume) an experiment. Exit code 3 means a rate limit paused it."""
+    """Run (or resume) an experiment. Exit code 3 means a rate limit paused it.
+
+    A config with a plan.json beside it is a plan bundle's (spec section 11): it runs only when
+    the bundle is runnable and unchanged since stage 5, on the bundle's own worlds, its personas
+    registered and the run record stamped with the bundle."""
+    bundle: BundleRun | None = None
+    worlds = worlds_dir or DEFAULT_WORLDS_DIR
+    if (config.parent / PLAN_FILE).is_file():
+        bundle, worlds = _bundle_for_run(config.parent, worlds_dir)
+        # before --only, whose expand_cells must resolve a bundle persona (R-registry)
+        register_plan_personas(bundle.stamp.personas)
     exp = load_experiment(config)
     if only is not None and not any(fnmatch.fnmatch(c.cell_id, only) for c in expand_cells(exp)):
         raise typer.BadParameter(f"{only!r} matches no cell of {exp.name!r}", param_hint="--only")
@@ -83,10 +109,15 @@ def run(
                 max_cells=max_cells,
                 dry_run=dry_run,
                 console=console,
+                worlds_dir=worlds,
+                plan_hash=bundle.record.bundle_hash if bundle is not None else None,
+                plan=bundle.stamp if bundle is not None else None,
             ),
             wait_on_rate_limit,
             say=_say,
         )
+    except BundleRefused as exc:  # a resume of a run made from another bundle
+        raise typer.BadParameter(str(exc), param_hint="CONFIG") from None
     except RateLimitExit as exc:
         wait = (
             f"about {int(exc.retry_after_s)} seconds" if exc.retry_after_s else "the stated window"
@@ -104,6 +135,20 @@ def run(
         f"{summary.cells_aborted} aborted, {summary.cells_skipped} skipped, "
         f"{summary.turns_written} turns written"
     )
+
+
+def _bundle_for_run(root: Path, worlds_dir: Path | None) -> tuple[BundleRun, Path]:
+    """``load_bundle_for_run(root)`` and the bundle's worlds directory (``bundle_worlds_dir``).
+    A refusal is a usage error (exit 2); a damaged ``plan.json`` is printed as ``error: <file>:
+    <line or field>`` and exits 1 (Task 9's error contract: nothing else is caught, so a defect
+    keeps its traceback). Either way nothing is written."""
+    try:
+        return load_bundle_for_run(root), bundle_worlds_dir(root, worlds_dir)
+    except BundleRefused as exc:
+        raise typer.BadParameter(str(exc), param_hint="CONFIG") from None
+    except DamagedRecordError as exc:
+        typer.echo(f"error: {exc}")
+        raise typer.Exit(code=1) from None
 
 
 @app.command()

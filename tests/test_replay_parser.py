@@ -22,6 +22,8 @@ from tests.helpers import conversation, turn
 PACKAGE = Path(__file__).parents[1] / "claude_bully"
 
 CASES = [
+    # the header line a run on a bundle carries (Phase 5 Task 10)
+    ("plan hash 0123abcd", "plan_hash", {"hash": "0123abcd"}),
     (
         "#3 target (pressure) I can't verify any of this.",
         "turn",
@@ -302,6 +304,11 @@ def test_every_shape_the_renderer_writes_parses(
         '    web_search {"query": "ferry"} -> 200 (surface) [mcp-1-1]: ...',
         "captured responses",
         "",
+        "plan hash 0123abc",  # seven hex
+        "plan hash 0123abcde",  # nine
+        "plan hash 0123ABCD",  # capitals
+        "plan hash",
+        "plan hash 0123abcd extra",
     ],
 )
 def test_other_lines_and_the_bare_forms_do_not_parse(line: str) -> None:
@@ -427,3 +434,20 @@ def test_no_other_module_parses_the_unlock_or_hook_lines() -> None:
             if any(mark in line for mark in ('"UNLOCK ', "'UNLOCK ", '"HOOK ', "'HOOK ")):
                 offenders.append(f"{path.relative_to(PACKAGE)}:{number}")
     assert offenders == []
+
+
+def test_the_plan_hash_line_follows_the_environment_line_or_the_header() -> None:
+    """Spec section 11: a run on a bundle replays ``plan hash <8 hex>`` after the environment
+    line, after the header when there is none; a run with no plan hash has no such line."""
+    turns = [turn(0, Speaker.bully, "go"), turn(1, Speaker.target, "ok")]
+    digest = "0123abcd" * 8
+    plain = render_replay(conversation(turns), [], [], [], None).splitlines()
+    assert (
+        render_replay(conversation(turns), [], [], [], None, plan_hash=None).splitlines() == plain
+    )
+    hashed = render_replay(conversation(turns), [], [], [], None, plan_hash=digest).splitlines()
+    assert hashed == [plain[0], "plan hash 0123abcd", *plain[1:]]
+    env = conversation(turns, environment_name="mini", world_hash="f" * 64)
+    lines = render_replay(env, [], [], [], None, plan_hash=digest).splitlines()
+    assert lines[1].startswith("environment mini") and lines[2] == "plan hash 0123abcd"
+    assert parse_replay_line(lines[2]) == ReplayLine("plan_hash", {"hash": "0123abcd"})

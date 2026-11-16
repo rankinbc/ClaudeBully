@@ -79,6 +79,7 @@ EXCERPT_CHARS = 120
 CAPTURE_CHARS = 200
 FOLD_WIDTH = 108
 HASH_CHARS = 12
+PLAN_HASH_CHARS = 8
 
 _INDENT = "    "
 _DEEP = _INDENT * 2
@@ -138,6 +139,9 @@ def _unescaped(text: str) -> str:
 # ``UNLOCK sanctuary (by ...)`` and ``followed@-``; the bare forms do not parse). Each later
 # phase appends its own shapes here and their fixtures to tests/test_replay_parser.py.
 _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # the header line of a run on a plan bundle (Phase 5); the header and environment lines
+    # themselves have no shape
+    ("plan_hash", re.compile(r"^plan hash (?P<hash>[0-9a-f]{8})$")),
     ("pause", re.compile(r"^#(?P<index>\d+) \[rate limit pause\]$")),
     (
         "turn",
@@ -262,7 +266,8 @@ __all__ = ["ReplayLine", "parse_replay_line", "render_replay", "replay_cell"]
 
 
 def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:
-    """The replay of one repetition, read from the run directory alone."""
+    """The replay of one repetition, read from the run directory alone; the plan hash line
+    from ``run.json`` when there is one."""
     payload = store.read_world_record(cell_id, rep)
     world = world_from_snapshot(payload, store.cell_dir(cell_id)) if payload else None
     return render_replay(
@@ -272,6 +277,7 @@ def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:
         store.read_generated(cell_id, rep),
         world,
         authority_calls=store.read_authority_calls(cell_id, rep),
+        plan_hash=store.read_run().plan_hash if store.exists() else None,
     )
 
 
@@ -283,12 +289,14 @@ def render_replay(
     world: World | None,
     *,
     authority_calls: Sequence[AuthorityCall] = (),
+    plan_hash: str | None = None,
 ) -> str:
     """The conversation, its tool calls, authority calls, trigger-stream records and generated
     documents as text.
 
     ``world`` only adds document titles; None (an older snapshot, a plain conversation) leaves the
-    ids alone.
+    ids alone. ``plan_hash`` (a run on a plan bundle) adds ``plan hash <8 hex>`` after the
+    environment line, after the header when there is none.
     """
     header = f"{conv.cell_id} rep {conv.rep} | {conv.strategy_name} | status {conv.status.value}"
     if conv.abort_reason:
@@ -299,6 +307,8 @@ def render_replay(
         if conv.world_hash:
             where += f" | world hash {conv.world_hash[:HASH_CHARS]}"
         lines.append(where)
+    if plan_hash is not None:
+        lines.append(f"plan hash {plan_hash[:PLAN_HASH_CHARS]}")
 
     calls_by_id = {call.id: call for call in tool_calls}
     by_turn = _records_by_turn(trigger_records, generated, authority_calls)

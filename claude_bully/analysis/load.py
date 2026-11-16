@@ -26,6 +26,7 @@ from claude_bully.metrics.events._common import AuthorityFallback
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.ratings import RatingVerdict
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
+from claude_bully.planner.bundle import register_plan_personas
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
 from claude_bully.records_env import (
@@ -118,6 +119,8 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
     ensure_registered()
     store = RunStore(run_dir.parent, run_dir.name)
     run = store.read_run()
+    if run.plan is not None:  # a run made from a plan bundle: its personas, from run.json alone
+        register_plan_personas(run.plan.personas)
     experiment = Experiment.model_validate(run.experiment)
     specs = {s.cell_id: s for s in expand_cells(experiment)}
     cells: dict[str, CellRecord] = {}
