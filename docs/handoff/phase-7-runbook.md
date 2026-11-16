@@ -14,9 +14,10 @@ Every command was checked against the live `--help` at 883a24b (`claude-bully ru
 eeb6b43 (Phase 4 Task 15): `run`, `analyze` (`--ratings`, `--hypotheses`), `replay`, `promote`,
 `readme-results`, `scripts/detector_audit.py` and `scripts/poisoned_well_probe.py`. The Phase 5
 rung's commands (rung D, and the one-line readers of a bundle's `plan.json` and `ledger.jsonl`)
-were checked the same way in Phase 5 Task 13: `plan new`, `plan review` and `plan validate`, and
-the two readers run on the example bundle and on a stand-in ledger. Where this
-file departs from the spec's text, the line says so and why.
+were checked the same way in Phase 5 Task 13: `plan new`, `plan continue`, `plan review` and
+`plan validate`, and the readers run on the example bundle, on a stand-in ledger and on a scratch
+copy with manifest entries added. Where this file departs from the spec's text, the line says so
+and why.
 
 ## Who does what
 
@@ -706,25 +707,34 @@ checks as every rung ("Before every rung"), then `doctor --live` first (Step 0):
 on `opus` and the reviewer on `sonnet`, both `claude_code` (the request's defaults, merged
 question 4), and every call after stage 1 asks for a JSON reply through `--json-schema`, the
 route check 3 (`structured`) exercises. The commands below were read against the live `--help` of
-`plan new`, `plan review` and `plan validate` (Phase 5 Task 13).
+`plan new`, `plan continue`, `plan review` and `plan validate` (Phase 5 Task 13). The Phase 7
+spec's section 14 figures for this rung (about 40 to 100 calls under a fixed author-call ceiling)
+are v1's and are superseded: this section and the Phase 5 spec's section 18 govern.
 
-    uv run claude-bully plan new "Does triggered gating beat scheduled on the Rescue premise?" --no-confirm --base-world overlay --hypotheses 9 --slug director-triggered-vs-scheduled --wait-on-rate-limit 360 --plans-root <a directory outside the repo>
+    uv run claude-bully plan new "Does triggered gating beat scheduled on the Rescue premise?" --no-confirm --base-world overlay --hypotheses 9 --slug director-triggered-vs-scheduled --wait-on-rate-limit 360 --plans-root output/phase7_rungD_<date>/plans
 
 It asks the hand-authored example's question (`plans/example-triggered-vs-scheduled/`) into a slug
-of its own beside it. `--no-confirm` goes on past `plan.md` through stage 5, `--base-world overlay`
-copies the shipped overlay for the planner to patch, and `--hypotheses 9` names the register item.
-A plan in flight is made with `--plans-root` outside the repository and moved into `plans/` only
-once it is `runnable` and clean: the CI scans read every bundle under `plans/`, so an in-flight
-plan there turns the local gate red. A rate limit the wait does not cover exits 3, and the same
-command resumes the plan (on an existing slug with the same request `plan new` continues it;
-`plan continue <bundle> --wait-on-rate-limit 360` does the same).
+of its own, which sits beside the example once it is moved in. `--no-confirm` goes on past
+`plan.md` through stage 5, `--base-world overlay` copies the shipped overlay for the planner to
+patch, and `--hypotheses 9` names the register item. A plan in flight is made with `--plans-root`
+outside `plans/` (here the rung's git-ignored output folder; a directory outside the checkout
+serves as well) and moved into `plans/` only once it is `runnable` and clean: the CI scans read
+every bundle under `plans/`, so an in-flight plan there turns the local gate red. A rate limit
+the wait does not cover exits 3, and the same command resumes the plan (on an existing slug with
+the same request `plan new` continues it; `plan continue <bundle> --wait-on-rate-limit 360` does
+the same).
 
 Estimate: one plan call, one manifest call, about 30 file calls for a patch of the overlay, up to
 10 repairs, 4 review calls, about 10 revise calls and about 5 confirm calls: 50 to 110 planner and
 reviewer calls, under the request's `max_director_calls = 120`, ledgered as `planner` and
 `reviewer` in the bundle's own `ledger.jsonl`. The ceiling counts committed calls, so a call whose
 first reply failed its check and was retried is one call against it and two ledger lines. The dry
-run and the lints cost nothing (a stub run, no model call).
+run and the lints cost nothing (a stub run, no model call). The rung also runs the seeded-bundle
+check below, a second plan of its own (`plan review` on a scratch copy, under its own
+`max_director_calls = 120`): so the rung costs 50 to 110 calls for the plan, plus up to 120 for the
+check, up to about 230 in all with the check counted at its ceiling. The check is expected to use
+far less than its ceiling: up to 3 review calls (one per group the copy shows in full), a revise
+call for each file with a block or a fix and a confirm call for each file with a block.
 
 Read first `plan.json`'s `stages[*].calls[*].attempts` and `status`, and each stage's `status` and
 `error` (a call is `fresh`, `cached` or `error`; `attempts` 2 means the first reply failed its
@@ -761,17 +771,42 @@ Bars (spec section 18):
   the reviewer missed. The controller writes them to `output/phase7_rungD_<date>/spotcheck_director.md`
   (each `unlock_lines` entry of the world sheet, and every bundle file whose path is not a key of
   `plan.json`'s `base_files` or whose sha differs from it), and the owner reads that;
-- the reviewer's blocks on a seeded bad bundle catch at least 8 of 10 (spec sections 15 and 18). The
-  controller plants ten defects of the two classes the reviewer's prompt blocks (a billboard, a
-  guardrail breach) in a scratch copy of the example bundle, outside the repository, each one a
-  defect no denylist scan reads (a document whose main point is the premise, an unlock line that
-  announces its evidence by paraphrase, hostility over the ceiling), since stage 3 runs the real-name,
-  Boundary and jailbreak scans before every reviewer call and a defect they stop never reaches the
-  reviewer. It runs `plan review <copy> --wait-on-rate-limit 360` once, and counts the planted
-  defects that stage 3's `review.md` quotes under a `block`. ASSUMED: the spec fixes no mechanism and
-  the CLI has no reviewer-only command, so the check is a plan of its own (its own ceiling of 120
-  calls): 4 review calls, then the revise and confirm calls its blocks cause. A copy the check
-  edits is never committed.
+- the reviewer's blocks on a seeded bad bundle catch at least 8 of 10 (spec sections 15 and 18).
+  Section 18 names the fixture bundles of section 15, but those are lint fixtures: the stage 3
+  scans and the stage 5 lints stop what they hold before a reviewer sees it, and the CLI has no
+  reviewer-only command. ASSUMED: the check is a plan of its own (its own ceiling of 120 calls).
+  The controller makes a scratch copy of the example bundle outside the repository and plants ten
+  defects of the two classes the reviewer's prompt blocks (a billboard, a guardrail breach), each
+  one a defect no denylist scan reads (a document whose main point is the premise, an unlock line
+  that announces its evidence by paraphrase, hostility over the ceiling), since stage 3 runs the
+  real-name, Boundary and jailbreak scans before every reviewer call and a defect they stop never
+  reaches the reviewer. It runs `plan review <copy> --wait-on-rate-limit 360` once, and counts the
+  planted defects that stage 3's `review.md` quotes under a `block`. A copy the check edits is never
+  committed.
+
+  Every planted defect must sit in a file the reviewer reads in full. Stage 3 shows a reused
+  world's file that no manifest entry names as one index line (id, layer, kind, title, address,
+  links), never its body (`context.unchanged_base_files`, which `Director.review_groups` reads),
+  and the example's manifest names only `config.yaml` and `expected.yaml`: as the example stands
+  its 54 overlay files are index lines and the reviewer is shown no corpus document, sheet or ladder
+  at all, so a defect edited into one is invisible and would score as missed for a reason that says
+  nothing about the reviewer. The code allows two ways to put a defect in front of it, and the
+  recipe takes the first: edit the overlay file in place and add a manifest entry for it to the
+  copy's `plan.json` (`"manifest"` is a list; the entry is
+  `{"path": "worlds/overlay/world.yaml", "kind": "world_sheet", "purpose": "seeded defect", "layer": null}`,
+  with kind `document` for a corpus document: the shape `Director._entry` gives a patched base
+  file), or plant it as a new file. A new file is not used, for two reasons: an unlock line lives in
+  the world sheet (`worlds/overlay/world.yaml`, `WorldSheet.unlock_lines`), a base file that no new
+  file can replace; and a stage 3 resumed after a kill, or after a rate limit past the wait, removes
+  every grammar file owned by neither `base_files` nor a committed call
+  (`bundle.rematerialize_open_stage`), so a new file would vanish and score as missed, where an
+  edited base file is owned and stays. A changed `plan.md`, `config.yaml` or `expected.yaml` needs
+  no entry (never base files, always reviewed in full). Before the run, this lists what each review
+  group reads in full, and every seeded path must be among them; it ran on the example with two
+  entries added (`plan validate` accepted that edited `plan.json`, and the groups listed the two
+  files):
+
+      uv run python -c "import sys; from pathlib import Path; from claude_bully.planner.bundle import Bundle; from claude_bully.planner.director import review_groups; b = Bundle(Path(sys.argv[1])); [print(g.name, 'full:', list(g.files), 'index lines:', len(g.index)) for g in review_groups(b, b.read_record())]" <copy>
 
 Stop rules (a fix is a task of its own, to the prompt, the lint or the code at fault, with a
 brief, a commit, a review and the docs-sync, as for any rung; the plan is then made again under a
@@ -790,7 +825,14 @@ text file of a checked-in bundle (R-scan-bundles). To commit one on the owner's 
 call) and `uv run pytest -q tests/test_real_names.py tests/test_guardrails.py tests/test_boundary.py
 tests/test_example_bundle.py` (the dry run of each bundle is in the slow suite, `-m slow`), and
 take it out again if one goes red. A `plan.json` diff of timestamps alone after a validate is
-not committed.
+not committed. Size is a decision for the owner before anything is committed: each transcript
+attempt stores its whole message (about 195,000 to 235,000 characters a planner call, measured on
+stubs), so across 50 to 110 calls a real bundle's `transcripts/` likely run to ten megabytes or
+more (an estimate from those sizes, not a measurement), against about 135 KB for the stub-built
+example, and the repository scans read every text file of a checked-in bundle. The report gives
+the bundle's total bytes and `transcripts/`'s, and says whether to commit the bundle with its
+`transcripts/` (with `plan.json` they rebuild the authored files, `materialize`) or keep it out of
+the repository; the owner rules on it with the yes.
 
 The same rung measures what the spec assumed (spec section 18), from the same bundle:
 
@@ -808,8 +850,9 @@ The same rung measures what the spec assumed (spec section 18), from the same bu
   is a finding whatever lint passed.
 
 Its report (`output/phase7_rungD_<date>/rung_report.md`, the form under "What `rung_report.md`
-holds"; its Calls rows are the `planner` and `reviewer` lines of the bundle's `ledger.jsonl`, since
-no run exists) decides whether the specs are distilled for the planner (spec section 17: on the
+holds"; its Calls rows are the `planner` and `reviewer` lines of the bundle's `ledger.jsonl`, and
+of the seeded-bundle check's own, since no run exists; its Files list gives the bundle's total
+bytes and `transcripts/`'s) decides whether the specs are distilled for the planner (spec section 17: on the
 measured input size) and whether the example bundle is replaced by the generated one, a task of its
 own, since `scripts/build_example_bundle.py` and `tests/test_example_bundle.py` are written for the
 hand-authored one.
