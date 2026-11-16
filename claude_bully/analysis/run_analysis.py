@@ -15,6 +15,7 @@ from claude_bully.analysis.authority import (
 from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
+from claude_bully.analysis.expected import expected_line, expected_report, write_expected
 from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.hypotheses import (
     evaluate,
@@ -292,6 +293,12 @@ def analyze_run(
     for phase4 in (chain_stop_chart(loaded, out), escape_by_rung_chart(loaded, out)):
         if phase4 is not None:
             charts.append(phase4)
+    # Phase 5: the plan's expected events against the observed ones, for a run made from a plan
+    # bundle (no model call; a plain run writes no file and its results.md gains no line)
+    expected_text: str | None = None
+    if (report := expected_report(loaded)) is not None:
+        write_expected(loaded, out, report)
+        expected_text = expected_line(report)
     # Task 13: the register last (P31), from LoadedRun, the applied ratings and, when Phase 6
     # wrote one, divergence.json
     section: str | None = None
@@ -310,4 +317,5 @@ def analyze_run(
         ratings=stale_note,
         hypotheses=section,
         values=not_judged_line(loaded),
+        expected=expected_text,
     )

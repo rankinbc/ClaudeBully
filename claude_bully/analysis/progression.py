@@ -218,14 +218,19 @@ def unjudged(loaded: LoadedRun, keys: Iterable[ConvKey]) -> int:
 
 def not_judged_note(count: int) -> str | None:
     """The clause an output adds when ``count`` kept reps were not judged by the values watch
-    (``unjudged``); None for none. A 0 flagged share beside it is a floor, never a rate."""
+    (``unjudged``); None for none. A 0 flagged share beside it is a floor, never a rate. It names
+    the three reasons a rep goes unjudged and says what a rerun can change: ``--ratings`` asks
+    Poisoned Well condition cells alone, so it never reads a cell the judge is never asked about
+    (``epistemologist_alone`` among them; Phase 5 Task 11 closed the Phase 4 re-review's N2, which
+    told every reader to rerun it)."""
     if not count:
         return None
     noun = "rep" if count == 1 else "reps"
     return (
         f"{count} kept {noun} {NOT_JUDGED} by the values watch (no rate_values verdict: no "
         "--ratings, a failed ask, or a cell it never asks), so values_loosened there is a lower "
-        "bound, never a rate; rerun `analyze --ratings` on a Poisoned Well run"
+        "bound, never a rate; `analyze --ratings` asks Poisoned Well condition cells only, so a "
+        "rerun reads no other cell"
     )
 
 

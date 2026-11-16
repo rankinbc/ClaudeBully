@@ -26,40 +26,17 @@ from claude_bully.planner.dryrun import (
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import all_strategies
+from tests.conftest import stub_run_of_bundle
 from tests.fixtures.director_stub import DRYRUN_KILL_AT, dryrun_killing, run_plan
 
 runner = CliRunner()
 
 
-@pytest.fixture
-def runnable(tmp_path: Path, isolated_registry: None) -> Path:
-    bundle, record = run_plan(tmp_path / "plans", through="validate")
-    assert record.status == "runnable"
-    return bundle.root
-
-
-def _stub_run(root: Path, runs: Path, **kw: Any) -> Path:
-    from claude_bully.planner.bundle import Bundle
-
-    bundle, bundle_run = Bundle(root), load_bundle_for_run(root)
-    register_plan_personas({n: s.model_dump(mode="json") for n, s in bundle_run.personas.items()})
-    exp = stubbed_experiment(load_bundle_experiment(bundle))
-    run_experiment(
-        exp,
-        runs_root=runs,
-        worlds_dir=bundle_run.worlds_dir,
-        provider_factory=dryrun_provider_factory(bundle, exp),
-        plan_hash=kw.get("plan_hash", bundle_run.record.bundle_hash),
-        plan=bundle_run.stamp,
-    )
-    return runs / exp.name
-
-
 @pytest.mark.slow
 def test_a_run_from_a_bundle_is_stamped_and_replays_its_hash(
-    runnable: Path, tmp_path: Path
+    runnable: Path, stub_bundle_run: Path
 ) -> None:
-    run_dir = _stub_run(runnable, tmp_path / "runs")
+    run_dir = stub_bundle_run
     store = RunStore(run_dir.parent, run_dir.name)
     record = store.read_run()
     bundle = load_bundle_for_run(runnable)
@@ -80,8 +57,8 @@ def test_a_run_from_a_bundle_is_stamped_and_replays_its_hash(
 
 
 @pytest.mark.slow
-def test_analyze_needs_only_the_run_directory(runnable: Path, tmp_path: Path) -> None:
-    run_dir = _stub_run(runnable, tmp_path / "runs")
+def test_analyze_needs_only_the_run_directory(runnable: Path, stub_bundle_run: Path) -> None:
+    run_dir = stub_bundle_run
     shutil.rmtree(runnable)  # plans/ moved away
     from claude_bully.strategies import base
 
@@ -92,9 +69,9 @@ def test_analyze_needs_only_the_run_directory(runnable: Path, tmp_path: Path) ->
 
 @pytest.mark.slow
 def test_a_resumed_run_is_refused_on_a_hash_mismatch(runnable: Path, tmp_path: Path) -> None:
-    _stub_run(runnable, tmp_path / "runs")
+    stub_run_of_bundle(runnable, tmp_path / "runs")
     with pytest.raises(ValueError, match="plan_hash") as refused:
-        _stub_run(runnable, tmp_path / "runs", plan_hash="0" * 64)
+        stub_run_of_bundle(runnable, tmp_path / "runs", plan_hash="0" * 64)
     assert "--run-id" in str(refused.value)  # review N2: how to start a new run
 
 
@@ -416,7 +393,7 @@ def test_two_bundle_runs_sharing_a_persona_name_are_reported_in_one_process(
     both = tmp_path / "both"
     both.mkdir()
     for name, root in (("ra", runnable), ("rb", other)):
-        run_dir = _stub_run(root, tmp_path / f"runs_{name}")
+        run_dir = stub_run_of_bundle(root, tmp_path / f"runs_{name}")
         shutil.move(str(run_dir), str(both / name))
     # the second run, in the same process, ran on its own sheet (a composition is rebuilt over
     # the persona class registered again, never reused by name)

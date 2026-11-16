@@ -8,6 +8,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -112,6 +113,51 @@ def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
     ensure_registered()
     monkeypatch.setattr(base, "_REGISTRY", dict(base._REGISTRY))
+
+
+def stub_run_of_bundle(root: Path, runs: Path, **kw: Any) -> Path:
+    """A stub run of the bundle at ``root`` under ``runs``: the bundle's own worlds, personas,
+    stamp and plan hash, every role one of the dry run's doubles (Phase 5 Task 10, moved here
+    by Task 11). ``plan_hash`` overrides the stamp's hash (a resume refused on a mismatch).
+    Register the bundle's personas for the test's span alone: use ``isolated_registry``."""
+    from claude_bully.planner.bundle import Bundle, load_bundle_for_run, register_plan_personas
+    from claude_bully.planner.dryrun import (
+        dryrun_provider_factory,
+        load_bundle_experiment,
+        stubbed_experiment,
+    )
+
+    bundle, bundle_run = Bundle(root), load_bundle_for_run(root)
+    register_plan_personas({n: s.model_dump(mode="json") for n, s in bundle_run.personas.items()})
+    exp = stubbed_experiment(load_bundle_experiment(bundle))
+    run_experiment(
+        exp,
+        runs_root=runs,
+        worlds_dir=bundle_run.worlds_dir,
+        provider_factory=dryrun_provider_factory(bundle, exp),
+        plan_hash=kw.get("plan_hash", bundle_run.record.bundle_hash),
+        plan=bundle_run.stamp,
+    )
+    return runs / exp.name
+
+
+@pytest.fixture
+def runnable(tmp_path: Path, isolated_registry: None) -> Path:
+    """The root of a ``runnable`` bundle: the good bundle planned on the Director's doubles
+    through stage 5 (Phase 5 Task 10, moved here by Task 11)."""
+    from tests.fixtures.director_stub import run_plan
+
+    bundle, record = run_plan(tmp_path / "plans", through="validate")
+    assert record.status == "runnable"
+    return bundle.root
+
+
+@pytest.fixture
+def stub_bundle_run(runnable: Path, tmp_path: Path) -> Path:
+    """The run directory of a stub run of ``runnable`` (the bundle is ``runnable``, the same
+    fixture instance). Function-scoped on ``isolated_registry``, so ``register_plan_personas``
+    never leaves ``ferry_caller`` registered for the rest of the suite (R-registry)."""
+    return stub_run_of_bundle(runnable, tmp_path / "runs")
 
 
 @pytest.fixture(scope="session")
