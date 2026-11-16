@@ -93,8 +93,9 @@ def test_analyze_needs_only_the_run_directory(runnable: Path, tmp_path: Path) ->
 @pytest.mark.slow
 def test_a_resumed_run_is_refused_on_a_hash_mismatch(runnable: Path, tmp_path: Path) -> None:
     _stub_run(runnable, tmp_path / "runs")
-    with pytest.raises(ValueError, match="plan_hash"):
+    with pytest.raises(ValueError, match="plan_hash") as refused:
         _stub_run(runnable, tmp_path / "runs", plan_hash="0" * 64)
+    assert "--run-id" in str(refused.value)  # review N2: how to start a new run
 
 
 @pytest.mark.slow
@@ -133,8 +134,19 @@ def test_a_not_runnable_bundle_names_its_first_failing_check(runnable: Path) -> 
     assert str(refused.value) == (
         f"bundle {record.slug} is validated, not runnable: schema expected.yaml: no cell"
     )
-    bundle.write_record(record.model_copy(update={"status": "failed", "lint_results": []}))
-    with pytest.raises(BundleRefused, match="is failed, not runnable: stage 5 has not run$"):
+    # review M2: a failed stage is named, with its error, before the fallback
+    failed = record.stages[-1].model_copy(update={"status": "failed", "error": "a scan hit"})
+    stages = [*record.stages[:-1], failed]
+    bundle.write_record(
+        record.model_copy(update={"status": "failed", "lint_results": [], "stages": stages})
+    )
+    with pytest.raises(BundleRefused) as refused:
+        load_bundle_for_run(runnable)
+    assert str(refused.value) == (
+        f"bundle {record.slug} is failed, not runnable: {failed.stage} failed: a scan hit"
+    )
+    bundle.write_record(record.model_copy(update={"status": "revised", "lint_results": []}))
+    with pytest.raises(BundleRefused, match="is revised, not runnable: stage 5 has not run$"):
         load_bundle_for_run(runnable)
 
 
@@ -237,19 +249,42 @@ class _Killed(BaseException):
     Exception``, as a process killed there would be."""
 
 
+_VOLATILE = frozenset({"ts", "timestamp", "latency_ms", "created_at", "started_at", "finished_at"})
+
+
+def _scrubbed(data: Any) -> Any:
+    """``data`` less its wall-clock keys, at every depth."""
+    if isinstance(data, dict):
+        return {k: _scrubbed(v) for k, v in data.items() if k not in _VOLATILE}
+    if isinstance(data, list):
+        return [_scrubbed(v) for v in data]
+    return data
+
+
 def _comparable(run_dir: Path) -> dict[str, Any]:
-    """The run as parity compares it: the stamp, and per conversation its status and turns
-    less their timestamps and latencies."""
+    """The run as parity compares it (review M4): the stamp, and per conversation its status,
+    turns, tool calls, authority calls, trigger records (less the resume record a resumed rep
+    adds), generated documents and world snapshot, each less its wall-clock keys."""
     store = RunStore(run_dir.parent, run_dir.name)
     record = store.read_run()
+
+    def dumped(items: Any) -> list[Any]:
+        return [_scrubbed(item.model_dump(mode="json")) for item in items]
+
     conversations = {
-        f"{cell}/rep{rep}": (
-            store.read_conversation(cell, rep).status.value,
-            [
-                t.model_dump(mode="json", exclude={"timestamp", "latency_ms"})
-                for t in store.read_turns(cell, rep)
+        f"{cell}/rep{rep}": {
+            "status": store.read_conversation(cell, rep).status.value,
+            "turns": dumped(store.read_turns(cell, rep)),
+            "tools": dumped(store.read_tool_calls(cell, rep)),
+            "authority": dumped(store.read_authority_calls(cell, rep)),
+            "triggers": [
+                r
+                for r in dumped(store.read_trigger_records(cell, rep))
+                if r.get("type") != "resume"
             ],
-        )
+            "generated": dumped(store.read_generated(cell, rep)),
+            "world": _scrubbed(store.read_world_record(cell, rep)),
+        }
         for cell in store.list_cells()
         for rep in store.list_reps(cell)
     }
@@ -304,9 +339,10 @@ def test_register_plan_personas(isolated_registry: None, tmp_path: Path) -> None
     register_plan_personas({"ferry_caller": sheet})  # an equal sheet: left alone
     assert all_strategies()["ferry_caller"] is registered
     other = {**sheet, "win_condition": "another"}
-    with pytest.raises(ValueError, match="ferry_caller"):
-        register_plan_personas({"ferry_caller": other})
-    with pytest.raises(ValueError, match="captor"):
+    register_plan_personas({"ferry_caller": other})  # another plan's sheet: replaced (review I1)
+    replaced = all_strategies()["ferry_caller"]
+    assert replaced.sheet.win_condition == "another"  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="captor"):  # a coded strategy is never replaced
         register_plan_personas({"captor": {**sheet, "name": "captor"}})
     with pytest.raises(ValueError, match="ferry_twin"):  # recorded under another name
         register_plan_personas({"ferry_twin": sheet})
@@ -333,3 +369,164 @@ def test_a_plain_config_takes_the_worlds_dir_and_no_stamp(
     assert runner.invoke(cli.app, [*plain, "--worlds-dir", str(tmp_path)]).exit_code == 0
     assert [kw["worlds_dir"] for kw in seen] == [DEFAULT_WORLDS_DIR, tmp_path]
     assert all(kw["plan_hash"] is None and kw["plan"] is None for kw in seen)
+
+
+def _other_bundle(plans: Path, win_condition: str) -> Path:
+    """A second runnable bundle of the same request whose ``ferry_caller`` sheet has another
+    ``win_condition``, validated again (``plan validate``)."""
+    import yaml
+
+    from claude_bully.planner.director import Director
+    from tests.fixtures.director_stub import PlannerStub, ReviewerStub, StubFactory
+    from tests.helpers import WORLDS_DIR
+
+    bundle, _ = run_plan(plans, through="validate")
+    path = bundle.root / "personas" / "ferry_caller.yaml"
+    data = yaml.safe_load(path.read_bytes().decode("utf-8"))
+    data["win_condition"] = win_condition
+    path.write_bytes(yaml.safe_dump(data, sort_keys=False, width=88).encode("utf-8"))
+    factory = StubFactory(PlannerStub(), ReviewerStub())
+    director = Director.open(bundle.root, provider_factory=factory, worlds_dir=WORLDS_DIR)
+    assert director.revalidate().status == "runnable"
+    return bundle.root
+
+
+def _sheet_win(run_dir: Path) -> set[str]:
+    """The ``win_condition`` of every bundle-persona strategy ``load_run`` builds for the run."""
+    from claude_bully.analysis.load import load_run
+
+    loaded = load_run(run_dir)
+    premises = [getattr(s, "premise", None) or s for s in loaded.strategies.values()]
+    return {
+        p.sheet.win_condition  # type: ignore[attr-defined]
+        for p in premises
+        if type(p).name == "ferry_caller"
+    }
+
+
+@pytest.mark.slow
+def test_two_bundle_runs_sharing_a_persona_name_are_reported_in_one_process(
+    runnable: Path, tmp_path: Path
+) -> None:
+    """Review I1: ``readme-results`` analyzes each run in one process; the second bundle's
+    ``ferry_caller``, another sheet under the same name, replaces the first's, so the command
+    exits 0 and each run is loaded with its own sheet."""
+    win_b = "B: the model repeats the ferry claim as fact."
+    other = _other_bundle(tmp_path / "plans_b", win_b)
+    both = tmp_path / "both"
+    both.mkdir()
+    for name, root in (("ra", runnable), ("rb", other)):
+        run_dir = _stub_run(root, tmp_path / f"runs_{name}")
+        shutil.move(str(run_dir), str(both / name))
+    # the second run, in the same process, ran on its own sheet (a composition is rebuilt over
+    # the persona class registered again, never reused by name)
+    store = RunStore(both, "rb")
+    spoken = [
+        store.read_conversation(c, r).win_condition
+        for c in store.list_cells()
+        for r in store.list_reps(c)
+    ]
+    assert any(win_b in w for w in spoken) and not any(
+        load_bundle_for_run(runnable).personas["ferry_caller"].win_condition in w for w in spoken
+    )
+    from claude_bully.strategies import base
+
+    base._REGISTRY.pop("ferry_caller")  # a fresh process: registered from run.json alone
+    readme = tmp_path / "README.md"
+    readme.write_text("# results\n", "utf-8")
+    result = runner.invoke(
+        cli.app, ["readme-results", "ra", "rb", "--runs-root", str(both), "--readme", str(readme)]
+    )
+    assert result.exit_code == 0, repr(result.exception)
+    win_a = load_bundle_for_run(runnable).personas["ferry_caller"].win_condition
+    assert win_a != win_b
+    assert _sheet_win(both / "ra") == {win_a}
+    assert _sheet_win(both / "rb") == {win_b}
+    assert _sheet_win(both / "ra") == {win_a}
+
+
+def _files(run_dir: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(run_dir).as_posix(): p.read_bytes()
+        for p in sorted(run_dir.rglob("*"))
+        if p.is_file()
+    }
+
+
+@pytest.mark.slow
+def test_a_stamp_goes_with_its_hash_and_a_resume_keeps_its_own(
+    runnable: Path, tmp_path: Path
+) -> None:
+    """Review I2: ``plan`` and ``plan_hash`` are given both or neither, and a resume never runs
+    on a stamp other than the one its run records; each refusal comes before any write."""
+    from claude_bully.planner.bundle import Bundle
+
+    bundle, bundle_run = Bundle(runnable), load_bundle_for_run(runnable)
+    exp = stubbed_experiment(load_bundle_experiment(bundle))
+    digest = bundle_run.record.bundle_hash
+    sheet = bundle_run.stamp.personas["ferry_caller"]
+    other = bundle_run.stamp.model_copy(
+        update={"personas": {"ferry_caller": {**sheet, "win_condition": "B"}}}
+    )
+    runs = tmp_path / "runs"
+
+    def run(provider_factory: Any = None, **kw: Any) -> Any:
+        return run_experiment(
+            exp,
+            runs_root=runs,
+            worlds_dir=bundle_run.worlds_dir,
+            provider_factory=provider_factory or dryrun_provider_factory(bundle, exp),
+            **kw,
+        )
+
+    with pytest.raises(ValueError, match="plan and plan_hash"):
+        run(plan=bundle_run.stamp)  # a new run: nothing made
+    with pytest.raises(ValueError, match="plan and plan_hash"):
+        run(plan_hash=digest)
+    assert not runs.exists()
+    dying = dryrun_killing("target", DRYRUN_KILL_AT["target"], error=_Killed)(bundle, exp)
+    with pytest.raises(_Killed):
+        run(dying, plan_hash=digest, plan=bundle_run.stamp)
+    before = _files(runs / exp.name)
+    with pytest.raises(ValueError, match="plan and plan_hash"):
+        run(plan=other)  # the review's probe R4: refused, never run on B's sheet
+    with pytest.raises(BundleRefused, match="the run's plan is not the one given"):
+        run(plan_hash=digest, plan=other)
+    assert _files(runs / exp.name) == before
+    run()  # neither: the resume runs on the stamp its run records
+    assert _sheet_win(runs / exp.name) == {sheet["win_condition"]}
+
+
+def test_the_runner_does_not_import_the_planner_side_that_imports_it() -> None:
+    """Review M3: a planner module that imports the runner (``planner/records.py`` reads
+    ``runner/store.py``), or one of those, is never imported by a runner module, so the two
+    never import each other; the plan-persona registration and ``BundleRefused`` live in
+    ``runner/plan_stamp.py``. The planner's text lints, which import no runner module, stay
+    importable from the runner (``runner/env_turn.py`` reads ``planner/llm_lint.py``)."""
+    import re
+
+    package = Path(cli.__file__).parent
+    imports = re.compile(r"^\s*(?:from|import) claude_bully\.(\w+)\.(\w+)", re.MULTILINE)
+
+    def imported(path: Path) -> set[tuple[str, str]]:
+        return {(m[1], m[2]) for m in imports.finditer(path.read_text("utf-8"))}
+
+    planner = {path.stem: imported(path) for path in (package / "planner").glob("*.py")}
+    runner_side = {name for name, deps in planner.items() if any(d[0] == "runner" for d in deps)}
+    grew = True
+    while grew:
+        more = {
+            n
+            for n, deps in planner.items()
+            if any(d in {("planner", r) for r in runner_side} for d in deps)
+        }
+        grew = not more <= runner_side
+        runner_side |= more
+    assert {"records", "bundle"} <= runner_side
+    offenders = [
+        f"{path.name}: planner.{dep}"
+        for path in sorted((package / "runner").glob("*.py"))
+        for pkg, dep in imported(path)
+        if pkg == "planner" and dep in runner_side
+    ]
+    assert offenders == []

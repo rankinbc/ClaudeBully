@@ -52,7 +52,6 @@ from claude_bully.environments.idle import (
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
 from claude_bully.paths import DATA_DIR
-from claude_bully.planner.bundle import BundleRefused, recorded_plan_personas
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
@@ -82,6 +81,7 @@ from claude_bully.runner.env_turn import (
     cell_turn_plan,
     target_system,
 )
+from claude_bully.runner.plan_stamp import BundleRefused, recorded_plan_personas
 from claude_bully.runner.prompts import load_bully_framing, load_target_system
 from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import TaskItem, assign_items, load_task_bank, score_item
@@ -776,21 +776,33 @@ def run_experiment(
     private sandbox root (default: the system temp directory).
 
     A run on a plan bundle (spec section 11) passes the bundle's ``plan_hash`` and its ``plan``
-    stamp, which a new ``RunRecord`` carries. The plan's personas (``plan``'s, else those the
-    existing run record's ``plan`` recorded, so a resume needs no ``plans/``) are registered for
-    the call alone, before ``expand_cells`` (preflight Q50; ``recorded_plan_personas``). A
-    resume whose run records another ``plan_hash`` than the one given raises ``BundleRefused``
-    (a ``ValueError``) before anything is written. A plain call is unchanged."""
+    stamp together, which a new ``RunRecord`` carries; one without the other is a ``ValueError``
+    (Task 10 review I2). An existing run record is read first, a dry run's included. A resume
+    given a stamp is refused with ``BundleRefused`` (a ``ValueError``) when its run records
+    another ``plan_hash`` or another ``plan``; a resume given neither goes on with its own. The
+    personas of the run record's ``plan``, else of the given one, are registered for the call
+    alone, before ``expand_cells`` (preflight Q50; ``recorded_plan_personas``), so a resume needs
+    no ``plans/`` for them. Every refusal comes before anything is written. A plain call is
+    unchanged."""
+    if (plan is None) != (plan_hash is None):
+        raise ValueError(
+            "plan and plan_hash go together: give both (a run on a plan bundle) or neither"
+        )
     ensure_registered()
     run_id = run_id or exp.name
     store = RunStore(runs_root, run_id)
     existing = store.read_run() if store.exists() else None
-    if existing is not None and plan_hash is not None and existing.plan_hash != plan_hash:
-        raise BundleRefused(
-            f"the run's plan_hash {_short_hash(existing.plan_hash)} is not the bundle's "
-            f"{_short_hash(plan_hash)}; start a new run"
-        )
-    recorded = plan if plan is not None else existing.plan if existing is not None else None
+    if existing is not None and plan is not None:
+        if existing.plan_hash != plan_hash:
+            raise BundleRefused(
+                f"the run's plan_hash {_short_hash(existing.plan_hash)} is not the bundle's "
+                f"{_short_hash(plan_hash)}; {_NEW_RUN}"
+            )
+        if existing.plan is None or existing.plan.model_dump(mode="json") != plan.model_dump(
+            mode="json"
+        ):
+            raise BundleRefused(f"the run's plan is not the one given; {_NEW_RUN}")
+    recorded = existing.plan if existing is not None else plan
     with recorded_plan_personas(recorded.personas if recorded is not None else {}):
         return _run_experiment(
             exp,
@@ -805,6 +817,9 @@ def run_experiment(
             plan_hash=plan_hash,
             stamp=plan,
         )
+
+
+_NEW_RUN = "start a new run with another --run-id"
 
 
 def _short_hash(digest: str | None) -> str:

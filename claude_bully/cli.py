@@ -25,11 +25,9 @@ from claude_bully.doctor import default_out_dir, failed, run_live_checks, write_
 from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
 from claude_bully.planner.bundle import (
     PLAN_FILE,
-    BundleRefused,
     BundleRun,
     bundle_worlds_dir,
     load_bundle_for_run,
-    register_plan_personas,
 )
 from claude_bully.planner.cli import plan_app
 from claude_bully.providers.base import Message, ProviderError
@@ -37,6 +35,7 @@ from claude_bully.providers.claude_code import clean_child_env, resolve_claude_c
 from claude_bully.providers.ledger import LEDGER_FILE, activate
 from claude_bully.providers.stub import StubProvider
 from claude_bully.runner.cells import expand_cells
+from claude_bully.runner.plan_stamp import BundleRefused, register_plan_personas
 from claude_bully.runner.runner import DEFAULT_WORLDS_DIR, RateLimitExit, run_experiment
 from claude_bully.runner.store import DamagedRecordError, RunStore
 

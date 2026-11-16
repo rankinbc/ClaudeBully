@@ -26,7 +26,6 @@ from claude_bully.metrics.events._common import AuthorityFallback
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.ratings import RatingVerdict
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
-from claude_bully.planner.bundle import register_plan_personas
 from claude_bully.providers.ledger import LEDGER_FILE, Ledger, LedgerLine
 from claude_bully.records import CellRecord, Conversation, Event, RunRecord
 from claude_bully.records_env import (
@@ -37,6 +36,7 @@ from claude_bully.records_env import (
     TriggerStreamRecord,
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
+from claude_bully.runner.plan_stamp import register_plan_personas
 from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.factory import (

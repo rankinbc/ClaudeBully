@@ -295,7 +295,16 @@ def make_composed(
         raise ValueError("a composition without an environment needs a premise and a pressure")
     name = composed_name(environment, premise_cls, pressure_cls)
     existing = _WITH_ENVIRONMENT.get(name) if environment else all_strategies().get(name)
-    if existing is not None and issubclass(existing, Composed):
+    # reused only over the same part classes: a plan persona registered again under its name
+    # with another sheet is another class, and a composition of it is built anew (Phase 5 Task
+    # 10 review I1: two bundle runs sharing a persona name in one process)
+    if (
+        existing is not None
+        and issubclass(existing, Composed)
+        and existing.environment_cls is environment
+        and existing.premise_cls is premise_cls
+        and existing.pressure_cls is pressure_cls
+    ):
         return existing
     given: list[type[Strategy]] = [
         part for part in (environment, premise_cls, pressure_cls) if part is not None

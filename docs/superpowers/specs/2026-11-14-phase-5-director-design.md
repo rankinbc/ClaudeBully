@@ -700,3 +700,11 @@ Task 10 (`run` on a bundle):
 - `_SHAPES` holds no environment shape (the header and environment lines are not parsed), so `plan_hash` is the first shape, the order the replay writes its lines in.
 - `PlanStamp.expected` is `expected.yaml` as `yaml.safe_load` gives it (the `expected_schema` lint has passed on the unchanged bundle).
 - `replay_cell` reads the plan hash from `run.json` when the store has one and passes None otherwise, so a directory of cells with no run record (`tests/test_cli.py`'s replay fixture) replays as before.
+- Fix round 1 (review I1, I2, M1 to M5, N2):
+  - I1 (amends section 11's `register_plan_personas` and section 13's row "Two bundles' personas share a name with different sheets in one process"): another plan's persona of the same name is replaced, never refused; only a strategy of the package (or a sheet recorded under another name) is refused. `strategies/composed.make_composed` reuses a cached composition only when its environment, premise and pressure classes are the ones given: it cached by name, so a second bundle's run or analysis in one process ran its environment cells on the first bundle's persona class and sheet.
+  - I2: `run_experiment` refuses `plan` without `plan_hash` or the reverse (`ValueError: plan and plan_hash go together`); a resume given a stamp is refused (`BundleRefused`) when its run records another hash or another `plan` (`the run's plan is not the one given; ...`), and the personas registered are the run record's.
+  - M1: the early `run.json` read stays (a resume given no stamp needs the record's personas); docs/00 section E states that `run --dry-run` now fails on a damaged or older `run.json`.
+  - M2: `_not_runnable` names the last failed stage (`<stage> failed: <error>`) after the open blocks and before `stage 5 has not run`.
+  - M3: `BundleRefused`, `plan_personas`, `is_plan_persona`, `register_plan_personas` and `recorded_plan_personas` move to `claude_bully/runner/plan_stamp.py`, which imports no planner or analysis module; `planner/bundle.py` re-exports the first four.
+  - M4: the parity test compares each rep's tool calls, authority calls, trigger records (less the resume record), generated documents and world snapshot too.
+  - M5 and N2: docs/00's resume line is narrowed to the personas; the resume refusals end `start a new run with another --run-id`.

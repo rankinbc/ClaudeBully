@@ -8,19 +8,19 @@ is written LF without a BOM, and the sha256 a call records is of the text as wri
 outside the grammar and have their own writers here. ``materialize`` and
 ``rematerialize_open_stage`` write committed files back from the transcripts, the second being
 spec section 8's resume rule for the open stage. ``load_bundle_for_run`` and
-``register_plan_personas`` are ``run``'s side of a bundle (spec section 11)."""
+``bundle_worlds_dir`` are ``run``'s side of a bundle (spec section 11); the plan-persona
+registration and ``BundleRefused`` live in ``runner/plan_stamp.py`` (re-exported here), so the
+runner never imports the planner (Task 10 review M3)."""
 
 import hashlib
 import json
 import os
 import re
-import weakref
-from collections.abc import Collection, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Self
+from typing import Final, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -40,10 +40,13 @@ from claude_bully.planner.records import (
 )
 from claude_bully.planner.request import WINDOWS_DEVICE_STEMS
 from claude_bully.records import PlanStamp
+
+# re-exported: they live in runner/plan_stamp.py, which the runner imports (review M3)
+from claude_bully.runner.plan_stamp import BundleRefused as BundleRefused
+from claude_bully.runner.plan_stamp import is_plan_persona as is_plan_persona
+from claude_bully.runner.plan_stamp import plan_personas as plan_personas
+from claude_bully.runner.plan_stamp import register_plan_personas as register_plan_personas
 from claude_bully.runner.store import DamagedRecordError
-from claude_bully.strategies import base as strategy_base
-from claude_bully.strategies.bootstrap import ensure_registered
-from claude_bully.strategies.premises.phased import make_phased_premise
 from claude_bully.strategies.sheets import PersonaSheet
 
 PLAN_FILE: Final = "plan.json"
@@ -541,48 +544,7 @@ def bundle_personas(bundle: Bundle) -> dict[str, PersonaSheet]:
     }
 
 
-# every class a plan_personas block registered: a plan's persona, never a strategy of the
-# package (the schema lint's name check reads it, review M5)
-_PLAN_CLASSES: Final[weakref.WeakSet[type[strategy_base.Strategy]]] = weakref.WeakSet()
-
-
-def is_plan_persona(cls: type[strategy_base.Strategy]) -> bool:
-    """True for a class a ``plan_personas`` block registered."""
-    return cls in _PLAN_CLASSES
-
-
-@contextmanager
-def plan_personas(sheets: Mapping[str, PersonaSheet]) -> Iterator[None]:
-    """The bundle's personas registered for the block (D-plan_personas, R-registry).
-
-    ``ensure_registered()`` runs first, so the block never sees a registry that loads its
-    strategies later. Each sheet is registered with ``make_phased_premise``; on exit, exceptions
-    included, each name the block registered is removed, or given back the class it replaced.
-    Nothing else is touched: a strategy something else registered inside the block stays, and the
-    registry is never restored from a snapshot (a snapshot taken before the first load would
-    empty it for good). Blocks nest, each undoing only its own registrations."""
-    ensure_registered()
-    replaced: dict[str, type[strategy_base.Strategy] | None] = {}
-    try:
-        for sheet in sheets.values():
-            replaced.setdefault(sheet.name, strategy_base._REGISTRY.get(sheet.name))
-            _PLAN_CLASSES.add(make_phased_premise(sheet))
-        yield
-    finally:
-        for name, previous in replaced.items():
-            if previous is None:
-                strategy_base._REGISTRY.pop(name, None)
-            else:
-                strategy_base._REGISTRY[name] = previous
-
-
 # ------------------------------------------------------------------------------ run on a bundle
-
-
-class BundleRefused(ValueError):  # noqa: N818 - the name is the specified interface
-    """A bundle ``run`` will not run: not ``runnable``, changed since stage 5 stamped it, beside
-    a ``--worlds-dir`` that is not its own, or not the bundle a run being resumed was made from.
-    Raised before anything is written."""
 
 
 @dataclass(frozen=True)
@@ -597,13 +559,17 @@ class BundleRun:
 
 
 def _not_runnable(record: PlanRecord) -> str:
-    """Why ``record`` is not runnable: its first failing lint result, else its open blocks,
-    else that stage 5 has not run."""
+    """Why ``record`` is not runnable: its first failing lint result, else its open blocks, else
+    its last failed stage and that stage's error (Task 10 review M2), else that stage 5 has not
+    run."""
     failing = next((r for r in record.lint_results if r.severity == "fail"), None)
     if failing is not None:
         return f"{failing.lint_id} {failing.doc_id}: {failing.message}"
     if record.open_blocks:
         return f"{record.open_blocks} open block(s)"
+    failed = next((s for s in reversed(record.stages) if s.status == "failed"), None)
+    if failed is not None:
+        return f"{failed.stage} failed: {failed.error}"
     return "stage 5 has not run"
 
 
@@ -640,50 +606,3 @@ def bundle_worlds_dir(root: Path, worlds_dir: Path | None) -> Path:
             "a bundle runs on the worlds it validated"
         )
     return own
-
-
-def _new_plan_sheets(personas: Mapping[str, Mapping[str, Any]]) -> dict[str, PersonaSheet]:
-    """The recorded sheets ``personas`` names that are not yet registered, validated. After
-    ``ensure_registered()`` (R-registry: a fresh process has loaded no coded strategy yet), a
-    name registered with an equal sheet is left out; one registered with another sheet, or with
-    none (a coded strategy), raises ``ValueError`` naming the name and both sources, as does a
-    sheet recorded under a name that is not its own."""
-    ensure_registered()
-    sheets: dict[str, PersonaSheet] = {}
-    for name, dumped in personas.items():
-        sheet = PersonaSheet.model_validate(dumped)
-        if sheet.name != name:
-            raise ValueError(f"plan persona {name!r}: the recorded sheet is named {sheet.name!r}")
-        registered = strategy_base._REGISTRY.get(name)
-        if registered is None:
-            sheets[name] = sheet
-            continue
-        own = getattr(registered, "sheet", None)
-        if not isinstance(own, PersonaSheet) or own.model_dump(mode="json") != sheet.model_dump(
-            mode="json"
-        ):
-            raise ValueError(
-                f"plan persona {name!r}: the plan's recorded sheet is not the sheet of the "
-                f"registered strategy {name!r} ({registered.__module__}.{registered.__qualname__})"
-            )
-    return sheets
-
-
-def register_plan_personas(personas: Mapping[str, Mapping[str, Any]]) -> None:
-    """Register each recorded persona sheet (``PlanStamp.personas``) as a phased premise
-    (``make_phased_premise``), for the rest of the process: ``run``'s CLI on a bundle and
-    ``load_run`` of a run made from one, so ``analyze`` needs no ``plans/``. A name already
-    registered with an equal sheet is left alone; with another sheet, or as a coded strategy,
-    it is a ``ValueError`` naming both (``_new_plan_sheets``)."""
-    for sheet in _new_plan_sheets(personas).values():
-        _PLAN_CLASSES.add(make_phased_premise(sheet))
-
-
-@contextmanager
-def recorded_plan_personas(personas: Mapping[str, Mapping[str, Any]]) -> Iterator[None]:
-    """The recorded personas registered for the block alone (``run_experiment``'s span; the
-    Task 10 carry, R-registry): the refusals of ``register_plan_personas``, then the scoped
-    ``plan_personas`` over the names not already registered with an equal sheet, so the block
-    removes only what it registered, exceptions included."""
-    with plan_personas(_new_plan_sheets(personas)):
-        yield
