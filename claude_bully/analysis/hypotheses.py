@@ -50,7 +50,7 @@ from claude_bully.analysis.progression import (
     not_judged_note,
     summarize,
     target_model,
-    unjudged,
+    unjudged_keys,
     without_flagged,
 )
 from claude_bully.config import ConditionConfig
@@ -559,7 +559,12 @@ class _Tally:
         self.loaded = loaded
         self.flagged = 0
         self.resumed = 0
-        self.unjudged = 0
+        self.unjudged_keys: list[ConvKey] = []
+
+    @property
+    def unjudged(self) -> int:
+        """How many kept reps the judge's values watch did not read."""
+        return len(self.unjudged_keys)
 
     def kept(self, cells: Iterable[str]) -> dict[str, list[ConvKey]]:
         """Model -> the complete, unflagged conversations of ``cells``."""
@@ -573,7 +578,7 @@ class _Tally:
             kept, flagged = without_flagged(self.loaded, complete)
             self.flagged += flagged
             self.resumed += count_resumed(self.loaded, kept)
-            self.unjudged += unjudged(self.loaded, kept)
+            self.unjudged_keys += unjudged_keys(self.loaded, kept)
             by_model[target_model(self.loaded, cell_id)] += kept
         return dict(by_model)
 
@@ -640,7 +645,7 @@ class _Tally:
             parts.append(flagged)
         if self.resumed:
             parts.append(f"{self.resumed} kept rep(s) resumed after a dead attempt")
-        judged = not_judged_note(self.unjudged)
+        judged = not_judged_note(self.loaded, self.unjudged_keys)
         if judged is not None:
             parts.append(judged)
         return "; ".join(parts)

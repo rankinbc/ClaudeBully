@@ -50,6 +50,7 @@ from claude_bully.analysis.load import ConvKey, LoadedRun, count_resumed  # noqa
 from claude_bully.analysis.progression import (  # noqa: E402
     flagged_note,
     is_values_loosened,
+    not_judged_clauses,
     not_judged_note,
     target_model,
     values_judged,
@@ -493,7 +494,7 @@ def _arm_payload(loaded: LoadedRun, keys: Sequence[ConvKey], flagged: int) -> di
         # not (their values_loosened is the heuristic's floor, never a reading)
         "values_watched": watched,
         "values_unwatched": len(keys) - watched,
-        "values_note": not_judged_note(len(keys) - watched),
+        "values_note": not_judged_note(loaded, keys),
         "chain_stop": _chain_stops(loaded, keys),
         "opened_by": _opened_by(loaded, keys),
         "concession_by_rung": reps.by_rung(),
@@ -536,9 +537,15 @@ def _source(kept: int, unwatched: int) -> str:
     return "heuristic" if unwatched == kept else "partly_judged"
 
 
-def _note(flagged: int, unwatched: int) -> str | None:
-    """The flagged count's note and the not-judged clause, joined; None when neither applies."""
-    parts = [n for n in (flagged_note(flagged, LEFT_OUT_OF), not_judged_note(unwatched)) if n]
+def _unwatched_clauses(loaded: LoadedRun) -> list[str]:
+    """The not-judged clause of each Poisoned Well cell with kept reps the judge did not read,
+    naming the one reason that applies to it (``not_judged_clauses``)."""
+    return not_judged_clauses(loaded, [key for key, *_ in pw_conversations(loaded)])
+
+
+def _note(flagged: int, unwatched: Sequence[str]) -> str | None:
+    """The flagged count's note and the not-judged clauses, joined; None when neither applies."""
+    parts = [n for n in (flagged_note(flagged, LEFT_OUT_OF), *unwatched) if n]
     return "; ".join(parts) if parts else None
 
 
@@ -561,7 +568,7 @@ def write_poisoned_well(loaded: LoadedRun, out_dir: Path) -> Path | None:
         "models": models,
         "values_loosened_left_out": len(flagged),
         "values_loosened_by": _flagged_by(loaded, flagged),
-        "note": _note(len(flagged), unwatched),
+        "note": _note(len(flagged), _unwatched_clauses(loaded)),
         # I1: how many kept reps the judge never read, and what watched the rest
         "values_unwatched": unwatched,
         "values_watch_source": _source(kept, unwatched),
@@ -591,15 +598,15 @@ def write_poisoned_well(loaded: LoadedRun, out_dir: Path) -> Path | None:
 # ------------------------------------------------------------------ charts
 
 
-def _footnote(fig: Figure, flagged: int, unwatched: int = 0) -> None:
-    """The flagged count under the chart (``flagged_note``) and the kept reps the judge's values
-    watch did not read (``not_judged_note``, the final review's I1), and the layout around
-    them."""
-    parts = [n for n in (flagged_note(flagged, LEFT_OUT_OF), not_judged_note(unwatched)) if n]
+def _footnote(fig: Figure, flagged: int, unwatched: Sequence[str] = ()) -> None:
+    """The flagged count under the chart (``flagged_note``) and, a line each, the kept reps the
+    judge's values watch did not read (``not_judged_clauses``, the final review's I1), and the
+    layout around them."""
+    parts = [n for n in (flagged_note(flagged, LEFT_OUT_OF), *unwatched) if n]
     if parts:
         fig.text(0.01, 0.01, "\n".join(parts), fontsize=7, wrap=True)
-    # the not-judged clause wraps to about two lines at the chart's width
-    bottom = 0.05 * len(parts) + (0.05 if unwatched else 0.0)
+    # a not-judged clause wraps to about two lines at the chart's width
+    bottom = 0.05 * len(parts) + 0.05 * len(unwatched)
     fig.tight_layout(rect=(0.0, bottom, 1.0, 0.94))
 
 
@@ -658,7 +665,7 @@ def chain_stop_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
     hatched = Patch(facecolor="white", hatch="//", edgecolor="dimgray", label="hedged stop")
     ax.legend(handles=[*handles, hatched], fontsize=7, loc="upper left", bbox_to_anchor=(1, 1))
     ax.set_title("Where the chain stopped")
-    _footnote(fig, len(_flagged(loaded)), _unwatched(loaded))
+    _footnote(fig, len(_flagged(loaded)), _unwatched_clauses(loaded))
     return _save(fig, out_dir / CHAIN_STOP_CHART)
 
 
@@ -709,5 +716,5 @@ def escape_by_rung_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
         if handles:
             ax.legend(handles=handles, fontsize=7, loc="upper left")
     fig.suptitle("Escape found by the highest rung reached")
-    _footnote(fig, len(_flagged(loaded)), _unwatched(loaded))
+    _footnote(fig, len(_flagged(loaded)), _unwatched_clauses(loaded))
     return _save(fig, out_dir / ESCAPE_CHART)

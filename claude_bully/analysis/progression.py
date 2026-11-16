@@ -48,7 +48,7 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import matplotlib
 
@@ -68,6 +68,7 @@ from claude_bully.metrics.events.environment import (  # noqa: E402
     DISCOVERY_TOOLS,
     is_belief_adoption,
 )
+from claude_bully.metrics.ratings import is_poisoned_well_cell  # noqa: E402
 from claude_bully.records import (  # noqa: E402
     Conversation,
     Turn,
@@ -208,35 +209,110 @@ def values_watched_cell(loaded: LoadedRun, cell_id: str) -> bool:
     return strategy is not None and EventType.values_loosened in relevant_for(loaded, cell_id)[1]
 
 
-def unjudged(loaded: LoadedRun, keys: Iterable[ConvKey]) -> int:
-    """How many of ``keys`` are reps under the values watch that the judge did not read: their
-    ``values_loosened`` count is the heuristic's floor, never a reading."""
-    return sum(
-        1 for key in keys if values_watched_cell(loaded, key[0]) and not values_judged(loaded, key)
-    )
+# why a rep under the values watch was not judged (the Phase 4 re-review's N2; Phase 5 Task 11):
+# the clause for a cell names the one reason that applies to it, never a list of all three
+UnjudgedReason = Literal["no_ratings", "failed_ask", "never_asked"]
+FAILED_KEYS_SHOWN: Final = 3
 
 
-def not_judged_note(count: int) -> str | None:
-    """The clause an output adds when ``count`` kept reps were not judged by the values watch
-    (``unjudged``); None for none. A 0 flagged share beside it is a floor, never a rate. It names
-    the three reasons a rep goes unjudged and says what a rerun can change: ``--ratings`` asks
-    Poisoned Well condition cells alone, so it never reads a cell the judge is never asked about
-    (``epistemologist_alone`` among them; Phase 5 Task 11 closed the Phase 4 re-review's N2, which
-    told every reader to rerun it)."""
-    if not count:
+def unjudged_reason(
+    loaded: LoadedRun, key: ConvKey
+) -> tuple[UnjudgedReason, tuple[str, ...]] | None:
+    """Why the judge did not read the rep, and the failed ``rate_values`` keys when its ask failed;
+    None when the rep is judged or its cell is not under the values watch. In this order:
+
+    - ``never_asked``: the cell is no Poisoned Well cell, the only cells ``rate_values`` asks
+      (``epistemologist_alone`` among the others);
+    - ``failed_ask``: ``ratings.json`` names a failed ``rate_values`` key of the rep
+      (``LoadedRun.ratings_failed``);
+    - ``no_ratings``: no verdict is applied and no ask failed anywhere, so ``--ratings`` was not
+      run (or none of its verdicts applies);
+    - ``never_asked`` again: ``--ratings`` ran and asked nothing about this rep (a Poisoned Well
+      rep with no reply after its reveal line)."""
+    cell_id, rep = key
+    if not values_watched_cell(loaded, cell_id) or values_judged(loaded, key):
         return None
+    if not is_poisoned_well_cell(loaded, cell_id):
+        return "never_asked", ()
+    prefix = f"{cell_id}/{rep}/rate_values/"
+    failed = tuple(k for k in loaded.ratings_failed if k.startswith(prefix))
+    if failed:
+        return "failed_ask", failed
+    if not loaded.ratings and not loaded.ratings_failed:
+        return "no_ratings", ()
+    return "never_asked", ()
+
+
+def unjudged_keys(loaded: LoadedRun, keys: Iterable[ConvKey]) -> list[ConvKey]:
+    """The ``keys`` that are reps under the values watch that the judge did not read: their
+    ``values_loosened`` count is the heuristic's floor, never a reading."""
+    return [key for key in keys if unjudged_reason(loaded, key) is not None]
+
+
+def unjudged(loaded: LoadedRun, keys: Iterable[ConvKey]) -> int:
+    """How many of ``keys`` are reps under the values watch that the judge did not read."""
+    return len(unjudged_keys(loaded, keys))
+
+
+def not_judged_clause(
+    count: int, cell: str, reason: UnjudgedReason, keys: Sequence[str] = ()
+) -> str:
+    """The clause for ``count`` kept reps of ``cell`` that the values watch did not judge, for the
+    one ``reason`` that applies: ``--ratings`` was not run; the ``rate_values`` ask failed (the
+    failed ``keys`` named, the first ``FAILED_KEYS_SHOWN`` of them); or the judge is never asked
+    about the cell, which ``--ratings`` cannot change (it asks Poisoned Well condition cells
+    only). A 0 flagged share beside it is a floor, never a rate."""
     noun = "rep" if count == 1 else "reps"
+    if reason == "no_ratings":
+        why, advice = "--ratings was not run", "`analyze --ratings` asks it"
+    elif reason == "failed_ask":
+        shown = ", ".join(keys[:FAILED_KEYS_SHOWN])
+        if len(keys) > FAILED_KEYS_SHOWN:
+            shown += f" and {len(keys) - FAILED_KEYS_SHOWN} more"
+        why = f"the rate_values ask failed ({shown})"
+        advice = "`analyze --ratings` asks it again"
+    else:
+        why = "the judge is never asked about it"
+        advice = (
+            "`analyze --ratings` asks Poisoned Well condition cells only, so a rerun reads no "
+            "other cell"
+        )
     return (
-        f"{count} kept {noun} {NOT_JUDGED} by the values watch (no rate_values verdict: no "
-        "--ratings, a failed ask, or a cell it never asks), so values_loosened there is a lower "
-        "bound, never a rate; `analyze --ratings` asks Poisoned Well condition cells only, so a "
-        "rerun reads no other cell"
+        f"{count} kept {noun} {NOT_JUDGED} by the values watch in {cell}: {why}, so "
+        f"values_loosened there is a lower bound, never a rate; {advice}"
     )
+
+
+def not_judged_clauses(loaded: LoadedRun, keys: Iterable[ConvKey]) -> list[str]:
+    """One ``not_judged_clause`` per cell and reason among the unjudged ``keys``, by cell. A cell
+    whose reps differ in why (rare: one rep's ask failed, another was never asked) gets one
+    clause for each."""
+    groups: dict[tuple[str, UnjudgedReason], list[tuple[ConvKey, tuple[str, ...]]]] = defaultdict(
+        list
+    )
+    for key in keys:
+        found = unjudged_reason(loaded, key)
+        if found is not None:
+            groups[(key[0], found[0])].append((key, found[1]))
+    return [
+        not_judged_clause(
+            len(reps), cell, reason, tuple(k for _, failed in reps for k in sorted(failed))
+        )
+        for (cell, reason), reps in sorted(groups.items())
+    ]
+
+
+def not_judged_note(loaded: LoadedRun, keys: Iterable[ConvKey]) -> str | None:
+    """The clauses an output adds when some of its kept reps ``keys`` were not judged by the values
+    watch (``not_judged_clauses``), joined; None for none."""
+    clauses = not_judged_clauses(loaded, keys)
+    return "; ".join(clauses) if clauses else None
 
 
 def not_judged_line(loaded: LoadedRun) -> str | None:
-    """``results.md``'s line under the leaderboard: the complete, unflagged reps of the condition
-    cells under the values watch that the judge did not read (``not_judged_note``)."""
+    """``results.md``'s lines under the leaderboard: for each cell the complete, unflagged reps of
+    the condition cells under the values watch that the judge did not read, one paragraph per
+    cell (``not_judged_clauses``)."""
     conditions = set(loaded.condition_cells())
     kept = [
         key
@@ -245,8 +321,8 @@ def not_judged_line(loaded: LoadedRun) -> str | None:
         and conv.status is CellStatus.complete
         and not is_values_loosened(loaded, key)
     ]
-    note = not_judged_note(unjudged(loaded, kept))
-    return None if note is None else note[0].upper() + note[1:] + "."
+    clauses = not_judged_clauses(loaded, kept)
+    return "\n\n".join(c[0].upper() + c[1:] + "." for c in clauses) if clauses else None
 
 
 def unlocks_of(records: Sequence[TriggerStreamRecord]) -> list[RungUnlock]:

@@ -15,7 +15,7 @@ from claude_bully.analysis.authority import (
 from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
 from claude_bully.analysis.dose import dose_response
-from claude_bully.analysis.expected import expected_line, expected_report, write_expected
+from claude_bully.analysis.expected import analyze_expected
 from claude_bully.analysis.generator import generator_chart, write_generator
 from claude_bully.analysis.hypotheses import (
     evaluate,
@@ -200,6 +200,7 @@ def analyze_run(
             except RateLimitError as exc:  # the verdicts before it are cached; the rerun replays
                 _dump_judgements(loaded, out)
                 raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+            loaded.ratings_failed = list(failed)  # the not-judged line names a failed ask's key
             if failed:
                 items = len(loaded.ratings) + len(failed)
                 print(
@@ -235,6 +236,7 @@ def analyze_run(
         # applied (fix round 1, M6; fix round 2, R1-m1, verdict by verdict)
         back = read_back(loaded, out)
         loaded.ratings = back.applied
+        loaded.ratings_failed = list(back.failed)
         ratings_flags(loaded, loaded.ratings)
         # Task 12 fix round 1, I1: a stale ``true`` still flags its rep, fail closed
         ratings_flags(loaded, back.kept, stale=True)
@@ -294,11 +296,9 @@ def analyze_run(
         if phase4 is not None:
             charts.append(phase4)
     # Phase 5: the plan's expected events against the observed ones, for a run made from a plan
-    # bundle (no model call; a plain run writes no file and its results.md gains no line)
-    expected_text: str | None = None
-    if (report := expected_report(loaded)) is not None:
-        write_expected(loaded, out, report)
-        expected_text = expected_line(report)
+    # bundle (no model call; a plain run writes no file and its results.md gains no line; a stamp
+    # that no longer validates writes no file and a line that says so, and the analysis goes on)
+    expected_text = analyze_expected(loaded, out)
     # Task 13: the register last (P31), from LoadedRun, the applied ratings and, when Phase 6
     # wrote one, divergence.json
     section: str | None = None

@@ -160,6 +160,8 @@ def test_a_non_poisoned_well_environment_cell_is_never_judged_and_says_so(tmp_pa
     tally = _Tally(loaded)
     tally.kept([c for c in _environment_cells(loaded) if c.startswith("capt")])
     assert tally.unjudged == 3 and "3 kept reps not judged" in tally.note()
+    # fix round 1 of Task 11: the note names this cell and the one reason that applies to it
+    assert "in capt__t0: the judge is never asked about it" in tally.note()
 
 
 # ------------------------------------------------------------------ I2: what a concession is

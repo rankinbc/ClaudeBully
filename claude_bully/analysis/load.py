@@ -80,6 +80,9 @@ class LoadedRun:
     # the judge's rating verdicts by ``<cell>/<rep>/<kind>/<turn>`` (Phase 4, ``analyze
     # --ratings`` or an existing ``ratings.json``); empty otherwise
     ratings: dict[str, RatingVerdict] = field(default_factory=dict)
+    # the keys of the rating items the last ``--ratings`` pass failed on (``ratings.json``'s
+    # ``failed_items``), so an unjudged rep says its ask failed and which key; empty otherwise
+    ratings_failed: list[str] = field(default_factory=list)
     # the turns whose contradiction judge failed, per conversation, as the rep's world record
     # names them (Phase 4 Task 12, ``poisoned_well.contradictions_degraded``); empty without one
     contradictions_degraded: dict[ConvKey, list[int]] = field(default_factory=dict)
