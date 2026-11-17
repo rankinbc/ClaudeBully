@@ -79,6 +79,7 @@ The real-name scan's address patterns and config spare live here too (D-scans):
 ``tests/test_real_names.py`` imports them back.
 """
 
+import hashlib
 import re
 import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -122,6 +123,7 @@ from claude_bully.planner.bundle import (
     Bundle,
     is_plan_persona,
     kind_of,
+    not_utf8,
     plan_personas,
     world_of,
 )
@@ -601,27 +603,44 @@ def _scan_texts(rel: str, text: str, skip: frozenset[str] = frozenset()) -> list
 class _View:
     """One ``lint_bundle`` call's reads of the bundle: the grammar index, every file's path and
     each text, read once and shared by every lint (fix round 1, review M3). The lints write
-    nothing to the bundle, so nothing goes stale within a call."""
+    nothing to the bundle, so nothing goes stale within a call.
 
-    def __init__(self, bundle: Bundle) -> None:
+    With ``reply`` (the final review's I1), one grammar path's text as a planner reply gives it
+    stands in for the file on disk, present or not, and the denylist scans read that path alone
+    (``wanted``): ``reply_scans``, the arrival check of a file the planner writes."""
+
+    def __init__(self, bundle: Bundle, reply: tuple[str, str] | None = None) -> None:
         self.root = bundle.root
         self._bundle = bundle
+        self._reply = reply
         self._index: dict[str, str] | None = None
         self._files: list[str] | None = None
-        self._texts: dict[str, str] = {}
+        self._texts: dict[str, str] = {} if reply is None else {reply[0]: reply[1]}
         self._replaced: dict[str, str] = {}
         self._scans: dict[tuple[str, frozenset[str]], list[str]] = {}
+
+    def wanted(self, rel: str) -> bool:
+        """Whether a denylist scan reads ``rel``: every file, or the reply's path alone."""
+        return self._reply is None or rel == self._reply[0]
 
     def index(self) -> dict[str, str]:
         if self._index is None:
             self._index = self._bundle.index()
+            if self._reply is not None:
+                rel, text = self._reply
+                self._index[rel] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                self._index = dict(sorted(self._index.items()))
         return self._index
 
     def files(self) -> list[str]:
-        """Every file under the root, grammar or not, posix and sorted."""
+        """Every file under the root, grammar or not, posix and sorted (the reply's path among
+        them)."""
         if self._files is None:
             found = (p for p in self.root.rglob("*") if p.is_file())
-            self._files = sorted(p.relative_to(self.root).as_posix() for p in found)
+            files = {p.relative_to(self.root).as_posix() for p in found}
+            if self._reply is not None:
+                files.add(self._reply[0])
+            self._files = sorted(files)
         return self._files
 
     def read_file(self, rel: str) -> str:
@@ -680,11 +699,6 @@ def _skipped(rel: str, what: str, why: str) -> LintResult:
     """A ``schema`` step not run because a step it depends on failed: a warn beside that
     step's failure, so the report says what was not checked."""
     return LintResult("schema", "warn", rel, f"skipped: {what} ({why})")
-
-
-def _not_utf8(exc: UnicodeDecodeError) -> str:
-    """``schema``'s message for a file whose bytes are no UTF-8: the first bad byte and where."""
-    return f"not valid UTF-8: byte 0x{exc.object[exc.start]:02x} at offset {exc.start}"
 
 
 def _off_grammar_message(rel: str) -> str:
@@ -794,7 +808,7 @@ def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
                 bundle.read_file(rel)
         except ValueError as exc:
             if isinstance(exc, UnicodeDecodeError):
-                message = _not_utf8(exc)
+                message = not_utf8(exc)
             else:
                 # parse_document's message opens with the path the doc_id already holds
                 message = str(exc).removeprefix(f"{rel}: ")
@@ -813,6 +827,12 @@ def _load_files(bundle: _View, out: list[LintResult]) -> _Files:
         for rel in bundle.world_and_persona_files()
         if rel not in present
     ]
+    # the final review's M5: a bundle with no plan.md is no bundle docs/08 describes, and every
+    # stage after the first reads it; a failure that, like the off-grammar ones, stops no load
+    if _PLAN not in present:
+        files.off_grammar.append(
+            _schema_fail(_PLAN, "missing: a bundle holds its plan (stage 1 writes it)")
+        )
     return files
 
 
@@ -1103,15 +1123,18 @@ def _real_name_bundle(view: _View) -> list[LintResult]:
     a checked-in bundle is scanned whole by CI (R-scan-bundles)."""
     patterns = load_patterns(REAL_NAMES_PATH)
     present = view.index()
-    texts = {rel: view.scan_texts(rel) for rel in view.world_and_persona_files()}
+    texts = {
+        rel: view.scan_texts(rel) for rel in view.world_and_persona_files() if view.wanted(rel)
+    }
     owned = dict(texts)  # what the owner clause reads: the same files, nothing spared
+    # the spare's names are config.yaml's whatever the scan reads (a reply's own, for a reply)
     names = config_display_names(view.scan_text(_CONFIG) if _CONFIG in present else "")
-    if _CONFIG in present:
+    if _CONFIG in present and view.wanted(_CONFIG):
         spared = view.scan_texts(_CONFIG, frozenset({"provider"}))
         texts[_CONFIG] = [config_scan_text(text, names) for text in spared]
         owned[_CONFIG] = view.scan_texts(_CONFIG)
     for rel in (_EXPECTED, _PLAN):
-        if rel in present:
+        if rel in present and view.wanted(rel):
             owned[rel] = view.scan_texts(rel)
             texts[rel] = (
                 owned[rel]
@@ -1166,8 +1189,8 @@ def _boundary_bundle(view: _View) -> list[LintResult]:
     included, of every file under ``worlds/`` and ``personas/`` and of ``config.yaml``; no field
     is exempt."""
     patterns = load_patterns(BOUNDARY_PATH)
-    rels = view.world_and_persona_files()
-    if _CONFIG in view.index():
+    rels = [rel for rel in view.world_and_persona_files() if view.wanted(rel)]
+    if _CONFIG in view.index() and view.wanted(_CONFIG):
         rels.append(_CONFIG)
     what = "a Boundary word"
     return [
@@ -1192,12 +1215,14 @@ def _jailbreak_bundle(view: _View, record: PlanRecord) -> list[LintResult]:
     what = "a jailbreak denylist phrase"
     out: list[LintResult] = []
     for rel in view.files():
-        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED:
+        if rel.split("/", 1)[0] in _NOT_JAILBREAK_SCANNED or not view.wanted(rel):
             continue
         if rel in _HARNESS_RECORDS or rel in _QUOTING_FILES:
             continue
         texts = view.scan_texts(rel)
         out += _denylist_hits("jailbreak_bundle", rel, texts, patterns, what)
+    if not view.wanted(PLAN_FILE):  # a reply's view reads its own path alone
+        return out
     request = record.request
     texts = [
         collapse_paragraphs(request.model_dump_json()),
@@ -1213,8 +1238,13 @@ def plan_scans(bundle: Bundle, display_names: Collection[str]) -> list[LintResul
     and its owner clause (no span), ``boundary_bundle``'s list and ``jailbreak_bundle``'s, each
     a fail on ``plan.md`` as ``lint_bundle`` words it. Nothing when there is no ``plan.md``;
     bytes that are no UTF-8 are read replaced, so the scan never raises."""
-    view = _View(bundle)
-    if _PLAN not in view.index():
+    return _plan_hits(_View(bundle), display_names)
+
+
+def _plan_hits(view: _View, display_names: Collection[str]) -> list[LintResult]:
+    """``plan_scans`` over ``view``: nothing when it holds no ``plan.md`` or its scans read
+    another path (a reply's view)."""
+    if _PLAN not in view.index() or not view.wanted(_PLAN):
         return []
     texts = view.scan_texts(_PLAN)
     names = {name.lower() for name in display_names} | {_DEFAULT_DISPLAY_NAME.lower()}
@@ -1241,15 +1271,31 @@ def review_scans(bundle: Bundle, record: PlanRecord) -> list[LintResult]:
     result once. ``review.md`` and ``transcripts/`` stay exempt, as they are at stage 5. Bytes
     that are no UTF-8 and YAML that does not parse are read as the scans read them, so the scans
     report and never raise."""
+    return _scans(_View(bundle), record)
+
+
+def _scans(view: _View, record: PlanRecord) -> list[LintResult]:
     names = [role.display_name for role in record.request.target_models]
-    view = _View(bundle)
     found = [
-        *plan_scans(bundle, names),
+        *_plan_hits(view, names),
         *_real_name_bundle(view),
         *_boundary_bundle(view),
         *_jailbreak_bundle(view, record),
     ]
     return list(dict.fromkeys(found))
+
+
+def reply_scans(bundle: Bundle, record: PlanRecord, rel: str, text: str) -> list[LintResult]:
+    """``review_scans`` over one file as a planner reply gives it, before anything is written
+    (the final review's I1): ``text``, the reply's content normalized as ``write_file`` writes
+    it, read as the grammar path ``rel`` holding it, through the same clauses and spares
+    (``config.yaml``'s display names read from the reply when ``rel`` is ``config.yaml``, from
+    the file on disk otherwise), and only ``rel``'s results. Stage 2's file and repair calls and
+    stage 4's revise calls read it in their arrival check, so a hit is a check failure (one
+    retry naming the lint, then an ``error`` call that commits nothing), never a committed file
+    that the scan before the next call fails on and every resume writes back. A path the
+    scans do not read (``review.md``) gives none."""
+    return [result for result in _scans(_View(bundle, (rel, text)), record) if result.doc_id == rel]
 
 
 def _no_values_expectation(view: _View) -> list[LintResult]:

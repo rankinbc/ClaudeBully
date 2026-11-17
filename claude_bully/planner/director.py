@@ -66,7 +66,7 @@ from claude_bully.environments.world import (
     world_hash,
 )
 from claude_bully.metrics.judge import JudgeCache
-from claude_bully.paths import REPO_ROOT
+from claude_bully.paths import REPO_ROOT, shown_paths
 from claude_bully.planner.bundle import (
     CACHE_DIR,
     DRYRUN_FILE,
@@ -90,6 +90,7 @@ from claude_bully.planner.bundle import (
     rematerialize_open_stage,
     remove_leftovers,
     remove_leftovers_of,
+    undecodable,
     world_of,
 )
 from claude_bully.planner.bundle_lints import (
@@ -99,6 +100,7 @@ from claude_bully.planner.bundle_lints import (
     lint_bundle,
     model_from_text,
     premise_sheet_model,
+    reply_scans,
     review_scans,
 )
 from claude_bully.planner.context import (
@@ -149,7 +151,7 @@ from claude_bully.providers.base import (
 from claude_bully.providers.ledger import LedgerLine, activate, note_cached
 from claude_bully.runner.cells import expand_cells
 from claude_bully.runner.runner import RateLimitExit, _git_sha
-from claude_bully.runner.store import parsed_lines
+from claude_bully.runner.store import DamagedRecordError, parsed_lines
 from claude_bully.strategies.bootstrap import ensure_registered, listed_strategies
 from claude_bully.strategies.sheets import PersonaSheet
 
@@ -723,7 +725,16 @@ def _last_stage(record: PlanRecord, stage: Stage) -> StageRecord | None:
 
 
 def _last_reply(bundle: Bundle, call: DirectorCall) -> str:
-    return bundle.read_transcript(call.transcript).attempts[-1].reply
+    """The last reply of a committed call's transcript. A transcript with no attempt, which no
+    committed call that is no ``error`` writes, raises ``DamagedRecordError`` naming it (the
+    final review's I3; before, an ``IndexError``)."""
+    transcript = bundle.read_transcript(call.transcript)
+    if not transcript.attempts:
+        raise DamagedRecordError(
+            f"{bundle.root / call.transcript}: field attempts: empty, though the "
+            f"{call.purpose} call committed a reply"
+        )
+    return transcript.attempts[-1].reply
 
 
 def review_findings(bundle: Bundle, record: PlanRecord) -> list[ReviewFinding]:
@@ -950,7 +961,12 @@ class Director:
         error: str | None = None
         provider_failed = False
         for attempt in (1, 2):
-            message = spec.message(failures)
+            try:
+                message = spec.message(failures)
+            except Exception:
+                if attempt == 1:  # nothing was sent: no call is dead (the final review's I3)
+                    self.bundle.clear_attempt()
+                raise
             if len(message) > MAX_CONTEXT_CHARS:
                 what = "the retry's message" if attempt == 2 else "the message"
                 over = (
@@ -1174,7 +1190,7 @@ class Director:
             )
         parsed: Any = None
         if call.status != "error":
-            reply = self.bundle.read_transcript(call.transcript).attempts[-1].reply
+            reply = _last_reply(self.bundle, call)
             parsed = spec.parse(reply) if spec.parse is not None else spec.check(reply)[0]
         return Answer(call=call, parsed=parsed, provider_failed=call.provider_failed)
 
@@ -1187,10 +1203,13 @@ class Director:
         self.bundle.write_record(self.record)
 
     def _fail(self, stage: Stage, error: str) -> None:
-        """The stage failed, and with it the plan (spec section 13)."""
+        """The stage failed, and with it the plan (spec section 13). The error is recorded and
+        printed with the checkout's root and the home folder written ``<repo>`` and ``<home>``
+        (``paths.shown_paths``; the final review's M2: a missing world's message names its absolute
+        path, and the default plans root is ``plans/``, which CI's owner clause reads)."""
         failed = self._stage(stage) or self._open_stage(stage)
         failed.status = "failed"
-        failed.error = error
+        failed.error = shown_paths(error)
         failed.finished_at = datetime.now(UTC)
         self.record.status = "failed"
         self.bundle.write_record(self.record)
@@ -1327,7 +1346,7 @@ class Director:
                     self._record_dead_attempt(existing)
                     if existing.status == "failed":
                         self._reopen_failed(existing)  # the failed-stage ruling
-                    rematerialize_open_stage(self.bundle, self.record, stage)
+                    rematerialize_open_stage(self.bundle, self.record, stage, say=self.say)
                 try:
                     getattr(self, stage)()
                 except DirectorError as exc:  # the stage failed, the plan failed (section 13)
@@ -1399,9 +1418,10 @@ class Director:
         resume that skips a committed manifest call still copies. The opening scan leaves out
         the paths the stage's own committed calls wrote (Task 8 re-review round 2, I1): a resume
         has written them back from their transcripts, an unbroken pass opens with none of them
-        on disk, they are the planner's output and never owner text (an owner's edit to one is
-        overwritten), and the first stage-3 call scans them, so a hit in one fails at stage 3
-        whether or not the stage was interrupted, and the owner's fix is never written over."""
+        on disk, and they are the planner's output and never owner text (an owner's edit to one
+        is overwritten). Each passed the denylist scans on arrival (``_reply_hits``; the final
+        review's I1), so none holds a hit, and a planner reply that holds one is never written,
+        never shown to a later call and never written back."""
         stage = self._open_stage("author", adopt=True)
         own = {rel for call in stage.calls for rel in call.outputs}
         self._scan_bundle("stage 2", besides=own)
@@ -1437,11 +1457,25 @@ class Director:
         (Task 8 re-review, point 3). A hit fails the stage as a lint failure, its results the
         stage's error, the owner clause naming no name. The one path of stage 2's opening, every
         reviewer and confirm call and every revise call. The results on the paths of ``besides``
-        are left out (stage 2's opening: see ``author``)."""
+        are left out (stage 2's opening: see ``author``). First, every grammar file must be
+        UTF-8 (``undecodable``; the final review's I3): one a Windows editor saved as cp1252 or
+        UTF-16 fails the stage naming the file and the byte, before any marker or message, and
+        a continue after the owner saves it as UTF-8 goes on."""
+        self._refuse_undecodable(before)
         _refuse_hits(
             [r for r in review_scans(self.bundle, self.record) if r.doc_id not in besides],
             f"the bundle fails a lint before {before} shows it",
         )
+
+    def _refuse_undecodable(self, before: str) -> None:
+        """``DirectorError`` naming each grammar file that is no UTF-8 and its first bad byte;
+        nothing when every one decodes."""
+        bad = undecodable(self.bundle)
+        if bad:
+            raise DirectorError(
+                f"the bundle holds a file that is not UTF-8, so {before} cannot show it; save it "
+                f"as UTF-8: {'; '.join(bad)}"
+            )
 
     def _shipped(self, manifest: Sequence[ManifestEntry]) -> list[str]:
         """The worlds the manifest names that are shipped worlds (``worlds_dir``) to copy: under
@@ -1644,8 +1678,20 @@ class Director:
         content = parse_content(reply)
         if content is None:
             return None, [_NOT_CONTENT]
-        found = self._arrival(entry, normalize_text(content))
-        return content, [self._relative(message) for message in found]
+        text = normalize_text(content)
+        found = self._arrival(entry, text)
+        return content, [self._relative(m) for m in found] + self._reply_hits(entry.path, text)
+
+    def _reply_hits(self, rel: str, text: str) -> list[str]:
+        """The denylist scans over a reply's file before it is written (``reply_scans``; the
+        final review's I1, which closes Task 8's N7 and N10): each hit a failure naming the file,
+        the lint and what it holds, never the matched text, so neither the retry nor the
+        recorded error carries a name or a phrase. A file that holds a hit is never committed,
+        so no resume writes it back over the owner's fix and no later prompt shows it."""
+        return [
+            f"{rel}: {r.lint_id}: {r.message.split(':', 1)[0]}"
+            for r in reply_scans(self.bundle, self.record, rel, text)
+        ]
 
     def _arrival(self, entry: ManifestEntry, text: str) -> list[str]:
         """What one file can show on arrival (spec section 7, steps 3 and 5): its model, and for
@@ -1933,7 +1979,9 @@ class Director:
         reply: str,
     ) -> tuple[Revision | None, list[str]]:
         """A revise reply: the object, its content through the arrival check of the file's kind
-        (stage 2's; ``plan.md``'s is stage 1's), and exactly one response for every block and
+        (stage 2's; ``plan.md``'s is stage 1's) and the denylist scans (``_reply_hits``; the
+        final review's I1: a revision that holds a hit is retried, then an ``error`` call that
+        leaves the file as it was, D-revise-error), and exactly one response for every block and
         fix finding of the file and none for another number."""
         revision = parse_revision(reply)
         if revision is None:
@@ -1943,6 +1991,7 @@ class Director:
             found = _check_plan(content)[1]
         else:
             found = [self._relative(m) for m in self._arrival(entry, content)]
+        found += self._reply_hits(rel, content)
         wanted = [f.id for f in mine if f.severity in ("block", "fix")]
         answered = Counter(r.finding for r in revision.responses)
         for number in wanted:
@@ -2112,12 +2161,16 @@ class Director:
         after (2) leaves only (3) to do. Then ``run`` goes on through stage 5, the review stage
         adopting the hand edits as it opens. Refused while stage 2 is not committed (there is
         nothing to review). A dead attempt the last stage's marker names is recorded first, as
-        ``run`` records it, so an archived stage never hides one."""
+        ``run`` records it, so an archived stage never hides one. Before the archive, a grammar
+        file that is no UTF-8 is refused with ``DirectorError`` naming it (the final review's
+        I3), so the round and its status stay as they were and the same command after the owner
+        saves the file as UTF-8 archives it."""
         author = self._stage("author")
         if author is None or author.status != "committed":
             raise DirectorError("stage author is not committed, so there is no bundle to review")
         self._clear_hard_kill()
         if self._round_finished():
+            self._refuse_undecodable("the review")
             self._record_dead_attempt(self.record.stages[-1])
             self._archive_round()
         self._drop_round_transcripts()

@@ -237,6 +237,9 @@ def analyze_run(
         back = read_back(loaded, out)
         loaded.ratings = back.applied
         loaded.ratings_failed = list(back.failed)
+        # Task 11's fourth reason: a stale verdict was asked, and a rerun asks it again
+        loaded.ratings_stale = frozenset(back.stale_reps)
+        loaded.ratings_prompt_stale = "rate_values" in back.stale_kinds
         ratings_flags(loaded, loaded.ratings)
         # Task 12 fix round 1, I1: a stale ``true`` still flags its rep, fail closed
         ratings_flags(loaded, back.kept, stale=True)

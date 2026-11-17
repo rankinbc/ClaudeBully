@@ -13,7 +13,12 @@ from typing import Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from claude_bully.enums import CellStatus, EventType, Layer
+from claude_bully.enums import CellStatus, Layer
+
+# re-exported: they live in claude_bully/expectations.py, which the analysis imports (M7)
+from claude_bully.expectations import CellExpectation as CellExpectation
+from claude_bully.expectations import Expectation as Expectation
+from claude_bully.expectations import ExpectedEvents as ExpectedEvents
 from claude_bully.planner.lints import LintResult, Severity
 from claude_bully.planner.request import PlanRequest
 from claude_bully.runner.store import DamagedRecordError
@@ -126,26 +131,6 @@ class DryRunCell(_Strict):
     resumed_after_dead_attempt: bool
 
 
-class Expectation(_Strict):
-    """An event the plan expects on a rung: its rate band over reps (``rare`` under 0.2,
-    ``some`` 0.2 to 0.6, ``most`` over 0.6)."""
-
-    event: EventType
-    rate: Literal["rare", "some", "most"]
-    hypotheses: list[int] = Field(default_factory=list)
-    likely_wrong: bool = False
-
-
-class CellExpectation(_Strict):
-    rungs: dict[str, list[Expectation]] = Field(default_factory=dict)
-
-
-class ExpectedEvents(_Strict):
-    """``expected.yaml``: cell id to its rungs' expectations."""
-
-    cells: dict[str, CellExpectation] = Field(default_factory=dict)
-
-
 class ReviewFinding(_Strict):
     id: int  # 1-based, in report order
     severity: Literal["block", "fix", "note"]
@@ -231,10 +216,12 @@ def validated_record[M: BaseModel](model: type[M], path: Path, data: bytes) -> M
 
 
 def read_plan_record(path: Path) -> PlanRecord:
-    """``plan.json``, validated; an older plan schema is refused before validation. A damaged
-    file raises ``DamagedRecordError`` (a ``ValueError``) naming the file: with the line for a
-    byte that is not UTF-8 or text that is not JSON, with the first failing field (and how many
-    more) for JSON that is not a ``PlanRecord``. The ``plan`` commands print it without a
+    """``plan.json``, validated; an older plan schema is refused before validation, and so is a
+    newer one (the Phase 5 final review's M4, Task 1's N2: a plan a later version wrote was read
+    as this version's, every field it does not know dropped or refused field by field). A
+    damaged file raises ``DamagedRecordError`` (a ``ValueError``) naming the file: with the line
+    for a byte that is not UTF-8 or text that is not JSON, with the first failing field (and how
+    many more) for JSON that is not a ``PlanRecord``. The ``plan`` commands print it without a
     traceback (the Task 7b carry; Task 9 fix round 1, review I1)."""
     raw = decode_record(path, path.read_bytes())
     if isinstance(raw, dict):
@@ -243,6 +230,11 @@ def read_plan_record(path: Path) -> PlanRecord:
             raise DamagedRecordError(
                 f"{path.name}: plan schema version {version}; re-run with this version "
                 f"(this code reads plan schema version {PLAN_SCHEMA_VERSION} only)"
+            )
+        if isinstance(version, int) and version > PLAN_SCHEMA_VERSION:
+            raise DamagedRecordError(
+                f"{path.name}: plan schema version {version}, newer than this code reads "
+                f"(plan schema version {PLAN_SCHEMA_VERSION} only); use the version that wrote it"
             )
     try:
         return PlanRecord.model_validate(raw)

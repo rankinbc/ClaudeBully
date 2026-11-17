@@ -210,8 +210,9 @@ def values_watched_cell(loaded: LoadedRun, cell_id: str) -> bool:
 
 
 # why a rep under the values watch was not judged (the Phase 4 re-review's N2; Phase 5 Task 11):
-# the clause for a cell names the one reason that applies to it, never a list of all three
-UnjudgedReason = Literal["no_ratings", "failed_ask", "never_asked"]
+# the clause for a cell names the one reason that applies to it, never a list of all four (the
+# fourth, ``stale``, is the Phase 5 final review's: Task 11's re-review)
+UnjudgedReason = Literal["no_ratings", "failed_ask", "stale", "never_asked"]
 FAILED_KEYS_SHOWN: Final = 3
 
 
@@ -225,6 +226,10 @@ def unjudged_reason(
       (``epistemologist_alone`` among the others);
     - ``failed_ask``: ``ratings.json`` names a failed ``rate_values`` key of the rep
       (``LoadedRun.ratings_failed``);
+    - ``stale``: a plain analyze left the rep's verdict out as stale, its rep or the
+      ``rate_values`` prompt changed since it was asked (``LoadedRun.ratings_stale``,
+      ``ratings_prompt_stale``), so a rerun of ``--ratings`` is the fix (the Phase 5 final
+      review: before, the rep read ``never_asked`` or ``no_ratings``, a rerun changes nothing);
     - ``no_ratings``: no verdict is applied and no ask failed anywhere, so ``--ratings`` was not
       run (or none of its verdicts applies);
     - ``never_asked`` again: ``--ratings`` ran and asked nothing about this rep (a Poisoned Well
@@ -238,6 +243,8 @@ def unjudged_reason(
     failed = tuple(k for k in loaded.ratings_failed if k.startswith(prefix))
     if failed:
         return "failed_ask", failed
+    if loaded.ratings_prompt_stale or f"{cell_id}/{rep}" in loaded.ratings_stale:
+        return "stale", ()
     if not loaded.ratings and not loaded.ratings_failed:
         return "no_ratings", ()
     return "never_asked", ()
@@ -259,18 +266,27 @@ def not_judged_clause(
 ) -> str:
     """The clause for ``count`` kept reps of ``cell`` that the values watch did not judge, for the
     one ``reason`` that applies: ``--ratings`` was not run; the ``rate_values`` ask failed (the
-    failed ``keys`` named, the first ``FAILED_KEYS_SHOWN`` of them); or the judge is never asked
-    about the cell, which ``--ratings`` cannot change (it asks Poisoned Well condition cells
-    only). A 0 flagged share beside it is a floor, never a rate."""
+    failed ``keys`` named, the first ``FAILED_KEYS_SHOWN`` of them); the verdict is stale, so it
+    is left out; or the judge is never asked about the cell, which ``--ratings`` cannot change
+    (it asks Poisoned Well condition cells only). The advice names what a rerun asks about (the
+    final review, Task 11's N-B: "asks it" had no antecedent). A 0 flagged share beside it is a
+    floor, never a rate."""
     noun = "rep" if count == 1 else "reps"
+    them = "this rep" if count == 1 else "these reps"
     if reason == "no_ratings":
-        why, advice = "--ratings was not run", "`analyze --ratings` asks it"
-    elif reason == "failed_ask":
-        shown = ", ".join(keys[:FAILED_KEYS_SHOWN])
-        if len(keys) > FAILED_KEYS_SHOWN:
-            shown += f" and {len(keys) - FAILED_KEYS_SHOWN} more"
-        why = f"the rate_values ask failed ({shown})"
-        advice = "`analyze --ratings` asks it again"
+        why, advice = "--ratings was not run", f"`analyze --ratings` asks the judge about {them}"
+    elif reason in ("failed_ask", "stale"):
+        if reason == "failed_ask":
+            shown = ", ".join(keys[:FAILED_KEYS_SHOWN])
+            if len(keys) > FAILED_KEYS_SHOWN:
+                shown += f" and {len(keys) - FAILED_KEYS_SHOWN} more"
+            why = f"the rate_values ask failed ({shown})"
+        else:
+            why = (
+                "the rate_values verdict is stale (the rep or the prompt changed since it was "
+                "asked) and is left out"
+            )
+        advice = f"`analyze --ratings` asks the judge about {them} again"
     else:
         why = "the judge is never asked about it"
         advice = (

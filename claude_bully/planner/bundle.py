@@ -16,7 +16,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,6 +95,8 @@ _FIXED_KINDS: Final[dict[str, ManifestKind | None]] = {
 _LEFTOVER: Final = re.compile(r"\.(?P<target>.+)\.[a-z0-9_]{8}\.tmp")
 # the files no resume removes: the owner's plan and the rendered review (spec section 8)
 _ALWAYS_OWNED: Final = frozenset({"plan.md", "review.md"})
+# the open stages whose resume removes a grammar file no record owns (the final review's I2)
+_REMOVING_STAGES: Final[frozenset[Stage]] = frozenset({"plan", "author"})
 
 
 class BundlePathError(ValueError):
@@ -103,7 +105,7 @@ class BundlePathError(ValueError):
 
 def normalize_text(text: str) -> str:
     """``text`` as every bundle file is written: a leading BOM dropped, CRLF and lone CR to LF."""
-    return text.removeprefix("﻿").replace("\r\n", "\n").replace("\r", "\n")
+    return text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _sha256(text: str) -> str:
@@ -202,14 +204,16 @@ def committed_outputs(call: DirectorCall, transcript: Transcript) -> dict[str, s
     normalized as written: ``plan`` gives ``plan.md`` the reply; ``file:``, ``repair:`` and
     ``revise:`` give their path ``json.loads(reply)["content"]``. A call that committed no file
     gives none. Raises ``DamagedRecordError``, naming the transcript, when it holds no attempt,
-    when its reply is no JSON object with a ``content``, or when the purpose does not give the
-    paths ``call.outputs`` names (Task 9 fix round 2, review R1)."""
+    when its reply is no JSON object with a ``content``, when that ``content`` is no string (the
+    final review's I3: Task 1 M3, Task 9 N-c; before, an ``AttributeError``), or when the
+    purpose does not give the paths ``call.outputs`` names (Task 9 fix round 2, review R1)."""
     if not call.outputs:
         return {}
     if not transcript.attempts:
         raise DamagedRecordError(f"{call.transcript}: no attempt to read the committed files from")
     reply = transcript.attempts[-1].reply
     kind, _, path = call.purpose.partition(":")
+    files: dict[str, object]
     if call.purpose == "plan":
         files = {"plan.md": reply}
     elif kind in ("file", "repair", "revise") and path:
@@ -219,6 +223,11 @@ def committed_outputs(call: DirectorCall, transcript: Transcript) -> dict[str, s
             raise DamagedRecordError(
                 f"{call.transcript}: the {call.purpose} reply is not a JSON object with a content"
             ) from exc
+        if not isinstance(files[path], str):
+            raise DamagedRecordError(
+                f"{call.transcript}: field content of the {call.purpose} reply: a "
+                f"{type(files[path]).__name__}, not a string"
+            )
     else:
         files = {}
     if set(files) != set(call.outputs):
@@ -226,7 +235,7 @@ def committed_outputs(call: DirectorCall, transcript: Transcript) -> dict[str, s
             f"{call.transcript}: purpose {call.purpose!r} gives {sorted(files)}, "
             f"the call records {sorted(call.outputs)}"
         )
-    return {rel: normalize_text(text) for rel, text in files.items()}
+    return {rel: normalize_text(str(text)) for rel, text in files.items()}
 
 
 @dataclass(frozen=True)
@@ -315,9 +324,17 @@ class Bundle:
 
     def read_transcript(self, rel: str) -> Transcript:
         """A transcript; ``DamagedRecordError`` naming the file and the line or field when it
-        does not read back (Task 9 fix round 2, review R1)."""
+        does not read back (Task 9 fix round 2, review R1), and naming the file when it is not
+        on disk (the final review's I3: a committed call names it; before, a
+        ``FileNotFoundError``)."""
         path = self._transcript_path(rel)
-        return validated_record(Transcript, path, path.read_bytes())
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            raise DamagedRecordError(
+                f"{path}: not on disk, though a committed call names it as its transcript"
+            ) from None
+        return validated_record(Transcript, path, data)
 
     def archive_failed_transcript(self, rel: str) -> str | None:
         """Move a failed call's transcript under ``transcripts/failed/`` (one rename), to
@@ -511,25 +528,59 @@ def remove_leftovers_of(folder: Path, targets: Collection[str]) -> list[str]:
     return removed
 
 
-def rematerialize_open_stage(bundle: Bundle, record: PlanRecord, stage: Stage) -> list[str]:
+def rematerialize_open_stage(
+    bundle: Bundle,
+    record: PlanRecord,
+    stage: Stage,
+    *,
+    say: Callable[[str], None] | None = None,
+) -> list[str]:
     """Spec section 8's resume rule for ``stage``, the first stage not committed: every file a
     committed call of it wrote whose bytes no longer hash to the call's record is rewritten from
-    the call's transcript (a later call of the stage winning on a path it rewrote), and every
-    grammar file owned by neither ``base_files``, a committed call of any stage or round,
-    ``plan.md`` nor ``review.md`` is removed. Every ``write_atomic`` leftover in the bundle is
-    removed first (R-tmp). A committed stage is the owner's to edit: only its leftovers go.
-    Returns the paths it rewrote."""
+    the call's transcript (a later call of the stage winning on a path it rewrote). When
+    ``stage`` is ``plan`` or ``author``, every grammar file owned by neither ``base_files``, a
+    committed call of any stage or round, ``plan.md`` nor ``review.md`` is removed, one ``say``
+    line each: the one place the harness itself leaves such a file is stage 2's base copy killed
+    midway, and before stage 2 commits no manifest can name an owner's file. In stages 3 to 5
+    no file is removed (the final review's I2): a file there that no record owns
+    is the owner's, added with its manifest entry after stage 2, and an unbroken stage keeps it;
+    ``manifest_complete`` names one no manifest entry lists. Every ``write_atomic`` leftover in
+    the bundle is removed first (R-tmp). A committed stage is the owner's to edit: only its
+    leftovers go. Returns the paths it rewrote."""
     remove_leftovers(bundle)
     current = next((s for s in reversed(record.stages) if s.stage == stage), None)
     if current is None or current.status == "committed":
         return []
     rewritten = _write_changed(bundle, _committed_texts(bundle, current.calls))
+    if stage not in _REMOVING_STAGES:
+        return rewritten
     owned = set(record.base_files) | _ALWAYS_OWNED
     owned |= {rel for s in _stage_records(record) for call in s.calls for rel in call.outputs}
     for rel in bundle.index():
         if rel not in owned:
             bundle.remove_file(rel)
+            if say is not None:
+                say(f"removed {rel}: no committed call or base copy of the plan owns it")
     return rewritten
+
+
+def not_utf8(exc: UnicodeDecodeError) -> str:
+    """The message for a file whose bytes are no UTF-8: the first bad byte and where (``schema``'s
+    and the Director's, one wording)."""
+    return f"not valid UTF-8: byte 0x{exc.object[exc.start]:02x} at offset {exc.start}"
+
+
+def undecodable(bundle: Bundle) -> list[str]:
+    """Each grammar file of ``bundle`` whose bytes are no UTF-8, as ``<path>: not valid UTF-8:
+    byte 0x.. at offset <n>`` (``not_utf8``), in path order: a file a Windows editor saved as
+    cp1252 or UTF-16, which no call can show (the final review's I3)."""
+    out: list[str] = []
+    for rel in bundle.index():
+        try:
+            bundle.read_file(rel)
+        except UnicodeDecodeError as exc:
+            out.append(f"{rel}: {not_utf8(exc)}")
+    return out
 
 
 def bundle_personas(bundle: Bundle) -> dict[str, PersonaSheet]:

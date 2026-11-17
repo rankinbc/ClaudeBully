@@ -22,7 +22,7 @@ from claude_bully.analysis.report import update_readme
 from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import load_experiment
 from claude_bully.doctor import default_out_dir, failed, run_live_checks, write_report
-from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT
+from claude_bully.paths import DEFAULT_RESULTS_ROOT, DEFAULT_RUNS_ROOT, REPO_ROOT, shown_default
 from claude_bully.planner.bundle import (
     PLAN_FILE,
     BundleRun,
@@ -51,8 +51,18 @@ app = typer.Typer(
 console = Console()
 app.add_typer(plan_app, name="plan")
 
-RunsRoot = Annotated[Path, typer.Option(help="Where runs are written.")]
-ResultsRoot = Annotated[Path, typer.Option(help="Where promoted runs live.")]
+# each default shown as its expression, never the absolute path, which holds the login's home
+# folder (Phase 5 Task 9 m4, the final review's M1: one helper for every command)
+RunsRoot = Annotated[
+    Path,
+    typer.Option(help="Where runs are written.", show_default=shown_default(DEFAULT_RUNS_ROOT)),
+]
+ResultsRoot = Annotated[
+    Path,
+    typer.Option(
+        help="Where promoted runs live.", show_default=shown_default(DEFAULT_RESULTS_ROOT)
+    ),
+]
 # a chart link of results.md, ``![stem](name.png)`` with no directory in the target
 _CHART_LINK = re.compile(r"!\[([^\]]*)\]\(([^)/]+\.png)\)")
 
@@ -192,6 +202,9 @@ def analyze(
             wait_on_rate_limit,
             say=_say,
         )
+    except DamagedRecordError as exc:  # a harness record that does not read back (M9)
+        typer.echo(f"error: {exc}")
+        raise typer.Exit(code=1) from None
     except RateLimitExit as exc:
         wait = (
             f"about {int(exc.retry_after_s)} seconds" if exc.retry_after_s else "the stated window"

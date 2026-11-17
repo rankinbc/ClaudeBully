@@ -389,9 +389,10 @@ def test_a_denylist_hit_blocks_the_reviewer_call_as_a_lint_failure(
 
 class _NamingPlanner(PlannerStub):
     """A planner whose revision of DOC1, stage 4's last revise call, signs it with the owner's
-    name: a document's arrival check has no owner clause and no revise call follows, so only the
-    scan before the confirm call catches it (fix round 1: a revision of plan.md is caught by the
-    scan before the next revise call)."""
+    name on every attempt. Since the final review's I1 the revise reply's arrival check runs the
+    denylist scans (``reply_scans``), so the revision is retried and then an ``error`` call that
+    commits nothing; before, it committed and only the scan before the confirm call caught it,
+    and every resume wrote it back."""
 
     def _reply(self, purpose: str, mode: str | None) -> str:
         reply = super()._reply(purpose, mode)
@@ -403,15 +404,27 @@ class _NamingPlanner(PlannerStub):
 
 
 @pytest.mark.slow  # a plan through stage 4
-def test_a_denylist_hit_blocks_the_confirm_call_as_a_lint_failure(
+def test_a_denylist_hit_in_a_revision_is_an_error_call_and_never_reaches_the_confirm_call(
     tmp_path: Path, isolated_registry: None
 ) -> None:
+    """The final review's I1: the revision holding the owner's name is an ``error`` call
+    (D-revise-error), DOC1 is left as stage 3 reviewed it, its block stays open, and the confirm
+    call reads the unrevised file, never the name; stage 4 commits with the plan ``failed`` on its
+    open block, the way on being ``plan review``."""
     reviewer = ReviewerStub()
-    _, record = run_plan(tmp_path, through="revise", planner=_NamingPlanner(), reviewer=reviewer)
-    assert record.status == "failed" and record.stages[3].status == "failed"
-    assert "real_name_bundle: " in (record.stages[3].error or "")
-    assert [c.purpose for c in record.stages[3].calls] == ["revise:plan.md", f"revise:{_doc1()}"]
-    assert not [m for _, _, m in reviewer.calls if "\ncall: confirm:" in m]
+    bundle, record = run_plan(
+        tmp_path, through="revise", planner=_NamingPlanner(), reviewer=reviewer
+    )
+    assert record.status == "failed" and record.stages[3].status == "committed"
+    assert record.open_blocks == 1
+    revise = {c.purpose: c for c in record.stages[3].calls}
+    assert list(revise) == ["revise:plan.md", f"revise:{_doc1()}", f"confirm:{_doc1()}"]
+    assert revise[f"revise:{_doc1()}"].status == "error"
+    assert "real_name_bundle: holds the owner's name" in str(revise[f"revise:{_doc1()}"].error)
+    confirms = [m for _, _, m in reviewer.calls if "\ncall: confirm:" in m]
+    assert confirms and all(_owner().lower() not in m.lower() for m in confirms)
+    assert _owner().lower() not in bundle.read_file(_doc1()).lower()
+    assert _owner().lower() not in (bundle.root / "plan.json").read_text("utf-8").lower()
 
 
 def test_the_scans_before_a_reviewer_call_never_raise(

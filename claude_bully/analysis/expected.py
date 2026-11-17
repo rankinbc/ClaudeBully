@@ -37,7 +37,7 @@ from pydantic import ValidationError
 from claude_bully.analysis.load import ConvKey, LoadedRun
 from claude_bully.analysis.progression import unlocks_of, without_flagged
 from claude_bully.enums import CellStatus
-from claude_bully.planner.records import Expectation, ExpectedEvents
+from claude_bully.expectations import Expectation, ExpectedEvents
 
 EXPECTED_FILE: Final = "expected.json"
 # a band's name and the share it ends at: ``rare`` is under 0.2, ``some`` 0.2 to 0.6 inclusive,
@@ -203,11 +203,12 @@ def _head(digest: object) -> str:
 
 def expected_line(report: Mapping[str, Any]) -> str:
     """``results.md``'s line: the plan hash, the predictions in band, those the run could not
-    test and those marked likely wrong, left apart."""
+    test (a rung no kept rep fired, a cell not run, or a cell whose every complete rep the flag
+    left out: the final review, Task 11's N-A) and those marked likely wrong, left apart."""
     return (
         f"Plan {_head(report['plan_hash'])}: {report['hits']} of {report['predictions']} "
-        f"predictions in band ({report['untested']} untested: rung never fired or cell not run; "
-        f"{len(report['likely_wrong'])} marked likely wrong left apart)."
+        f"predictions in band ({report['untested']} untested: rung never fired, cell not run or "
+        f"every rep flagged; {len(report['likely_wrong'])} marked likely wrong left apart)."
     )
 
 
@@ -223,11 +224,13 @@ def unreadable_line(loaded: LoadedRun, reason: str) -> str:
 def analyze_expected(loaded: LoadedRun, out: Path) -> str | None:
     """What ``analyze_run`` does for the plan: build the report once, write ``expected.json`` and
     return ``results.md``'s line. None for a run with no expected events (no file, no line); a
-    stamp that does not validate writes no file and returns the line that says so, and the
-    analysis goes on."""
+    stamp that does not validate writes no file, removes the one an earlier analysis wrote (the
+    Phase 5 final review, Task 11's N-C: the line says there is none), and returns the line that
+    says so, and the analysis goes on."""
     try:
         report = expected_report(loaded)
     except ExpectedUnreadableError as exc:
+        (out / EXPECTED_FILE).unlink(missing_ok=True)
         return unreadable_line(loaded, str(exc))
     if report is None:
         return None

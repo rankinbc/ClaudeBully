@@ -30,7 +30,7 @@ from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
 from claude_bully.environments import world as world_module
 from claude_bully.environments.world import hash_tree
-from claude_bully.paths import DEFAULT_PLANS_ROOT
+from claude_bully.paths import DEFAULT_PLANS_ROOT, shown_default, shown_paths
 from claude_bully.planner.bundle import PLAN_FILE, Bundle, hashed_paths
 from claude_bully.planner.director import (
     Checkpoint,
@@ -55,8 +55,9 @@ plan_app = typer.Typer(
 )
 
 BundleDir = Annotated[Path, typer.Argument(help="The plan's directory, plans/<slug>.")]
-# the default as its expression: the absolute path would print the login's home folder (review m4)
-PLANS_ROOT_SHOWN: Final = "<repo>/plans"
+# the default as its expression: the absolute path would print the login's home folder (review
+# m4; the final review's M1: the one helper every command's root option shows its default by)
+PLANS_ROOT_SHOWN: Final = shown_default(DEFAULT_PLANS_ROOT)
 _NO_FILE: Final = "/dev/null"
 # the statuses of a plan between stage 1 and stage 5 that neither failed nor was held: `plan
 # continue` is the way on
@@ -325,14 +326,19 @@ def new(
         # only a plan standing at stage 1 is a stop after stage 1 as asked, this run's or an
         # earlier one's (D-exit; review M4); a plan past it is reported as it is (fix round 2,
         # re-review N1): its failed stage, open blocks or lint failures, its status, and the
-        # exit its status implies. A plan held by open blocks was refused above.
-        if record.status == "planned":
+        # exit its status implies. A plan held by open blocks was refused above. A plan whose
+        # stage 2 has made a call is past the stop too, whatever its status says (the final
+        # review's M6: its manifest was planned on plan.md as it was, so an edit is no longer
+        # stage 2's to adopt)
+        author = next((s for s in record.stages if s.stage == "author"), None)
+        if record.status == "planned" and (author is None or not author.calls):
             _stopped(director)
             return
-        if record.status in _MID_PLAN:
+        if record.status in _MID_PLAN or record.status == "planned":
+            where = "in stage author" if record.status == "planned" else f"at {record.status}"
             typer.echo(
-                f"plan new without --no-confirm runs stage 1 only; this plan stands at "
-                f"{record.status}, so run plan continue {director.bundle.root.as_posix()}"
+                f"plan new without --no-confirm runs stage 1 only; this plan stands {where}, "
+                f"so run plan continue {director.bundle.root.as_posix()}"
             )
     _finish(record)
 
@@ -427,10 +433,12 @@ def _file_diff(a: Path, b: Path, a_label: str, b_label: str) -> list[str]:
 
 def bundle_diff(a: Path, b: Path) -> str:
     """The unified diff of the hashed files of bundles ``a`` and ``b`` (every file
-    ``bundle_hash`` covers), path by path in sorted order; empty when they are the same."""
+    ``bundle_hash`` covers), path by path in sorted order; empty when they are the same. Each
+    side is labelled by its path in its bundle, ``a/<path>`` and ``b/<path>``, never by an
+    absolute path, which holds the login's home folder (the final review's M1)."""
     out: list[str] = []
     for rel in sorted(set(hashed_paths(a)) | set(hashed_paths(b))):
-        out += _file_diff(a / rel, b / rel, (a / rel).as_posix(), (b / rel).as_posix())
+        out += _file_diff(a / rel, b / rel, f"a/{rel}", f"b/{rel}")
     return "".join(out)
 
 
@@ -439,7 +447,10 @@ def world_diff(bundle: Bundle, worlds_dir: Path) -> str:
     since the copy (its ``hash_tree``, ``world_hash``'s scheme, against the hash recorded at the
     copy), then the unified diff of each file of the shipped world and of the copy, shipped to
     copy, so a patch the plan made reads as an edit. Spec section 13: a moved shipped world
-    fails nothing; the bundle runs its copy."""
+    fails nothing; the bundle runs its copy. The shipped side is labelled
+    ``shipped/<name>/<path>`` (its path in the worlds directory) and the copy
+    ``worlds/<name>/<path>`` (its path in the bundle), never an absolute path (the final
+    review's M1)."""
     record = bundle.read_record()
     if not record.base_worlds:
         return "the bundle copied no shipped world\n"
@@ -447,7 +458,9 @@ def world_diff(bundle: Bundle, worlds_dir: Path) -> str:
     for name, then in sorted(record.base_worlds.items()):
         shipped, copy = worlds_dir / name, bundle.root / "worlds" / name
         if not shipped.is_dir():
-            out.append(f"worlds/{name}: {worlds_dir.as_posix()} holds no world {name}\n")
+            out.append(
+                f"worlds/{name}: {shown_paths(worlds_dir.as_posix())} holds no world {name}\n"
+            )
             continue
         now = hash_tree(shipped)
         if now == then:
@@ -461,6 +474,6 @@ def world_diff(bundle: Bundle, worlds_dir: Path) -> str:
         files |= {p.relative_to(copy).as_posix() for p in copy.rglob("*") if p.is_file()}
         for rel in sorted(files):
             out += _file_diff(
-                shipped / rel, copy / rel, (shipped / rel).as_posix(), (copy / rel).as_posix()
+                shipped / rel, copy / rel, f"shipped/{name}/{rel}", f"worlds/{name}/{rel}"
             )
     return "".join(out)

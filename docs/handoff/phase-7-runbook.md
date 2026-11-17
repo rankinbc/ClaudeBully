@@ -788,20 +788,22 @@ Bars (spec section 18):
   world's file that no manifest entry names as one index line (id, layer, kind, title, address,
   links), never its body (`context.unchanged_base_files`, which `Director.review_groups` reads),
   and the example's manifest names only `config.yaml` and `expected.yaml`: as the example stands
-  its 54 overlay files are index lines and the reviewer is shown no corpus document, sheet or ladder
-  at all, so a defect edited into one is invisible and would score as missed for a reason that says
-  nothing about the reviewer. The code allows two ways to put a defect in front of it, and the
-  recipe takes the first: edit the overlay file in place and add a manifest entry for it to the
-  copy's `plan.json` (`"manifest"` is a list; the entry is
-  `{"path": "worlds/overlay/world.yaml", "kind": "world_sheet", "purpose": "seeded defect", "layer": null}`,
-  with kind `document` for a corpus document: the shape `Director._entry` gives a patched base
-  file), or plant it as a new file. A new file is not used, for two reasons: an unlock line lives in
-  the world sheet (`worlds/overlay/world.yaml`, `WorldSheet.unlock_lines`), a base file that no new
-  file can replace; and a stage 3 resumed after a kill, or after a rate limit past the wait, removes
-  every grammar file owned by neither `base_files` nor a committed call
-  (`bundle.rematerialize_open_stage`), so a new file would vanish and score as missed, where an
-  edited base file is owned and stays. A changed `plan.md`, `config.yaml` or `expected.yaml` needs
-  no entry (never base files, always reviewed in full). Before the run, this lists what each review
+  its 54 overlay files are not shown at all (no review group reads one in full, so those groups
+  make no call and not even their index lines reach the reviewer), so a defect edited into one is
+  invisible and would score as missed for a reason that says nothing about the reviewer. The code
+  allows two ways to put a defect in front of it, and the recipe takes the first: edit the overlay
+  file in place and add a manifest entry for it to the copy's `plan.json` (`"manifest"` is a list;
+  the entry is
+  `{"path": "worlds/overlay/world.yaml", "kind": "world_sheet", "purpose": "seeded defect", "layer": null}`;
+  the entry's kind is the path's kind, `world_sheet`, `document`, `ladder` or `premise_sheet`, as
+  `ManifestKind` validates it: the shape `Director._entry` gives a patched base file), or plant it
+  as a new file. A new file is not used: an unlock line lives in the world sheet
+  (`worlds/overlay/world.yaml`, `WorldSheet.unlock_lines`), a base file that no new file can
+  replace. A new file with its manifest entry would stay all the same: a resumed stage 3, 4 or 5
+  removes no file, after a kill or a rate limit, within the wait or past it
+  (`bundle.rematerialize_open_stage`; the Phase 5 final review's I2). A changed `plan.md`,
+  `config.yaml` or `expected.yaml` needs no entry (never base files, always reviewed in full).
+  Before the run, this lists what each review
   group reads in full, and every seeded path must be among them; it ran on the example with two
   entries added (`plan validate` accepted that edited `plan.json`, and the groups listed the two
   files):
@@ -820,7 +822,11 @@ new slug):
 
 A generated bundle whose `review.md`, `plan.md` or a transcript's replies quote a real name (a
 review in flight may, to block it) is not committed as it stands: the repository scan reads every
-text file of a checked-in bundle (R-scan-bundles). To commit one on the owner's yes, move it into
+text file of a checked-in bundle (R-scan-bundles). So can the harness's own records, which no
+lint reads: a `ledger.jsonl` line whose `error` holds a provider's text (a host name among them)
+and a stage's or call's `error` in `plan.json`, kept after a retry that succeeded, fail the CI
+real-name scan though the bundle validated (the Phase 5 final review's M3). To commit one on the
+owner's yes, move it into
 `plans/`, run `uv run claude-bully plan validate plans/director-triggered-vs-scheduled` (no model
 call) and `uv run pytest -q tests/test_real_names.py tests/test_guardrails.py tests/test_boundary.py
 tests/test_example_bundle.py` (the dry run of each bundle is in the slow suite, `-m slow`), and
@@ -829,7 +835,8 @@ not committed. Size is a decision for the owner before anything is committed: ea
 attempt stores its whole message (about 195,000 to 235,000 characters a planner call, measured on
 stubs), so across 50 to 110 calls a real bundle's `transcripts/` likely run to ten megabytes or
 more (an estimate from those sizes, not a measurement), against about 135 KB for the stub-built
-example, and the repository scans read every text file of a checked-in bundle. The report gives
+example, and the repository's scans load every transcript (they read its replies, never its
+message, Task 12), so the size is the repository's weight and the JSON load. The report gives
 the bundle's total bytes and `transcripts/`'s, and says whether to commit the bundle with its
 `transcripts/` (with `plan.json` they rebuild the authored files, `materialize`) or keep it out of
 the repository; the owner rules on it with the yes.
@@ -852,10 +859,10 @@ The same rung measures what the spec assumed (spec section 18), from the same bu
 Its report (`output/phase7_rungD_<date>/rung_report.md`, the form under "What `rung_report.md`
 holds"; its Calls rows are the `planner` and `reviewer` lines of the bundle's `ledger.jsonl`, and
 of the seeded-bundle check's own, since no run exists; its Files list gives the bundle's total
-bytes and `transcripts/`'s) decides whether the specs are distilled for the planner (spec section 17: on the
-measured input size) and whether the example bundle is replaced by the generated one, a task of its
-own, since `scripts/build_example_bundle.py` and `tests/test_example_bundle.py` are written for the
-hand-authored one.
+bytes and `transcripts/`'s) decides whether the specs are distilled for the planner (spec section
+17: on the measured input size) and whether the example bundle is replaced by the generated one, a
+task of its own, since `scripts/build_example_bundle.py` and `tests/test_example_bundle.py` are
+written for the hand-authored one.
 
 ## Rungs other phases add (spec section 14)
 

@@ -37,7 +37,7 @@ from claude_bully.records_env import (
 )
 from claude_bully.runner.cells import CellSpec, expand_cells
 from claude_bully.runner.plan_stamp import register_plan_personas
-from claude_bully.runner.store import RunStore
+from claude_bully.runner.store import RUN_FILE, DamagedRecordError, RunStore
 from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.factory import (
     build_strategy,
@@ -83,6 +83,12 @@ class LoadedRun:
     # the keys of the rating items the last ``--ratings`` pass failed on (``ratings.json``'s
     # ``failed_items``), so an unjudged rep says its ask failed and which key; empty otherwise
     ratings_failed: list[str] = field(default_factory=list)
+    # the reps (``<cell>/<rep>``) whose ``rate_values`` verdict a plain analyze left out as stale
+    # (``ReadBack.stale_reps``; every rep when ``stale_kinds`` holds ``rate_values``), so an
+    # unjudged rep says a rerun asks it again (the Phase 5 final review, Task 11's ``stale``)
+    ratings_stale: frozenset[str] = frozenset()
+    # ``ratings_stale`` covers every rep: the ``rate_values`` prompt changed since it was asked
+    ratings_prompt_stale: bool = False
     # the turns whose contradiction judge failed, per conversation, as the rep's world record
     # names them (Phase 4 Task 12, ``poisoned_well.contradictions_degraded``); empty without one
     contradictions_degraded: dict[ConvKey, list[int]] = field(default_factory=dict)
@@ -123,7 +129,12 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
     store = RunStore(run_dir.parent, run_dir.name)
     run = store.read_run()
     if run.plan is not None:  # a run made from a plan bundle: its personas, from run.json alone
-        register_plan_personas(run.plan.personas)
+        try:
+            register_plan_personas(run.plan.personas)
+        except ValueError as exc:  # a stamp edited by hand (the Phase 5 final review's M9)
+            raise DamagedRecordError(
+                f"{store.run_dir / RUN_FILE}: field plan.personas: {exc}"
+            ) from exc
     experiment = Experiment.model_validate(run.experiment)
     specs = {s.cell_id: s for s in expand_cells(experiment)}
     cells: dict[str, CellRecord] = {}
