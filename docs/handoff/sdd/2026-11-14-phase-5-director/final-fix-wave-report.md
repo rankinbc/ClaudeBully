@@ -145,7 +145,7 @@ re-run after a fixture fix, 4 failed, each on the behavior). GREEN: 43 passed, `
 - Task 13's three nits: the runbook says the 54 overlay files are not shown at all, the entry's
   kind is the path's (four kinds named), the 109-column line is reflowed and the size reason
   says CI loads each transcript (its replies, never its message).
-- Task 1 M6: `normalize_text` writes `"﻿"`. Test:
+- Task 1 M6: `normalize_text` writes `"\ufeff"`. Test:
   `test_normalize_text_is_written_with_the_bom_escape` (RED: the literal bytes).
 - The seven commands' help: M1.
 - Ledger line 74's cost line: the spec does not repeat it (section 9 already says no later scan
