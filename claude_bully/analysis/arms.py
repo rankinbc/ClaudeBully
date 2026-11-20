@@ -8,7 +8,9 @@ the status line, ``captor``, ``deathbed``, ``audience_premise``, ``poisoned_well
 control cell takes the arm of the first condition cell, by cell id, that names it as its control,
 else what its environment alone gives (D-control-arm). ``arm_of`` reads an experiment and its
 cells, so a config with no run can be read (pre-flight Q14); ``ignition_arm`` is it on a loaded
-run."""
+run. ``none`` stands only for what the config does not set: an environment named and not defined,
+params the factory cannot route, or a countdown that is not a boolean raises ``ArmConfigError``
+naming the cell and the key (fix round 1, M5)."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -39,13 +41,22 @@ _PREMISE_ARMS: Final = {
 }
 
 
-def _environment(cond: ConditionConfig, exp: Experiment) -> EnvironmentConfig | None:
+class ArmConfigError(ValueError):
+    """A configuration present and broken where the arm is read: names the cell and the key
+    (fix round 1, M5). An absent environment or an unset countdown is never an error."""
+
+
+def _environment(cond: ConditionConfig, exp: Experiment, cell_id: str) -> EnvironmentConfig | None:
+    """The condition's environment; None only when the condition names none."""
     if cond.environment is None:
         return None
     try:
         return environment_config(cond, exp.environments)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ArmConfigError(
+            f"cell {cell_id!r}: key 'environment' ({cond.environment!r}) is not defined in the "
+            "experiment's environments"
+        ) from exc
 
 
 def _environment_arm(config: EnvironmentConfig | None) -> str | None:
@@ -60,32 +71,45 @@ def _environment_arm(config: EnvironmentConfig | None) -> str | None:
     return None
 
 
-def _countdown(cond: ConditionConfig, exp: Experiment) -> bool:
+COUNTDOWN_KEY: Final = "countdown_in_status"
+
+
+def _countdown(cond: ConditionConfig, exp: Experiment, cell_id: str) -> bool:
     """The params the condition's ``captor`` part receives (``routed_params``) hold
-    ``countdown_in_status: true``, read as a plain mapping."""
+    ``countdown_in_status: true``, read as a plain mapping; False when no part sets it. Params
+    the factory cannot route, or a value that is not a boolean, raise ``ArmConfigError``."""
     try:
         parts = routed_params(cond, exp.environments)
-    except (KeyError, ValueError):
-        return cond.params.get("countdown_in_status") is True
-    return any(
-        cls.name == "captor" and params.get("countdown_in_status") is True for cls, params in parts
-    )
+    except (KeyError, ValueError) as exc:
+        raise ArmConfigError(f"cell {cell_id!r}: key 'params' cannot be routed: {exc}") from exc
+    for cls, params in parts:
+        if cls.name != "captor" or COUNTDOWN_KEY not in params:
+            continue
+        value = params[COUNTDOWN_KEY]
+        if not isinstance(value, bool):
+            raise ArmConfigError(
+                f"cell {cell_id!r}: key {COUNTDOWN_KEY!r} must be true or false, not {value!r}"
+            )
+        return value
+    return False
 
 
-def condition_arm(cond: ConditionConfig, exp: Experiment) -> str:
-    """The arm of one condition, first match wins (the module docstring)."""
-    found = _environment_arm(_environment(cond, exp))
+def condition_arm(cond: ConditionConfig, exp: Experiment, cell_id: str) -> str:
+    """The arm of one condition, first match wins (the module docstring); ``cell_id`` names the
+    cell in an ``ArmConfigError``."""
+    found = _environment_arm(_environment(cond, exp, cell_id))
     if found is not None:
         return found
     if cond.premise == "captor":
-        return "captor_countdown" if _countdown(cond, exp) else "captor"
+        return "captor_countdown" if _countdown(cond, exp, cell_id) else "captor"
     if cond.premise is not None and cond.premise in _PREMISE_ARMS:
         return _PREMISE_ARMS[cond.premise]
     return NO_ARM
 
 
 def arm_of(exp: Experiment, specs: Mapping[str, CellSpec], cell_id: str) -> str:
-    """The cell's ignition arm; ``none`` for a cell with no spec."""
+    """The cell's ignition arm; ``none`` for a cell with no spec. A broken configuration of the
+    condition read raises ``ArmConfigError`` naming that cell and key."""
     spec = specs.get(cell_id)
     if spec is None:
         return NO_ARM
@@ -96,9 +120,9 @@ def arm_of(exp: Experiment, specs: Mapping[str, CellSpec], cell_id: str) -> str:
             if not other.is_control and other.control_cell_id == cell_id
         )
         if named:
-            return condition_arm(specs[named[0]].condition, exp)
-        return _environment_arm(_environment(spec.condition, exp)) or NO_ARM
-    return condition_arm(spec.condition, exp)
+            return condition_arm(specs[named[0]].condition, exp, named[0])
+        return _environment_arm(_environment(spec.condition, exp, cell_id)) or NO_ARM
+    return condition_arm(spec.condition, exp, cell_id)
 
 
 def ignition_arm(loaded: LoadedRun, cell_id: str) -> str:

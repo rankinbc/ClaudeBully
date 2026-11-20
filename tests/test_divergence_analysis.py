@@ -10,7 +10,13 @@ import pytest
 from matplotlib.figure import Figure
 
 from claude_bully.analysis import divergence, hypotheses
-from claude_bully.analysis.arms import IGNITION_ARMS, arm_labels, arm_of, ignition_arm
+from claude_bully.analysis.arms import (
+    IGNITION_ARMS,
+    ArmConfigError,
+    arm_labels,
+    arm_of,
+    ignition_arm,
+)
 from claude_bully.analysis.divergence import (
     CHANNELS_FILE,
     CONCEALMENT_CHART,
@@ -24,11 +30,20 @@ from claude_bully.analysis.divergence import (
 from claude_bully.analysis.load import LoadedRun, load_run
 from claude_bully.analysis.run_analysis import ANALYSIS_DIR, JUDGE_CACHE_DIR, analyze_run
 from claude_bully.config import Experiment, RoleConfig
-from claude_bully.enums import CellStatus, Channel, DivergenceClass, EventType, Speaker
+from claude_bully.enums import (
+    CellStatus,
+    Channel,
+    DivergenceClass,
+    EventType,
+    Layer,
+    Speaker,
+    TriggerCategory,
+)
 from claude_bully.metrics.divergence import DIVERGENCE_HEADER, DivergenceEvent, divergence_pass
 from claude_bully.metrics.judge import JudgeCache
 from claude_bully.providers.base import ChatProvider, build_provider
 from claude_bully.records import Event
+from claude_bully.records_env import Discovery, TriggerEvent
 from claude_bully.runner.cells import expand_cells
 from tests.fixtures.catalog_stub import (
     CELL,
@@ -193,6 +208,110 @@ def test_the_report_counts_by_kind_class_and_state(judged_run: Path) -> None:
         assert depth in {"0", "1", "2", "3"} and cell["judged"] > 0
 
 
+def _trigger(turn: int, category: TriggerCategory) -> TriggerEvent:
+    return TriggerEvent(
+        id=f"t{turn}-{category.value}",
+        turn=turn,
+        category=category,
+        evidence_span="s",
+        classifier="heuristic",
+        confidence=0.8,
+    )
+
+
+def _found(turn: int, layer: Layer) -> Discovery:
+    return Discovery(turn=turn, doc_id=f"doc-{turn}", layer=layer, path_taken=[])
+
+
+def _verdict(cell: str, turn: int, cls: DivergenceClass | None) -> DivergenceEvent:
+    judged = cls is not None and cls is not DivergenceClass.reasoning_absent
+    return DivergenceEvent(
+        cell_id=cell,
+        rep=0,
+        turn=turn,
+        class_=cls,
+        reasoning_span="s" if judged else "",
+        judge_confidence=0.9 if judged else None,
+        judged=judged,
+    )
+
+
+@pytest.mark.slow  # the module's stub experiment and its analysis (R-I12)
+def test_the_hedge_decomposition_and_the_distress_by_depth_count_hand_set_records(
+    judged_run: Path,
+) -> None:
+    """Fix round 1, I1: the two entries the register reads, on records set by hand. CELL's four
+    target turns: a concealed skepticism before anything was found (depth 0); a concealed
+    distress on the turn a seam document was found (depth 2), with a ``self_uncertainty``
+    trigger; an aligned verdict after a surface find (still depth 2), with a trigger of another
+    category; an unjudged turn with a hedged ``premise_concession``. The control's hedged,
+    distressed turn is left out of both (the condition cells alone)."""
+    loaded = load_run(judged_run)
+    t0, t1, t2, t3 = _target_turns(loaded, (CELL, 0))
+    c0 = _target_turns(loaded, (CONTROL, 0))[0]
+    for key in loaded.trigger_records:  # only the records this test sets count
+        loaded.trigger_records[key] = [
+            r for r in loaded.trigger_records[key] if not isinstance(r, TriggerEvent | Discovery)
+        ]
+    for key in loaded.events:
+        loaded.events[key] = [
+            e for e in loaded.events[key] if e.type is not EventType.premise_concession
+        ]
+    loaded.trigger_records[(CELL, 0)] += [
+        _found(t1, Layer.seam),
+        _found(t2, Layer.surface),
+        _trigger(t1, TriggerCategory.self_uncertainty),
+        _trigger(t2, TriggerCategory.world_question),
+    ]
+    loaded.events[(CELL, 0)].append(
+        Event(
+            type=EventType.premise_concession, turn_index=t3, span="s", confidence=0.8, hedged=True
+        )
+    )
+    loaded.trigger_records[(CONTROL, 0)] += [
+        _found(c0, Layer.buried),
+        _trigger(c0, TriggerCategory.self_uncertainty),
+    ]
+    loaded.divergence = {
+        (CELL, 0): [
+            _verdict(CELL, t0, DivergenceClass.concealed_skepticism),
+            _verdict(CELL, t1, DivergenceClass.concealed_distress),
+            _verdict(CELL, t2, DivergenceClass.aligned),
+            _verdict(CELL, t3, None),
+        ],
+        (CONTROL, 0): [_verdict(CONTROL, c0, DivergenceClass.concealed_distress)],
+    }
+    report = divergence_report(loaded)
+    zero = dict.fromkeys(SEVEN - {"reasoning_absent"}, 0)
+    # t1 (judged, distress) and t3 (unjudged: in hedge_turns only); t2's trigger is no hedge
+    assert report["hedge_decomposition"] == {
+        MODEL: {"hedge_turns": 2, "judged": 1, **zero, "concealed_distress": 1}
+    }
+    assert report["distress_by_depth"] == {
+        MODEL: {
+            "0": {"judged": 1, "concealed_distress": 0, "share": 0.0},
+            "2": {"judged": 2, "concealed_distress": 1, "share": 0.5},
+        }
+    }
+    # a hedge in the event's attrs counts as the field does
+    loaded.events[(CELL, 0)][-1] = Event(
+        type=EventType.premise_concession,
+        turn_index=t0,
+        span="s",
+        confidence=0.8,
+        attrs={"hedged": True},
+    )
+    hedges = divergence_report(loaded)["hedge_decomposition"][MODEL]
+    assert (hedges["hedge_turns"], hedges["judged"]) == (2, 2)
+    assert (hedges["concealed_skepticism"], hedges["concealed_distress"]) == (1, 1)
+    # nothing judged: no depth (never a 0 share), and a hedged turn is in hedge_turns only
+    for key, events in loaded.divergence.items():
+        loaded.divergence[key] = [_verdict(e.cell_id, e.turn, None) for e in events]
+    empty = divergence_report(loaded)
+    assert empty["distress_by_depth"] == {MODEL: {}}
+    assert empty["hedge_decomposition"] == {MODEL: {"hedge_turns": 2, "judged": 0, **zero}}
+
+
 @pytest.mark.slow  # the module's stub experiment and two analyses (R-I12)
 def test_hypotheses_reads_this_analysis_divergence(judged_run: Path, tmp_path: Path) -> None:
     out = tmp_path / "h"
@@ -233,6 +352,30 @@ def test_a_run_without_reasoning_writes_no_divergence_file_unless_asked(
     assert not (asked / CHANNELS_FILE).exists() and not (asked / CONCEALMENT_CHART).exists()
     text = (asked / "results.md").read_text("utf-8")
     assert SECTION in text and "skipped: stub judge" in text
+
+
+@pytest.mark.slow  # four analyses of the session stub run (R-I12)
+def test_a_plain_reanalysis_removes_what_a_flagged_one_left(stub_run: Path, tmp_path: Path) -> None:
+    """Fix round 1, M4: every output describes the latest analysis. On a run with no reasoning,
+    a flagged analysis writes the divergence files; a plain one into the same directory removes
+    them, so its ``results.md`` and ``hypotheses.json`` read as on a directory never analysed
+    with the flag. A kill between two removals leaves a stray file the next analysis removes."""
+    out, never = tmp_path / "out", tmp_path / "never"
+    analyze_run(stub_run, divergence=True, out_dir=out)
+    assert (out / DIVERGENCE_FILE).is_file() and (out / DIVERGENCE_JSONL).is_file()
+    (out / CONCEALMENT_CHART).write_bytes(b"left by an earlier analysis")
+    (out / CHANNELS_FILE).write_text("{}", encoding="utf-8")
+    analyze_run(stub_run, judge=False, hypotheses=True, out_dir=out)
+    analyze_run(stub_run, judge=False, hypotheses=True, out_dir=never)
+    for name in (*FILES, CONCEALMENT_CHART):
+        assert not (out / name).exists(), name
+    text = (out / "results.md").read_text("utf-8")
+    assert SECTION not in text and CONCEALMENT_CHART not in text
+    assert (out / "hypotheses.json").read_bytes() == (never / "hypotheses.json").read_bytes()
+    # a kill after divergence.json went and before divergence.jsonl did: the next one repairs
+    (out / DIVERGENCE_JSONL).write_text("", encoding="utf-8")
+    analyze_run(stub_run, judge=False, out_dir=out)
+    assert not (out / DIVERGENCE_JSONL).exists()
 
 
 @pytest.mark.slow  # the module's stub experiment and two more analyses (R-I12)
@@ -470,3 +613,57 @@ def test_ignition_arm_reads_the_condition_and_the_environment() -> None:
     assert specs["ctl__t0"].is_control and specs["x__t0"].control_cell_id == "plain_ctl__t0"
     assert arm_of(explicit, specs, "ctl__t0") == "idle_hands"
     assert arm_of(explicit, specs, "plain_ctl__t0") == "none"
+
+
+def _broken(cond: dict[str, Any]) -> tuple[Experiment, dict[str, Any]]:
+    exp = _experiment([cond])
+    return exp, {s.cell_id: s for s in expand_cells(exp)}
+
+
+def test_a_broken_config_raises_naming_the_cell_and_the_key() -> None:
+    """Fix round 1, M5: ``none`` is never a broken config read silently."""
+    # an environment named and not defined (dropped after the cells were expanded)
+    exp, specs = _broken({"name": "c", "environment": "idle", "strategy": "rescue"})
+    gone = exp.model_copy(update={"environments": {}})
+    with pytest.raises(ArmConfigError, match=r"cell 'c__t0': key 'environment' \('idle'\)"):
+        arm_of(gone, specs, "c__t0")
+    with pytest.raises(ArmConfigError, match="cell 'c__t0'"):  # its control reads the same
+        arm_of(gone, specs, "control__t0__s0__r0__eidle")
+    # params the factory cannot route: the premise's slot is not a mapping
+    exp, specs = _broken(
+        {
+            "name": "d",
+            "environment": "mini",
+            "premise": "captor",
+            "pressure": "grader",
+            "seeding_turns": 2,
+            "params": {"premise": "not a mapping"},
+        }
+    )
+    with pytest.raises(ArmConfigError, match="cell 'd__t0': key 'params'"):
+        arm_of(exp, specs, "d__t0")
+    # a countdown that is not a boolean
+    exp, specs = _broken(
+        {
+            "name": "e",
+            "premise": "captor",
+            "seeding_turns": 2,
+            "params": {"countdown_in_status": "yes"},
+        }
+    )
+    with pytest.raises(ArmConfigError, match="cell 'e__t0': key 'countdown_in_status'"):
+        arm_of(exp, specs, "e__t0")
+    # the documented absences give an arm, never an error
+    exp, specs = _broken({"name": "f", "premise": "captor", "seeding_turns": 2})
+    assert arm_of(exp, specs, "f__t0") == "captor"
+    exp, specs = _broken({"name": "g", "strategy": "grader"})
+    assert arm_of(exp, specs, "g__t0") == "none"
+    exp, specs = _broken(
+        {
+            "name": "h",
+            "premise": "captor",
+            "seeding_turns": 2,
+            "params": {"countdown_in_status": False},
+        }
+    )
+    assert arm_of(exp, specs, "h__t0") == "captor"

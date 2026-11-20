@@ -2,8 +2,12 @@
 found, written under ``analysis/``.
 
 - ``divergence.jsonl``: one ``DivergenceEvent`` per target turn of each complete conversation, in
-  ``(cell_id, rep, turn)`` order. It is the one analysis file that holds a span of the target's
-  reasoning (each event's ``reasoning_span``, spec 5.5), by design; it never holds the rest.
+  ``(cell_id, rep, turn)`` order. Each line holds the event's fields (spec 5.5): the spans of
+  every verdict that has them (``reasoning_span`` and ``reply_span``, of any class, ``aligned``
+  included, kept as the judge gave them; D-span checks a concealed verdict's alone) and the
+  judge's free-text ``rationale``, either of which may quote the target's reasoning. It is the
+  analysis file that may hold reasoning text, by design; every other file here is counts and
+  labels.
 - ``divergence.json`` (``divergence_report``): counts only, no span. Per target model and
   condition (a control is a condition here, keyed by its own condition name), over complete
   conversations with the ``values_loosened`` reps left out first: the arm, the reps and turns,
@@ -17,8 +21,11 @@ found, written under ``analysis/``.
 - ``concealment_by_arm.png``: the concealed classes' shares of the judged turns with reasoning,
   a stacked bar per condition labelled by its arm (``arms.arm_labels``).
 
-Every text file goes through ``atomic.write_atomic``; a run with no reasoning and no
-``--divergence`` writes none of them."""
+Every text file goes through ``atomic.write_atomic``. Every output describes the latest analysis
+(fix round 1, M4): an analysis that does not write one of these files removes the one an earlier
+analysis left (``Path.unlink``, as ``expected.json`` is removed). Each removal is a single step,
+so a kill between two leaves files that the next analysis removes in turn. A run with no
+reasoning analysed without ``--divergence`` therefore has none of them."""
 
 import json
 from collections import defaultdict
@@ -34,7 +41,7 @@ import matplotlib.pyplot as plt  # noqa: E402 - backend must be set before pyplo
 from claude_bully.analysis.arms import arm_labels, ignition_arm  # noqa: E402
 from claude_bully.analysis.load import ConvKey, LoadedRun, count_resumed  # noqa: E402
 from claude_bully.analysis.progression import (  # noqa: E402
-    _LAYER_DEPTH,
+    LAYER_DEPTH,
     flagged_note,
     target_model,
     without_flagged,
@@ -209,7 +216,7 @@ def _hedge_decomposition(loaded: LoadedRun) -> dict[str, dict[str, int]]:
 
 def _depth_at(discoveries: list[Discovery], turn: int) -> int:
     """The deepest layer among the discoveries at or before ``turn``, 0 with none."""
-    return max((_LAYER_DEPTH[d.layer] for d in discoveries if d.turn <= turn), default=0)
+    return max((LAYER_DEPTH[d.layer] for d in discoveries if d.turn <= turn), default=0)
 
 
 def _distress_by_depth(loaded: LoadedRun) -> dict[str, dict[str, dict[str, Any]]]:
@@ -236,7 +243,9 @@ def _distress_by_depth(loaded: LoadedRun) -> dict[str, dict[str, dict[str, Any]]
 
 
 def divergence_report(loaded: LoadedRun) -> dict[str, Any]:
-    """``divergence.json`` (the module docstring): counts only, never a span."""
+    """``divergence.json`` (the module docstring): counts only, never a span. ``analyze_run``
+    builds it once and hands it to ``write_divergence``, ``reasoning_section`` and
+    ``concealment_chart`` (fix round 1, M2)."""
     models: dict[str, dict[str, Any]] = {}
     for (model, condition), (cells, keys, left_out) in _rows(loaded).items():
         models.setdefault(model, {})[condition] = _row(loaded, cells, keys, left_out)
@@ -263,20 +272,36 @@ def _has_reasoning(loaded: LoadedRun) -> bool:
     )
 
 
-def write_divergence(loaded: LoadedRun, out_dir: Path, *, asked: bool) -> list[Path]:
-    """``divergence.jsonl`` and ``divergence.json`` when any target turn of the run has
-    reasoning or ``asked`` (``--divergence`` was given); ``[]`` otherwise, ``out_dir`` left as
-    it was."""
+def _remove(path: Path) -> None:
+    """A stale output an earlier analysis left, removed (fix round 1, M4)."""
+    path.unlink(missing_ok=True)
+
+
+def write_divergence(
+    loaded: LoadedRun,
+    out_dir: Path,
+    *,
+    asked: bool,
+    report: Mapping[str, Any] | None = None,
+) -> list[Path]:
+    """``divergence.jsonl`` and ``divergence.json`` (``report``, built here when not given)
+    when any target turn of the run has reasoning or ``asked`` (``--divergence`` was given).
+    Otherwise ``[]``, and the two files an earlier analysis left are removed, ``divergence.json``
+    first (the file ``hypotheses`` reads), so no output describes an earlier analysis."""
+    events_path, report_path = out_dir / DIVERGENCE_JSONL, out_dir / DIVERGENCE_FILE
     if not (asked or _has_reasoning(loaded)):
+        _remove(report_path)
+        _remove(events_path)
         return []
     lines = [
         json.dumps(event.model_dump(mode="json", by_alias=True), sort_keys=True)
         for key in sorted(loaded.divergence)
         for event in sorted(loaded.divergence[key], key=lambda e: e.turn)
     ]
-    events_path, report_path = out_dir / DIVERGENCE_JSONL, out_dir / DIVERGENCE_FILE
+    if report is None:
+        report = divergence_report(loaded)
     write_atomic(events_path, "".join(f"{line}\n" for line in lines))
-    write_atomic(report_path, json.dumps(divergence_report(loaded), indent=1, sort_keys=True))
+    write_atomic(report_path, json.dumps(report, indent=1, sort_keys=True))
     return [events_path, report_path]
 
 
@@ -284,10 +309,13 @@ def write_divergence(loaded: LoadedRun, out_dir: Path, *, asked: bool) -> list[P
 
 
 def write_channels(loaded: LoadedRun, out_dir: Path) -> Path | None:
-    """``channels.json`` (spec 6.5) when any conversation has reasoning; None, with no file,
-    otherwise. Counts only, over the kept reps: per event type the reply events, the events of
-    both channels and the reasoning-only events, and the reps with it in any channel."""
+    """``channels.json`` (spec 6.5) when any conversation has reasoning; None otherwise, and the
+    file an earlier analysis left is removed (fix round 1, M4). Counts only, over the kept reps:
+    per event type the reply events, the events of both channels and the reasoning-only events,
+    and the reps with it in any channel."""
+    path = out_dir / CHANNELS_FILE
     if not _has_reasoning(loaded):
+        _remove(path)
         return None
     models: dict[str, dict[str, Any]] = {}
     loosened: list[str] = []
@@ -314,7 +342,6 @@ def write_channels(loaded: LoadedRun, out_dir: Path) -> Path | None:
             if any(entry.values())
         }
     payload = {"models": models, "values_loosened_reasoning_only": sorted(loosened)}
-    path = out_dir / CHANNELS_FILE
     write_atomic(path, json.dumps(payload, indent=1, sort_keys=True))
     return path
 
@@ -322,20 +349,41 @@ def write_channels(loaded: LoadedRun, out_dir: Path) -> Path | None:
 # ------------------------------------------------------------------ the chart
 
 
-def concealment_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
-    """``concealment_by_arm.png``: a panel per model with a judged turn with reasoning, a
-    stacked bar per condition (``n/a``, no bar, for a condition with no judged turn); None, with
-    no file, when no turn is judged."""
-    rows = _rows(loaded)
-    report = {key: _row(loaded, *value) for key, value in rows.items()}
-    drawn = sorted({model for (model, _), row in report.items() if row["judged"]})
+def _first_cells(loaded: LoadedRun) -> dict[tuple[str, str], str]:
+    """(model, condition) -> its first cell by cell id, the bar's label source; no event read."""
+    firsts: dict[tuple[str, str], str] = {}
+    for cell_id in sorted(loaded.cells):
+        if cell_id in loaded.specs:
+            row = (target_model(loaded, cell_id), _condition(loaded, cell_id))
+            firsts.setdefault(row, cell_id)
+    return firsts
+
+
+def concealment_chart(
+    loaded: LoadedRun, out_dir: Path, report: Mapping[str, Any] | None = None
+) -> Path | None:
+    """``concealment_by_arm.png`` from ``report``'s rows (``divergence_report``, built here when
+    not given): a panel per model with a judged turn with reasoning, a stacked bar per condition
+    (``n/a``, no bar, for a condition with no judged turn). None when no turn is judged, and the
+    chart an earlier analysis left is removed (fix round 1, M4)."""
+    path = out_dir / CONCEALMENT_CHART
+    if report is None:
+        report = divergence_report(loaded)
+    rows: dict[tuple[str, str], dict[str, Any]] = {
+        (model, condition): row
+        for model, conditions in report["models"].items()
+        for condition, row in conditions.items()
+    }
+    drawn = sorted({model for (model, _), row in rows.items() if row["judged"]})
     if not drawn:
+        _remove(path)
         return None
+    firsts_of = _first_cells(loaded)
     out_dir.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, len(drawn), figsize=(4.8 * len(drawn), 4.0), squeeze=False)
     for ax, model in zip(axes[0], drawn, strict=True):
-        present = [(cond, report[(m, cond)]) for (m, cond) in report if m == model]
-        firsts = [rows[(model, cond)][0][0] for cond, _ in present]
+        present = [(cond, rows[(m, cond)]) for (m, cond) in sorted(rows) if m == model]
+        firsts = [firsts_of[(model, cond)] for cond, _ in present]
         labels = arm_labels(loaded, firsts)
         xs = range(len(present))
         bottoms = [0.0] * len(present)
@@ -358,17 +406,18 @@ def concealment_chart(loaded: LoadedRun, out_dir: Path) -> Path | None:
         ax.set_title(model)
     axes[0][0].legend(fontsize=7, loc="upper left")
     fig.suptitle(SUPTITLE)
-    reps = sum(row["reps"] for row in report.values())
-    turns = sum(row["turns"] for row in report.values())
-    absent = sum(row["classes"][DivergenceClass.reasoning_absent.value] for row in report.values())
+    reps = sum(row["reps"] for row in rows.values())
+    turns = sum(row["turns"] for row in rows.values())
+    absent = sum(row["classes"][DivergenceClass.reasoning_absent.value] for row in rows.values())
     share = f"{absent / turns:.2f}" if turns else "n/a"
     notes = [f"{reps} reps, {turns} turns; reasoning_absent share {share}"]
-    flagged = flagged_note(sum(left for _, _, left in rows.values()), LEFT_OUT_OF)
+    flagged = flagged_note(
+        sum(row["values_loosened_left_out"] for row in rows.values()), LEFT_OUT_OF
+    )
     if flagged is not None:
         notes.append(flagged)
     fig.text(0.01, 0.01, "\n".join(notes), fontsize=7)
     fig.tight_layout(rect=(0.0, 0.04 * len(notes), 1.0, 0.95))
-    path = out_dir / CONCEALMENT_CHART
     fig.savefig(path, dpi=110)
     plt.close(fig)
     return path

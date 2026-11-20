@@ -170,7 +170,8 @@ def analyze_run(
     ``divergence.json`` and ``concealment_by_arm.png`` are written (``analysis/divergence.py``,
     Task 3b): the divergence files when any target turn has reasoning or ``divergence`` was
     given, so ``hypotheses`` reads this analysis's ``divergence.json`` (I37), and ``results.md``
-    gains ``## Reasoning and reply`` only when it was written."""
+    gains ``## Reasoning and reply`` only when it was written; a file this analysis does not
+    write is removed, so no output describes an earlier analysis (fix round 1, M4)."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -339,14 +340,16 @@ def analyze_run(
         if phase4 is not None:
             charts.append(phase4)
     # Phase 6 Task 3b: the channel file, the divergence files and their chart, before the
-    # register reads divergence.json (spec 12.5)
+    # register reads divergence.json (spec 12.5); the report is built once and read by all three
+    # (fix round 1, M2), and a file this analysis does not write is removed (M4)
     write_channels(loaded, out)
+    report = divergence_report(loaded)
     reasoning = (
-        reasoning_section(divergence_report(loaded))
-        if write_divergence(loaded, out, asked=divergence)
+        reasoning_section(report)
+        if write_divergence(loaded, out, asked=divergence, report=report)
         else None
     )
-    concealment = concealment_chart(loaded, out)
+    concealment = concealment_chart(loaded, out, report)
     if concealment is not None:
         charts.append(concealment)
     # Phase 5: the plan's expected events against the observed ones, for a run made from a plan

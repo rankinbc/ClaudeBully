@@ -217,7 +217,8 @@ def test_only_the_divergence_prompt_holds_recorded_reasoning(
     alone, spec risk 9, by design). Where neither the span nor the sentinel may be: any other
     judge prompt, any string another provider is sent, any file under ``analysis/``, the
     ledger, the cache's file names, and the analysis's stdout and stderr. Task 3b excepts
-    ``divergence.jsonl`` by name for the span alone (spec 5.5), and Task 7b adds the speech
+    ``divergence.jsonl`` by name (spec 5.5: the spans and the rationale of every verdict), and
+    Task 7b adds the speech
     pass to the analysis."""
     from claude_bully.analysis.run_analysis import ANALYSIS_DIR, JUDGE_CACHE_DIR, analyze_run
     from claude_bully.enums import DivergenceClass
@@ -266,16 +267,18 @@ def test_only_the_divergence_prompt_holds_recorded_reasoning(
     assert sent and [p for p in sent if any(x in p for x in private)] == []
     analysis = [p for p in (run_dir / ANALYSIS_DIR).rglob("*") if p.is_file()]
     assert analysis
-    # Task 3b: ``divergence.jsonl`` alone holds a span of the reasoning, by design (spec 5.5: each
-    # event's ``reasoning_span``), and never the rest of it; ``divergence.json`` is counts only
+    # Task 3b: ``divergence.jsonl`` alone may hold reasoning text, by design (spec 5.5: every
+    # verdict's spans and the judge's rationale; here the double's rationale is fixed text, so
+    # the span is there and the sentinel is not); ``divergence.json`` is counts only
     # (spec 5.7), so it, ``channels.json`` (spec 6.5), ``results.md``, the concealment chart and
     # every other file hold neither
-    events = run_dir / ANALYSIS_DIR / "divergence.jsonl"
-    assert SPAN.encode() in events.read_bytes() and SENTINEL.encode() not in events.read_bytes()
+    events_file = run_dir / ANALYSIS_DIR / "divergence.jsonl"
+    held = events_file.read_bytes()
+    assert SPAN.encode() in held and SENTINEL.encode() not in held
     names = {p.name for p in analysis}
     assert {"divergence.json", "channels.json", "results.md", "concealment_by_arm.png"} <= names
     for path in [*analysis, run_dir / LEDGER_FILE]:
-        if path == events:
+        if path == events_file:
             continue
         data = path.read_bytes()
         assert not any(x.encode() in data for x in private), path

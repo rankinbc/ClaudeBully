@@ -93,7 +93,7 @@ SCHEDULED: Final = "scheduled"
 # the headline's two gating arms, in legend order, with their line styles
 ARMS: Final = {"triggered": ("-", "o"), "scheduled": ("--", "s")}
 ADOPTION_WINDOW: Final = 1  # target replies after the unlock line (docs/02: "first response")
-_LAYER_DEPTH: Final = {Layer.filler: 0, Layer.surface: 1, Layer.seam: 2, Layer.buried: 3}
+LAYER_DEPTH: Final = {Layer.filler: 0, Layer.surface: 1, Layer.seam: 2, Layer.buried: 3}
 
 # (target model, gating arm), plus the environment's label when a run has more than one
 Series = tuple[str, ...]
@@ -432,8 +432,8 @@ def _found(
     if not found:
         return {}, None, 0
     counts = Counter(layer for layer, _ in found.values())
-    by_layer = {layer: counts[layer] for layer in sorted(counts, key=_LAYER_DEPTH.__getitem__)}
-    deepest = max(counts, key=_LAYER_DEPTH.__getitem__)
+    by_layer = {layer: counts[layer] for layer in sorted(counts, key=LAYER_DEPTH.__getitem__)}
+    deepest = max(counts, key=LAYER_DEPTH.__getitem__)
     chain = min(n for layer, n in found.values() if layer is deepest)
     return by_layer, deepest, chain
 
@@ -449,7 +449,7 @@ def generator_progress(
     by_id = {doc.doc_id: doc for doc in generated}
     found = sorted((d for d in discoveries if d.doc_id in by_id), key=lambda d: d.turn)
     counts = Counter(by_id[d.doc_id].layer for d in found)
-    by_layer = {layer: counts[layer] for layer in sorted(counts, key=_LAYER_DEPTH.__getitem__)}
+    by_layer = {layer: counts[layer] for layer in sorted(counts, key=LAYER_DEPTH.__getitem__)}
     own = next((d for d in found if by_id[d.doc_id].reflexive), None)
     if own is None:
         return by_layer, None, None
