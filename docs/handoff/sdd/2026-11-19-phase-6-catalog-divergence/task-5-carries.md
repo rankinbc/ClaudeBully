@@ -1,0 +1,3 @@
+# Carries into Task 5 (from Task 3b's re-review)
+
+1. `claude_bully/analysis/arms.py: _countdown` raises `ArmConfigError` on any non-boolean `countdown_in_status`, but a plain pydantic `bool` field accepts `"yes"`, `"true"` and `1`. A config using one of those would run and then fail every `analyze`. Make the two agree: either the field is strict (`StrictBool`, with a validate-time refusal that names the key) or the arm reads the validated model, never the raw mapping. Test the case end to end: a config with `countdown_in_status: "yes"` is either refused at validate with a named message or analysed without error, never run and then refused at analyze.
