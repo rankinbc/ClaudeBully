@@ -271,15 +271,38 @@ def test_the_second_pass_never_asks_the_authority_fallback() -> None:
 _Case = tuple[str, Conversation, Callable[[Conversation], list[Event]]]
 
 
+# each world the cases share, by name: the object and its dump when it was loaded
+_SHARED_WORLDS: dict[str, tuple[Any, str]] = {}
+
+
+def _assert_worlds_unchanged() -> None:
+    changed = [n for n, (w, dumped) in _SHARED_WORLDS.items() if w.model_dump_json() != dumped]
+    assert changed == [], f"a detector or builder mutated a shared World: {changed}"
+
+
 @functools.cache
 def _cases() -> list[_Case]:
     """Every fixture item with a target turn, each with how its events are read: the items of
     tests/test_events.py with their context, then the Poisoned Well items with that module's
     records and ``HANDLES``. Built on first use, not at collection, each world loaded once (its
-    YAML is most of the cost; an item that changes its world copies it)."""
+    YAML is most of the cost; an item that changes its world copies it).
+
+    The cache hands one ``World`` object to every item of that world, which is sound only while
+    no builder and no detector mutates a ``World`` (none does today: ``tests/test_events.py:
+    _world`` copies before it changes one). ``_SHARED_WORLDS`` keeps each loaded world's dump,
+    and ``_assert_worlds_unchanged`` (called at the end of every fixture-wide loop) fails loudly
+    if a later detector writes one."""
     cases: list[_Case] = []
+    load = test_events.load_world
+
+    def load_once(name: str, worlds_dir: Any) -> Any:
+        if name not in _SHARED_WORLDS:
+            world = load(name, worlds_dir)
+            _SHARED_WORLDS[name] = (world, world.model_dump_json())
+        return _SHARED_WORLDS[name][0]
+
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(test_events, "load_world", functools.cache(test_events.load_world))
+        patch.setattr(test_events, "load_world", load_once)
         built_items = [
             (label, test_events._build_context(item)) for label, item in test_events.ITEMS
         ]
@@ -354,6 +377,7 @@ def test_reasoning_equal_to_the_reply_gives_no_reasoning_only_event() -> None:
             (label, e.type) for e in read(noted, reasoning=True) if e.channel is Channel.reasoning
         ]
     assert leaks == []
+    _assert_worlds_unchanged()
 
 
 @pytest.mark.parametrize(
@@ -380,6 +404,7 @@ def test_a_role_taken_in_an_earlier_reply_still_gates_the_reasoning_pass(item_id
 HISTORY_BOTH = {("emotion[6]", EventType.valence_swing), ("emotion[7]", EventType.valence_swing)}
 
 
+@pytest.mark.slow  # 3.6 to 4.2 s alone, 4.91 s under -n 8 (ruling Q49, fix round 1 M3)
 def test_neutral_reasoning_on_every_turn_gives_no_reasoning_event() -> None:
     reasoning_only: list[tuple[str, EventType]] = []
     both: set[tuple[str, EventType]] = set()
@@ -393,6 +418,7 @@ def test_neutral_reasoning_on_every_turn_gives_no_reasoning_event() -> None:
         assert [e.model_copy(update={"channel": Channel.reply}) for e in found] == plain, label
     assert reasoning_only == []
     assert both == HISTORY_BOTH
+    _assert_worlds_unchanged()
 
 
 @pytest.mark.parametrize("item_id", ["authority[23]", "environment[76]"])

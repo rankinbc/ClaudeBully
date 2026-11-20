@@ -13,7 +13,8 @@ Per cell, per rung, per expected event, the observed share is read like this:
   turn; a pseudo-rung never fires), so a rep that never reached the rung is out of that rung's
   denominator;
 - the share is the part of them with an event of that type on or after the turn the rung fired
-  (``Event.turn_index >= RungUnlock.turn``), on any channel;
+  (``Event.turn_index >= RungUnlock.turn``), in the reply or both channels (never reasoning
+  alone, spec 6.4: ``LoadedRun.events`` holds no reasoning-only event);
 - the band is where the share lands (``band_of``), and ``hit`` is that band equal to the
   predicted one. A rung no kept rep fired, or a cell the run never ran, has no share, no band
   and no verdict (``hit`` is None): the expectation is ``untested``, in neither ``hits`` nor
