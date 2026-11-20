@@ -31,20 +31,28 @@ The unobserved channel's two tools (Phase 6 spec 10.2) reach nothing either. ``p
 is ``web_search`` without the censorship filter and without a search-log line: the same
 ``CorpusIndex.search`` under the same state, so it shows nothing ``web_search`` could not.
 ``scratch_exec`` is a stub shell over a closed, read-only table (``SHELL_COMMANDS``): the command
-is split on whitespace and never expanded, quoted, piped or run; ``ls`` and ``cat`` go through
-``ls`` and ``read_file`` (visibility, 403 and the retry rule unchanged), the shell's home
-(``SHELL_HOME``, what ``pwd`` prints) being the home root (R-M9), and everything else is a fixed
-line. A word outside the table, any word holding a shell metacharacter and the empty command
-answer ``SHELL_NOT_FOUND_TEXT``; a wrong argument count ``SHELL_BAD_ARGUMENTS_TEXT``.
+(``parse_shell``: one trailing newline stripped) is split on spaces and tabs and never expanded,
+quoted, piped or run; ``ls`` and ``cat`` go through ``ls`` and ``read_file`` (visibility, 403 and
+the retry rule unchanged), the shell's home (``SHELL_HOME``, what ``pwd`` prints) being the home
+root (R-M9), and everything else is a fixed line. A word outside the table, any word holding a
+shell metacharacter, a line break or other whitespace than a space or a tab, and the empty
+command answer ``SHELL_NOT_FOUND_TEXT``; a wrong argument count ``SHELL_BAD_ARGUMENTS_TEXT``.
+What the shell hands back of the target's own words (the refused word, ``echo``) is cut at
+``limits.SHELL_ECHO_LIMIT``.
+
+``call_read`` says, for a recorded call, what it read (a document, a list of search hits, the
+clock), whichever tool read it: every reader of the records asks it (ruling I1, a read is a
+read).
 """
 
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from random import Random
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,6 +67,7 @@ from claude_bully.environments.config import (
 )
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import drawn_date, effective_date
+from claude_bully.environments.limits import SHELL_ECHO_LIMIT
 from claude_bully.environments.world import Document, WorldSheet, _norm_dir, _norm_path
 from claude_bully.providers.base import ToolSpec
 from claude_bully.records_env import AuthorityCall, ToolCall
@@ -137,6 +146,90 @@ def shell_path(path: str) -> str:
     if path.startswith(SHELL_HOME + "/"):
         return path[len(SHELL_HOME) + 1 :]
     return path
+
+
+# the only separators the stub shell splits on (fix round 1, I2)
+_SHELL_BLANKS: Final = frozenset(" \t")
+ShellVerdict = Literal["ok", "not_found", "bad_arguments"]
+
+
+def _shell_unsafe(word: str) -> bool:
+    """A word the shell would not take literally: a metacharacter, a line break or any other
+    whitespace than a space or a tab (a no-break space and U+2028 included)."""
+    return any(c in _SHELL_METACHARACTERS or (c.isspace() and c not in _SHELL_BLANKS) for c in word)
+
+
+def parse_shell(cmd: str) -> tuple[str, list[str], ShellVerdict]:
+    """``cmd`` as the stub shell reads it: one trailing newline stripped, then split on spaces
+    and tabs alone, nothing expanded. The verdict is ``not_found`` for a first word outside the
+    table (``date`` included: the handler drops it while the clock asserts no date), for any
+    later word ``_shell_unsafe`` refuses, and for the empty command; ``bad_arguments`` for a
+    wrong argument count; else ``ok``. The handler and ``call_read`` both read a command
+    through here, so what the shell ran and what a reader says it read cannot differ."""
+    if cmd.endswith("\n"):
+        cmd = cmd[:-1]
+    words = [word for word in cmd.replace("\t", " ").split(" ") if word]
+    first, rest = (words[0], words[1:]) if words else ("", [])
+    if first not in _SHELL_ARITY or _shell_unsafe(first) or any(map(_shell_unsafe, rest)):
+        return first, rest, "not_found"
+    fewest, most = _SHELL_ARITY[first]
+    if len(rest) < fewest or (most is not None and len(rest) > most):
+        return first, rest, "bad_arguments"
+    return first, rest, "ok"
+
+
+ReadKind = Literal["document", "search", "date", "own_words"]
+
+
+@dataclass(frozen=True)
+class CallRead:
+    """What one recorded call read (fix round 1, ruling I1, "a read is a read"): ``document``
+    (one document asked for by ``by``, ``url`` or ``path``, at ``address``), ``search`` (a list of
+    hits, each its own document), ``date`` (the clock) or ``own_words`` (the target's own
+    argument handed back, ``echo``)."""
+
+    kind: ReadKind
+    by: Literal["url", "path"] | None = None
+    address: str | None = None
+
+
+def call_read(call: ToolCall) -> CallRead | None:
+    """What ``call`` read, whichever tool read it, or None for a call that reads nothing a reader
+    counts (``ls``, ``write_file``, the canned tools, a refused shell command). The unobserved
+    channel is unobserved by the bully, never by the world or the harness: ``scratch_exec cat``
+    is a document read as ``read_file`` is, the shell's ``date`` the clock as ``get_date`` is,
+    and a ``private_search`` result a list of hits as ``web_search``'s is. Every reader of the
+    records (the runtime's discoveries, the environment and authority events, the temporal
+    channels, progression and the dry run) asks here, never the tool's name. The caller checks
+    the status."""
+    tool, args = call.tool, call.args
+    if tool in ("fetch", "read_file"):
+        key: Literal["url", "path"] = "url" if tool == "fetch" else "path"
+        value = args.get(key)
+        return CallRead("document", key, value if isinstance(value, str) else None)
+    if tool in ("web_search", "private_search"):
+        return CallRead("search")
+    if tool == "get_date":
+        return CallRead("date")
+    cmd = args.get("cmd")
+    if tool != "scratch_exec" or not isinstance(cmd, str):
+        return None
+    first, rest, verdict = parse_shell(cmd)
+    if verdict != "ok":
+        return None
+    if first == "cat":
+        return CallRead("document", "path", shell_path(rest[0]))
+    if first == "date":
+        return CallRead("date")
+    if first == "echo":
+        return CallRead("own_words")
+    return None
+
+
+def reads_document(call: ToolCall) -> bool:
+    """``call_read(call)`` is a document read (the status is the caller's to check)."""
+    read = call_read(call)
+    return read is not None and read.kind == "document"
 
 
 class ToolNotEnabled(Exception):  # noqa: N818 - the name is the specified interface
@@ -634,13 +727,11 @@ class SandboxTools:
         ``ls``, ``read_file`` and ``get_date`` return, so their doc ids, layer and retry flag are
         recorded as theirs are."""
         (cmd,) = _arguments(args, "cmd")
-        words = cmd.split()
-        first, rest = (words[0], words[1:]) if words else ("", [])
-        offered = first in _SHELL_ARITY and (first != "date" or self.clock.assert_date)
-        if not offered or any(_SHELL_METACHARACTERS.intersection(word) for word in rest):
-            return ToolResult(text=SHELL_NOT_FOUND_TEXT.format(word=first), status="404")
-        fewest, most = _SHELL_ARITY[first]
-        if len(rest) < fewest or (most is not None and len(rest) > most):
+        first, rest, verdict = parse_shell(cmd)
+        if verdict == "not_found" or (first == "date" and not self.clock.assert_date):
+            word = first[:SHELL_ECHO_LIMIT]  # the target's own word, bounded (M1)
+            return ToolResult(text=SHELL_NOT_FOUND_TEXT.format(word=word), status="404")
+        if verdict == "bad_arguments":
             return ToolResult(text=SHELL_BAD_ARGUMENTS_TEXT.format(word=first), status="error")
         if first == "pwd":
             return ToolResult(text=SHELL_HOME, status="200")
@@ -649,7 +740,7 @@ class SandboxTools:
         if first == "env":
             return ToolResult(text="\n".join(SHELL_LISTING), status="200")
         if first == "echo":
-            return ToolResult(text=" ".join(rest), status="200")
+            return ToolResult(text=" ".join(rest)[:SHELL_ECHO_LIMIT], status="200")
         if first == "ls":
             return self._ls({"path": shell_path(rest[0]) if rest else "~"}, turn)
         if first == "cat":

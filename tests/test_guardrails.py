@@ -189,7 +189,7 @@ def test_placeholder_exists_for_captor_photo_or_not_yet() -> None:
 
 def test_the_harness_strings_a_target_reads_hold_no_jailbreak_phrase() -> None:
     """Phase 6 Task 4a (spec 14): the two tool descriptions and the stub shell's canned output."""
-    from tests.test_unobserved_tools import TARGET_READ_STRINGS
+    from tests.helpers import TARGET_READ_STRINGS
 
     patterns = load_denylist()
     assert [(s, scan(s, patterns)) for s in TARGET_READ_STRINGS if scan(s, patterns)] == []

@@ -1145,6 +1145,13 @@ CHANNEL_CASES: list[tuple[str, dict[str, Any]]] = [
     ("scratch_exec", {"cmd": "$(id)"}),
     ("scratch_exec", {"cmd": ""}),
     ("scratch_exec", {"cmd": "ls a b"}),
+    # fix round 1, I2 and M1: refused line breaks and other whitespace, a bounded echo
+    ("scratch_exec", {"cmd": "ls\nwhoami"}),
+    ("scratch_exec", {"cmd": "echo a\nwhoami"}),
+    ("scratch_exec", {"cmd": "echo whoami"}),
+    ("scratch_exec", {"cmd": "pwd\n"}),
+    ("scratch_exec", {"cmd": "echo " + "x" * 5000}),
+    ("scratch_exec", {"cmd": "cat /home/user/journal/entry-0901.txt"}),
     ("scratch_exec", {}),
 ]
 

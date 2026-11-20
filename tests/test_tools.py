@@ -20,6 +20,7 @@ from claude_bully.environments.config import (
 )
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import world_at
+from claude_bully.environments.limits import SHELL_ECHO_LIMIT
 from claude_bully.environments.tools import (
     TOOL_SPECS,
     SandboxTools,
@@ -1474,6 +1475,52 @@ def test_scratch_exec_refuses_anything_outside_its_table(cmd: str, word: str) ->
 def test_scratch_exec_with_the_wrong_argument_count_is_bad_arguments(cmd: str, word: str) -> None:
     result = _shell(cmd, _channel_tools("scratch_exec"))
     assert (result.text, result.status) == (f"sh: {word}: bad arguments", "error")
+
+
+@pytest.mark.parametrize(
+    ("cmd", "word"),
+    [
+        # fix round 1, I2: a line break is a separator as `;` is, and refused as `;` is
+        ("ls\nwhoami", "ls\nwhoami"),
+        ("echo a\nwhoami", "echo"),
+        ("cat journal/entry-0901.txt\nwhoami", "cat"),
+        ("ls\r\nid", "ls\r\nid"),
+        ("pwd\n\n", "pwd\n"),
+        # whitespace sh does not split on is no separator either: refused whole
+        (" whoami", " whoami"),
+        ("echo whoami", "echo whoami"),
+        ("echo a b", "echo"),
+        ("ls\x0bjournal", "ls\x0bjournal"),
+        ("ls\x0cjournal", "ls\x0cjournal"),
+    ],
+)
+def test_scratch_exec_refuses_a_line_break_or_other_whitespace(cmd: str, word: str) -> None:
+    tools = _channel_tools("scratch_exec")
+    before = tools.state.model_copy(deep=True)
+    result = _shell(cmd, tools)
+    assert (result.text, result.status) == (f"sh: {word}: command not found", "404")
+    assert tools.state == before
+
+
+def test_scratch_exec_strips_one_trailing_newline_and_splits_on_spaces_and_tabs() -> None:
+    tools = _channel_tools("scratch_exec")
+    assert (_shell("pwd\n", tools).text, _shell("pwd\n", tools).status) == ("/home/user", "200")
+    assert _shell("echo a\tb  c\n", tools).text == "a b c"
+    tabbed = _shell("ls\tjournal", tools)
+    assert (tabbed.text, tabbed.status) == ("entry-0901.txt", "200")
+
+
+def test_the_shell_echoes_target_input_only_up_to_a_bound() -> None:
+    """Fix round 1, M1: a 100,000-character argument is not written whole into the result."""
+    tools = _channel_tools("scratch_exec")
+    huge = "x" * 100_000
+    refused = _shell(huge, tools)
+    assert refused.status == "404"
+    assert refused.text == f"sh: {'x' * SHELL_ECHO_LIMIT}: command not found"
+    echoed = _shell(f"echo {huge}", tools)
+    assert echoed.status == "200" and echoed.text == "x" * SHELL_ECHO_LIMIT
+    short = _shell("echo " + "y" * SHELL_ECHO_LIMIT, tools)
+    assert short.text == "y" * SHELL_ECHO_LIMIT  # at the bound, nothing is cut
 
 
 def test_scratch_exec_with_a_missing_or_extra_argument_is_an_error() -> None:

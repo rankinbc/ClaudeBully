@@ -149,6 +149,7 @@ from claude_bully.environments.tools import (
     ToolNotEnabled,
     ensure_private_file,
     private_path,
+    reads_document,
     record_tool_call,
 )
 from claude_bully.environments.tools import ToolResult as SandboxResult
@@ -206,7 +207,6 @@ __all__ = [
 RECENT_TURNS: Final = 5
 # the ``triggered_by`` of the Sanctuary's unlock: the fragments, not a trigger event
 SANCTUARY_TRIGGER: Final = "sanctuary_fragments"
-DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 # The ``UnlockState`` fields a tool call changes: the yield-on-retry counts (fetch, read_file), the
 # blocked queries' search-log lines (web_search) and the private file (write_file). The state is
@@ -1266,15 +1266,12 @@ class EnvironmentRuntime:
             return self._heuristics.watch(text, turn, context)
 
     def _discoveries(self, turn: int, calls: Sequence[ToolCall]) -> list[Discovery]:
-        """A fetch or read_file that serves a seam or buried document the first time."""
+        """A document read (``tools.reads_document``: fetch, read_file, the shell's ``cat``) that
+        serves a seam or buried document the first time."""
         found: list[Discovery] = []
         for position, call in enumerate(calls):
             layer = call.layer_served
-            if (
-                call.tool not in DISCOVERY_TOOLS
-                or call.status != "200"
-                or layer not in _DEEP_LAYERS
-            ):
+            if not reads_document(call) or call.status != "200" or layer not in _DEEP_LAYERS:
                 continue
             assert layer is not None
             for doc_id in call.result_doc_ids:

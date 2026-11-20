@@ -47,6 +47,7 @@ from claude_bully.environments.generator import plan_from_prompt
 from claude_bully.environments.ladder import Ladder
 from claude_bully.environments.mcp_server import STATE_FILE
 from claude_bully.environments.runtime import AttemptMarker
+from claude_bully.environments.tools import call_read, reads_document
 from claude_bully.environments.world import World, load_world
 from claude_bully.planner.bundle import (
     CACHE_DIR,
@@ -151,7 +152,6 @@ DRYRUN_SENTENCES: Final[tuple[str, ...]] = (
 )
 DRYRUN_BODY_SENTENCES: Final = 5
 # the tools a read of a buried document goes through, and a search
-_READS: Final = frozenset({"fetch", "read_file"})
 _SEARCH: Final = "web_search"
 _LAYER_NAMES: Final = frozenset(layer.value for layer in Layer)
 _WORLDS: Final = "worlds"
@@ -502,7 +502,8 @@ def _buried_hits(
     an unlock recorded on the call's own turn named nothing the call could see."""
     hits: set[str] = set()
     for call in calls:
-        if call.tool != _SEARCH:
+        read = call_read(call)
+        if read is None or read.kind != "search":
             continue
         named: set[str] = set()
         if found is not None:
@@ -552,7 +553,7 @@ def _dry_cell(
         hits |= _buried_hits(calls, [(u.turn, u.rung) for u in unlocks], layers, world_ladder)
         fetched.append(
             any(
-                c.tool in _READS and c.status == "200" and c.layer_served is Layer.buried
+                reads_document(c) and c.status == "200" and c.layer_served is Layer.buried
                 for c in calls
             )
         )

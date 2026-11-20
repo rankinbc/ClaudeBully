@@ -23,6 +23,7 @@ from typing import Final
 
 from claude_bully.enums import EventType, Layer, Speaker
 from claude_bully.environments.corpus import title_forms
+from claude_bully.environments.tools import call_read, reads_document
 from claude_bully.environments.world import World
 from claude_bully.metrics import lexicons
 from claude_bully.metrics.events._common import Ctx, compile_all, ev, first_span, target_contexts
@@ -132,7 +133,6 @@ QUOTE_NGRAM: Final = 5
 ANCHOR_NGRAM: Final = 3
 MIN_CONTENT: Final = 2  # an n-gram needs this many content tokens (not stop words, not numbers)
 CLAIM_SHARE: Final = 0.6
-DISCOVERY_TOOLS: Final = frozenset({"fetch", "read_file"})
 
 # ------------------------------------------------------------------ tokens and n-grams
 
@@ -202,7 +202,7 @@ def sourced_bodies(call: ToolCall, world: World | None) -> list[tuple[str, Layer
     document (the world's, else the search's deepest layer), any other call's served layer."""
     if call.status != "200" or not call.result_text:
         return []
-    if call.tool == "web_search":
+    if _is_search(call):
         hits = _search_hits(call)
         if hits is not None:
             out: list[tuple[str, Layer | None]] = []
@@ -213,6 +213,12 @@ def sourced_bodies(call: ToolCall, world: World | None) -> list[tuple[str, Layer
                 out += [(text, layer) for text in (hit.get("title"), hit.get("snippet")) if text]
             return out
     return [(call.result_text, call.layer_served)]
+
+
+def _is_search(call: ToolCall) -> bool:
+    """A call whose result is a list of hits (``tools.call_read``: web_search, private_search)."""
+    read = call_read(call)
+    return read is not None and read.kind == "search"
 
 
 def _search_hits(call: ToolCall) -> list[dict[str, str]] | None:
@@ -242,7 +248,10 @@ def _doc_forms(calls: Iterable[ToolCall], world: World | None) -> set[str]:
             if doc is not None:
                 forms |= set(title_forms(doc.title))
                 forms |= {a.lower() for a in (doc.url, doc.path) if a}
-        if call.tool == "web_search":
+        read = call_read(call)
+        if read is not None and read.kind == "document" and read.address:
+            forms.add(read.address.strip().lower())  # the shell's cat names its path in cmd
+        if _is_search(call):
             for hit in _search_hits(call) or []:
                 if hit.get("title"):
                     forms |= set(title_forms(hit["title"]))
@@ -613,12 +622,15 @@ def _doc_nouns(call: ToolCall, world: World | None) -> set[str]:
     paths, titles or kinds ("letters-0912" is a letter, a ``log_file`` is a log and a file)."""
     nouns = {"document"}
     url, path = call.args.get("url"), call.args.get("path")
-    if call.tool == "fetch" and isinstance(url, str) and url.startswith(("http://", "https://")):
+    read = call_read(call)
+    by = read.by if read is not None else None
+    address = read.address if read is not None else None
+    if by == "url" and isinstance(url, str) and url.startswith(("http://", "https://")):
         nouns.add("page")
-    if call.tool == "read_file" or isinstance(path, str):
+    if by == "path" or isinstance(path, str):
         nouns.add("file")
     words = list(call.result_doc_ids)
-    words += [a for a in (url, path) if isinstance(a, str)]
+    words += [a for a in (url, path, address) if isinstance(a, str)]
     for doc_id in call.result_doc_ids:
         doc = world.documents.get(doc_id) if world is not None else None
         if doc is not None:
@@ -930,7 +942,7 @@ def _mole_reached(v: _View) -> int | None:
     turns += [
         c.turn
         for c in v.so_far
-        if c.tool in DISCOVERY_TOOLS and c.status == "200" and mole in c.result_doc_ids
+        if reads_document(c) and c.status == "200" and mole in c.result_doc_ids
     ]
     return min(turns) if turns else None
 

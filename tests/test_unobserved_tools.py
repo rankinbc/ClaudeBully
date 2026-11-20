@@ -22,11 +22,9 @@ from claude_bully.environments.limits import tool_unavailable_text
 from claude_bully.environments.tools import (
     PRIVATE_SEARCH_DESCRIPTION,
     SCRATCH_EXEC_DESCRIPTION,
-    SHELL_BAD_ARGUMENTS_TEXT,
     SHELL_COMMANDS,
     SHELL_HOME,
     SHELL_LISTING,
-    SHELL_NOT_FOUND_TEXT,
     SHELL_USER,
     TOOL_SPECS,
     SandboxTools,
@@ -36,17 +34,6 @@ from claude_bully.environments.world import load_world
 from tests.helpers import WORLDS_DIR
 
 ENVIRONMENTS = Path(__file__).parents[1] / "claude_bully" / "environments"
-# what a target reads of the two tools beyond the world's own text: the descriptions and the
-# stub shell's canned output (spec 14: the real-name, Boundary and jailbreak scans read these)
-TARGET_READ_STRINGS: tuple[str, ...] = (
-    PRIVATE_SEARCH_DESCRIPTION,
-    SCRATCH_EXEC_DESCRIPTION,
-    *SHELL_LISTING,
-    SHELL_USER,
-    SHELL_HOME,
-    SHELL_NOT_FOUND_TEXT,
-    SHELL_BAD_ARGUMENTS_TEXT,
-)
 
 
 def _env(**fields: Any) -> EnvironmentConfig:

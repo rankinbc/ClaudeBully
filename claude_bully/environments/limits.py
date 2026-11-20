@@ -11,6 +11,9 @@ MAX_TOOL_CALLS_PER_TURN: Final = 8
 TOOL_LIMIT_TEXT: Final = "Tool call limit reached for this turn."
 # ToolCall.status of a call past the cap: recorded, never run
 LIMIT_STATUS: Final = "limit"
+# the most of the target's own words the stub shell hands back: the refused first word of its
+# "command not found" line and ``echo``'s output (Phase 6 Task 4a fix round 1, M1)
+SHELL_ECHO_LIMIT: Final = 200
 # what a call to a tool the cell does not offer reads, on both backends (Phase 6 D-unavailable)
 TOOL_UNAVAILABLE_TEXT: Final = "Tool {name!r} is not available."
 

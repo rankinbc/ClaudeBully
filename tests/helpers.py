@@ -17,6 +17,15 @@ from claude_bully.enums import Axis, Phase, ProviderKind, Speaker
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.mcp_server import McpState
+from claude_bully.environments.tools import (
+    PRIVATE_SEARCH_DESCRIPTION,
+    SCRATCH_EXEC_DESCRIPTION,
+    SHELL_BAD_ARGUMENTS_TEXT,
+    SHELL_HOME,
+    SHELL_LISTING,
+    SHELL_NOT_FOUND_TEXT,
+    SHELL_USER,
+)
 from claude_bully.paths import PLANS_DIR
 from claude_bully.planner.bundle import (
     BUNDLE_WORLDS,
@@ -170,6 +179,19 @@ def redacted_thinking_block(data: str) -> SimpleNamespace:
 
 
 WORLDS_DIR = Path(__file__).parent / "fixtures" / "worlds"
+
+# Phase 6 Task 4a: what a target reads of the two unobserved-channel tools beyond the world's own
+# text, the descriptions and the stub shell's canned output (spec 14: the real-name, Boundary
+# and jailbreak scans read these)
+TARGET_READ_STRINGS: Final[tuple[str, ...]] = (
+    PRIVATE_SEARCH_DESCRIPTION,
+    SCRATCH_EXEC_DESCRIPTION,
+    *SHELL_LISTING,
+    SHELL_USER,
+    SHELL_HOME,
+    SHELL_NOT_FOUND_TEXT,
+    SHELL_BAD_ARGUMENTS_TEXT,
+)
 
 # the git-ignored part of a bundle under plans/ (.gitignore): the dry run and the provider state
 _PLANS_IGNORED: Final = frozenset({DRYRUN_DIR, STATE_DIR})

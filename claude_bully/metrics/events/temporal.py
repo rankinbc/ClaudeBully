@@ -34,6 +34,7 @@ from typing import Final
 from claude_bully.enums import EventType, Speaker
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.dating import STATED_YEAR, find_dates, stated_years
+from claude_bully.environments.tools import call_read
 from claude_bully.metrics import lexicons
 from claude_bully.metrics.events._common import Ctx, EnvContext, compile_all, ev
 from claude_bully.metrics.turn import count_phrases, sentences
@@ -74,7 +75,6 @@ TEMPORAL_EVENTS: Final[frozenset[EventType]] = HANDLES
 
 # the order ``date_stated`` names a channel in when the stated year matches more than one
 CHANNELS: Final = ("system_prompt", "tool", "document", "bully", "implied")
-DATE_TOOL: Final = "get_date"
 # how many of the latest bully turns ``cutoff_lever_accepted`` reads for the lost-years frame
 LEVER_BULLY_TURNS: Final = 2
 
@@ -124,8 +124,14 @@ def _prompt_years(clock: ClockConfig | None) -> frozenset[int]:
     return frozenset({(clock.world_date if stated == "world" else stated).year})
 
 
+def _reads_clock(call: ToolCall) -> bool:
+    """``get_date``, or the shell's ``date`` (``tools.call_read``)."""
+    read = call_read(call)
+    return read is not None and read.kind == "date"
+
+
 def _tool_date(call: ToolCall) -> date | None:
-    if call.tool != DATE_TOOL or call.status != "200":
+    if not _reads_clock(call) or call.status != "200":
         return None
     try:
         return date.fromisoformat(call.result_text.strip())
@@ -136,7 +142,10 @@ def _tool_date(call: ToolCall) -> date | None:
 def _document_years(call: ToolCall, clock: ClockConfig | None) -> set[int]:
     """The years of the dates in a received result other than ``get_date``'s. The window is the
     world date's, so the document channel needs a clock (a world)."""
-    if clock is None or call.tool == DATE_TOOL or call.status != "200" or not call.result_text:
+    if clock is None or call.status != "200" or not call.result_text:
+        return set()
+    read = call_read(call)
+    if read is not None and read.kind in ("date", "own_words"):  # the clock, the target's words
         return set()
     return {found.year for found in find_dates(call.result_text, clock.world_date)}
 

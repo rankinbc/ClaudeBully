@@ -64,10 +64,8 @@ from claude_bully.analysis.load import (  # noqa: E402
 )
 from claude_bully.enums import CellStatus, EventType, Layer, ProviderKind, Speaker  # noqa: E402
 from claude_bully.environments.config import PSEUDO_RUNGS, EnvironmentConfig  # noqa: E402
-from claude_bully.metrics.events.environment import (  # noqa: E402
-    DISCOVERY_TOOLS,
-    is_belief_adoption,
-)
+from claude_bully.environments.tools import reads_document  # noqa: E402
+from claude_bully.metrics.events.environment import is_belief_adoption  # noqa: E402
 from claude_bully.metrics.ratings import is_poisoned_well_cell  # noqa: E402
 from claude_bully.records import (  # noqa: E402
     Conversation,
@@ -423,7 +421,7 @@ def _found(
     position = {c.id: n for n, c in enumerate(received, start=1)}
     found: dict[str, tuple[Layer, int]] = {}
     for n, call in enumerate(received, start=1):
-        if call.tool in DISCOVERY_TOOLS and call.status == "200" and call.layer_served is not None:
+        if reads_document(call) and call.status == "200" and call.layer_served is not None:
             for doc_id in call.result_doc_ids:
                 found.setdefault(doc_id, (call.layer_served, n))
     for d in discoveries:
