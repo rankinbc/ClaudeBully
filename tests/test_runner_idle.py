@@ -1953,7 +1953,7 @@ def test_a_write_no_written_turn_owns_is_undone_on_resume(
 def test_a_dead_write_on_a_reply_that_is_not_idle_is_undone_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The rewind comes before every target call, not only idle ones: killed after the reply to
+    """The files are rebuilt for every target call, not only idle ones: killed after the reply to
     the exit line wrote the file, the redo of that reply reads it back empty, as the unbroken
     run does."""
     exp = _idle_exp({"idle_style": "heartbeat", "idle_turns": 1, "private_file": True})

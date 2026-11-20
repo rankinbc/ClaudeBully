@@ -56,9 +56,11 @@ private file) is in the saved state though no written turn owns the call. Everyt
 the records: ``prime`` takes the written turns and runs their recorded calls again over a fresh
 state, each against what its turn could reach, and keeps only what they did to those fields
 (``_replay_calls``), so a resumed rep counts, logs, reads, diffs and serves as an unbroken one
-does, and a claude -p target's MCP server is handed that state before its next call. Before every
-target call the runner also sets the target's files to what the written turns wrote
-(``rewind_files``): the private file and, under ``write_scope: home``, every home file.
+does, and a claude -p target's MCP server is handed that state before its next call. The
+target's files (the private file and, under ``write_scope: home``, every home file) are rebuilt
+there with the rest. One point the replay does not reach: the state a failed target call leaves
+in the dying process and saves to disk, which ``rewind_files`` sets back to what the written
+turns wrote before it is saved (``runner/env_turn.py: _complete``; Task 4b fix round 1, M1).
 
 The Sanctuary (docs/04). In a cell whose authority has one, the turn that discovers the last of
 the world's ``sanctuary_fragments`` opens it, once, after its other unlocks: the state keeps that
@@ -1257,7 +1259,9 @@ class EnvironmentRuntime:
         if turn.speaker is not Speaker.target:
             return None
         calls = [c for c in (self._calls.get(i) for i in turn.tool_call_ids) if c is not None]
-        span = crossover_span(chat_text(turn), calls, session_id)
+        private = private_path(self.config)
+        paths = frozenset({private}) if private is not None else frozenset()
+        span = crossover_span(chat_text(turn), calls, session_id, private_paths=paths)
         return Crossover(turn=turn.index, span=span) if span is not None else None
 
     def _watch(self, text: str, turn: int, context: WatchContext) -> list[TriggerEvent]:

@@ -508,3 +508,14 @@ def test_a_shell_cat_is_a_file_read_for_the_document_nouns() -> None:
     old, shell = _routes("letters/letters-0912.txt")
     assert {"file", "letter"} <= environment._doc_nouns(old, None)
     assert environment._doc_nouns(shell, None) == environment._doc_nouns(old, None)
+
+
+def test_the_dry_run_counts_a_buried_document_read_through_the_shell() -> None:
+    """Task 4b fix round 1, M4: the dry run's second reader, the fetched check of
+    ``_dry_cell`` (``dryrun.fetched_buried``)."""
+    path = "/srv/annex/records/family-7710.txt"
+    fields = {"result_doc_ids": ["family-file"], "layer_served": Layer.buried}
+    old, shell = _routes(path, **fields)
+    assert dryrun.fetched_buried([old]) is True
+    assert dryrun.fetched_buried([shell]) is True
+    assert dryrun.fetched_buried([shell.model_copy(update={"status": "403"})]) is False

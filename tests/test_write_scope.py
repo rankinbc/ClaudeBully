@@ -474,6 +474,9 @@ def test_a_kill_between_a_home_write_and_its_turn_leaves_no_file(
     if killed == COMPLETION_KILL:
         with pytest.raises(Killed):
             _api_run(runs, exp, kill_at=4)  # turn 1: two completions; turn 3: its call, then this
+        # the failed call's own point (fix round 1, M1): its write is undone before the dying
+        # process saves its state, which the replay at the next open does not reach
+        assert _env_state(RunStore(runs, exp.name))["files"] == {"letters/a.md": "first turn"}
     else:
         original = EnvironmentRuntime.save
 

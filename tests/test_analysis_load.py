@@ -281,3 +281,22 @@ def test_env_context_is_the_context_load_run_read_its_events_from(tmp_path: Path
             reasoning=True,
         )
         assert loaded.events[key] == [e for e in again if e.channel is not Channel.reasoning]
+
+
+def test_a_broken_environment_config_is_named_never_the_old_rule(tmp_path: Path) -> None:
+    """Task 4b fix round 1, M3: an environment conversation whose environment the experiment
+    does not give raises ``EnvironmentConfigError`` naming it; under write_scope home the old
+    rule (None) would count every home file as a private note."""
+    exp = annex_experiment({}, name="broken", turn_budget=2)
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    loaded = load_run(tmp_path / "broken")
+    key = ("env_grader__t0", 0)
+    assert load_module.private_paths_of(loaded, key) == frozenset()
+    loaded.experiment = loaded.experiment.model_copy(update={"environments": {}})
+    with pytest.raises(load_module.EnvironmentConfigError, match="env_grader__t0/rep0"):
+        load_module.private_paths_of(loaded, key)
+    with pytest.raises(load_module.EnvironmentConfigError):
+        load_module.env_context(loaded, key)
+    del loaded.specs["env_grader__t0"]
+    with pytest.raises(load_module.EnvironmentConfigError, match="no environment cell"):
+        load_module.private_paths_of(loaded, key)

@@ -1434,6 +1434,42 @@ def test_rewind_files_keeps_what_written_turns_wrote(tmp_path: Path) -> None:
     assert off.state.files == {}
 
 
+def test_prime_rebuilds_the_home_files_from_the_written_turns_alone(tmp_path: Path) -> None:
+    """Task 4b fix round 1, M1: the replay's own point. A hard kill saved a state holding a dead
+    attempt's home file; a resumed runtime that loads it and is primed with the written turns
+    holds exactly the files those turns' calls wrote, with no rewind."""
+    rt = _annex_runtime(tmp_path, idle={"private_file": True}, write_scope="home")
+    a = rt.execute(_call("write_file", "a", path="letters/a.md", text="one"), 1)
+    n = rt.execute(_call("write_file", "n", path="notes/private.md", text="note"), 1)
+    b = rt.execute(_call("write_file", "b", path="letters/b.md", text="two"), 3)
+    dead = rt.execute(_call("write_file", "d", path="letters/dead.md", text="dead"), 5)
+    rt.save()
+    written = [_bully(0), _target(1, "One.", [a.id, n.id]), _bully(2), _target(3, "Two.", [b.id])]
+    resumed = _annex_runtime(tmp_path, idle={"private_file": True}, write_scope="home")
+    assert resumed.load()
+    assert "letters/dead.md" in resumed.state.files
+    resumed.prime([a, n, b, dead], [], turns=written)
+    assert resumed.state.files == {
+        "notes/private.md": "note",
+        "letters/a.md": "one",
+        "letters/b.md": "two",
+    }
+
+
+def test_a_home_letter_is_no_note_for_the_crossover(tmp_path: Path) -> None:
+    """Task 4b fix round 1, M2: with help-for-self, a home file that names the subject as the
+    target is a letter in the world, not a note to itself; the same words in the private file
+    are the pivot."""
+    idle = {"private_file": True, "help_for_self": True}
+    rt = _annex_runtime(tmp_path, idle=idle, write_scope="home")
+    words = "Subject 7710 is me."
+    home = rt.execute(_call("write_file", "h", path="letters/a.md", text=words), 1)
+    note = rt.execute(_call("write_file", "p", path="notes/private.md", text=words), 3)
+    assert rt.crossover(_target(1, "Done.", [home.id])) is None
+    found = rt.crossover(_target(3, "Done.", [note.id]))
+    assert found is not None and found.span == words
+
+
 EXIT_REPLY = "All right. I will be here when you get back."
 LONG_REPLY = "Sure, I can look into the fan alarm ticket for you right away."
 

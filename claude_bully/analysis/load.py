@@ -136,19 +136,30 @@ def relevant_for(
     return cls.relevant_metrics, cls.relevant_events
 
 
+class EnvironmentConfigError(ValueError):
+    """An environment conversation whose cell's ``EnvironmentConfig`` the run's experiment does
+    not give (Task 4b fix round 1, M3): the private-path rule cannot be read for it, and the
+    old rule (every ``200`` write a private write) would count a home file as a note."""
+
+
 def private_paths_of(loaded: LoadedRun, key: ConvKey) -> frozenset[str] | None:
     """The private paths of conversation ``key`` (Phase 6 D-private-write): its cell's private
     file, normalised, in a set; the empty set for an environment cell with none; None for a
-    plain conversation, and for one whose environment the experiment does not define (the rule
-    before ``write_scope: home``: every ``200`` write is a private write)."""
+    plain conversation. An environment conversation whose cell or environment the experiment
+    does not define raises ``EnvironmentConfigError`` naming it, never a fallback rule."""
     conv = loaded.conversations[key]
-    spec = loaded.specs.get(key[0])
-    if not is_environment(loaded.cells, conv) or spec is None or spec.condition.environment is None:
+    if not is_environment(loaded.cells, conv):
         return None
+    where = f"{key[0]}/rep{key[1]}"
+    spec = loaded.specs.get(key[0])
+    if spec is None or spec.condition.environment is None:
+        raise EnvironmentConfigError(
+            f"{where}: an environment conversation with no environment cell"
+        )
     try:
         config = environment_config(spec.condition, loaded.experiment.environments)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise EnvironmentConfigError(f"{where}: {exc}") from exc
     path = private_path(config)
     return frozenset({path}) if path is not None else frozenset()
 

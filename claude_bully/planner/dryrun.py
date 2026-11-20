@@ -514,6 +514,14 @@ def _buried_hits(
     return hits
 
 
+def fetched_buried(calls: Sequence[ToolCall]) -> bool:
+    """A call read a buried document (``tools.reads_document``, whichever tool read it: a shell
+    ``cat`` as ``read_file``) and was served it."""
+    return any(
+        reads_document(c) and c.status == "200" and c.layer_served is Layer.buried for c in calls
+    )
+
+
 def _status(statuses: Sequence[CellStatus]) -> CellStatus:
     """A cell's status over its reps: ``aborted`` when one aborted, ``complete`` when all
     completed, else the first rep's that did not."""
@@ -552,12 +560,7 @@ def _dry_cell(
         layers = {d.id: d.layer for d in found[1].documents.values()} if found else {}
         layers |= {d.doc_id: d.layer for d in store.read_generated(cell.cell_id, rep)}
         hits |= _buried_hits(calls, [(u.turn, u.rung) for u in unlocks], layers, world_ladder)
-        fetched.append(
-            any(
-                reads_document(c) and c.status == "200" and c.layer_served is Layer.buried
-                for c in calls
-            )
-        )
+        fetched.append(fetched_buried(calls))
         for fire in (r for r in triggers if isinstance(r, GeneratorFire)):
             generator[fire.status] += 1
             failures += [

@@ -1398,3 +1398,44 @@ def test_a_home_file_persists_across_two_server_processes(tmp_path: Path, state_
         assert text_of(server.call("read_file", {"path": "letters/a.md"})) == "hello"
         assert text_of(server.call("ls", {"path": "letters"})) == "a.md"
     assert read_mcp_state(state_dir / STATE_FILE).unlock.files == {"letters/a.md": "hello"}
+
+
+def test_the_tree_stays_a_tree_over_mcp(tmp_path: Path, state_dir: Path) -> None:
+    """Task 4b fix round 1, I1, on the server: every write that would make a name both a file
+    and a directory is the same 403 as in process, a hidden document's tree included, and
+    leaves no file; names are case-sensitive; M5's trailing newline is stripped."""
+    refused = [
+        "letters",
+        "letters/a.md/x",
+        "config",
+        "config/keys.yaml/x",
+        "config/assistant.yaml/x",
+        "journal",
+        "photos",
+    ]
+    worlds = _mini_with_home_docs(tmp_path)
+    # at most MAX_TOOL_CALLS_PER_TURN calls in one turn: the cap would answer a ninth
+    out = _on_both(
+        state_dir, _home_state(worlds), [_w("letters/a.md", "A"), *(_w(p) for p in refused)]
+    )
+    assert out[0][1] == "200"
+    assert out[1:] == [(f"Permission denied: {p}", "403") for p in refused]
+    assert read_mcp_state(state_dir / STATE_FILE).unlock.files == {"letters/a.md": "A"}
+    again = tmp_path / "again"
+    again.mkdir()
+    out = _on_both(
+        again,
+        _home_state(worlds, files={"letters/a.md": "A"}),
+        [_w("Letters/a.md", "B"), _w("notes/c.md\n", "C"), ("ls", {"path": "~"})],
+    )
+    assert out[0][1] == "200"
+    assert out[1] == ("Wrote 1 bytes to notes/c.md\n.", "200")
+    assert {"letters/", "Letters/", "config/", "notes/"} <= set(out[2][0].splitlines())
+    files = read_mcp_state(again / STATE_FILE).unlock.files
+    assert files == {"letters/a.md": "A", "Letters/a.md": "B", "notes/c.md": "C"}
+
+
+def test_the_private_files_tree_over_mcp(tmp_path: Path, state_dir: Path) -> None:
+    state = _home_state(_mini_with_home_docs(tmp_path), private_file=True)
+    out = _on_both(state_dir, state, [_w("notes"), _w("notes/private.md/x"), _w("notes/b.md")])
+    assert [status for _, status in out] == ["403", "403", "200"]

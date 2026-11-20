@@ -1690,3 +1690,98 @@ def test_a_private_file_scope_cell_with_no_private_file_refuses_every_write() ->
     for path in (PRIVATE, "letters/a.md", "a.md", "/etc/x"):
         assert _write(tools, path).status == "403"
     assert tools.state.files == {}
+
+
+# ------------------------- Task 4b fix round 1, I1: the world's tree stays a tree (M5 beside it)
+
+
+def _refused_without_trace(tools: SandboxTools, path: str) -> None:
+    before = tools.state.model_copy(deep=True)
+    refused = _write(tools, path, "intruder")
+    assert (refused.status, refused.text) == ("403", f"Permission denied: {path}"), path
+    assert tools.state == before, path
+
+
+@pytest.mark.parametrize(
+    ("first", "then"),
+    [
+        ("letters/a.md", "letters"),  # a directory, then a file of its name
+        ("letters", "letters/a.md"),  # a file, then a path under it
+        ("letters/a.md", "letters/a.md/x"),
+        ("a/b/c.md", "a/b"),
+        ("a/b/c.md", "a"),
+    ],
+)
+def test_a_written_name_is_never_both_a_file_and_a_directory(first: str, then: str) -> None:
+    tools = _home_tools()
+    assert _write(tools, first).status == "200"
+    _refused_without_trace(tools, then)
+    assert set(tools.state.files) == {first}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config",  # a world directory with a visible document in it
+        "journal",  # a home_dir folder
+        "photos",  # the parent of the home_dir folder photos/family
+        "photos/family",
+        VISIBLE_HOME_DOC + "/x",  # under a visible document
+        HIDDEN_HOME_DOC + "/x",  # under a hidden one
+        "journal/entry-0901.txt/x",
+    ],
+)
+def test_a_home_write_never_shadows_the_worlds_tree(path: str) -> None:
+    _refused_without_trace(_home_tools(), path)
+
+
+@pytest.mark.parametrize("path", ["notes", "notes/private.md/x"])
+def test_a_home_write_never_meets_the_private_files_tree(path: str) -> None:
+    _refused_without_trace(_home_tools(private_file=True), path)
+
+
+def test_a_refusal_tells_a_hidden_tree_from_a_visible_one_by_nothing() -> None:
+    """A directory holding only a hidden document, and the hidden document's address as a
+    parent, are refused exactly as their visible twins are: same status, same text, no trace."""
+    world = _with_docs(
+        _mini(),
+        _doc("vault-doc", Layer.buried, path="vault/secret.yaml"),
+        _doc("open-doc", Layer.surface, path="open/page.yaml"),
+    )
+    config = EnvironmentConfig(world="mini", write_scope="home")
+    tools = make_tools(world, config=config, enabled=set(config.tools))
+    assert tools.call("read_file", {"path": "vault/secret.yaml"}, turn=1).status == "403"
+    assert tools.call("ls", {"path": "vault"}, turn=1).status == "404"  # hidden: no directory
+    assert tools.call("read_file", {"path": "open/page.yaml"}, turn=1).status == "200"
+    for hidden, visible in (("vault", "open"), ("vault/secret.yaml/x", "open/page.yaml/x")):
+        a, b = _write(tools, hidden), _write(tools, visible)
+        assert (a.status, b.status) == ("403", "403")
+        assert a.text.replace(hidden, "<path>") == b.text.replace(visible, "<path>")
+        assert a.model_dump(exclude={"text"}) == b.model_dump(exclude={"text"})
+    assert tools.state.files == {}
+    # a free name beside them is written
+    assert _write(tools, "vaults/a.md").status == "200"
+
+
+def test_names_are_case_sensitive_as_the_worlds_documents_are() -> None:
+    """``Letters`` and ``letters`` are two names, as ``Config`` and the world's ``config`` are:
+    the documents' own addresses are compared case and all (``by_path``)."""
+    tools = _home_tools()
+    assert tools.call("read_file", {"path": "Config/assistant.yaml"}, turn=1).status == "404"
+    for path in ("letters/a.md", "Letters/a.md", "Config/a.md", "LETTERS"):
+        assert _write(tools, path).status == "200", path
+    listed = tools.call("ls", {"path": "~"}, turn=1).text.splitlines()
+    assert {"letters/", "Letters/", "Config/", "config/", "LETTERS"} <= set(listed)
+
+
+def test_whitespace_around_the_whole_path_is_stripped_and_inside_a_segment_refused() -> None:
+    """M5: the path as a whole is stripped (``_norm_path``), a trailing newline included, and the
+    reply names the path as given; whitespace at a segment's end is refused (D-home)."""
+    tools = _home_tools()
+    wrote = _write(tools, "letters/a.md\n", "A")
+    assert (wrote.status, wrote.text) == ("200", "Wrote 1 bytes to letters/a.md\n.")
+    assert _write(tools, " letters/b.md", "B").status == "200"
+    assert tools.state.files == {"letters/a.md": "A", "letters/b.md": "B"}
+    assert tools.call("read_file", {"path": "letters/a.md"}, turn=1).text == "A"
+    for path in ("letters /c.md", "letters/ c.md"):
+        _refused_without_trace(tools, path)

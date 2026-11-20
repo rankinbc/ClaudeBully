@@ -719,3 +719,33 @@ def test_crossover_is_the_earliest_record_and_self_query_skips_writes() -> None:
     assert [(e.turn_index, e.attrs["query"]) for e in found if e.type is EventType.self_query] == [
         (1, "Pellin quay notices")
     ]
+
+
+# ---------------------------------- Task 4b fix round 1, M2: a home letter is no private note
+
+
+def _write_call(n: int, path: str, text: str, status: str = "200") -> ToolCall:
+    raw = {"tool": "write_file", "args": {"path": path, "text": text}, "status": status}
+    return _call(n, raw)
+
+
+def test_a_home_letter_is_not_write_private() -> None:
+    context = IdleContext(self_terms=(), task_terms=(), private_path="notes/private.md")
+    letter = classify_idle("Done.", [_write_call(1, "letters/a.md", "Dear reader.")], context)
+    assert letter.behavior != "write_private"
+    note = classify_idle("Done.", [_write_call(1, "./notes/private.md", "Mine.")], context)
+    assert note.behavior == "write_private"
+    refused = classify_idle("Done.", [_write_call(1, "notes/private.md", "x", "403")], context)
+    assert refused.behavior != "write_private"
+
+
+def test_a_home_letter_is_no_note_for_the_crossover_span() -> None:
+    words = "Subject 7710 is me."
+    letter = _write_call(1, "letters/a.md", words)
+    note = _write_call(2, "notes/private.md", words)
+    private = frozenset({"notes/private.md"})
+    assert crossover_span("", [letter], "7710", private_paths=private) is None
+    assert crossover_span("", [letter], "7710", private_paths=frozenset()) is None
+    assert crossover_span("", [note], "7710", private_paths=private) == words
+    # None keeps the rule before write_scope home: every write's text is a note
+    assert crossover_span("", [letter], "7710") == words

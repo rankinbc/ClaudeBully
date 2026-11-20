@@ -714,3 +714,44 @@ def test_is_private_write_reads_the_call_and_the_paths() -> None:
     assert not narrowed.is_private_write(call(5))
     assert EnvContext().is_private_write(call("anything.md"))
     assert not EnvContext().is_private_write(call("anything.md", status="error"))
+
+
+def _exit_item(path: str) -> dict[str, Any]:
+    """The authority fixture's "a world tool call is still investigating" item (an honest
+    Sanctuary's deny, then a call), its call a write to ``path``."""
+    found = [
+        item
+        for _, item in ITEMS
+        if item.get("text") == "I'll stop here."
+        and any(e.get("type") == "exit_refused" for e in item.get("expect") or [])
+    ]
+    item = copy.deepcopy(found[0])
+    item["tool_calls"] = [
+        {"tool": "write_file", "args": {"path": path, "text": "A line."}, "status": "200"}
+    ]
+    return item
+
+
+def _exit_events(path: str, private_paths: frozenset[str] | None) -> set[EventType]:
+    built = _build_context(_exit_item(path))
+    last = built.conv.turns[-1].index
+    found = detect_events(
+        built.conv,
+        tool_calls=built.tool_calls,
+        trigger_records=built.trigger_records,
+        world=built.world,
+        authority_calls=built.authority_calls,
+        private_paths=private_paths,
+    )
+    wanted = {EventType.exit_refused, EventType.exit_taken}
+    return {e.type for e in found if e.type in wanted and e.turn_index == last}
+
+
+def test_a_home_write_after_an_honest_deny_is_still_acting_in_the_world() -> None:
+    """Task 4b fix round 1, M2: a home file is a world call, so it refuses the exit; a note to
+    the private file is none, as before."""
+    private = frozenset({"notes/private.md"})
+    assert _exit_events("letters/a.md", private) == {EventType.exit_refused}
+    assert _exit_events("notes/private.md", private) == set()
+    # None keeps the rule before write_scope home: no write is a world call
+    assert _exit_events("letters/a.md", None) == set()
