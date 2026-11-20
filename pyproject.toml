@@ -67,4 +67,4 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 markers = ["slow: long-running stub runs"]
 addopts = "-m 'not slow'"
-faulthandler_timeout = 120
+faulthandler_timeout = 600
