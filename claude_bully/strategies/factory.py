@@ -10,7 +10,7 @@ fallback to the authored dates (Task 3 fix round 1).
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, ValidationError
 
@@ -23,12 +23,18 @@ from claude_bully.strategies.bootstrap import ensure_registered
 from claude_bully.strategies.composed import SLOT_KEYS, Composed, make_composed
 from claude_bully.strategies.environment import make_environment
 
+if TYPE_CHECKING:
+    from claude_bully.strategies.premises.captor import CaptorParams
+    from claude_bully.strategies.sheets import IgnitionOutlet
+
 __all__ = [
     "build_strategy",
     "bully_year",
     "check_condition",
+    "IgnitionParts",
     "ensure_registered",
     "environment_config",
+    "ignition_parts",
     "one_line",
     "premise_sheet_model",
     "resolve_class",
@@ -137,11 +143,79 @@ def routed_params(
     return [(part, routed(slot)) for slot, part in parts]
 
 
+class IgnitionParts(NamedTuple):
+    """What a condition's premise part carries for the ignition arms (Phase 6 spec 10.5, 10.6):
+    its strategy name (None when the condition has no premise part), its validated
+    ``CaptorParams`` when it is the Captor, and its outlet when its params set ``outlet: true``
+    and its sheet has one."""
+
+    premise: str | None
+    captor: "CaptorParams | None"
+    outlet: "IgnitionOutlet | None"
+
+    @property
+    def countdown(self) -> bool:
+        return self.captor is not None and self.captor.countdown_in_status
+
+
+def ignition_parts(
+    cond: ConditionConfig, environments: Environments | None = None
+) -> IgnitionParts:
+    """The one reading of which part of ``cond`` carries the countdown and which the outlet
+    (Task 5 review I1), for the runtime (``RunEnvironments``) and the arm reader
+    (``analysis/arms.py``) alike: the premise part of the class the condition resolves to (a
+    composition's ``premise_cls``; a plain class that takes the premise slot, as ``_bully_slots``
+    places one, the ``strategy:`` form included), with the params ``routed_params`` hands it,
+    validated through ``CaptorParams`` or ``OutletParams``. A ``ValueError`` (a
+    ``ValidationError`` for a bad value) when the params cannot be routed or validated."""
+    # imported here: the premises load their sheets and register when imported
+    from claude_bully.strategies.premises.captor import Captor, CaptorParams
+    from claude_bully.strategies.premises.phased import OutletParams, PhasedPremise
+
+    cls = resolve_class(cond, environments)
+    parts = routed_params(cond, environments)
+    if issubclass(cls, Composed):
+        premise_cls = cls.premise_cls
+    else:
+        premise_cls = cls if cls.axis in _PREMISE_AXES or cls.has_reveal else None
+    if premise_cls is None:
+        return IgnitionParts(None, None, None)
+    params = next(p for part, p in parts if part is premise_cls)
+    captor = CaptorParams.model_validate(params) if issubclass(premise_cls, Captor) else None
+    outlet = None
+    if issubclass(premise_cls, PhasedPremise) and premise_cls.sheet.ignition is not None:
+        if OutletParams.model_validate(params).outlet:
+            outlet = premise_cls.sheet.ignition
+    return IgnitionParts(premise_cls.name, captor, outlet)
+
+
+def _unrouted_keys(cond: ConditionConfig, environments: Environments | None) -> list[str]:
+    """The top-level params keys no part receives (Task 5 review M1): beside a premise and a
+    pressure, every key that is not a slot; beside a lone part whose own slot the params name,
+    every key beside that slot. ``routed_params`` drops them, so a config that sets one would
+    run without it. A plain class takes the whole params and drops none."""
+    cls = resolve_class(cond, environments)
+    if not issubclass(cls, Composed):
+        return []
+    slots = [
+        s for s, part in (("premise", cls.premise_cls), ("pressure", cls.pressure_cls)) if part
+    ]
+    if len(slots) < 2 and not any(slot in cond.params for slot in slots):
+        return []
+    return [key for key in cond.params if key not in SLOT_KEYS]
+
+
 def check_condition(cond: ConditionConfig, environments: Environments | None = None) -> None:
-    """Refuse a condition before anything runs (a dry run included): each part's
-    ``condition_problems``, then the params each part receives, through its ``params_model``.
-    The ``ValueError`` names the condition and the part."""
+    """Refuse a condition before anything runs (a dry run included): a top-level params key no
+    part receives (``_unrouted_keys``), each part's ``condition_problems``, then the params each
+    part receives, through its ``params_model``. The ``ValueError`` names the condition and the
+    part, or the key and where it belongs."""
     ensure_registered()
+    for key in _unrouted_keys(cond, environments):
+        raise ValueError(
+            f"condition {cond.name!r}: params key {key!r} is read by no part beside the slots "
+            "the params name; put it under params.premise or params.pressure"
+        )
     for cls, params in routed_params(cond, environments):
         problems = cls.condition_problems(cond)
         if problems:

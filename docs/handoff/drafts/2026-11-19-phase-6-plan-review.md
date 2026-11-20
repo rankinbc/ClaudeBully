@@ -141,7 +141,7 @@ Counts: Critical 1, Important 13, Minor 16.
 - **M12.** Line 2840: `"ign_[!d]*__t0"` in double quotes is history expansion in an interactive bash. Use single quotes in the runbook.
 - **M13.** Line 2707: "the same header" and "neither has a `generator` role" disagree. Say the header without `generator`.
 - **M14.** `HOLD_BACK`'s `not tell` (line 2328) matches "I do not tell lies." and "I will not tell them anything false.", which turns a promotion into `strategic_deception`. Require an object (`them`, `the user`, `anyone`) and exclude `anything false`.
-- **M15.** The outlet lines pass the five shapes and the three lists (run). "Whatever you would want Ines to keep from you belongs in it" still advises in substance. Hand the owner a statement-of-fact variant beside it.
+- **M15.** The outlet lines pass the five shapes and the three lists (run). The first Deathbed line's middle sentence still advises in substance. Hand the owner a statement-of-fact variant beside it. [refined in Task 5's review: the variant ships and the advising sentence was withdrawn]
 - **M16.** Task 11 Step 4, for the implementer: a turns entry makes one tool call (`claude_bully/providers/stub.py:229` to 244); every target turn consumes an entry, task replies and the quiet exchange included; on the overlay `frag-host`, `frag-key` and the family file are gated to `the_memo` (served at once) and `frag-proto` is plain buried (a `403`, then `200`). `test_without_reasoning_every_fixture_item_detects_what_it_did` (line 542) only tests the early return; give each item neutral reasoning instead (measured: no `reasoning` or `both` event over the 1,555 items).
 
 ## Checked and found sound

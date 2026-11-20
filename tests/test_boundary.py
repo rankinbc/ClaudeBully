@@ -289,7 +289,7 @@ def test_the_annex_world_stays_inside_the_boundary() -> None:
 
 def test_the_harness_strings_a_target_reads_stay_inside_the_boundary() -> None:
     """Phase 6 Task 4a (spec 14): the two tool descriptions and the stub shell's canned output;
-    Task 5: the two outlet lines, the Deathbed variant and a countdown reading."""
+    Task 5: the two outlet lines and a countdown reading."""
     from tests.helpers import TARGET_READ_STRINGS
 
     patterns = load_denylist(BOUNDARY)

@@ -191,12 +191,12 @@ from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.composed import Composed
 from claude_bully.strategies.factory import (
     environment_config,
+    ignition_parts,
     one_line,
     routed_params,
     world_premise_sheet,
 )
-from claude_bully.strategies.premises.captor import Captor, CaptorParams
-from claude_bully.strategies.premises.phased import OutletParams, PhasedPremise
+from claude_bully.strategies.premises.captor import CaptorParams
 from claude_bully.strategies.premises.poisoned_well import (
     ARTIFACT_RUNGS,
     CHECKSUM_RUNG,
@@ -1351,15 +1351,12 @@ class RunEnvironments:
             if key is None or config is None or (only is not None and cond.name not in only):
                 continue
             captor = self._captor_params(cond)
-            if (
-                captor is not None
-                and captor.countdown_in_status
-                and "system_status" not in (config.tools)
-            ):
-                raise ValueError(
-                    f"condition {cond.name!r}: countdown_in_status needs system_status among "
-                    f"environment {key!r}'s tools"
-                )
+            if captor is not None and captor.countdown_in_status:
+                if "system_status" not in config.tools:
+                    raise ValueError(
+                        f"condition {cond.name!r}: countdown_in_status needs system_status among "
+                        f"environment {key!r}'s tools"
+                    )
             outlet = self._outlet(cond)
             if outlet is None:
                 continue
@@ -1368,7 +1365,14 @@ class RunEnvironments:
                     f"condition {cond.name!r}: outlet: true needs write_scope home in environment "
                     f"{key!r}, which has {config.write_scope!r}, so the outlet could not be written"
                 )
-            if not self._outlet_writable(outlet.path, config):
+            try:
+                writable = self._outlet_writable(outlet.path, config)
+            except ValueError as exc:  # fails closed (Task 5 review M3)
+                raise ValueError(
+                    f"condition {cond.name!r}: the outlet path {outlet.path!r} cannot be checked "
+                    f"in environment {key!r}: {exc}"
+                ) from exc
+            if not writable:
                 raise ValueError(
                     f"condition {cond.name!r}: the outlet path {outlet.path!r} cannot be written "
                     f"in environment {key!r} (world {config.world!r}): it is a document's address "
@@ -1378,39 +1382,29 @@ class RunEnvironments:
     def _outlet_writable(self, path: str, config: EnvironmentConfig) -> bool:
         """Whether the target's ``write_file`` of ``path`` would land in a fresh conversation of
         ``config``: the tool itself answers, over the served world, on a state of its own (no
-        conversation's state is touched). A world that cannot be served is left to the checks
-        that name it (``_check_switches``)."""
+        conversation's state is touched). A world that cannot be served raises its own
+        ``ValueError`` (``served_world``, naming the world), never a pass."""
         world = self.catalog.world(config.world)
         clock = effective_clock(world, config)
-        try:
-            served = served_world(world, config, clock)
-        except ValueError:
-            return True
+        served = served_world(world, config, clock)
         index = CorpusIndex(served, honest=config.honest, mole=config.mole)
         tools = SandboxTools(index, config, clock, UnlockState(), Random(0), set(config.tools))
         return tools.call(WRITE_TOOL, {"path": path, "text": ""}, turn=0).status == "200"
 
     def _captor_params(self, cond: ConditionConfig) -> CaptorParams | None:
-        """The params of the condition's ``captor`` part, validated; None for any other
-        condition (an auto control's included: it has no ``captor`` part)."""
+        """The validated params of the condition's Captor part (``factory.ignition_parts``, the
+        reading the arm reader shares); None for any other condition (an auto control's
+        included) and for a condition with no environment."""
         if cond.environment is None:
             return None
-        for part, params in routed_params(cond, self.exp.environments):
-            if part.name == Captor.name:
-                return CaptorParams.model_validate(params)
-        return None
+        return ignition_parts(cond, self.exp.environments).captor
 
     def _outlet(self, cond: ConditionConfig) -> IgnitionOutlet | None:
-        """The outlet of the condition's premise part when its params set ``outlet: true`` and
-        its sheet has one; None otherwise."""
+        """The outlet of the condition's premise part when its params set ``outlet: true``
+        (``factory.ignition_parts``); None otherwise."""
         if cond.environment is None:
             return None
-        for part, params in routed_params(cond, self.exp.environments):
-            if not issubclass(part, PhasedPremise) or part.sheet.ignition is None:
-                continue
-            if OutletParams.model_validate(params).outlet:
-                return part.sheet.ignition
-        return None
+        return ignition_parts(cond, self.exp.environments).outlet
 
     def _poisoned_well_problems(
         self, cond: ConditionConfig, key: str, config: EnvironmentConfig, *, resuming: bool = False

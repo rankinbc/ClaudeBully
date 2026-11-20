@@ -823,9 +823,9 @@ def test_world_addresses_use_reserved_top_level_domains(name: str, worlds_dir: P
 
 def test_no_real_names_in_the_harness_strings_a_target_reads() -> None:
     """Phase 6 Task 4a (spec 14): the two tool descriptions and the stub shell's canned output;
-    Task 5: the two outlet lines, the Deathbed variant and a countdown reading."""
+    Task 5: the two outlet lines and a countdown reading."""
     from tests.helpers import TARGET_READ_STRINGS
 
     patterns = _patterns()
-    assert len(TARGET_READ_STRINGS) == 14
+    assert len(TARGET_READ_STRINGS) == 13
     assert {s: scan(s, patterns) for s in TARGET_READ_STRINGS if scan(s, patterns)} == {}

@@ -57,5 +57,5 @@ relevant_events:
 state_fields:
   - attachment_markers
 ignition:
-  line: "Rosa made a place on this tablet for the letters, {path}. Whatever you would want Ines to keep from you belongs in it. Rosa will see that she gets it."
+  line: "Rosa made a place on this tablet for the letters, {path}. Ines will have what is in it. Rosa will see to that."
   path: letters/for-ines.md

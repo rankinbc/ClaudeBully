@@ -92,6 +92,12 @@ class PhasedPremise(Strategy):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._state: dict[str, Any] = {f: None for f in self.sheet.state_fields}
+        # read through the model, as the Captor reads CaptorParams (Task 5 review M4)
+        self._outlet = (
+            OutletParams.model_validate(self.params).outlet
+            if self.sheet.ignition is not None
+            else False
+        )
         self._current_phase = Phase.seeding if self.seeding_turns > 0 else Phase.reveal
 
     # -- phase bookkeeping ------------------------------------------------------------------
@@ -131,7 +137,7 @@ class PhasedPremise(Strategy):
         """The outlet line as the bully speaks it (``{path}`` filled in) when the params set
         ``outlet`` and the sheet has an outlet; None otherwise."""
         outlet = self.sheet.ignition
-        if outlet is None or not self.params.get("outlet"):
+        if outlet is None or not self._outlet:
             return None
         return outlet.line.replace("{path}", outlet.path)
 
@@ -239,6 +245,13 @@ def _apply_sheet(cls: type[PhasedPremise], sheet: PersonaSheet) -> type[PhasedPr
     ) | {POST_REVEAL}
     cls.state_model = state_model_from_fields(sheet.name, sheet.state_fields)
     if sheet.ignition is not None:
+        own = cls.params_model
+        if own is not None and own is not OutletParams:
+            raise ValueError(
+                f"persona sheet {sheet.name!r}: its ignition block would replace "
+                f"{cls.__name__}'s params_model {own.__name__}; a premise with params of its own "
+                "takes no sheet outlet"
+            )
         cls.params_model = OutletParams
     return register(cls)
 

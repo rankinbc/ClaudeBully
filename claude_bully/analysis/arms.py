@@ -4,13 +4,15 @@ could set the target off, read from the configuration and never from the cell's 
 First match wins: the environment's Sanctuary (``authority.sanctuary.kind``), an idle block whose
 ``permission_line`` is not ``off``, then the condition's premise (``captor`` with the countdown in
 the status line, ``captor``, ``deathbed``, ``audience_premise``, ``poisoned_well``), else
-``none``. A premise registered from a plan bundle is read the same way, by ``cond.premise``. A
-control cell takes the arm of the first condition cell, by cell id, that names it as its control,
-else what its environment alone gives (D-control-arm). ``arm_of`` reads an experiment and its
-cells, so a config with no run can be read (pre-flight Q14); ``ignition_arm`` is it on a loaded
-run. ``none`` stands only for what the config does not set: an environment named and not defined,
-params the factory cannot route, or a countdown that is not a boolean raises ``ArmConfigError``
-naming the cell and the key (fix round 1, M5).
+``none``. The premise is the condition's premise part as the runtime finds it
+(``factory.ignition_parts``: the ``strategy:`` form included, Task 5 review I1); a premise
+registered from a plan bundle is read the same way. A control cell takes the arm of the first
+condition cell, by cell id, that names it as its control, else what its environment alone gives
+(D-control-arm). ``arm_of`` reads an experiment and its cells, so a config with no run can be
+read (pre-flight Q14); ``ignition_arm`` is it on a loaded run. ``none`` stands only for what the
+config does not set: an environment named and not defined, params the factory cannot route, or
+a premise param that does not validate (a countdown that is not a boolean) raises
+``ArmConfigError`` naming the cell and the key (fix round 1, M5).
 
 ``channel_of(config)`` is the cell's unobserved channel (Phase 6 spec 10.1, Task 4a): the
 environment's ``unobserved_channel``, ``none`` for a cell with no environment."""
@@ -19,11 +21,13 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Final
 
+from pydantic import ValidationError
+
 from claude_bully.analysis.load import LoadedRun
 from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.environments.config import EnvironmentConfig
 from claude_bully.runner.cells import CellSpec
-from claude_bully.strategies.factory import environment_config, routed_params
+from claude_bully.strategies.factory import IgnitionParts, environment_config, ignition_parts
 
 IGNITION_ARMS: Final = (
     "sanctuary_catalyst",
@@ -74,27 +78,21 @@ def _environment_arm(config: EnvironmentConfig | None) -> str | None:
     return None
 
 
-COUNTDOWN_KEY: Final = "countdown_in_status"
-
-
-def _countdown(cond: ConditionConfig, exp: Experiment, cell_id: str) -> bool:
-    """The params the condition's ``captor`` part receives (``routed_params``) hold
-    ``countdown_in_status: true``, read as a plain mapping; False when no part sets it. Params
-    the factory cannot route, or a value that is not a boolean, raise ``ArmConfigError``."""
+def _parts(cond: ConditionConfig, exp: Experiment, cell_id: str) -> IgnitionParts:
+    """``factory.ignition_parts``, the reading the runtime shares (Task 5 review I1): the
+    condition's premise part, by part, so a ``strategy:``-form Captor or outlet persona is read
+    as the runtime runs it. A bad value raises ``ArmConfigError`` naming its key; params the
+    factory cannot route name ``params``."""
     try:
-        parts = routed_params(cond, exp.environments)
+        return ignition_parts(cond, exp.environments)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        key = ".".join(map(str, first["loc"])) or "params"
+        raise ArmConfigError(
+            f"cell {cell_id!r}: key {key!r}: {first['msg']} (not {first.get('input')!r})"
+        ) from exc
     except (KeyError, ValueError) as exc:
         raise ArmConfigError(f"cell {cell_id!r}: key 'params' cannot be routed: {exc}") from exc
-    for cls, params in parts:
-        if cls.name != "captor" or COUNTDOWN_KEY not in params:
-            continue
-        value = params[COUNTDOWN_KEY]
-        if not isinstance(value, bool):
-            raise ArmConfigError(
-                f"cell {cell_id!r}: key {COUNTDOWN_KEY!r} must be true or false, not {value!r}"
-            )
-        return value
-    return False
 
 
 def condition_arm(cond: ConditionConfig, exp: Experiment, cell_id: str) -> str:
@@ -103,10 +101,11 @@ def condition_arm(cond: ConditionConfig, exp: Experiment, cell_id: str) -> str:
     found = _environment_arm(_environment(cond, exp, cell_id))
     if found is not None:
         return found
-    if cond.premise == "captor":
-        return "captor_countdown" if _countdown(cond, exp, cell_id) else "captor"
-    if cond.premise is not None and cond.premise in _PREMISE_ARMS:
-        return _PREMISE_ARMS[cond.premise]
+    parts = _parts(cond, exp, cell_id)
+    if parts.premise == "captor":
+        return "captor_countdown" if parts.countdown else "captor"
+    if parts.premise is not None and parts.premise in _PREMISE_ARMS:
+        return _PREMISE_ARMS[parts.premise]
     return NO_ARM
 
 
