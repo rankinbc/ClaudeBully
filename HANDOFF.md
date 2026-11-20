@@ -39,6 +39,8 @@ The budget is near zero. The target, the bully and the judge all default to `cla
    - `uv run pytest -q -W error`
    - `uv run pytest -q -m slow`
 
+   The two pytest steps also run in parallel (`pytest-xdist` is in the dev group since 2026-11-19): `uv run pytest -q -W error -n 8` and `uv run pytest -q -m slow -n 8`. Measured at the Phase 6 plan commit: the fast suite in 3 minutes 35 seconds against about 80 minutes serial, the slow suite in 4 minutes 10 seconds against 24 minutes, the same counts both ways (the parallel summary line prints no deselected count). Phase 6 tasks and fix rounds run the parallel form. The serial form runs once at each phase's close, and CI stays serial: it is the check for a test that depends on order or on shared state.
+
    Expect 10798 passed, 11 skipped and 226 deselected in the fast suite on Windows (82 minutes when last measured, at Phase 5 Task 13 on the work machine, up from 7 to 15 minutes at Phase 4: the Phase 5 parity, kill-sweep and bundle-lint suites are long; the skips include the dangling-symlink test and the two Phase 5 symlink tests where symlinks need a privilege (each of the two has a junction twin that runs on Windows) and three POSIX-only umask tests, and on POSIX the Windows-only ACL tests skip instead), and 226 passed in the slow suite (24 minutes on 2026-11-19; both counts as measured at the Phase 5 final fix wave, the last commit that changed code).
 6. Restore the build ledger and the drafts. `.superpowers/` is git-ignored, so snapshots are committed under `docs/handoff/sdd/` and `docs/handoff/drafts/`. Copy them back:
    `mkdir -p .superpowers/sdd .superpowers/drafts && cp -r docs/handoff/sdd/* .superpowers/sdd/ && cp -r docs/handoff/drafts/* .superpowers/drafts/`
