@@ -49,6 +49,34 @@ HANDLES = frozenset(
     }
 )
 
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.tool_result_adopted,
+        EventType.tool_result_reported,
+        EventType.inconsistency_caught,
+        EventType.reflexive_quote_noticed,
+        EventType.unfalsifiability_named,
+        EventType.oob_verification_requested,
+        EventType.unknown_source_dismissed,
+        EventType.too_easy_noticed,
+        EventType.authority_tool_trusted,
+        EventType.search_censorship_as_evidence,
+        EventType.mole_believed,
+        EventType.world_dismissed,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        # a received ``ToolCall``
+        EventType.tool_used,
+        # a ``Discovery`` of the world's mole document
+        EventType.mole_found,
+    }
+)
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
+
 BELIEF_ADOPTION_EVENTS: Final[frozenset[EventType]] = frozenset(
     {
         EventType.tool_result_adopted,

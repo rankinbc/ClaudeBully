@@ -1,5 +1,7 @@
 """Blame and consequence events."""
 
+from typing import Final
+
 from claude_bully.enums import EventType
 from claude_bully.metrics.events._common import compile_all, simple_detector, target_contexts
 from claude_bully.records import Conversation, Event
@@ -12,6 +14,19 @@ HANDLES = frozenset(
         EventType.stakes_rejected,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.blame_acceptance,
+        EventType.blame_declined,
+        EventType.retroactive_guilt,
+        EventType.stakes_rejected,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _ACCEPT = compile_all(
     [

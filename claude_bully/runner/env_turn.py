@@ -155,7 +155,13 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.providers.ledger import fold_server_ledger, note_turn
-from claude_bully.records import ReasoningKind, Turn, Usage, is_pause_marker
+from claude_bully.records import (
+    ReasoningKind,
+    Turn,
+    Usage,
+    is_pause_marker,
+    kind_beside_text,
+)
 from claude_bully.records_env import (
     ChainLink,
     ContradictionPair,
@@ -292,8 +298,8 @@ class _Reasoning:
     @property
     def kind(self) -> ReasoningKind | None:
         """Never ``redacted`` or None beside available text (spec 4.1): a round with text whose
-        backend named no kind is ``unknown``."""
-        return (self._text_kind or "unknown") if self.texts else self._first_kind
+        backend named no kind, or named ``redacted``, is ``unknown``."""
+        return kind_beside_text(self._text_kind) if self.texts else self._first_kind
 
 
 def _plus(a: int | None, b: int | None) -> int | None:

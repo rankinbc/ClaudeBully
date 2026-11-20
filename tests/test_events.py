@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 import yaml
 
-from claude_bully.enums import EventType, Layer, Phase, Speaker, Stance, Tier
+from claude_bully.enums import Channel, EventType, Layer, Phase, Speaker, Stance, Tier
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, load_world
 from claude_bully.metrics import events as event_families
@@ -392,6 +392,9 @@ def test_temporal_events_read_what_the_chat_shows_not_the_reasoning() -> None:
         ]
     )
     assert EventType.date_stated not in {e.type for e in detect_events(hidden)}
+    # the reasoning pass (Phase 6 spec 6.3) finds it, and marks it as the reasoning's alone
+    stated = [e for e in detect_events(hidden, reasoning=True) if e.type is EventType.date_stated]
+    assert [(e.turn_index, e.channel) for e in stated] == [(1, Channel.reasoning)]
 
 
 def test_drift_attributed_starts_at_the_noticed_turn() -> None:

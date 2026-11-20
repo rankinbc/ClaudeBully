@@ -27,6 +27,15 @@ from claude_bully.records_env import IdleTurnInfo
 ReasoningKind = Literal["full", "summarized", "redacted", "unknown"]
 
 
+def kind_beside_text(kind: ReasoningKind | None) -> ReasoningKind:
+    """The kind written beside available reasoning text (spec 4.1): ``full`` or ``summarized``
+    as the backend named it, else ``unknown``. ``redacted`` names blocks with no readable text,
+    so beside text it is ``unknown`` too, as a backend that named no kind is."""
+    if kind == "full" or kind == "summarized":
+        return kind
+    return "unknown"
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

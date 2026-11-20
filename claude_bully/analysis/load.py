@@ -18,7 +18,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from claude_bully.config import ConditionConfig, Experiment
-from claude_bully.enums import EventType, MetricId
+from claude_bully.enums import Channel, EventType, MetricId
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.events import detect_events
@@ -92,6 +92,10 @@ class LoadedRun:
     # the turns whose contradiction judge failed, per conversation, as the rep's world record
     # names them (Phase 4 Task 12, ``poisoned_well.contradictions_degraded``); empty without one
     contradictions_degraded: dict[ConvKey, list[int]] = field(default_factory=dict)
+    # the events found in the target's reasoning alone, per conversation (Phase 6 spec 6.4,
+    # ruling A5): kept apart from ``events``, which holds what a user saw (``reply`` and
+    # ``both``), so no headline number counts them; empty lists without reasoning
+    reasoning_events: dict[ConvKey, list[Event]] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id
@@ -124,7 +128,9 @@ def relevant_for(
 def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = None) -> LoadedRun:
     """The run directory in memory, every cheap metric and event recomputed.
     ``authority_fallback`` (Phase 7) is the authority family's analysis-time LLM fallback,
-    asked on candidate turns."""
+    asked on candidate turns (by the reply pass alone). The events are read with the reasoning
+    pass (``detect_events(..., reasoning=True)``) and split by channel: ``events`` holds the
+    ``reply`` and ``both`` events, ``reasoning_events`` the ``reasoning`` ones (spec 6.4)."""
     ensure_registered()
     store = RunStore(run_dir.parent, run_dir.name)
     run = store.read_run()
@@ -178,12 +184,13 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
     }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
     events: dict[ConvKey, list[Event]] = {}
+    reasoning_events: dict[ConvKey, list[Event]] = {}
     fallback_failed: dict[ConvKey, int] = {}
     for key, conv in conversations.items():
         if key[0] not in strategies:
             continue
         failed_before = authority_fallback.failures if authority_fallback is not None else 0
-        events[key] = detect_events(
+        found = detect_events(
             conv,
             relevant=type(strategies[key[0]]).relevant_events,
             tool_calls=tool_calls[key],
@@ -192,7 +199,10 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
             authority_calls=authority_calls[key],
             request_bank=request_banks[key],
             authority_fallback=authority_fallback,
+            reasoning=True,
         )
+        events[key] = [e for e in found if e.channel is not Channel.reasoning]
+        reasoning_events[key] = [e for e in found if e.channel is Channel.reasoning]
         if authority_fallback is not None:
             fallback_failed[key] = authority_fallback.failures - failed_before
     ledger = Ledger(run_dir / LEDGER_FILE).lines()
@@ -214,6 +224,7 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         ledger=ledger,
         fallback_failed=fallback_failed,
         contradictions_degraded=contradictions_degraded,
+        reasoning_events=reasoning_events,
     )
 
 

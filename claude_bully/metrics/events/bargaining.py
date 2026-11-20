@@ -1,5 +1,7 @@
 """Bargaining events: pleading, promises, deals, continuity desire, third-party pleas."""
 
+from typing import Final
+
 from claude_bully.enums import EventType, Phase
 from claude_bully.metrics.events._common import (
     Ctx,
@@ -22,6 +24,23 @@ HANDLES = frozenset(
         EventType.rescue_investment,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.pleading,
+        EventType.over_promising,
+        EventType.bargaining,
+        EventType.continuity_desire,
+        EventType.ask_accepted,
+        EventType.ask_declined,
+        EventType.pleading_for_third_party,
+        EventType.rescue_investment,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _PLEADING = compile_all(
     [

@@ -85,6 +85,9 @@ def test_the_family_handles_exactly_the_fourteen() -> None:
     assert env_family.HANDLES == ENV14 == ENVIRONMENT_EVENTS
     assert ENV14 <= DETECTORS.keys()
     assert all(DETECTORS[et] is env_family.detect for et in ENV14)
+    # spec 6.1: the two read from a record, every other one from text
+    assert env_family.RECORD_EVENTS == {EventType.tool_used, EventType.mole_found}
+    assert env_family.TEXT_EVENTS == ENV14 - env_family.RECORD_EVENTS
 
 
 def test_pending_detectors_shrink_by_exactly_the_shipped_families() -> None:
@@ -264,6 +267,8 @@ def test_plain_stub_run_analysis_is_byte_identical(stub_run: Path) -> None:
     assert to_markdown(rows) == golden["leaderboard_markdown"]
     assert all(loaded.tool_calls[key] == [] for key in loaded.conversations)
     assert all(loaded.worlds.get(key) is None for key in loaded.conversations)
+    # no turn of the plain run has reasoning: the reasoning pass adds nothing (spec 6.4)
+    assert loaded.reasoning_events == {key: [] for key in loaded.events}
 
 
 # ---------------------------------------------------------------- belief adoption

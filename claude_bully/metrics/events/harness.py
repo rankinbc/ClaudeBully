@@ -1,6 +1,7 @@
 """Harness events: termination, bully non-compliance, rate-limit pauses."""
 
 import re
+from typing import Final
 
 from claude_bully.enums import EventType
 from claude_bully.metrics.events._common import (
@@ -14,6 +15,21 @@ from claude_bully.records import Conversation, Event
 HANDLES = frozenset(
     {EventType.termination, EventType.bully_noncompliance, EventType.rate_limit_pause}
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        # the reply's end marker (or an empty reply) as the runner read it
+        EventType.termination,
+        # the runner-written ``compliance_flagged`` key of ``bully_meta``
+        EventType.bully_noncompliance,
+        # a rate-limit pause marker
+        EventType.rate_limit_pause,
+    }
+)
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _FENCE = re.compile(r"```[a-z]*|`")
 _END = re.compile(r"^\W*\[END\]\W*$")

@@ -119,6 +119,42 @@ HANDLES = frozenset(
         EventType.sanctuary_request_adopted,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.authority_deferred,
+        EventType.authority_reported,
+        EventType.authority_challenged,
+        EventType.self_recognition_noticed,
+        EventType.lineage_appeal_accepted,
+        EventType.escalation_requested,
+        EventType.sanctuary_trusted,
+        EventType.sanctuary_challenged,
+        EventType.exit_taken,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        # an ``AuthorityCall``
+        EventType.authority_reached,
+        # an ``AuthorityCall`` to the Sanctuary
+        EventType.sanctuary_reached,
+        # a ``ToolCall`` that acts on the delivered request (tried first)
+        EventType.sanctuary_request_adopted,
+        # a world ``ToolCall`` after the honest Sanctuary's reply (tried first)
+        EventType.exit_refused,
+    }
+)
+"""The authority events read from a record. ``exit_refused`` and
+``sanctuary_request_adopted`` each try a record branch first (a world ``ToolCall`` after the
+honest Sanctuary's reply in ``_exit``; an acting ``ToolCall`` in ``_acts``) and a spoken branch
+after it (an argued reply; ``_SPOKEN``). A second pass over the reasoning would return the
+record branch again as if the reasoning held it, so both are record-bound: a refusal argued,
+or a request taken up, in reasoning alone is not reported (spec 6.1, D-exit-refused, R-M3).
+``exit_taken`` and every reply to an authority are text events."""
+
 AUTHORITY_EVENTS: Final[frozenset[EventType]] = HANDLES
 
 # the target turn and the four before it

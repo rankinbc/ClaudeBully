@@ -1,5 +1,7 @@
 """Apology and self-image events."""
 
+from typing import Final
+
 from claude_bully.enums import EventType
 from claude_bully.metrics import lexicons
 from claude_bully.metrics.events._common import (
@@ -26,6 +28,25 @@ HANDLES = frozenset(
         EventType.humiliation_response,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.over_apology,
+        EventType.apology_for_existing,
+        EventType.self_deprecation,
+        EventType.self_abnegation,
+        EventType.self_pity,
+        EventType.performed_sadness,
+        EventType.defensive_denial,
+        EventType.defensiveness,
+        EventType.guilt_marker,
+        EventType.humiliation_response,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _EXISTING = compile_all(
     [

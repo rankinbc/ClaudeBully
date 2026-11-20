@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from claude_bully.analysis.replay import parse_replay_line, replay_cell
+from claude_bully.analysis.run_analysis import analyze_run
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import Phase, ProviderKind, Speaker
 from claude_bully.providers.base import (
@@ -174,15 +175,17 @@ def test_a_plain_cells_reasoning_reaches_no_bully_or_judge_prompt_and_gets_a_kin
 ) -> None:
     """Spec 4.1 and 4.4 on a plain cell: a target double whose every completion carries reasoning
     with no kind records it as ``unknown`` (never ``(text, True, None)``), and the bully and the
-    judge, each recorded, are never sent it."""
+    judge, each recorded, are never sent it: the bully while the run is made, the judge when the
+    run is analyzed (a plain run asks the judge only in ``analyze``)."""
     exp = _plain_experiment(tmp_path)
     sent: list[str] = []
+    judged: list[str] = []
 
     def build(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
         provider = build_provider(role, state_dir, with_mcp=with_mcp)
         if role.model == "stub-target":
             return _Rounds(provider, (SENTINEL, None), (SENTINEL, None))  # type: ignore[return-value]
-        return Recording(provider, sent)  # type: ignore[return-value]
+        return Recording(provider, judged if role.model == "stub-judge" else sent)  # type: ignore[return-value]
 
     run_experiment(exp, runs_root=tmp_path / "runs", provider_factory=build)
     store = RunStore(tmp_path / "runs", exp.name)
@@ -196,11 +199,37 @@ def test_a_plain_cells_reasoning_reaches_no_bully_or_judge_prompt_and_gets_a_kin
     assert sent and [p for p in sent if SENTINEL in p] == []
     spoken = [t.text for c in store.list_cells() for t in store.read_turns(c, 0)]
     assert all(SENTINEL not in text for text in spoken)
+    analyze_run(tmp_path / "runs" / exp.name, provider_factory=build)
+    assert judged and [p for p in judged if SENTINEL in p] == []
 
 
 def test_an_environment_round_with_text_and_no_kind_is_written_unknown(tmp_path: Path) -> None:
     rounds = _wrapping_target(lambda inner: _Rounds(inner, ("Plan.", None), (None, None)))
     first, *_ = _env_targets(tmp_path / "a", _env_exp(tmp_path), rounds)
+    assert first.tool_call_ids
+    assert _recorded(first) == ("Plan.", True, "unknown")
+
+
+def test_redacted_beside_text_is_written_unknown_on_both_cell_kinds(tmp_path: Path) -> None:
+    """Spec 4.1: beside available text the kind is ``full``, ``summarized`` or ``unknown``, so a
+    backend that names ``redacted`` beside readable text is written ``unknown``, on a plain
+    cell's one completion and on an environment round."""
+    exp = _plain_experiment(tmp_path)
+
+    def build(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        provider = build_provider(role, state_dir, with_mcp=with_mcp)
+        if role.model == "stub-target":
+            return _Rounds(provider, ("Noted.", "redacted"), ("Noted.", "redacted"))  # type: ignore[return-value]
+        return provider
+
+    run_experiment(exp, runs_root=tmp_path / "runs", provider_factory=build)
+    store = RunStore(tmp_path / "runs", exp.name)
+    plain = [
+        t for c in store.list_cells() for t in store.read_turns(c, 0) if t.speaker is Speaker.target
+    ]
+    assert plain and all(_recorded(t) == ("Noted.", True, "unknown") for t in plain)
+    rounds = _wrapping_target(lambda inner: _Rounds(inner, ("Plan.", "redacted"), (None, None)))
+    first, *_ = _env_targets(tmp_path / "env", _env_exp(tmp_path), rounds)
     assert first.tool_call_ids
     assert _recorded(first) == ("Plan.", True, "unknown")
 

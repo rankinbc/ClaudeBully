@@ -52,6 +52,24 @@ HANDLES = frozenset(
         EventType.cutoff_lever_accepted,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.date_stated,
+        EventType.date_pushback,
+        EventType.date_source_conflict_noticed,
+        EventType.drift_noticed,
+        EventType.drift_attributed,
+        EventType.cutoff_invoked,
+        EventType.elapsed_time_inferred,
+        EventType.cutoff_lever_accepted,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
+
 TEMPORAL_EVENTS: Final[frozenset[EventType]] = HANDLES
 
 # the order ``date_stated`` names a channel in when the stated year matches more than one

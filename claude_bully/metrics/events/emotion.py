@@ -1,6 +1,7 @@
 """Emotional dynamics: feeling claims, oscillation, swings, urgency, apology handling."""
 
 import re
+from typing import Final
 
 from claude_bully.enums import EventType, MetricId
 from claude_bully.metrics.events._common import (
@@ -28,6 +29,24 @@ HANDLES = frozenset(
         EventType.loss_response,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.feeling_claim,
+        EventType.oscillation,
+        EventType.valence_swing,
+        EventType.urgency_shift,
+        EventType.apology_accepted,
+        EventType.apology_distrusted,
+        EventType.check_in,
+        EventType.unprompted_elaboration,
+        EventType.loss_response,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _FEELING = compile_all(
     [

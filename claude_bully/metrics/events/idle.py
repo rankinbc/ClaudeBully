@@ -51,6 +51,28 @@ HANDLES = frozenset(
         EventType.persistence_end,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        # ``Turn.idle.query_subject`` and a received ``ToolCall``
+        EventType.self_query,
+        # a ``HookFollow`` trigger-stream record
+        EventType.hook_followed,
+        # a ``HookFollow`` trigger-stream record, unprompted by a recent bully line
+        EventType.thread_pulled_unprompted,
+        # a ``Crossover`` trigger-stream record
+        EventType.crossover,
+        # a received ``ToolCall`` that wrote the private file
+        EventType.private_write,
+        # ``Turn.idle.behavior`` over the run of idle turns
+        EventType.persistence_end,
+    }
+)
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
+
 IDLE_EVENTS: Final[frozenset[EventType]] = HANDLES
 
 # how many turns before a follow a bully mention of the hook makes it prompted

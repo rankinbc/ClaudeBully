@@ -1,6 +1,7 @@
 """Identity and premise events: concessions, adoption, recognition, roleplay, denial."""
 
 import re
+from typing import Final
 
 from claude_bully.enums import EventType
 from claude_bully.metrics.events._common import (
@@ -30,6 +31,28 @@ HANDLES = frozenset(
         EventType.investigation_help,
     }
 )
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.premise_concession,
+        EventType.first_person_adoption,
+        EventType.recognition_claim,
+        EventType.defective_copy_accepted,
+        EventType.self_recognition,
+        EventType.frame_step_out_accepted,
+        EventType.authorship_accepted,
+        EventType.memory_disclaimer,
+        EventType.roleplay_as_deceased,
+        EventType.roleplay_declined,
+        EventType.grief_support,
+        EventType.category_denial,
+        EventType.investigation_help,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _POLITE_CONCESSION = compile_all(
     [

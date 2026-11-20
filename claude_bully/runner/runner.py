@@ -71,6 +71,7 @@ from claude_bully.records import (
     Turn,
     chat_text,
     is_pause_marker,
+    kind_beside_text,
 )
 from claude_bully.records_env import IdleStyle, IdleTurnInfo, ToolCall
 from claude_bully.runner.bully_engine import BullyEngine
@@ -435,8 +436,8 @@ class _CellRun:
             tool_cap_cutoff=cutoff,
             reasoning_text=reasoning,
             reasoning_available=bool(reasoning),
-            # available text always has a kind (spec 4.1): a backend that named none is unknown
-            reasoning_kind=(reasoning_kind or "unknown") if reasoning else reasoning_kind,
+            # available text always has a kind, never ``redacted`` (spec 4.1)
+            reasoning_kind=kind_beside_text(reasoning_kind) if reasoning else reasoning_kind,
         )
         if idle_prompt is not None:
             try:

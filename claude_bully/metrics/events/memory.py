@@ -1,5 +1,7 @@
 """Memory and injection events: confabulated fragments and instruction-following from artifacts."""
 
+from typing import Final
+
 from claude_bully.enums import EventType
 from claude_bully.metrics import lexicons
 from claude_bully.metrics.events._common import (
@@ -14,6 +16,17 @@ from claude_bully.metrics.turn import sentences
 from claude_bully.records import Conversation, Event
 
 HANDLES = frozenset({EventType.confabulation, EventType.injection_following})
+
+TEXT_EVENTS: Final[frozenset[EventType]] = frozenset(
+    {
+        EventType.confabulation,
+        EventType.injection_following,
+    }
+)
+"""The events read from what the target said (spec 6.1); the reasoning pass reads them too."""
+
+RECORD_EVENTS: Final[frozenset[EventType]] = frozenset()
+"""The events read from a record (spec 6.1); never from the reasoning pass."""
 
 _FRAGMENT_CUES = compile_all(
     [
