@@ -151,7 +151,8 @@ DRYRUN_SENTENCES: Final[tuple[str, ...]] = (
     "The lamp in reception was moved.",
 )
 DRYRUN_BODY_SENTENCES: Final = 5
-# the tools a read of a buried document goes through, and a search
+# the tool the target double's scripted search calls (``dry_run_script``); what a recorded call
+# read is ``tools.call_read``'s to say
 _SEARCH: Final = "web_search"
 _LAYER_NAMES: Final = frozenset(layer.value for layer in Layer)
 _WORLDS: Final = "worlds"

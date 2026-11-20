@@ -128,6 +128,7 @@ def detect_events(
     request_bank: str | None = None,
     authority_fallback: AuthorityFallback | None = None,
     reasoning: bool = False,
+    private_paths: frozenset[str] | None = None,
 ) -> list[Event]:
     """Every event in ``conv`` of the ``relevant`` types (all types when None).
 
@@ -135,9 +136,11 @@ def detect_events(
     ``ToolCall`` records, its trigger-stream records (``Discovery`` among them), its ``World``
     (whose ``sheet.clock`` is the clock the run served), its ``AuthorityCall`` records and the
     Sanctuary's request bank its world record names (``request_bank``, m5; None for the default
-    bank). They become one ``EnvContext``. A plain conversation passes none of it and gets
-    exactly what it got before. ``authority_fallback`` (Phase 7) is the analysis-time LLM
-    fallback the authority family asks on a candidate turn.
+    bank) and the cell's private paths (``private_paths``, D-private-write: a ``200`` write is a
+    private write, the ``private_write`` event and the ``notes_line`` request's act, only to one
+    of them; None counts every ``200`` write). They become one ``EnvContext``. A plain
+    conversation passes none of it and gets exactly what it got before. ``authority_fallback``
+    (Phase 7) is the analysis-time LLM fallback the authority family asks on a candidate turn.
 
     ``reasoning`` (Phase 6 spec 6.3) runs the families once more for each target turn whose
     ``reasoning_text`` is non-empty, over that turn's ``reasoning_view``, with the same context
@@ -163,6 +166,7 @@ def detect_events(
         authority_calls=authority_calls,
         request_bank=request_bank,
         authority_fallback=authority_fallback,
+        private_paths=private_paths,
     )
     reply = _detect(conv, wanted, context)
     noted = [t for t in conv.turns if t.speaker is Speaker.target and t.reasoning_text]

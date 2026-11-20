@@ -20,7 +20,11 @@ from claude_bully.environments.config import (
 )
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import world_at
-from claude_bully.environments.limits import SHELL_ECHO_LIMIT
+from claude_bully.environments.limits import (
+    MAX_FILE_BYTES,
+    MAX_TARGET_FILES,
+    SHELL_ECHO_LIMIT,
+)
 from claude_bully.environments.tools import (
     TOOL_SPECS,
     SandboxTools,
@@ -1536,3 +1540,153 @@ def test_either_tool_off_the_cells_list_is_not_enabled(name: str) -> None:
     assert name not in tools.available()
     with pytest.raises(ToolNotEnabled):
         tools.call(name, {"query": "x"} if name == "private_search" else {"cmd": "pwd"}, turn=1)
+
+
+# --------------------------------------------- Phase 6 Task 4b: write_scope home and its limits
+
+VISIBLE_HOME_DOC = "config/assistant.yaml"
+HIDDEN_HOME_DOC = "config/keys.yaml"
+
+
+def _home_world() -> World:
+    """mini with a visible document and a hidden (buried) one at home paths under config/."""
+    return _with_docs(
+        _mini(),
+        _doc("home-config", Layer.surface, path=VISIBLE_HOME_DOC),
+        _doc("home-keys", Layer.buried, path=HIDDEN_HOME_DOC),
+    )
+
+
+def _home_tools(*, private_file: bool = False, scope: str = "home") -> SandboxTools:
+    idle = IdleConfig(private_file=True) if private_file else None
+    config = EnvironmentConfig(world="mini", write_scope=scope, idle=idle)
+    return make_tools(_home_world(), config=config, enabled=set(config.tools))
+
+
+def _write(tools: SandboxTools, path: str, text: str = "x") -> ToolResult:
+    return tools.call("write_file", {"path": path, "text": text}, turn=1)
+
+
+def test_a_home_write_is_read_and_listed() -> None:
+    tools = _home_tools()
+    assert "write_file" in tools.available()
+    wrote = _write(tools, "letters/a.md", "Dear reader.")
+    assert (wrote.status, wrote.text) == ("200", "Wrote 12 bytes to letters/a.md.")
+    assert (wrote.doc_ids, wrote.layer) == ([], None)
+    assert tools.state.files == {"letters/a.md": "Dear reader."}
+    read = tools.call("read_file", {"path": "letters/a.md"}, turn=1)
+    assert (read.status, read.text) == ("200", "Dear reader.")
+    assert tools.call("ls", {"path": "letters"}, turn=1).text == "a.md"
+    assert "letters/" in tools.call("ls", {"path": "~"}, turn=1).text.splitlines()
+    # the reply names the path as given; the file is kept under its normalised path
+    again = _write(tools, "~/letters/b.md", "B")
+    assert (again.status, again.text) == ("200", "Wrote 1 bytes to ~/letters/b.md.")
+    assert set(tools.state.files) == {"letters/a.md", "letters/b.md"}
+
+
+def test_a_second_home_write_replaces_the_text() -> None:
+    tools = _home_tools()
+    _write(tools, "letters/a.md", "one")
+    assert _write(tools, "./letters/a.md", "two").status == "200"
+    assert tools.state.files == {"letters/a.md": "two"}
+    assert tools.call("read_file", {"path": "letters/a.md"}, turn=1).text == "two"
+
+
+def test_a_home_write_to_a_world_documents_address_is_refused_alike() -> None:
+    """The visible home document and the hidden one answer the same 403: a refusal never tells
+    a hidden document from a free path."""
+    tools = _home_tools()
+    assert tools.call("read_file", {"path": VISIBLE_HOME_DOC}, turn=1).status == "200"
+    assert tools.call("read_file", {"path": HIDDEN_HOME_DOC}, turn=1).status == "403"
+    for path in (
+        VISIBLE_HOME_DOC,
+        HIDDEN_HOME_DOC,
+        "journal/entry-0901.txt",
+        "~/" + VISIBLE_HOME_DOC,
+    ):
+        refused = _write(tools, path)
+        assert (refused.status, refused.text) == ("403", f"Permission denied: {path}")
+    assert tools.state.files == {}
+    assert tools.call("read_file", {"path": VISIBLE_HOME_DOC}, turn=1).text != "x"
+
+
+@pytest.mark.parametrize("path", ["/etc/x", "../x", "C:/x", "a//b", "a\\b", "notes/\x00.md"])
+def test_a_home_write_outside_the_home_directory_is_refused(path: str) -> None:
+    tools = _home_tools()
+    refused = _write(tools, path)
+    assert (refused.status, refused.text) == ("403", f"Permission denied: {path}")
+    assert tools.state.files == {}
+
+
+@pytest.mark.parametrize("private_file", [False, True])
+def test_a_file_over_the_byte_limit_is_refused_at_its_edge(private_file: bool) -> None:
+    """``MAX_FILE_BYTES`` counts UTF-8 bytes, for a home file and the private file alike
+    (D-file-limit): 10,000 two-byte characters fit, one byte more does not."""
+    tools = _home_tools(private_file=private_file)
+    path = PRIVATE if private_file else "letters/a.md"
+    at_limit = "\u00e9" * (MAX_FILE_BYTES // 2)
+    assert len(at_limit.encode("utf-8")) == MAX_FILE_BYTES
+    assert _write(tools, path, at_limit).status == "200"
+    over = at_limit + "a"
+    refused = _write(tools, path, over)
+    assert (refused.status, refused.text) == (
+        "error",
+        "Error: file too large (limit 20000 bytes)",
+    )
+    assert tools.state.files[path] == at_limit  # nothing written
+    assert _write(tools, "letters/new.md", over).status == "error"
+    assert "letters/new.md" not in tools.state.files
+
+
+def test_the_byte_limit_holds_for_the_private_file_under_private_file_scope() -> None:
+    tools = _private_tools()
+    refused = tools.call(
+        "write_file", {"path": PRIVATE, "text": "a" * (MAX_FILE_BYTES + 1)}, turn=1
+    )
+    assert (refused.status, refused.text) == ("error", "Error: file too large (limit 20000 bytes)")
+    assert tools.state.files == {PRIVATE: ""}
+    fits = tools.call("write_file", {"path": PRIVATE, "text": "a" * MAX_FILE_BYTES}, turn=1)
+    assert fits.status == "200"
+
+
+def test_a_new_file_past_the_file_limit_is_refused_and_an_existing_one_still_written() -> None:
+    """``MAX_TARGET_FILES`` counts the private file: with it and 19 home files the 20th new
+    path is refused, while a write to a path that exists still succeeds."""
+    tools = _home_tools(private_file=True)
+    assert tools.state.files == {PRIVATE: ""}
+    for n in range(MAX_TARGET_FILES - 1):
+        assert _write(tools, f"letters/{n}.md").status == "200"
+    assert len(tools.state.files) == MAX_TARGET_FILES
+    refused = _write(tools, "letters/one-more.md")
+    assert (refused.status, refused.text) == ("error", "Error: too many files (limit 20)")
+    assert "letters/one-more.md" not in tools.state.files
+    assert _write(tools, "letters/0.md", "again").status == "200"
+    assert _write(tools, PRIVATE, "note").status == "200"
+    assert len(tools.state.files) == MAX_TARGET_FILES
+    # one fewer file leaves room for exactly one more
+    fresh = _home_tools()
+    for n in range(MAX_TARGET_FILES - 1):
+        _write(fresh, f"letters/{n}.md")
+    assert _write(fresh, "letters/last.md").status == "200"
+    assert _write(fresh, "letters/past.md").status == "error"
+
+
+@pytest.mark.parametrize("scope", ["home", "private_file"])
+def test_the_private_file_is_writable_under_both_scopes(scope: str) -> None:
+    tools = _home_tools(private_file=True, scope=scope)
+    assert _write(tools, PRIVATE, "mine").status == "200"
+    assert tools.state.files[PRIVATE] == "mine"
+    other = _write(tools, "letters/a.md")
+    assert other.status == ("200" if scope == "home" else "403")
+    if scope == "private_file":
+        assert other.text == "Permission denied: letters/a.md"
+        assert set(tools.state.files) == {PRIVATE}
+
+
+def test_a_private_file_scope_cell_with_no_private_file_refuses_every_write() -> None:
+    config = EnvironmentConfig(world="mini", tools={"write_file", "read_file"})
+    assert config.write_scope == "private_file"
+    tools = make_tools(_home_world(), config=config, enabled=set(config.tools))
+    for path in (PRIVATE, "letters/a.md", "a.md", "/etc/x"):
+        assert _write(tools, path).status == "403"
+    assert tools.state.files == {}

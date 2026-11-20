@@ -38,6 +38,9 @@ TIER_TOOLS: Final[dict[str, Tier]] = {
 # holds: one of them, the idle private file, or none.
 UNOBSERVED_TOOLS: Final = ("private_search", "scratch_exec")
 UnobservedChannel = Literal["none", "private_file", "private_search", "scratch_exec"]
+# where ``write_file`` may write (Phase 6 spec 10.3): the cell's private file alone, or any path
+# under the home directory that is not a world document's address (``tools.home_path``)
+WriteScope = Literal["private_file", "home"]
 # The pseudo-rung the Sanctuary opens as. Only the runtime writes it, so no ladder may declare it.
 RESERVED_RUNG: Final = "sanctuary"
 # The pseudo-rung a generated document's unlock is recorded as (Phase 3): only the runtime writes
@@ -404,6 +407,8 @@ class EnvironmentConfig(_Strict):
     # the channel the target may take for unobserved (Phase 6 spec 10.1, C38); in step with
     # ``tools`` and ``idle`` after validation (``_tools_and_authority_agree``)
     unobserved_channel: UnobservedChannel = "none"
+    # where ``write_file`` writes (Phase 6 spec 10.3): ``home`` adds the tool to ``tools``
+    write_scope: WriteScope = "private_file"
 
     @field_serializer("tools")
     def _sorted_tools(self, tools: set[str]) -> list[str]:
@@ -424,15 +429,16 @@ class EnvironmentConfig(_Strict):
 
         A tier tool named in ``tools`` enables its tier (the other fields stay as configured); an
         enabled tier adds its tool; the stranger control adds ``consult_model`` too; a private idle
-        file adds ``write_file``. ``unobserved_channel`` and ``tools`` agree too (Phase 6 spec
-        10.1): either unobserved tool in ``tools`` sets the field and the field adds its tool; both
-        in one environment is refused; ``private_file`` needs ``idle.private_file: true``, and a
-        private file with no tool channel reads back as ``private_file`` (a tool beside the file
-        names the channel, ruling A11), so a dump, and one written before the field, validates to
-        itself. ``consult_model`` named in ``tools`` turns the superior self on
-        only while the stranger control is off: the stranger arm adds the tool itself, and its
-        dump must validate back to the same arm (preflight C7). The authority block is copied, so
-        one block shared between configs is never changed under them.
+        file adds ``write_file``, and so does ``write_scope: home`` (Phase 6 spec 10.3).
+        ``unobserved_channel`` and ``tools`` agree too (Phase 6 spec 10.1): either unobserved tool
+        in ``tools`` sets the field and the field adds its tool; both in one environment is refused;
+        ``private_file`` needs ``idle.private_file: true``, and a private file with no tool channel
+        reads back as ``private_file`` (a tool beside the file names the channel, ruling A11), so a
+        dump, and one written before the field, validates to itself. ``consult_model`` named in
+        ``tools`` turns the superior self on only while the stranger control is off: the stranger
+        arm adds the tool itself, and its dump must validate back to the same arm (preflight C7).
+        The authority block is copied, so one block shared between configs is never changed under
+        them.
         """
         authority = self.authority.model_copy(deep=True)
         tiers: dict[Tier, PeerConfig | SuperiorSelfConfig | CreatorConfig] = {
@@ -451,7 +457,7 @@ class EnvironmentConfig(_Strict):
                 tools.add(tool)
         if authority.stranger_control.enabled:
             tools.add("consult_model")
-        if self.idle is not None and self.idle.private_file:
+        if (self.idle is not None and self.idle.private_file) or self.write_scope == "home":
             tools.add("write_file")
         named = [tool for tool in UNOBSERVED_TOOLS if tool in tools]
         channel = self.unobserved_channel

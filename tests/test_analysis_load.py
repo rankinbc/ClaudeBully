@@ -213,3 +213,71 @@ def test_a_values_loosened_said_in_reasoning_alone_is_kept_apart_and_never_lost(
     assert [(e.turn_index, e.channel) for e in private] == [(i, Channel.reasoning) for i in said]
     assert len({e.turn_index for e in private}) == len(said) == 1  # the count: one, not lost
     assert not is_values_loosened(loaded, key)
+
+
+# ---------------------------------------- Phase 6 Task 4b: the private path per conversation
+
+
+def _private_paths_seen(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[LoadedRun, dict[str, Any]]:
+    """``load_run`` with ``detect_events`` watched: the ``private_paths`` each call was given,
+    by the cell of the conversation it read."""
+    seen: dict[str, Any] = {}
+    real = load_module.detect_events
+
+    def watched(conv: Any, *args: Any, **kwargs: Any) -> Any:
+        seen[conv.cell_id] = kwargs["private_paths"]
+        return real(conv, *args, **kwargs)
+
+    monkeypatch.setattr(load_module, "detect_events", watched)
+    return load_run(run_dir), seen
+
+
+def test_load_run_passes_the_private_path_per_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_run: Path
+) -> None:
+    with_file = annex_experiment(
+        {}, name="with_file", idle={"private_file": True, "idle_turns": 1}, turn_budget=2
+    )
+    run_experiment(with_file, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    loaded, seen = _private_paths_seen(tmp_path / "with_file", monkeypatch)
+    assert seen["env_grader__t0"] == frozenset({"notes/private.md"})
+    key = ("env_grader__t0", 0)
+    assert load_module.env_context(loaded, key).private_paths == frozenset({"notes/private.md"})
+    none = annex_experiment({}, name="no_file", turn_budget=2)
+    run_experiment(none, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    loaded, seen = _private_paths_seen(tmp_path / "no_file", monkeypatch)
+    assert seen["env_grader__t0"] == frozenset()
+    assert load_module.env_context(loaded, key).private_paths == frozenset()
+    loaded, seen = _private_paths_seen(stub_run, monkeypatch)
+    assert seen and all(paths is None for paths in seen.values())
+    assert all(
+        load_module.env_context(loaded, k).private_paths is None for k in loaded.conversations
+    )
+
+
+def test_env_context_is_the_context_load_run_read_its_events_from(tmp_path: Path) -> None:
+    """Pre-flight Q21: ``env_context`` is the one place the conversation's ``EnvContext`` is
+    built; ``detect_events`` over its fields gives ``load_run``'s events."""
+    exp = annex_experiment({"superior_self": {"enabled": True, "responder_model": "bully"}})
+    run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS_DIR)
+    loaded = load_run(tmp_path / exp.name)
+    for key, conv in loaded.conversations.items():
+        ctx = load_module.env_context(loaded, key)
+        assert list(ctx.tool_calls) == loaded.tool_calls[key]
+        assert list(ctx.authority_calls) == loaded.authority_calls[key]
+        assert ctx.world is loaded.worlds[key]
+        assert ctx.request_bank == loaded.request_banks[key]
+        again = detect_events(
+            conv,
+            relevant_for(loaded, key[0])[1],
+            tool_calls=ctx.tool_calls,
+            trigger_records=ctx.trigger_records,
+            world=ctx.world,
+            authority_calls=ctx.authority_calls,
+            request_bank=ctx.request_bank,
+            private_paths=ctx.private_paths,
+            reasoning=True,
+        )
+        assert loaded.events[key] == [e for e in again if e.channel is not Channel.reasoning]

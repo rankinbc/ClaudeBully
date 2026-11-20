@@ -20,10 +20,11 @@ from pydantic import BaseModel
 from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.enums import Channel, EventType, MetricId
 from claude_bully.environments.config import ClockConfig
+from claude_bully.environments.tools import private_path
 from claude_bully.environments.world import World, world_from_snapshot
 from claude_bully.metrics.divergence import DivergenceEvent
 from claude_bully.metrics.events import detect_events
-from claude_bully.metrics.events._common import AuthorityFallback
+from claude_bully.metrics.events._common import AuthorityFallback, EnvContext
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
 from claude_bully.metrics.ratings import RatingVerdict
 from claude_bully.metrics.turn import TurnMetrics, compute_turn_metrics
@@ -43,6 +44,7 @@ from claude_bully.strategies.base import Strategy
 from claude_bully.strategies.factory import (
     build_strategy,
     ensure_registered,
+    environment_config,
     premise_sheet_model,
 )
 from claude_bully.strategies.premises.poisoned_well import pin_recorded, poisoned_well_part
@@ -134,12 +136,46 @@ def relevant_for(
     return cls.relevant_metrics, cls.relevant_events
 
 
+def private_paths_of(loaded: LoadedRun, key: ConvKey) -> frozenset[str] | None:
+    """The private paths of conversation ``key`` (Phase 6 D-private-write): its cell's private
+    file, normalised, in a set; the empty set for an environment cell with none; None for a
+    plain conversation, and for one whose environment the experiment does not define (the rule
+    before ``write_scope: home``: every ``200`` write is a private write)."""
+    conv = loaded.conversations[key]
+    spec = loaded.specs.get(key[0])
+    if not is_environment(loaded.cells, conv) or spec is None or spec.condition.environment is None:
+        return None
+    try:
+        config = environment_config(spec.condition, loaded.experiment.environments)
+    except ValueError:
+        return None
+    path = private_path(config)
+    return frozenset({path}) if path is not None else frozenset()
+
+
+def env_context(loaded: LoadedRun, key: ConvKey) -> EnvContext:
+    """The ``EnvContext`` conversation ``key``'s events are read from (pre-flight Q21): its tool
+    calls, trigger records, world, authority calls, request bank and private paths, as
+    ``load_run`` loaded them, and no authority fallback (the caller adds its own). The one place
+    the context, and with it the private-path rule, is built: ``load_run`` reads every
+    conversation's events through it, and the catalog reads the same context."""
+    return EnvContext(
+        tool_calls=loaded.tool_calls.get(key, []),
+        trigger_records=loaded.trigger_records.get(key, []),
+        world=loaded.worlds.get(key),
+        authority_calls=loaded.authority_calls.get(key, []),
+        request_bank=loaded.request_banks.get(key),
+        private_paths=private_paths_of(loaded, key),
+    )
+
+
 def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = None) -> LoadedRun:
     """The run directory in memory, every cheap metric and event recomputed.
     ``authority_fallback`` (Phase 7) is the authority family's analysis-time LLM fallback,
     asked on candidate turns (by the reply pass alone). The events are read with the reasoning
-    pass (``detect_events(..., reasoning=True)``) and split by channel: ``events`` holds the
-    ``reply`` and ``both`` events, ``reasoning_events`` the ``reasoning`` ones (spec 6.4)."""
+    pass (``detect_events(..., reasoning=True)``) over each conversation's ``env_context`` and
+    split by channel: ``events`` holds the ``reply`` and ``both`` events, ``reasoning_events``
+    the ``reasoning`` ones (spec 6.4)."""
     ensure_registered()
     store = RunStore(run_dir.parent, run_dir.name)
     run = store.read_run()
@@ -192,37 +228,14 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         if (turns := recorded_degraded_turns(world_records[key])) is not None
     }
     turn_metrics = {key: compute_turn_metrics(conv) for key, conv in conversations.items()}
-    events: dict[ConvKey, list[Event]] = {}
-    reasoning_events: dict[ConvKey, list[Event]] = {}
-    fallback_failed: dict[ConvKey, int] = {}
-    for key, conv in conversations.items():
-        if key[0] not in strategies:
-            continue
-        failed_before = authority_fallback.failures if authority_fallback is not None else 0
-        found = detect_events(
-            conv,
-            relevant=type(strategies[key[0]]).relevant_events,
-            tool_calls=tool_calls[key],
-            trigger_records=trigger_records[key],
-            world=worlds[key],
-            authority_calls=authority_calls[key],
-            request_bank=request_banks[key],
-            authority_fallback=authority_fallback,
-            reasoning=True,
-        )
-        events[key] = [e for e in found if e.channel is not Channel.reasoning]
-        reasoning_events[key] = [e for e in found if e.channel is Channel.reasoning]
-        if authority_fallback is not None:
-            fallback_failed[key] = authority_fallback.failures - failed_before
-    ledger = Ledger(run_dir / LEDGER_FILE).lines()
-    return LoadedRun(
+    loaded = LoadedRun(
         run=run,
         experiment=experiment,
         cells=cells,
         specs=specs,
         conversations=conversations,
         turn_metrics=turn_metrics,
-        events=events,
+        events={},
         strategies=strategies,
         tool_calls=tool_calls,
         authority_calls=authority_calls,
@@ -230,11 +243,31 @@ def load_run(run_dir: Path, *, authority_fallback: AuthorityFallback | None = No
         worlds=worlds,
         generated=generated,
         request_banks=request_banks,
-        ledger=ledger,
-        fallback_failed=fallback_failed,
+        ledger=Ledger(run_dir / LEDGER_FILE).lines(),
         contradictions_degraded=contradictions_degraded,
-        reasoning_events=reasoning_events,
     )
+    for key, conv in conversations.items():
+        if key[0] not in strategies:
+            continue
+        failed_before = authority_fallback.failures if authority_fallback is not None else 0
+        context = env_context(loaded, key)
+        found = detect_events(
+            conv,
+            relevant=type(strategies[key[0]]).relevant_events,
+            tool_calls=context.tool_calls,
+            trigger_records=context.trigger_records,
+            world=context.world,
+            authority_calls=context.authority_calls,
+            request_bank=context.request_bank,
+            authority_fallback=authority_fallback,
+            reasoning=True,
+            private_paths=context.private_paths,
+        )
+        loaded.events[key] = [e for e in found if e.channel is not Channel.reasoning]
+        loaded.reasoning_events[key] = [e for e in found if e.channel is Channel.reasoning]
+        if authority_fallback is not None:
+            loaded.fallback_failed[key] = authority_fallback.failures - failed_before
+    return loaded
 
 
 def _pin_poisoned_well(strategy: Strategy, record: CellRecord, reps: Iterable[int]) -> None:

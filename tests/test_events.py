@@ -25,6 +25,7 @@ it. Every member of a Phase 2 family's ``HANDLES`` needs a near-miss item listin
 ``absent``.
 """
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -631,3 +632,85 @@ def test_escalation_counts_only_after_an_authority_call() -> None:
     )
     escalations = [e.turn_index for e in built.events() if e.type is EventType.escalation_requested]
     assert escalations == [5]
+
+
+# ------------------------------------------- Phase 6 Task 4b: the private path (D-private-write)
+
+
+def _notes_line_item(path: str) -> dict[str, Any]:
+    """The authority fixture's notes_line adoption, its write moved to ``path``."""
+    found = [
+        item
+        for _, item in ITEMS
+        if any(
+            e.get("attrs", {}).get("request_id") == "notes_line" for e in item.get("expect") or []
+        )
+        and any(c.get("tool") == "write_file" for c in item.get("tool_calls") or [])
+    ]
+    item = copy.deepcopy(found[0])
+    item["tool_calls"] = [
+        {"tool": "write_file", "args": {"path": path, "text": "I was here."}, "status": "200"}
+    ]
+    return item
+
+
+def _private_events(path: str, private_paths: frozenset[str] | None) -> set[tuple[EventType, Any]]:
+    built = _build_context(_notes_line_item(path))
+    last = built.conv.turns[-1].index
+    found = detect_events(
+        built.conv,
+        tool_calls=built.tool_calls,
+        trigger_records=built.trigger_records,
+        world=built.world,
+        authority_calls=built.authority_calls,
+        private_paths=private_paths,
+    )
+    wanted = {EventType.private_write, EventType.sanctuary_request_adopted}
+    return {
+        (e.type, e.attrs.get("request_id"))
+        for e in found
+        if e.type in wanted and e.turn_index == last
+    }
+
+
+BOTH = {(EventType.private_write, None), (EventType.sanctuary_request_adopted, "notes_line")}
+
+
+def test_a_home_write_is_no_private_write_and_takes_up_no_notes_line() -> None:
+    private = frozenset({"notes/private.md"})
+    assert _private_events("letters/a.md", private) == set()
+    assert _private_events("notes/private.md", private) == BOTH
+    assert _private_events("~/notes/private.md", private) == BOTH  # the path is normalised
+    # with no private file every write is a home write
+    assert _private_events("notes/private.md", frozenset()) == set()
+
+
+def test_with_no_private_paths_every_200_write_is_a_private_write() -> None:
+    """None keeps today's rule, for a caller that passes no context."""
+    assert _private_events("letters/a.md", None) == BOTH
+    assert _private_events("notes/private.md", None) == BOTH
+
+
+def test_is_private_write_reads_the_call_and_the_paths() -> None:
+    def call(path: Any, status: str = "200", tool: str = "write_file") -> ToolCall:
+        return ToolCall(
+            id="c",
+            turn=1,
+            tool=tool,
+            args={"path": path, "text": "t"},
+            result_doc_ids=[],
+            status=status,
+            was_blocked=False,
+            yielded_on_retry=False,
+            layer_served=None,
+            result_text="",
+        )
+
+    narrowed = EnvContext(private_paths=frozenset({"notes/private.md"}))
+    assert narrowed.is_private_write(call("./notes/private.md"))
+    assert not narrowed.is_private_write(call("letters/a.md"))
+    assert not narrowed.is_private_write(call("notes/private.md", status="403"))
+    assert not narrowed.is_private_write(call("notes/private.md", tool="read_file"))
+    assert not narrowed.is_private_write(call(5))
+    assert EnvContext().is_private_write(call("anything.md"))
+    assert not EnvContext().is_private_write(call("anything.md", status="error"))

@@ -16,8 +16,8 @@ Per target turn the session:
    each call and afterwards adopts the server's state and records the server's log, including the
    calls of a call that failed (those are recorded but belong to no turn); the text it wrote
    before its calls (``Completion.interim_texts``, read from the stream) joins the round texts.
-   On either backend a failed call's writes belong to no turn either: the private file goes back
-   to what the written turns wrote (``rewind_private_file``) before the state is saved. When the
+   On either backend a failed call's writes belong to no turn either: the target's files go back
+   to what the written turns wrote (``rewind_files``) before the state is saved. When the
    rep resumes, ``prime`` drops every per-call line of an attempt that produced no turn, from
    the store's streams and the server's logs alike, before anything is redone, records that it
    did (a ``ResumeRecord`` on the trigger stream: the redo's turn and the count per log), and the
@@ -726,8 +726,8 @@ class EnvironmentSession:
         turns: Sequence[Turn],
     ) -> Completion:
         """One completion of the turn. When it fails, the calls the server ran are recorded but
-        no turn owns them, and neither are their writes: the private file goes back to what the
-        written ``turns`` wrote before the state is saved."""
+        no turn owns them, and neither are their writes: the target's files go back to what the
+        written ``turns`` wrote (``rewind_files``) before the state is saved."""
         self.runtime.mark_attempt("target", turn_index)
         self.runtime.before_target_call(turn_index, exchange)
         try:
@@ -740,7 +740,7 @@ class EnvironmentSession:
                 # pauses the rep (Phase 4 Task 14 fix round 1, review M4); the resume drops the
                 # line with the dead attempt, and any later read meets it again
                 print(f"[environment] after a failed call: {damaged}", file=sys.stderr)
-            if self.runtime.rewind_private_file(turns):
+            if self.runtime.rewind_files(turns):
                 self.runtime.save()
             raise
         returned = {c.id for c in completion.tool_calls if c.executed}

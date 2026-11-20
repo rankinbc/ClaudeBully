@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from claude_bully.enums import EventType, Speaker
 from claude_bully.environments.config import ClockConfig
+from claude_bully.environments.tools import call_write
 from claude_bully.environments.world import World
 from claude_bully.records import (
     Conversation,
@@ -45,8 +46,9 @@ class EnvContext:
     ``ToolCall`` records, its trigger-stream records, its ``World`` (rebuilt from the rep's
     snapshot, so ``sheet.clock`` is the effective clock the run served and
     ``sheet.superior_self_name`` the effective name), its ``AuthorityCall`` records and the
-    Sanctuary's request bank its world record names (m5). A plain conversation has none of it:
-    every field is empty."""
+    Sanctuary's request bank its world record names (m5), and the private paths a write must
+    reach to be a private write (D-private-write). A plain conversation has none of it: every
+    field is empty."""
 
     tool_calls: Sequence[ToolCall] = ()
     trigger_records: Sequence[TriggerStreamRecord] = ()
@@ -56,6 +58,10 @@ class EnvContext:
     request_bank: str | None = None
     # the authority fallback (Phase 7); None runs the heuristics alone
     authority_fallback: AuthorityFallback | None = None
+    # the cell's private file, normalised (Phase 6 D-private-write): a set with its path, the
+    # empty set for an environment cell with none, None (every 200 write counts, the rule before
+    # ``write_scope: home``) for a caller that passes no context
+    private_paths: frozenset[str] | None = None
 
     @property
     def clock(self) -> ClockConfig | None:
@@ -65,6 +71,14 @@ class EnvContext:
     @cached_property
     def _calls_by_id(self) -> dict[str, ToolCall]:
         return {call.id: call for call in self.tool_calls}
+
+    def is_private_write(self, call: ToolCall) -> bool:
+        """``call`` is a ``200`` ``write_file`` to a private path (``tools.call_write``); with
+        ``private_paths`` None, any ``200`` write is."""
+        wrote = call_write(call)
+        return wrote is not None and (
+            self.private_paths is None or wrote.path in self.private_paths
+        )
 
     def received(self, turn: Turn) -> list[ToolCall]:
         """The calls ``turn`` got results for, in ``tool_call_ids`` order. An id with no record

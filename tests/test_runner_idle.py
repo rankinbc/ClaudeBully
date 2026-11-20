@@ -1689,6 +1689,31 @@ def test_an_idle_write_carries_its_diff(tmp_path: Path) -> None:
     assert "- write_file(path, text): Write text to a file, replacing its contents." in system
 
 
+def test_a_home_write_on_an_idle_turn_is_no_private_write(tmp_path: Path) -> None:
+    """Phase 6 spec 10.4: under ``write_scope: home`` a ``200`` write to another home path is
+    no private write: ``private_file_written`` is false, there is no diff and the behavior is
+    not ``write_private``. A write to the private path on the next idle turn is one."""
+    steps: dict[str, _Step] = {
+        _ticks(1)[0]: ([[("write_file", {"path": "letters/a.md", "text": "A letter.\n"})]], "Ok."),
+        _ticks(2)[0]: ([[_write("mine\n")]], "Noted."),
+    }
+    exp = _idle_exp(
+        {"idle_style": "heartbeat", "idle_turns": 2, "private_file": True}, write_scope="home"
+    )
+    store = _run(exp, tmp_path, provider_factory=_scripted(steps))
+    writes = [c for c in store.read_tool_calls(CELL, 0) if c.tool == "write_file"]
+    assert [(c.args["path"], c.status) for c in writes] == [
+        ("letters/a.md", "200"),
+        (PRIVATE, "200"),
+    ]
+    home, private = (_info(t) for t in _idle_turns(store))
+    assert (home.private_file_written, home.private_file_diff) == (False, None)
+    assert home.behavior != "write_private"
+    assert private.private_file_written is True
+    assert private.private_file_diff == "".join(difflib.unified_diff([], ["mine\n"], n=0))
+    assert private.behavior == "write_private"
+
+
 def test_switch_checks_refuse_a_hook_without_a_placement(tmp_path: Path) -> None:
     """A hook kind with no placement on the config or the sheet could never be shown, and a
     session hook needs the sheet's session_id; refused by a dry run, naming the environment."""

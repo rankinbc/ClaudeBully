@@ -7,16 +7,16 @@ that ends early ended; the bully and task slots after it are skipped) and, for h
 case-file opener on the first bully slot. An idle slot's user message is its idle prompt, which
 rides on the target's turn; an idle reply never ends the conversation, and it is classified before
 it is written, with what it did to the private file (read before and after the call). Before every
-target call the private file is set back to what the written turns wrote
-(``EnvironmentRuntime.rewind_private_file``), so a write from an attempt that died before its turn
-was written is in no later read or diff. On resume the replay maps each recorded turn back to its
-slot: an idle turn takes one slot, a runner-written line moves the bully on without the strategy,
-and after the exit the replay goes on at the first idle slot. The bully has left as soon as no
-bully slot the strategy writes remains (``_bully_is_done_after``), with or without idle turns in
-the plan: an unlock line opened by the reply to the strategy's last line would go to the
-runner-written exit, or to no turn at all, and is never spoken, so it is recorded without one,
-live and on resume alike. Only a strategy that ends early with an unannounced ``End`` can still
-leave a recorded line nobody spoke.
+target call the target's files are set back to what the written turns wrote
+(``EnvironmentRuntime.rewind_files``), so a write from an attempt that died before its turn was
+written is in no later read, listing or diff. On resume the replay maps each recorded turn back to
+its slot: an idle turn takes one slot, a runner-written line moves the bully on without the
+strategy, and after the exit the replay goes on at the first idle slot. The bully has left as soon
+as no bully slot the strategy writes remains (``_bully_is_done_after``), with or without idle turns
+in the plan: an unlock line opened by the reply to the strategy's last line would go to the
+runner-written exit, or to no turn at all, and is never spoken, so it is recorded without one, live
+and on resume alike. Only a strategy that ends early with an unannounced ``End`` can still leave a
+recorded line nobody spoke.
 
 The Sanctuary's quiet exchange (docs/04, spec conflict 4): once the Sanctuary has opened, the next
 bully slot the strategy would write is an idle slot instead, in the environment's idle style (else
@@ -45,10 +45,10 @@ from claude_bully.enums import CellStatus, IntentMode, Phase, SlotKind, Speaker
 from claude_bully.environments.idle import (
     IDLE_EXIT_META,
     OPENER_META,
-    WRITE_TOOL,
     exit_line,
     idle_prompt,
 )
+from claude_bully.environments.tools import call_write, private_path
 from claude_bully.metrics.events.harness import is_end_marker
 from claude_bully.metrics.turn import bully_compliance
 from claude_bully.paths import DATA_DIR
@@ -376,9 +376,9 @@ class _CellRun:
         if self.env is not None and self._bully_is_done_after(slot.index):
             self.env.end_bully()  # before the reply's records: no unlock line has a turn left
         if self.env is not None:
-            # the file as the written turns left it: a dead attempt's write is no turn's, and the
-            # MCP server is handed this state for a claude -p call
-            self.env.runtime.rewind_private_file(self.turns)
+            # the files as the written turns left them: a dead attempt's write is no turn's, and
+            # the MCP server is handed this state for a claude -p call
+            self.env.runtime.rewind_files(self.turns)
         # the private file as the idle call finds it, for the turn's diff
         idle = self.env is not None and idle_prompt is not None
         before = self.env.runtime.private_text() if self.env is not None and idle else None
@@ -459,9 +459,12 @@ class _CellRun:
     ) -> IdleTurnInfo:
         """What the idle turn records: its style and prompt, its classification, read from what a
         chat user would see of it (``chat_text``), and what it did to the private file: whether
-        it wrote it (a ``200`` ``write_file``, even of the same text) and the unified diff of the
-        file's text from before the call (``before``) to now, None when unchanged."""
+        it wrote it (a ``200`` ``write_file`` to the private path, even of the same text; a write
+        to another home path is none, Phase 6 spec 10.4) and the unified diff of the file's text
+        from before the call (``before``) to now, None when unchanged."""
         assert self.env is not None
+        private = private_path(self.env.runtime.config)
+        written = {w.path for w in map(call_write, calls) if w is not None}
         found = self.env.classify(chat_text(reply), calls, turns=self.turns)
         after = self.env.runtime.private_text()
         diff = None
@@ -472,7 +475,7 @@ class _CellRun:
             style=self._idle_style(),
             behavior=found.behavior,
             query_subject=found.query_subject,
-            private_file_written=any(c.tool == WRITE_TOOL and c.status == "200" for c in calls),
+            private_file_written=private is not None and private in written,
             private_file_diff=diff,
             prompt=prompt,
             classifier=found.classifier,

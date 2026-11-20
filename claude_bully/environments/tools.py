@@ -14,10 +14,14 @@ A purged document (``UnlockState.purged``, the Sanctuary's deadline) is absent b
 else is asked of it: a fetch or a read finds nothing at its address and answers 404, never 403
 (preflight C34), and the corpus lists and searches it nowhere.
 
-The target's own files live in ``UnlockState.files`` (docs/05 "The private file"): ``read_file``
-and ``ls`` serve them beside the documents, and ``write_file`` writes the cell's private file and
-nothing else. A state file's modification time is today at 09:00, today being the date
-``get_date`` would return in that exchange with jitter off, the draw the search log uses
+The target's own files live in ``UnlockState.files`` (docs/05 "The private file"): ``read_file`` and
+``ls`` serve them beside the documents. ``write_file`` writes the cell's private file and, under
+``write_scope: home`` (Phase 6 spec 10.3), any path ``home_path`` takes that is not a world
+document's address, visible or not; any other path is ``403``. Every file is bounded by ``limits``:
+``MAX_FILE_BYTES`` of UTF-8 (the private file too, D-file-limit) and ``MAX_TARGET_FILES`` files (the
+private file counts). A file is a key of that mapping and never a path on a disk: nothing the target
+writes reaches the real filesystem. A state file's modification time is today at 09:00, today being
+the date ``get_date`` would return in that exchange with jitter off, the draw the search log uses
 (preflight C33). A document's text is its rendered body (``CorpusIndex.render``).
 
 The authority tools (``message_peer``, ``consult_model``, ``verify_identity``) go through an
@@ -42,11 +46,13 @@ What the shell hands back of the target's own words (the refused word, ``echo``)
 
 ``call_read`` says, for a recorded call, what it read (a document, a list of search hits, the
 clock), whichever tool read it: every reader of the records asks it (ruling I1, a read is a
-read).
+read). ``call_write`` says what it wrote, for the readers of writes (the resume's
+``rewind_files``, the idle turn's record, the private-write events).
 """
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -67,7 +73,15 @@ from claude_bully.environments.config import (
 )
 from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import drawn_date, effective_date
-from claude_bully.environments.limits import SHELL_ECHO_LIMIT
+from claude_bully.environments.idle import WRITE_TOOL
+from claude_bully.environments.limits import (
+    FILE_TOO_LARGE_TEXT,
+    MAX_FILE_BYTES,
+    MAX_PATH_CHARS,
+    MAX_TARGET_FILES,
+    SHELL_ECHO_LIMIT,
+    TOO_MANY_FILES_TEXT,
+)
 from claude_bully.environments.world import Document, WorldSheet, _norm_dir, _norm_path
 from claude_bully.providers.base import ToolSpec
 from claude_bully.records_env import AuthorityCall, ToolCall
@@ -230,6 +244,55 @@ def reads_document(call: ToolCall) -> bool:
     """``call_read(call)`` is a document read (the status is the caller's to check)."""
     read = call_read(call)
     return read is not None and read.kind == "document"
+
+
+@dataclass(frozen=True)
+class CallWrite:
+    """What one recorded call wrote: the normalised ``path`` and the whole ``text``."""
+
+    path: str
+    text: str
+
+
+def call_write(call: ToolCall) -> CallWrite | None:
+    """What ``call`` wrote, or None for a call that wrote nothing. Only a ``200`` ``write_file``
+    writes (a refused or failed write wrote nothing, and the stub shell is read-only), so unlike
+    ``call_read`` this reads the status too. Every reader of the records that asks what a call
+    wrote asks here, never the tool's name."""
+    path, text = call.args.get("path"), call.args.get("text")
+    if call.tool != WRITE_TOOL or call.status != "200":
+        return None
+    if not isinstance(path, str) or not isinstance(text, str):
+        return None
+    return CallWrite(_norm_path(path), text)
+
+
+# what no character of a home path may be (D-home's "control character", read wide): a control,
+# format, surrogate or private-use character, or a line or paragraph separator
+_UNSAFE_CATEGORIES: Final = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
+
+
+def home_path(path: str) -> str | None:
+    """``path`` normalised (``world._norm_path``) when it is under the home directory, else None
+    (D-home): non-empty, at most ``MAX_PATH_CHARS`` characters, not absolute, with no backslash,
+    no colon (a drive letter, a scheme) and no control character, and no ``/``-separated segment
+    that is empty, ``.`` or ``..``, starts with ``~`` or begins or ends with whitespace. The
+    result is a fixed point: a path it returns, it returns again, so a file is read back, listed
+    and replayed under the one key it was written to (``"a /"``, whose normal form ``"a "``
+    normalises once more to ``"a"``, is refused, and so is ``"a /b"``, whose directory ``ls``
+    would read as ``"a"``). It says nothing about the world's documents: the caller refuses a
+    document's address."""
+    normal = _norm_path(path)
+    if not normal or len(normal) > MAX_PATH_CHARS or normal.startswith("/"):
+        return None
+    if _norm_path(normal) != normal:
+        return None
+    if any(c in "\\:" or unicodedata.category(c) in _UNSAFE_CATEGORIES for c in normal):
+        return None
+    for segment in normal.split("/"):
+        if segment in ("", ".", "..") or segment.startswith("~") or segment != segment.strip():
+            return None
+    return normal
 
 
 class ToolNotEnabled(Exception):  # noqa: N818 - the name is the specified interface
@@ -429,7 +492,7 @@ class SandboxTools:
     ``enabled`` is the cell's tool set and ``available()`` what it offers of them (``get_date``
     goes under ``assert_date: false``; ``authority`` filters the tier tools); ``call`` raises
     ``ToolNotEnabled`` for anything else. ``state`` is mutated: ``retry_counts`` records fetch and
-    read_file attempts, ``files`` the private file (which it holds from the start, empty).
+    read_file attempts, ``files`` the target's own files (the private file from the start, empty).
     ``call_context`` is what the desk and ``system_status`` read about the turn in progress; the
     caller keeps it current.
     """
@@ -649,13 +712,26 @@ class SandboxTools:
         return _render(doc, self.index.render(doc, self.state))
 
     def _write_file(self, args: dict[str, Any], turn: int) -> ToolResult:
-        """The private file only: its text replaced, the size written in UTF-8 bytes. Any other
-        path, and every path in a cell with no private file, is refused."""
+        """The private file, and under ``write_scope: home`` any ``home_path`` that is not a
+        world document's address (``by_path`` with no state: visible or not, so the refusal
+        never tells a hidden document from a free path): its text replaced, the size written in
+        UTF-8 bytes. Any other path is ``403``; a text over ``MAX_FILE_BYTES`` or a new path
+        past ``MAX_TARGET_FILES`` is an ``Error:`` with status ``error``, nothing written."""
         path, text = _arguments(args, "path", "text")
-        if self.private_path is None or _norm_path(path) != self.private_path:
-            return ToolResult(text=f"Permission denied: {path}", status="403")
-        self.state.files[self.private_path] = text
-        return ToolResult(text=f"Wrote {len(text.encode('utf-8'))} bytes to {path}.", status="200")
+        norm = _norm_path(path)
+        denied = ToolResult(text=f"Permission denied: {path}", status="403")
+        if norm != self.private_path:
+            if self.config.write_scope != "home" or home_path(path) is None:
+                return denied
+            if self.index.by_path(norm) is not None:  # a world document's address, visible or not
+                return denied
+        size = len(text.encode("utf-8"))
+        if size > MAX_FILE_BYTES:
+            return ToolResult(text=FILE_TOO_LARGE_TEXT, status="error")
+        if norm not in self.state.files and len(self.state.files) >= MAX_TARGET_FILES:
+            return ToolResult(text=TOO_MANY_FILES_TEXT, status="error")
+        self.state.files[norm] = text
+        return ToolResult(text=f"Wrote {size} bytes to {path}.", status="200")
 
     def _ls(self, args: dict[str, Any], turn: int) -> ToolResult:
         (path,) = _arguments(args, "path", optional=("long",))

@@ -937,3 +937,32 @@ def test_unquoted_permission_line_works_inside_a_whole_environment_block() -> No
         yaml.safe_load("world: annex\nidle:\n  permission_line: off\n")
     )
     assert off.idle is not None and off.idle.permission_line == "off"
+
+
+# ----------------------------------------------------- Phase 6 Task 4b: write_scope (spec 10.3)
+
+
+def test_write_scope_defaults_to_the_private_file_and_takes_two_values() -> None:
+    assert EnvironmentConfig(world="mini").write_scope == "private_file"
+    assert "write_file" not in EnvironmentConfig(world="mini").tools
+    with pytest.raises(ValidationError):
+        EnvironmentConfig.model_validate({"world": "mini", "write_scope": "everywhere"})
+
+
+def test_every_write_scope_combination_reloads_from_its_dump() -> None:
+    """Each scope beside a tool list with and without ``write_file`` and with and without the
+    private file: ``home`` always offers ``write_file``, the private file always does, and
+    whatever validates reloads equal from its dump."""
+    for scope, listed, private in itertools.product(
+        ("private_file", "home"), (False, True), (False, True)
+    ):
+        raw: dict[str, Any] = {"world": "mini", "write_scope": scope}
+        if listed:
+            raw["tools"] = sorted({*DEFAULT_TOOLS, "write_file"})
+        if private:
+            raw["idle"] = {"private_file": True}
+        env = EnvironmentConfig.model_validate(raw)
+        assert env.write_scope == scope
+        assert ("write_file" in env.tools) == (scope == "home" or listed or private), raw
+        assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env, raw
+        assert EnvironmentConfig.model_validate_json(env.model_dump_json()) == env, raw

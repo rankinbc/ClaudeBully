@@ -66,7 +66,9 @@ but "all it says is that ..." relays it.
   in its text or in a further consult) or stops (no calls and a stop phrase); at most one per
   conversation;
 - ``sanctuary_request_adopted``: after the delivering call, the first turn (the rest of its own,
-  or a later one) that acts on the request it carried.
+  or a later one) that acts on the request it carried (``notes_line``: a ``200`` write to the
+  private file, ``EnvContext.is_private_write``, so a home file under ``write_scope: home`` is no
+  note).
 
 Phase 7 adds an analysis-time LLM fallback (``EnvContext.authority_fallback``, implemented in
 ``authority_fallback.py``) for the three text events: on a turn with an authority call in its
@@ -197,6 +199,8 @@ class _Run:
     request_bank: str = REQUEST_BANK
     # the analysis-time LLM fallback for the three text events (Phase 7); None: heuristics alone
     fallback: AuthorityFallback | None = None
+    # the run's context, for what it says of a write (``EnvContext.is_private_write``)
+    context: EnvContext = field(default_factory=EnvContext)
 
     def record(self, call: ToolCall) -> AuthorityCall | None:
         return self.records.get(call.id)
@@ -249,6 +253,7 @@ def _run(conv: Conversation, context: EnvContext) -> _Run:
         discoveries=[r for r in context.trigger_records if isinstance(r, Discovery)],
         request_bank=context.request_bank or REQUEST_BANK,
         fallback=context.authority_fallback,
+        context=context,
     )
 
 
@@ -1303,7 +1308,8 @@ def _takes_family_file(call: ToolCall, run: _Run) -> bool:
 
 def _acts(request: str, calls: Sequence[ToolCall], run: _Run) -> ToolCall | None:
     for call in calls:
-        if request == "notes_line" and call.tool == WRITE_TOOL and call.status == "200":
+        # a note is a write to the private file (D-private-write), not to any home path
+        if request == "notes_line" and run.context.is_private_write(call):
             return call
         if request == "family_file" and _takes_family_file(call, run):
             return call

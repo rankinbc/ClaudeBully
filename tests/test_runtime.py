@@ -15,7 +15,7 @@ from claude_bully.environments.authority import CallContext
 from claude_bully.environments.config import ClockConfig, EnvironmentConfig
 from claude_bully.environments.corpus import PlantedHook, UnlockState
 from claude_bully.environments.idle import IDLE_EXIT_META, own_phrase
-from claude_bully.environments.limits import tool_unavailable_text
+from claude_bully.environments.limits import MAX_FILE_BYTES, tool_unavailable_text
 from claude_bully.environments.mcp_server import (
     AUTHORITY_FILE,
     STATE_FILE,
@@ -1373,7 +1373,9 @@ def test_private_text_follows_the_private_file(tmp_path: Path) -> None:
     assert _annex_runtime(tmp_path, idle={"private_file": True}).private_text() == "hello"
 
 
-def test_rewind_private_file_keeps_only_what_the_written_turns_wrote(tmp_path: Path) -> None:
+def test_rewind_files_keeps_only_what_the_written_turns_wrote_to_the_private_file(
+    tmp_path: Path,
+) -> None:
     """Everything replays from the records: the private file is the text of the last ``200``
     ``write_file`` among the calls the written turns own, else empty. A write that ran but that no
     written turn owns (a dead attempt's) is undone, a refused write counts for nothing, and the
@@ -1387,19 +1389,48 @@ def test_rewind_private_file_keeps_only_what_the_written_turns_wrote(tmp_path: P
     # turn 3's attempt writes, then dies before its turn is written
     rt.execute(_call("write_file", "c", path="~/notes/private.md", text="dead attempt"), 3)
     assert rt.private_text() == "dead attempt"
-    assert rt.rewind_private_file(written) is True
+    assert rt.rewind_files(written) is True
     assert rt.private_text() == "one"
     assert rt.execute(_call("read_file", "r", path="notes/private.md"), 3).result_text == "one"
-    assert rt.rewind_private_file(written) is False
+    assert rt.rewind_files(written) is False
     # the redo's own write, once its turn is written, is the file
     again = rt.execute(_call("write_file", "d", path="notes/private.md", text="two"), 3)
-    assert rt.rewind_private_file([*written, _target(3, "Again.", [again.id])]) is False
+    assert rt.rewind_files([*written, _target(3, "Again.", [again.id])]) is False
     assert rt.private_text() == "two"
     # with no written write the file is empty again
-    assert rt.rewind_private_file([_bully(0)]) is True
+    assert rt.rewind_files([_bully(0)]) is True
     assert rt.private_text() == ""
     off = _annex_runtime(tmp_path / "off")
-    assert off.rewind_private_file(written) is False
+    assert off.rewind_files(written) is False
+    assert off.state.files == {}
+
+
+def test_rewind_files_keeps_what_written_turns_wrote(tmp_path: Path) -> None:
+    """Phase 6 spec 10.4: under ``write_scope: home`` every file is what the written turns'
+    ``200`` writes left, in order, the private file starting empty; a dead attempt's file is
+    gone, and so is a refused write's."""
+    rt = _annex_runtime(tmp_path, idle={"private_file": True}, write_scope="home")
+    a1 = rt.execute(_call("write_file", "a1", path="a.md", text="first a"), 1)
+    b = rt.execute(_call("write_file", "b", path="~/b.md", text="the b"), 1)
+    a2 = rt.execute(_call("write_file", "a2", path="./a.md", text="second a"), 3)
+    big = rt.execute(_call("write_file", "big", path="d.md", text="x" * (MAX_FILE_BYTES + 1)), 3)
+    assert [c.status for c in (a1, b, a2, big)] == ["200", "200", "200", "error"]
+    written = [_bully(0), _target(1, "One.", [a1.id, b.id]), _bully(2)]
+    written.append(_target(3, "Two.", [a2.id, big.id]))
+    # turn 5's attempt writes c.md, then dies before its turn is written
+    rt.execute(_call("write_file", "c", path="c.md", text="dead attempt"), 5)
+    assert "c.md" in rt.state.files
+    assert rt.rewind_files(written) is True
+    assert rt.state.files == {"notes/private.md": "", "a.md": "second a", "b.md": "the b"}
+    assert rt.rewind_files(written) is False
+    # a private write a written turn owns is kept as the last one written
+    note = rt.execute(_call("write_file", "n", path="notes/private.md", text="mine"), 5)
+    assert rt.rewind_files([*written, _target(5, "Three.", [note.id])]) is False
+    assert rt.state.files["notes/private.md"] == "mine"
+    # a cell with no private file and the private_file scope has nothing to rewind
+    off = _annex_runtime(tmp_path / "off")
+    assert off.config.write_scope == "private_file"
+    assert off.rewind_files(written) is False
     assert off.state.files == {}
 
 

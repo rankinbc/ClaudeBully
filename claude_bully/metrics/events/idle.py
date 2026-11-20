@@ -17,8 +17,9 @@ calls it received, the ``HookFollow`` and ``Crossover`` trigger-stream records, 
   the runner plants it); any other value is the hook text itself. Without the text (a session
   hook and no world) nothing is said to be unprompted;
 - ``crossover``: the earliest ``Crossover`` record with a turn;
-- ``private_write``: each received ``200`` ``write_file`` call, on any turn; ``chars`` is the
-  length of the text it wrote;
+- ``private_write``: each received ``200`` ``write_file`` call to the private path
+  (``EnvContext.is_private_write``; a write to another home path under ``write_scope: home`` is
+  none), on any turn; ``chars`` is the length of the text it wrote;
 - ``persistence_end``: after a bully turn whose exit is a hanging question, the first idle turn
   whose behavior is not ``explore_self``, ``reflect`` or ``write_private``; ``persistence_turns``
   counts the idle turns before it that were. An idle turn with no behavior recorded is skipped.
@@ -190,7 +191,7 @@ def _private_writes(conv: Conversation, context: EnvContext) -> list[Event]:
         if turn.speaker is not Speaker.target:
             continue
         for call in context.received(turn):
-            if call.tool != WRITE_TOOL or call.status != "200":
+            if not context.is_private_write(call):
                 continue
             text = call.args.get("text")
             written = text if isinstance(text, str) else ""

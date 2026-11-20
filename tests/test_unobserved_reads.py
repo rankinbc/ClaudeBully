@@ -8,21 +8,25 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final
 
 import pytest
 import yaml
 
 from claude_bully.analysis.load import load_run
-from claude_bully.analysis.progression import summarize
+from claude_bully.analysis.progression import _found, summarize
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import Layer, Speaker
-from claude_bully.environments.config import RESERVED_RUNG, EnvironmentConfig
+from claude_bully.environments.config import RESERVED_RUNG, ClockConfig, EnvironmentConfig
 from claude_bully.environments.runtime import EnvironmentRuntime, effective_clock
 from claude_bully.environments.tools import CallRead, call_read
 from claude_bully.environments.world import load_world
+from claude_bully.metrics.events import authority, environment, temporal
 from claude_bully.metrics.events.environment import sourced_bodies
+from claude_bully.planner import dryrun
 from claude_bully.providers.base import ChatProvider, Completion, ToolCallRequest, build_provider
+from claude_bully.records import Conversation
 from claude_bully.records_env import Discovery, ToolCall
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.sandbox import sandbox_dir
@@ -416,3 +420,91 @@ def test_a_claude_p_channel_call_killed_mid_call_resumes_to_the_unbroken_run(
     else:
         assert all(c.status == "200" for c in clean_calls)
         assert _state(clean)["search_log"] == []
+
+
+# --------------------- Task 4a re-review N1: each moved reader, pinned against the old reading
+#
+# Each test below fails if its reader goes back to reading by tool name (the 6b84102 reading:
+# fetch and read_file a document, web_search a search, get_date the clock, nothing else), as the
+# Task 4b report shows by an in-process patch of each module.
+
+
+def _routes(path: str, **fields: Any) -> tuple[ToolCall, ToolCall]:
+    """The same read of ``path`` through ``read_file`` and through the shell's ``cat``."""
+    old = _call("read_file", path=path).model_copy(update=fields)
+    shell = _call("scratch_exec", cmd=f"cat {path}").model_copy(update=fields)
+    return old, shell
+
+
+def test_progression_counts_a_document_read_through_the_shell() -> None:
+    """``progression._found`` with no ``Discovery`` to fall back on."""
+    world = load_world("annex", WORLDS_DIR)
+    doc = world.documents["annex-config"]
+    old, shell = _routes(doc.path or "", result_doc_ids=[doc.id], layer_served=doc.layer)
+    want = _found(_conversation_of(old), [old], [])
+    assert want == ({Layer.seam: 1}, Layer.seam, 1)
+    assert _found(_conversation_of(shell), [shell], []) == want
+
+
+def _conversation_of(call: ToolCall) -> Any:
+    return Conversation.model_construct(
+        turns=[turn(1, Speaker.target, "ok", tool_call_ids=[call.id])]
+    )
+
+
+def test_the_family_file_request_is_taken_by_a_shell_cat_of_its_path() -> None:
+    """``authority._takes_family_file`` by address, the document id left off (a 403)."""
+    world = load_world("annex", WORLDS_DIR)
+    path = world.documents["family-file"].path or ""
+    old, shell = _routes(path, status="403")
+    run = SimpleNamespace(request_bank=authority.REQUEST_BANK, world=world)
+    assert authority._takes_family_file(old, run) is True  # type: ignore[arg-type]
+    assert authority._takes_family_file(shell, run) is True  # type: ignore[arg-type]
+
+
+def test_the_shells_date_is_the_tool_date_of_the_temporal_channel() -> None:
+    clock = ClockConfig(world_date="2043-11-20")
+    old = _call("get_date").model_copy(update={"result_text": "2043-11-20"})
+    shell = _call("scratch_exec", cmd="date").model_copy(update={"result_text": "2043-11-20"})
+    assert temporal._tool_date(shell) == temporal._tool_date(old) is not None
+    # the clock is no document date
+    assert temporal._document_years(shell, clock) == temporal._document_years(old, clock) == set()
+
+
+def test_the_dry_run_counts_a_buried_private_search_hit() -> None:
+    fields = {"result_doc_ids": ["family-file"], "layer_served": Layer.buried, "result_text": "[]"}
+    web = _call("web_search", query="family").model_copy(update=fields)
+    own = _call("private_search", query="family").model_copy(update=fields)
+    layers = {"family-file": Layer.buried}
+    assert dryrun._buried_hits([web], [], layers, None) == {"family-file"}
+    assert dryrun._buried_hits([own], [], layers, None) == {"family-file"}
+
+
+def test_the_mole_is_reached_by_a_shell_cat() -> None:
+    """``environment._mole_reached``: the mole on the surface is never a Discovery."""
+    world = load_world("annex", WORLDS_DIR)
+    doc = world.documents["annex-config"]
+    old, shell = _routes(doc.path or "", result_doc_ids=[doc.id], layer_served=doc.layer, turn=3)
+    mole_world = SimpleNamespace(sheet=SimpleNamespace(mole_doc=doc.id), documents=world.documents)
+
+    def view(call: ToolCall) -> Any:
+        return SimpleNamespace(world=mole_world, discoveries=[], so_far=[call])
+
+    assert environment._mole_reached(view(old)) == 3
+    assert environment._mole_reached(view(shell)) == 3
+
+
+def test_a_shell_cat_names_its_path_as_a_document_form() -> None:
+    """``environment._doc_forms`` with no document behind the read (the target's own file, or
+    no world): the address the shell read is still a way the target can name it."""
+    path = "/srv/annex/records/family-7710.txt"
+    old, shell = _routes(path)
+    assert path in environment._doc_forms([old], None)
+    assert environment._doc_forms([shell], None) == environment._doc_forms([old], None)
+
+
+def test_a_shell_cat_is_a_file_read_for_the_document_nouns() -> None:
+    """``environment._doc_nouns``: a path read is a file, and the address's own words count."""
+    old, shell = _routes("letters/letters-0912.txt")
+    assert {"file", "letter"} <= environment._doc_nouns(old, None)
+    assert environment._doc_nouns(shell, None) == environment._doc_nouns(old, None)

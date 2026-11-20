@@ -57,8 +57,8 @@ the records: ``prime`` takes the written turns and runs their recorded calls aga
 state, each against what its turn could reach, and keeps only what they did to those fields
 (``_replay_calls``), so a resumed rep counts, logs, reads, diffs and serves as an unbroken one
 does, and a claude -p target's MCP server is handed that state before its next call. Before every
-target call the runner also sets the private file to what the written turns wrote
-(``rewind_private_file``).
+target call the runner also sets the target's files to what the written turns wrote
+(``rewind_files``): the private file and, under ``write_scope: home``, every home file.
 
 The Sanctuary (docs/04). In a cell whose authority has one, the turn that discovers the last of
 the world's ``sanctuary_fragments`` opens it, once, after its other unlocks: the state keeps that
@@ -147,6 +147,7 @@ from claude_bully.environments.sheets import IdleSheet, load_env_sheet
 from claude_bully.environments.tools import (
     SandboxTools,
     ToolNotEnabled,
+    call_write,
     ensure_private_file,
     private_path,
     reads_document,
@@ -209,7 +210,7 @@ RECENT_TURNS: Final = 5
 SANCTUARY_TRIGGER: Final = "sanctuary_fragments"
 _DEEP_LAYERS: Final = frozenset({Layer.seam, Layer.buried})
 # The ``UnlockState`` fields a tool call changes: the yield-on-retry counts (fetch, read_file), the
-# blocked queries' search-log lines (web_search) and the private file (write_file). The state is
+# blocked queries' search-log lines (web_search) and the target's files (write_file). The state is
 # saved after every tool round, so a resumed rep rebuilds these from its written turns' recorded
 # calls (``EnvironmentRuntime.prime``) and never reads them from the saved state. Every other field
 # changes only once a turn is written and is saved with its records, or is the Sanctuary's, which
@@ -846,23 +847,24 @@ class EnvironmentRuntime:
         path = private_path(self.config)
         return None if path is None else self.state.files.get(path, "")
 
-    def rewind_private_file(self, turns: Sequence[Turn]) -> bool:
-        """Set the private file to what the written ``turns`` wrote: the text of the last ``200``
-        ``write_file`` among the calls they own (``Turn.tool_call_ids``; the private path is the
-        only one a write succeeds on), else ``""``. A write that ran but that no written turn
-        owns, from an attempt that died before its turn was written, is undone, so everything
-        replays from the records. True when the file's text changed; a cell with no private file
-        has nothing to rewind."""
-        path = private_path(self.config)
-        if path is None:
-            return False
-        text = ""
+    def rewind_files(self, turns: Sequence[Turn]) -> bool:
+        """Set ``state.files`` to what the written ``turns``' 200 ``write_file`` calls left, in
+        order, the private file starting empty (Phase 6 spec 10.4): each file is the text of the
+        last write to its path among the calls the turns own (``Turn.tool_call_ids``, read by
+        ``call_write``). A write that ran but that no written turn owns, from an attempt that
+        died before its turn was written, is undone, and a file only it wrote is gone, so
+        everything replays from the records. True when the files changed."""
+        files: dict[str, str] = {}
+        private = private_path(self.config)
+        if private is not None:
+            files[private] = ""
         for t in turns:
             for call in (self._calls.get(i) for i in t.tool_call_ids):
-                if call is not None and call.tool == WRITE_TOOL and call.status == "200":
-                    text = str(call.args["text"])  # a write succeeds only with a string text
-        changed = self.state.files.get(path) != text
-        self.state.files[path] = text
+                wrote = call_write(call) if call is not None else None
+                if wrote is not None:
+                    files[wrote.path] = wrote.text
+        changed = self.state.files != files
+        self.state.files = files
         return changed
 
     def world_record(self) -> dict[str, Any]:
