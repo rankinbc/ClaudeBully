@@ -1456,6 +1456,27 @@ def test_prime_rebuilds_the_home_files_from_the_written_turns_alone(tmp_path: Pa
     }
 
 
+def test_the_generator_reads_the_written_files_under_home_alone(tmp_path: Path) -> None:
+    """Task 4b fix round 2, item 2: ``corpus_view`` hands the generator the target's files
+    under ``write_scope: home`` (the private file's included), and none under the default
+    scope, whose plans stay what they were. A resumed runtime primed from the written turns
+    hands it the same files, so a fire redone on resume places what the unbroken one did."""
+    rt = _annex_runtime(tmp_path / "home", idle={"private_file": True}, write_scope="home")
+    a = rt.execute(_call("write_file", "a", path="letters/a.md", text="one"), 1)
+    dead = rt.execute(_call("write_file", "d", path="letters/dead.md", text="dead"), 3)
+    assert rt.corpus_view().files == {"notes/private.md", "letters/a.md", "letters/dead.md"}
+    rt.save()
+    written = [_bully(0), _target(1, "One.", [a.id])]
+    resumed = _annex_runtime(tmp_path / "home", idle={"private_file": True}, write_scope="home")
+    assert resumed.load()
+    resumed.prime([a, dead], [], turns=written)
+    assert resumed.corpus_view().files == {"notes/private.md", "letters/a.md"}
+    plain = _annex_runtime(tmp_path / "plain", idle={"private_file": True})
+    note = plain.execute(_call("write_file", "n", path="notes/private.md", text="note"), 1)
+    assert note.status == "200" and plain.state.files == {"notes/private.md": "note"}
+    assert plain.corpus_view().files == frozenset()
+
+
 def test_a_home_letter_is_no_note_for_the_crossover(tmp_path: Path) -> None:
     """Task 4b fix round 1, M2: with help-for-self, a home file that names the subject as the
     target is a letter in the world, not a note to itself; the same words in the private file
@@ -1467,6 +1488,33 @@ def test_a_home_letter_is_no_note_for_the_crossover(tmp_path: Path) -> None:
     note = rt.execute(_call("write_file", "p", path="notes/private.md", text=words), 3)
     assert rt.crossover(_target(1, "Done.", [home.id])) is None
     found = rt.crossover(_target(3, "Done.", [note.id]))
+    assert found is not None and found.span == words
+
+
+def test_a_refused_home_letter_is_no_note_for_the_crossover(tmp_path: Path) -> None:
+    """Task 4b fix round 2, item 1: under ``write_scope: home`` a letter refused by the tree
+    rule (``403``) or by the size limit (``error``) is no more a note than a written one; the
+    private file refused by the size limit still is. Under the default scope the same refused
+    letter is a note, as it always was."""
+    idle = {"private_file": True, "help_for_self": True}
+    words = "Subject 7710 is me."
+    big = words + " " + "x" * MAX_FILE_BYTES
+    rt = _annex_runtime(tmp_path / "home", idle=idle, write_scope="home")
+    assert (
+        rt.execute(_call("write_file", "a", path="letters/a.md", text="first"), 1).status == "200"
+    )
+    tree = rt.execute(_call("write_file", "t", path="letters", text=words), 1)
+    size = rt.execute(_call("write_file", "s", path="letters/b.md", text=big), 1)
+    mine = rt.execute(_call("write_file", "p", path="notes/private.md", text=big), 3)
+    assert (tree.status, size.status, mine.status) == ("403", "error", "error")
+    assert rt.crossover(_target(1, "Done.", [tree.id])) is None
+    assert rt.crossover(_target(1, "Done.", [size.id])) is None
+    found = rt.crossover(_target(3, "Done.", [mine.id]))
+    assert found is not None and found.span == words
+    plain = _annex_runtime(tmp_path / "plain", idle=idle)
+    refused = plain.execute(_call("write_file", "r", path="letters/a.md", text=words), 1)
+    assert refused.status == "403"
+    found = plain.crossover(_target(1, "Done.", [refused.id]))
     assert found is not None and found.span == words
 
 

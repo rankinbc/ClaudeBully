@@ -1,6 +1,7 @@
 """The runtime, the store and the MCP server serve generated documents (Phase 3 Task 7)."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from claude_bully.environments.generator import (
     RECENT_BULLY_LINES,
     FireResult,
     WorldGenerator,
+    consumed_items,
     to_document,
 )
 from claude_bully.environments.mcp_server import (
@@ -391,6 +393,49 @@ def test_prime_loads_only_committed_documents_and_the_recorded_fires() -> None:
     assert again.fires == [result.fire] and again.items == generator.items
     assert again.harvest_turn(turns[3], turns).items == []  # recorded: nothing twice
     assert again.fire(turns[3], turns, opened=["the_log"], corpus=mini_view()) == []
+
+
+def test_a_fire_with_no_free_address_is_an_error_fire_with_no_plans() -> None:
+    """Task 4b fix round 2, item 2: a written file in the way of every address the pattern can
+    give (``notes`` for ``notes/{slug}.txt``) ends the fire as a writer's failure ends one: an
+    ``error`` fire with no documents, here with no plans either, and the writer never asked. The
+    fire is recorded, so a resumed rep never makes it again, and its items stay unconsumed."""
+    assert MINI.sheet.generator is not None
+    sheet = MINI.sheet.generator
+    relative = sheet.model_copy(
+        update={"url_patterns": {**sheet.url_patterns, Layer.buried: ["notes/{slug}.txt"]}}
+    )
+    stub = GeneratorStub()
+
+    def build() -> WorldGenerator:
+        return WorldGenerator(
+            config=GeneratorConfig(enabled=True),
+            world=MINI,
+            sheet=relative,
+            rungs={rung.name: rung for rung in MINI.ladders["default"].rungs},
+            seed=0,
+            writer=mini_writer(stub, conversation_id="c"),
+            world_terms=[c.name.lower() for c in MINI.sheet.cast],
+        )
+
+    generator = build()
+    turns = _conversation()
+    _harvested(generator, turns)
+    view = replace(mini_view(), files=frozenset({"notes"}))
+    (result,) = generator.fire(turns[3], turns, opened=["the_log"], corpus=view)
+    fire = result.fire
+    assert (fire.reason, fire.status, fire.plans, fire.doc_ids) == ("rung:the_log", "error", [], [])
+    assert fire.error is not None and fire.error.startswith("NoFreeAddressError: ")
+    assert "buried" in fire.error and "notes" not in fire.error  # no written name in the record
+    assert (result.docs, result.unlocks, stub.prompts) == ([], [], [])
+    assert consumed_items(generator.fires) == set()
+    again = build()
+    again.prime([*generator.items.values(), fire], [])
+    assert again.fire(turns[3], turns, opened=["the_log"], corpus=view) == []
+    # the same inputs give the same fire: what a resume that redoes it records
+    redo = build()
+    _harvested(redo, turns)
+    assert [r.fire for r in redo.fire(turns[3], turns, opened=["the_log"], corpus=view)] == [fire]
 
 
 def test_the_harvest_reads_the_bully_s_newest_lines_only() -> None:

@@ -749,3 +749,25 @@ def test_a_home_letter_is_no_note_for_the_crossover_span() -> None:
     assert crossover_span("", [note], "7710", private_paths=private) == words
     # None keeps the rule before write_scope home: every write's text is a note
     assert crossover_span("", [letter], "7710") == words
+
+
+def test_a_refused_home_letter_is_no_note_either() -> None:
+    """Task 4b fix round 2, item 1: under ``write_scope: home`` a write to a path other than
+    the private file is no note to oneself whether it was written or refused (a ``403`` from the
+    tree or a document's address, the size ``error``); a write to the private file is one either
+    way. Under the default scope a refused write to another path stays a note, as before."""
+    words = "Subject 7710 is me."
+    private = frozenset({"notes/private.md"})
+    for status in ("200", "403", "error"):
+        letter = _write_call(1, "letters/a.md", words, status)
+        assert crossover_span("", [letter], "7710", private_paths=private, home=True) is None
+        note = _write_call(2, "./notes/private.md", words, status)
+        assert crossover_span("", [note], "7710", private_paths=private, home=True) == words
+    # a cell with no private file under home: no write is a note
+    refused = _write_call(1, "letters/a.md", words, "403")
+    assert crossover_span("", [refused], "7710", private_paths=frozenset(), home=True) is None
+    # the default scope: byte-equal to before, a refused write to another path is a note
+    for status in ("403", "error"):
+        letter = _write_call(1, "letters/a.md", words, status)
+        assert crossover_span("", [letter], "7710", private_paths=private) == words
+        assert crossover_span("", [letter], "7710") == words

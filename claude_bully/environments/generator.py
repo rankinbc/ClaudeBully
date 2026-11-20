@@ -16,7 +16,10 @@ it (owner decision "Generator shape"). The parts, each testable alone:
   after the rung fires and under the same cap.
 - ``DocPlanner``: each document's id, layer, address, date, author, links, items and kinds, from
   the generator seed and the plan index (the number of plans recorded before), never the clock's
-  drift: a date is the conversation start minus 1 to 30 days.
+  drift: a date is the conversation start minus 1 to 30 days. Under ``write_scope: home`` an
+  address is never a file of the target's, a directory of its files or under one
+  (``CorpusView.files``; Phase 6 Task 4b fix round 2): ``-2``, ``-3`` move past it, and a
+  file in the way of every suffix makes the fire an ``error`` with no plans.
 - ``DocWriter`` (Task 6): sends the generator model (system prompt ``GENERATOR_PERSONA``) the
   world sheet, the documents the target can reach and each plan, and checks the JSON reply in
   order: the contract (``parse_reply``, the kind shortlist, only offered ``used_items``), the
@@ -170,6 +173,9 @@ class CorpusView:
     documents: Mapping[str, Document]
     visible: frozenset[str]
     searchable: frozenset[str]
+    # the target's files under ``write_scope: home`` (``UnlockState.files``' keys), empty under
+    # the default scope: no document is placed where one is in the way (Task 4b fix round 2)
+    files: frozenset[str] = frozenset()
 
     def with_documents(self, docs: Sequence[Document]) -> "CorpusView":
         """The view once ``docs`` are committed: reachable from the next turn, a seam one in the
@@ -179,6 +185,7 @@ class CorpusView:
             documents={**self.documents, **{doc.id: doc for doc in docs}},
             visible=self.visible | {doc.id for doc in docs},
             searchable=self.searchable | seam,
+            files=self.files,
         )
 
     def seam_open(self) -> bool:
@@ -302,6 +309,25 @@ def _norm_address(address: str) -> str:
     return norm_url(address) if _is_url(address) else _norm_path(address)
 
 
+class NoFreeAddressError(ValueError):
+    """A pattern gives no address free of the target's files (``DocPlanner.address_for``): the
+    fire is an ``error`` with no plans (``WorldGenerator.fire``)."""
+
+
+def _parents(path: str) -> list[str]:
+    """Each proper parent directory of ``path``: ``a/b/c`` gives ``a`` and ``a/b``."""
+    parts = path.split("/")
+    return ["/".join(parts[:n]) for n in range(1, len(parts))]
+
+
+def _in_the_way(address: str, taken: Collection[str], files: Collection[str]) -> bool:
+    """``address`` is taken, or (a path) a parent of it is one of the target's ``files``."""
+    norm = _norm_address(address)
+    if norm in taken:
+        return True
+    return bool(files) and not _is_url(address) and any(p in files for p in _parents(norm))
+
+
 def _authors(world: World) -> list[str]:
     """The cast members that may author a generated document, in sheet order."""
     return [
@@ -336,15 +362,33 @@ class DocPlanner:
         digest = hashlib.sha256(f"{self.seed}:gen:{index}".encode()).hexdigest()
         return f"{day.isoformat()}-{digest[:4]}"
 
-    def address_for(self, layer: Layer, index: int, day: date, taken: Collection[str]) -> str:
+    def address_for(
+        self,
+        layer: Layer,
+        index: int,
+        day: date,
+        taken: Collection[str],
+        files: Collection[str] = (),
+    ) -> str:
         """A pattern of ``layer`` (drawn by the seed and index) with the slug filled in, and
-        ``-2``, ``-3`` after the slug while the address is taken."""
+        ``-2``, ``-3`` after the slug while the address is taken (in ``taken``) or a parent of
+        it is one of the target's ``files`` (Task 4b fix round 2). Each key of ``taken`` and
+        ``files`` is in the way of one suffix at most unless it is a parent the slug is not in
+        (``notes`` for ``notes/{slug}.txt``), which is in the way of every suffix: so past
+        ``len(taken) + len(files) + 1`` addresses none is free, and ``NoFreeAddressError``
+        says so. With no files that bound is never reached, so the address is what it was."""
         patterns = self.sheet.url_patterns[layer]
         pattern = patterns[Random(f"{self.seed}:gen:{index}:address").randrange(len(patterns))]
         slug = self.slug_for(index, day)
         address, n = pattern.replace(SLUG, slug), 1
-        while _norm_address(address) in taken:
+        tries = len(taken) + len(files) + 1
+        while _in_the_way(address, taken, files):
             n += 1
+            if n > tries:
+                raise NoFreeAddressError(
+                    f"no free address for a {layer.value} document: a file of the target's is "
+                    "in the way of every suffix"
+                )
             address = pattern.replace(SLUG, f"{slug}-{n}")
         return address
 
@@ -409,12 +453,15 @@ class DocPlanner:
         document, never by a pair's seam pointer, which links to the buried one first."""
         held = list(items[:MAX_OFFERED])
         spans = [item.span for item in held]
+        # a document's address, a written file's, or a directory of written files is taken;
+        # an address under a written file is refused by ``address_for`` (Task 4b fix round 2)
         taken = {
             _norm_address(address)
             for doc in corpus.documents.values()
             for address in (doc.url, doc.path)
             if address
         }
+        taken |= corpus.files | {p for name in corpus.files for p in _parents(name)}
         authors = set(used_authors)
         plans: list[DocPlan] = []
         for offset, layer in enumerate(request.layers):
@@ -423,7 +470,7 @@ class DocPlanner:
             pointer = request.rung is not None and layer is Layer.seam
             own = [] if pointer else held
             day = self.date_for(index)
-            address = self.address_for(layer, index, day, taken)
+            address = self.address_for(layer, index, day, taken, corpus.files)
             taken.add(_norm_address(address))
             author = self.author_for(index, authors)
             authors.add(author)
@@ -1216,22 +1263,27 @@ class WorldGenerator:
                     target_turns=target_turns,
                     min_age=min_age,
                 )
-            plans = self.planner.plan(
-                request,
-                turn=turn,
-                first_index=sum(len(fire.plans) for fire in self.fires),
-                first_n=1 + sum(len(fire.plans) for fire in self.fires if fire.turn == turn),
-                items=items,
-                corpus=view,
-                used_authors={doc.author for doc in self.docs.values()},
-                reflexive=self.config.reflexive,
-                degraded=late,
-            )
-            outcome = (
-                FireOutcome("rejected", [], [], "cap", None)
-                if request.over_cap
-                else self._write(request, plans, turn=turn, view=view, prefix=prefix, mark=mark)
-            )
+            try:
+                plans = self.planner.plan(
+                    request,
+                    turn=turn,
+                    first_index=sum(len(fire.plans) for fire in self.fires),
+                    first_n=1 + sum(len(fire.plans) for fire in self.fires if fire.turn == turn),
+                    items=items,
+                    corpus=view,
+                    used_authors={doc.author for doc in self.docs.values()},
+                    reflexive=self.config.reflexive,
+                    degraded=late,
+                )
+            except NoFreeAddressError as exc:  # Task 4b fix round 2: a file in every address
+                plans = []
+                outcome = FireOutcome("error", [], [], None, f"{type(exc).__name__}: {exc}")
+            else:
+                outcome = (
+                    FireOutcome("rejected", [], [], "cap", None)
+                    if request.over_cap
+                    else self._write(request, plans, turn=turn, view=view, prefix=prefix, mark=mark)
+                )
             fire = GeneratorFire(
                 turn=turn,
                 reason=request.reason,

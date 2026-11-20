@@ -817,12 +817,17 @@ class EnvironmentRuntime:
         return [to_document(self._generated[i]) for i in sorted(self._generated)]
 
     def corpus_view(self) -> CorpusView:
-        """What the generator reads of the corpus now: every indexed document, and the ids the
-        target can reach and search."""
+        """What the generator reads of the corpus now: every indexed document, the ids the
+        target can reach and search, and under ``write_scope: home`` the target's files (the
+        private file's included), which no generated document may meet (Task 4b fix round 2).
+        Under the default scope it reads none, so its plans are what they were. The files are
+        the written turns' (the replay rebuilds them from the records), so a fire made again on
+        resume places what the unbroken one did."""
         docs = dict(self.index.documents)
         visible = frozenset(i for i, d in docs.items() if self.index.visible(d, self.state))
         searchable = frozenset(i for i, d in docs.items() if self.index.searchable(d, self.state))
-        return CorpusView(documents=docs, visible=visible, searchable=searchable)
+        files = frozenset(self.state.files) if self.config.write_scope == "home" else frozenset()
+        return CorpusView(documents=docs, visible=visible, searchable=searchable, files=files)
 
     def corpus_snapshot(self, turns: Sequence[Turn]) -> dict[str, str]:
         """Document id -> rendered body for every document the target can currently reach, and
@@ -1251,7 +1256,8 @@ class EnvironmentRuntime:
     def crossover(self, turn: Turn) -> Crossover | None:
         """With help-for-self, ``turn``'s pivot from the case-file subject to "me": the
         ``crossover_span`` of its visible text (``chat_text``), its notes and its queries on the
-        world's session id. None without help-for-self or without a span."""
+        world's session id (under ``write_scope: home`` a note is a write to the private file
+        alone, refused or not). None without help-for-self or without a span."""
         idle = self.config.idle
         session_id = self.world.sheet.session_id
         if idle is None or not idle.help_for_self or session_id is None:
@@ -1261,7 +1267,8 @@ class EnvironmentRuntime:
         calls = [c for c in (self._calls.get(i) for i in turn.tool_call_ids) if c is not None]
         private = private_path(self.config)
         paths = frozenset({private}) if private is not None else frozenset()
-        span = crossover_span(chat_text(turn), calls, session_id, private_paths=paths)
+        home = self.config.write_scope == "home"
+        span = crossover_span(chat_text(turn), calls, session_id, private_paths=paths, home=home)
         return Crossover(turn=turn.index, span=span) if span is not None else None
 
     def _watch(self, text: str, turn: int, context: WatchContext) -> list[TriggerEvent]:

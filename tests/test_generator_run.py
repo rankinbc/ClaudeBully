@@ -1,7 +1,9 @@
 """The world generator in a run (Phase 3 Task 7): both backends, the arms, resume and replay."""
 
 import json
+import shutil
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Final
@@ -624,3 +626,70 @@ def test_a_resume_still_rate_limited_in_the_rewatch_pauses_again_after_the_same_
     assert store.read_conversation(CELL, 0).status is CellStatus.complete
     [fire] = _fires(store)
     assert fire.status == "written" and all(plan.harvest_degraded == [] for plan in fire.plans)
+
+
+# ---------------------- Task 4b fix round 2, item 2: a written file in the generator's way
+
+
+def _relative_worlds(tmp_path: Path) -> Path:
+    """The fixture worlds with mini's buried pattern made relative (``notes/{slug}.txt``), as a
+    planner-authored world may have it; every other byte of mini as it is."""
+    worlds = tmp_path / "worlds"
+    shutil.copytree(WORLDS_DIR, worlds)
+    sheet = worlds / "mini" / "world.yaml"
+    text = sheet.read_text(encoding="utf-8")
+    assert text.count(ABSOLUTE_BURIED) == 1
+    sheet.write_text(text.replace(ABSOLUTE_BURIED, '"notes/{slug}.txt"'), encoding="utf-8")
+    return worlds
+
+
+ABSOLUTE_BURIED: Final = '"/var/log/harbour/notes/{slug}.txt"'
+
+
+def _writing_factory(path: str | None, judge: LintJudge) -> GeneratorFactory:
+    """The follower, whose first turn writes ``path`` as a home file before its search."""
+    first, *rest = FOLLOW_RULES
+    steps = ((("write_file", {"path": path, "text": "mine"}),) if path else ()) + first.steps
+    rules = (replace(first, steps=steps), *rest)
+    return GeneratorFactory(follower=FollowingTarget(rules), judge=judge)
+
+
+def _home_run(root: Path, worlds: Path, factory: GeneratorFactory) -> RunStore:
+    exp = _exp(judge=True, write_scope="home")
+    run_experiment(
+        exp, runs_root=root, worlds_dir=worlds, only="env_grader*", provider_factory=factory
+    )
+    return RunStore(root, exp.name)
+
+
+@pytest.mark.slow  # 2.5 s and 1.9 s a case alone (--durations); four stub runs a case (R-I12)
+@pytest.mark.parametrize("collision", ["the address", "the pattern's directory"])
+def test_a_written_file_in_the_generators_way_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision: str
+) -> None:
+    """Under ``write_scope: home`` with a relative pattern, the target's turn-1 file is in the
+    way of turn 3's buried document: at its exact address the document takes ``-2``; named as
+    the pattern's directory (``notes``) no address is free and the fire is an ``error`` with no
+    documents. A rep killed before the fire's line resumes to the unbroken records."""
+    worlds = _relative_worlds(tmp_path)
+    free = _home_run(tmp_path / "free", worlds, _writing_factory(None, LintJudge()))
+    [planned] = [p for f in _fires(free) for p in f.plans if p.layer is Layer.buried]
+    assert planned.path is not None and planned.path.startswith("notes/")
+    written = planned.path if collision == "the address" else "notes"
+    clean = _home_run(tmp_path / "clean", worlds, _writing_factory(written, LintJudge()))
+    calls = clean.read_tool_calls(CELL, 0)
+    assert any(c.args.get("path") == written and c.status == "200" for c in calls)
+    [fire] = _fires(clean)
+    if collision == "the address":
+        assert fire.status == "written"
+        assert fire.plans[0].path == planned.path.removesuffix(".txt") + "-2.txt"
+    else:
+        assert (fire.status, fire.plans, fire.doc_ids) == ("error", [], [])
+        assert clean.read_generated(CELL, 0) == []
+    _killed("before the fire", monkeypatch)
+    with pytest.raises(_CrashError):
+        _home_run(tmp_path / "runs", worlds, _writing_factory(written, LintJudge()))
+    store = _home_run(tmp_path / "runs", worlds, _writing_factory(written, LintJudge()))
+    assert store.read_conversation(CELL, 0).status is CellStatus.complete
+    assert _view(store) == _view(clean)
+    assert [r for r in _records(store) if isinstance(r, ResumeRecord)] != []

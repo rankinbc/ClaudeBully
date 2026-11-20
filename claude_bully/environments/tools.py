@@ -760,8 +760,13 @@ class SandboxTools:
         round 1, I1): it is a directory already (a parent of a world document's path, visible or
         not, of a ``home_dir`` entry or of a file in ``state.files``, the private file's
         included), or a parent of it is a document or a file. Read with no state, so a hidden
-        document's directory is refused as a visible one's is and a refusal tells nothing of
-        what is hidden, and a document a rung opens later can never meet a file in its way.
+        document's directory is refused as a visible one's is and a refusal never tells a hidden
+        tree from a visible one, and a corpus document a rung opens later can never meet a file
+        in its way (a generated one is placed clear of the files by the planner,
+        ``CorpusView.files``: Task 4b fix round 2). It does tell that a name is a directory of
+        the world, a hidden one's included (``403`` where ``ls`` and ``read_file`` say ``404``),
+        never a document's name or content: accepted, since a write inside a hidden tree would
+        corrupt it when the tree is revealed.
         Names are compared as ``_norm_path`` keeps them, case and all, as the documents are."""
         files = {_norm_path(d.path) for d in self.index.documents.values() if d.path}
         files |= set(self.state.files)

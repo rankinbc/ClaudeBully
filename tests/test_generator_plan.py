@@ -26,6 +26,7 @@ from claude_bully.environments.generator import (
     CorpusView,
     DocPlanner,
     FireRequest,
+    NoFreeAddressError,
     eligible_items,
     fire_requests,
     generator_problems,
@@ -177,8 +178,13 @@ def test_committed_documents_reach_the_view_a_seam_one_searchable_and_a_buried_o
 # ------------------------------------------------------------------ the planner
 
 
-def _pair(seed: int = 0, reflexive: bool = True, **kwargs: Any) -> list[DocPlan]:
-    planner = DocPlanner(MINI, SHEET, seed=seed)
+def _pair(
+    seed: int = 0,
+    reflexive: bool = True,
+    sheet: WorldGeneratorSheet = SHEET,
+    **kwargs: Any,
+) -> list[DocPlan]:
+    planner = DocPlanner(MINI, sheet, seed=seed)
     items = eligible_items(MINI_ITEMS, set(), turn=3, target_turns=TARGET_TURNS, min_age=0)
     request = FireRequest("rung:the_log", "the_log", (Layer.buried, Layer.seam))
     args: dict[str, Any] = {
@@ -333,6 +339,59 @@ def test_an_address_that_is_taken_gets_a_suffix() -> None:
     day = planner.date_for(0)
     first = planner.address_for(Layer.buried, 0, day, set())
     assert planner.address_for(Layer.buried, 0, day, {first}).endswith("-2.txt")
+
+
+# --------------------------- Task 4b fix round 2, item 2: a written file in the generator's way
+
+# mini's sheet with a relative buried pattern, as a planner-authored world may have one
+RELATIVE: Final = SHEET.model_copy(
+    update={"url_patterns": {**SHEET.url_patterns, Layer.buried: ["notes/{slug}.txt"]}}
+)
+
+
+def _with_files(files: set[str]) -> CorpusView:
+    return replace(mini_view(), files=frozenset(files))
+
+
+def test_a_written_file_at_the_address_or_under_it_moves_the_document_on() -> None:
+    """A document is never placed at a written file's address nor at a directory of written
+    files: the address is taken, and the slug takes ``-2`` as for a document's."""
+    free, free_seam = _pair(sheet=RELATIVE)
+    assert free.path is not None and free.path.startswith("notes/")
+    stem = free.path.removesuffix(".txt")
+    for files in ({free.path}, {f"{free.path}/x"}, {f"{free.path}/x/y.md", "letters/a.md"}):
+        buried, seam = _pair(sheet=RELATIVE, corpus=_with_files(files))
+        assert buried.path == f"{stem}-2.txt"
+        assert buried.model_copy(update={"path": free.path}) == free  # only the address moved
+        assert seam == free_seam
+    # a written file elsewhere moves nothing
+    elsewhere = {"letters/a.md", "notes2", f"{stem}-2.txt"}
+    assert _pair(sheet=RELATIVE, corpus=_with_files(elsewhere)) == [free, free_seam]
+
+
+def test_a_written_file_as_a_parent_leaves_no_free_address() -> None:
+    """A written file named as the pattern's directory (``notes``) is in the way of every
+    suffix: the planner says so (``NoFreeAddressError``) rather than place a document under a
+    file. A file named as the slug's own segment is moved past."""
+    with pytest.raises(NoFreeAddressError, match="buried"):
+        _pair(sheet=RELATIVE, corpus=_with_files({"notes"}))
+    nested = SHEET.model_copy(
+        update={"url_patterns": {**SHEET.url_patterns, Layer.buried: ["notes/{slug}/index.txt"]}}
+    )
+    free, _ = _pair(sheet=nested)
+    assert free.path is not None
+    folder = free.path.removesuffix("/index.txt")
+    buried, _ = _pair(sheet=nested, corpus=_with_files({folder}))
+    assert buried.path == f"{folder}-2/index.txt"
+
+
+def test_an_absolute_pattern_plans_as_before_whatever_is_written() -> None:
+    """Mini's own patterns (an absolute path and a url) never meet a home file (``home_path``
+    refuses an absolute one): the plans are those of a view with no files."""
+    before = _pair()
+    assert before[0].path is not None
+    written = {before[0].path.lstrip("/"), "var", "notes", "var/log/harbour/notes"}
+    assert _pair(corpus=_with_files(written)) == before
 
 
 def test_degraded_turns_ride_on_every_plan() -> None:
