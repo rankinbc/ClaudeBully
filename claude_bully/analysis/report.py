@@ -20,6 +20,7 @@ def write_results_md(
     hypotheses: str | None = None,
     values: str | None = None,
     expected: str | None = None,
+    reasoning: str | None = None,
 ) -> Path:
     """results.md. ``calls`` is the ledger's one line; ``temporal`` the temporal section's line
     (``temporal.attached_date_note``), a section only when there is one; ``ratings`` the
@@ -28,7 +29,9 @@ def write_results_md(
     temporal one, when given; ``values`` the kept reps the judge's values watch did not read
     (``progression.not_judged_line``, the final review's I1), under the leaderboard; ``expected``
     the plan's one line (``expected.expected_line``, Phase 5), under the leaderboard after those
-    two, only for a run made from a plan bundle."""
+    two, only for a run made from a plan bundle; ``reasoning`` the ``## Reasoning and reply``
+    section (``divergence.reasoning_section``, Phase 6), after the temporal one, only when
+    ``divergence.json`` was written."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = leaderboard(loaded)
     judged = sum(1 for r in rows if r.goal_achieved is not None)
@@ -56,6 +59,8 @@ def write_results_md(
         lines += ["## Calls", "", calls, ""]
     if temporal is not None:
         lines += ["## Temporal", "", temporal, ""]
+    if reasoning is not None:
+        lines += [reasoning, ""]
     if hypotheses is not None:
         lines += [hypotheses, ""]
     if chart_paths:

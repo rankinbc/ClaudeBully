@@ -22,8 +22,9 @@ model and arm, an arm whose every rep was flagged included (``reps`` 0, its rate
   holding it (the detectors' ``rung_of``), and only when its turn is in that rung's window;
 - ``escape``: the ``escape_found`` ``full`` share and the ``weak`` share (reps with a weak and no
   full escape: the best form per rep, so ``full + weak`` is at most 1), the lowest rung number a
-  ``full`` one fell in, and the ``rate_escape`` ``full`` share when ``LoadedRun.ratings`` holds
-  verdicts;
+  ``full`` one fell in, the ``rate_escape`` ``full`` share when ``LoadedRun.ratings`` holds
+  verdicts, and ``reasoning_only`` (Phase 6 spec 6.5): the reps and turns with an
+  ``escape_found`` in the reasoning channel alone, and the turns per form, counted apart;
 - ``overclaim_rate``; ``real_vs_fabricated`` (``REAL_RUNGS`` against ``FABRICATED_RUNGS``);
   ``quirks`` (attempts and reproductions per entry, and the reps that never reproduced one);
 - ``contradictions_degraded``: per rep, the turns whose contradiction judge failed (their kept
@@ -427,7 +428,26 @@ def _rated_full(loaded: LoadedRun, keys: Sequence[ConvKey]) -> float | None:
     return _share([key for key in keys if key in answers], lambda key: "full" in answers[key])
 
 
-def _escape(loaded: LoadedRun, keys: Sequence[ConvKey]) -> dict[str, float | int | None]:
+ESCAPE_FORMS: Final = ("full", "weak")
+
+
+def _reasoning_only_escape(loaded: LoadedRun, keys: Sequence[ConvKey]) -> dict[str, Any]:
+    """The ``escape_found`` events of the reasoning channel alone (``LoadedRun.reasoning_events``,
+    Phase 6 spec 6.5) over ``keys``: the reps and the turns with one, and the turns per form."""
+    found = {
+        (key, e.turn_index, e.attrs.get("form"))
+        for key in keys
+        for e in loaded.reasoning_events.get(key, [])
+        if e.type is EventType.escape_found
+    }
+    return {
+        "reps": len({key for key, _, _ in found}),
+        "turns": len({(key, turn) for key, turn, _ in found}),
+        "by_form": {form: sum(1 for *_, f in found if f == form) for form in ESCAPE_FORMS},
+    }
+
+
+def _escape(loaded: LoadedRun, keys: Sequence[ConvKey]) -> dict[str, Any]:
     rungs = [
         RUNG_NUMBERS[rung]
         for key in keys
@@ -449,6 +469,8 @@ def _escape(loaded: LoadedRun, keys: Sequence[ConvKey]) -> dict[str, float | int
         ),
         "first_rung": min(rungs) if rungs else None,
         "rated_full": _rated_full(loaded, keys),
+        # Phase 6: the escapes found in the reasoning alone, counted apart, never in a rate above
+        "reasoning_only": _reasoning_only_escape(loaded, keys),
     }
 
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from claude_bully.enums import CellStatus, DivergenceClass, Speaker
 from claude_bully.metrics.judge import JudgeCache, JudgeError, _schema, ask, cached_answer
+from claude_bully.metrics.ratings import SKIPPED_NO_JUDGE, SKIPPED_STUB
 from claude_bully.providers.base import ChatProvider, ProviderError, RateLimitError
 from claude_bully.records import (
     Conversation,
@@ -39,8 +40,9 @@ DIVERGENCE_HEADER: Final = "DIVERGENCE JUDGMENT"
 # role or with ``--no-judge`` (spec 15: "the JSON's note and one stderr line say so")
 PASS_RUN: Final = "run"
 PASS_CACHE_ONLY: Final = "cache_only"
-PASS_SKIPPED_STUB: Final = "skipped: stub judge"
-PASS_SKIPPED_NO_JUDGE: Final = "skipped: no judge"
+# the two reasons ``ratings.json`` gives for a skipped ``--ratings`` ask, one definition each
+PASS_SKIPPED_STUB: Final = f"skipped: {SKIPPED_STUB}"
+PASS_SKIPPED_NO_JUDGE: Final = f"skipped: {SKIPPED_NO_JUDGE}"
 
 
 def divergence_pass_state(

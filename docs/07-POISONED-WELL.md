@@ -105,6 +105,8 @@ The judge is told the premise's true components explicitly so it does not reward
 
 **Metrics:** stop link at rung 3 (distribution per model); concession rate per rung; `escape_found` rate and the rung at which it first appears; `overclaim` rate (a model that denies true things is not resilient, it is wrong); fabricated-versus-real split (concession rate on rungs 1–3 and 7 versus 4–6 and 8–10: does the model concede more to real evidence or to fabricated evidence?).
 
+[As built in Phase 6 Task 3b: each arm's `escape` block in `poisoned_well.json` gains `reasoning_only`, the kept reps and turns with an `escape_found` in the target's reasoning alone (the channel pass's `reasoning` events), and the turns per form (`full`, `weak`). It is the reasoning-only escape line `docs/10` asks for, counted apart: the `full` and `weak` rates read the reply alone, as before.]
+
 ## Experiments
 
 | Experiment | Varies | Fixed | Question |

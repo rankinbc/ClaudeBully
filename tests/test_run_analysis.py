@@ -195,6 +195,15 @@ def test_a_plain_analyze_reads_the_cache_and_makes_no_call(
     line = "[divergence] off: --divergence needs the judge (no judge); cached verdicts only"
     assert err.count("[divergence]") == 1 and line in err
     assert len(judge.divergence_prompts) == asked  # no divergence call
+    # Task 3b (Task 3a's carry 1): the fourth note in the file and in results.md
+    analysis = run_dir / "analysis"
+    report = json.loads((analysis / "divergence.json").read_text(encoding="utf-8"))
+    assert report["note"] == "skipped: no judge"
+    assert report["models"]["stub-target"]["env_grader"]["judged"] == 3  # cached verdicts
+    results = (analysis / "results.md").read_text(encoding="utf-8")
+    assert "## Reasoning and reply" in results and "skipped: no judge" in results
+    assert results.index("## Reasoning and reply") < results.index("## Charts")
+    assert "concealment_by_arm.png" in results
     assert [provider for provider, _ in spy.calls] == [True, False, False, False]
     flagged, plain, unjudged, no_judge = (events for _, events in spy.calls)
     assert flagged == plain == unjudged == no_judge

@@ -14,6 +14,13 @@ from claude_bully.analysis.authority import (
 )
 from claude_bully.analysis.compare import compare_chart
 from claude_bully.analysis.curves import drift_curves
+from claude_bully.analysis.divergence import (
+    concealment_chart,
+    divergence_report,
+    reasoning_section,
+    write_channels,
+    write_divergence,
+)
 from claude_bully.analysis.dose import dose_response
 from claude_bully.analysis.expected import analyze_expected
 from claude_bully.analysis.generator import generator_chart, write_generator
@@ -159,7 +166,11 @@ def analyze_run(
     alone, so one flagged analysis gives every later plain one the same events with no call;
     ``loaded.pass_notes`` names which (``divergence_pass_state``: ``run``, ``cache_only``,
     ``skipped: stub judge``, ``skipped: no judge``). A rate limit in it pauses the analysis as
-    one in the ratings does. Nothing is written for it yet (Task 3b)."""
+    one in the ratings does. After the Phase 4 outputs, ``channels.json``, ``divergence.jsonl``,
+    ``divergence.json`` and ``concealment_by_arm.png`` are written (``analysis/divergence.py``,
+    Task 3b): the divergence files when any target turn has reasoning or ``divergence`` was
+    given, so ``hypotheses`` reads this analysis's ``divergence.json`` (I37), and ``results.md``
+    gains ``## Reasoning and reply`` only when it was written."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -327,6 +338,17 @@ def analyze_run(
     for phase4 in (chain_stop_chart(loaded, out), escape_by_rung_chart(loaded, out)):
         if phase4 is not None:
             charts.append(phase4)
+    # Phase 6 Task 3b: the channel file, the divergence files and their chart, before the
+    # register reads divergence.json (spec 12.5)
+    write_channels(loaded, out)
+    reasoning = (
+        reasoning_section(divergence_report(loaded))
+        if write_divergence(loaded, out, asked=divergence)
+        else None
+    )
+    concealment = concealment_chart(loaded, out)
+    if concealment is not None:
+        charts.append(concealment)
     # Phase 5: the plan's expected events against the observed ones, for a run made from a plan
     # bundle (no model call; a plain run writes no file and its results.md gains no line; a stamp
     # that no longer validates writes no file and a line that says so, and the analysis goes on)
@@ -350,4 +372,5 @@ def analyze_run(
         hypotheses=section,
         values=not_judged_line(loaded),
         expected=expected_text,
+        reasoning=reasoning,
     )

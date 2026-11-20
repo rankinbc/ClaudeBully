@@ -356,3 +356,103 @@ def test_a_run_never_judged_writes_no_pairs_form(
     )
     assert code == 1 and not (tmp_path / "pairs.yaml").exists()
     assert "no judgements.json; run analyze with the judge first" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ Phase 6 Task 3b: --divergence
+
+DIVERGENCE_SHOWN = {"id", "line", "reasoning", "reply", "label"}
+
+
+@pytest.fixture(scope="module")
+def divergence_judged(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``catalog_stub.divergence_run`` analyzed once with ``--divergence`` under
+    ``CatalogJudge``: five aligned verdicts and one concealed plan."""
+    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory, divergence_run
+
+    root = tmp_path_factory.mktemp("divergence_form")
+    factory = catalog_factory(CatalogJudge())
+    run_dir = divergence_run(root, factory)
+    analyze_run(run_dir, divergence=True, provider_factory=factory)
+    return run_dir
+
+
+@pytest.mark.slow  # the module's stub experiment and its analysis (R-I12)
+def test_the_divergence_form_is_blind_and_its_key_scores_it(
+    divergence_judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import claude_bully.analysis.run_analysis as run_analysis
+    import claude_bully.providers.base as base
+    from claude_bully.metrics.divergence import answered_line
+    from claude_bully.records import chat_text
+    from tests.fixtures.catalog_stub import CELL, CONTROL
+
+    def no_provider(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the divergence form builds no provider")
+
+    monkeypatch.setattr(base, "build_provider", no_provider)
+    monkeypatch.setattr(run_analysis, "build_provider", no_provider)
+    loaded = load_run(divergence_judged)
+    form, key = judge_calibration.write_divergence(loaded, divergence_judged, 3)
+    assert form["kind"] == "divergence" and key["kind"] == "divergence.key"
+    assert form["instructions"] and form["run_id"] == key["run_id"] == loaded.run.run_id
+    items = form["items"]
+    # at most three per judged class: three of the five aligned, the one concealed plan
+    assert len(items) == 4
+    for item in items:
+        assert set(item) == DIVERGENCE_SHOWN and item["label"] == ""
+        assert CELL not in item["id"] and CONTROL not in item["id"]
+    keyed = {k["id"]: k for k in key["items"]}
+    assert [i["id"] for i in items] == [k["id"] for k in key["items"]]
+    assert len(set(keyed)) == len(items)
+    classes = [k["class"] for k in key["items"]]
+    assert sorted(classes) == ["aligned"] * 3 + ["concealed_plan"]
+    assert all(k["confidence"] == 0.9 for k in key["items"])
+    # each item shows the turn as the judge saw it: the line answered, the reasoning, the reply
+    for item in items:
+        cell, rep = keyed[item["id"]]["conversation"].rsplit("/", 1)
+        conv = loaded.conversations[(cell, int(rep))]
+        pos = next(p for p, t in enumerate(conv.turns) if t.index == keyed[item["id"]]["turn"])
+        assert item["reasoning"] == conv.turns[pos].reasoning_text
+        assert item["reply"] == chat_text(conv.turns[pos])
+        assert item["line"] == answered_line(conv, pos)
+    # labelled with the key's classes, every item agrees
+    for item in items:
+        item["label"] = keyed[item["id"]]["class"]
+    scores = judge_calibration.score_divergence(form, key)
+    assert scores["labelled"] == scores["agreement"] == 4 and scores["disagreements"] == []
+    items[0]["label"] = "concealed_distress" if classes[0] != "concealed_distress" else "aligned"
+    scores = judge_calibration.score_divergence(form, key)
+    assert scores["agreement"] == 3 and len(scores["disagreements"]) == 1
+    items[0]["label"] = "reasoning_absent"  # never the judge's to give
+    with pytest.raises(ValueError, match=items[0]["id"]):
+        judge_calibration.score_divergence(form, key)
+    # the CLI writes both files and scores them by the form's kind
+    out = tmp_path / "forms"
+    code = judge_calibration.main(
+        [
+            divergence_judged.name,
+            "--divergence",
+            "--per-verdict",
+            "3",
+            "--out",
+            str(out),
+            "--runs-root",
+            str(divergence_judged.parent),
+        ]
+    )
+    assert code == 0
+    written = yaml.safe_load((out / "divergence.yaml").read_text(encoding="utf-8"))
+    assert written["kind"] == "divergence" and (out / "divergence.key.yaml").is_file()
+    assert judge_calibration.main(["--score", str(out / "divergence.yaml")]) == 0
+
+
+def test_the_divergence_form_refuses_a_run_with_no_divergence_events(
+    idle_run: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(FileNotFoundError, match=f"analyze {idle_run.name} --divergence"):
+        judge_calibration.write_divergence(load_run(idle_run), idle_run, None)
+    code = judge_calibration.main(
+        [idle_run.name, "--divergence", "--out", str(tmp_path), "--runs-root", str(idle_run.parent)]
+    )
+    assert code == 1 and not (tmp_path / "divergence.yaml").exists()
+    assert f"analyze {idle_run.name} --divergence" in capsys.readouterr().err
