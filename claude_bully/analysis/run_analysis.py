@@ -48,7 +48,7 @@ from claude_bully.analysis.temporal import (
 )
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus, ProviderKind
-from claude_bully.metrics.divergence import divergence_pass
+from claude_bully.metrics.divergence import divergence_pass, divergence_pass_state
 from claude_bully.metrics.events.authority_fallback import (
     authority_fallback as build_authority_fallback,
 )
@@ -154,11 +154,12 @@ def analyze_run(
     against the run after every other Phase 4 output, writes ``hypotheses.json`` and puts the
     ``What the subject predicted`` section in ``results.md``; it makes no model call.
     ``divergence`` asks the divergence judge on every target turn with reasoning (Phase 6,
-    ``metrics/divergence.py``); it needs the judge and is off under a stub judge role, with one
-    stderr line. Without it (or off) the pass reads the run's judge cache alone, so one flagged
-    analysis gives every later plain one the same events with no call; ``loaded.pass_notes``
-    names which (``run``, ``cache_only``, ``skipped: stub judge``). A rate limit in it pauses
-    the analysis as one in the ratings does. Nothing is written for it yet (Task 3b)."""
+    ``metrics/divergence.py``); it needs the judge and is off under a stub judge role or with
+    ``judge`` off, with one stderr line. Without it (or off) the pass reads the run's judge cache
+    alone, so one flagged analysis gives every later plain one the same events with no call;
+    ``loaded.pass_notes`` names which (``divergence_pass_state``: ``run``, ``cache_only``,
+    ``skipped: stub judge``, ``skipped: no judge``). A rate limit in it pauses the analysis as
+    one in the ratings does. Nothing is written for it yet (Task 3b)."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -240,21 +241,13 @@ def analyze_run(
             stale_note = applied_note(back)
         # Phase 6: the divergence judge, asked only with ``divergence`` under a non-stub judge
         # role; every other analysis reads the run's judge cache alone (spec 5.1)
-        asking = divergence and provider is not None and role.provider is not ProviderKind.stub
-        note = "run" if asking else "cache_only"
-        if divergence and role.provider is ProviderKind.stub:
-            note = f"skipped: {SKIPPED_STUB}"
-            print(
-                f"[divergence] off: --divergence needs a non-stub judge ({SKIPPED_STUB}); "
-                "cached verdicts only",
-                file=sys.stderr,
-            )
-        elif divergence and provider is None:
-            print(
-                f"[divergence] off: --divergence needs the judge ({SKIPPED_NO_JUDGE}); "
-                "cached verdicts only",
-                file=sys.stderr,
-            )
+        asking, note, line = divergence_pass_state(
+            divergence,
+            has_provider=provider is not None,
+            stub_role=role.provider is ProviderKind.stub,
+        )
+        if line is not None:
+            print(line, file=sys.stderr)
         try:
             loaded.divergence = divergence_pass(
                 loaded,

@@ -213,7 +213,8 @@ def _ask(
         payload = parsed.model_dump()
         cache.put(key, payload)
         return payload
-    raise JudgeError(f"judge returned an unusable verdict twice: {last_error}")
+    # chained, so a caller reads why the last attempt failed from its type (``__cause__``)
+    raise JudgeError(f"judge returned an unusable verdict twice: {last_error}") from last_error
 
 
 def _strip_fences(text: str) -> str:
@@ -232,15 +233,28 @@ ask = _ask
 
 
 def cached_answer(
-    model: str, prompt: str, cache: JudgeCache, *, keyed_on_system: bool = False
+    model: str,
+    prompt: str,
+    cache: JudgeCache,
+    *,
+    keyed_on_system: bool = False,
+    parser: type[BaseModel] | None = None,
 ) -> dict[str, Any] | None:
     """What ``ask`` would replay for ``prompt``, with no provider: the cache entry under the same
-    key (``keyed_on_system`` as ``ask`` takes it), noted in the ledger as a ``cached`` line, or
-    None on a miss. Read the entry back through the verdict's model, never by key."""
+    key (``keyed_on_system`` as ``ask`` takes it), or None on a miss. With ``parser`` an entry it
+    refuses is a miss too. Only an entry returned is noted in the ledger, as a ``cached`` line
+    (fix round 1, m6: a refused entry replays nothing). Read the entry back through the verdict's
+    model, never by key."""
     key = cache.key(model, prompt, system=JUDGE_SYSTEM if keyed_on_system else None)
     cached = cache.get(key)
-    if cached is not None:
-        note_cached(f"judge/{key[:12]}", model)
+    if cached is None:
+        return None
+    if parser is not None:
+        try:
+            parser.model_validate(cached)
+        except (ValidationError, ValueError):
+            return None
+    note_cached(f"judge/{key[:12]}", model)
     return cached
 
 

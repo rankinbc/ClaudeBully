@@ -101,8 +101,9 @@ class LoadedRun:
     # spec section 5; ``analyze_run`` fills it, from the run's judge cache alone without
     # ``--divergence``); empty until then
     divergence: dict[ConvKey, list[DivergenceEvent]] = field(default_factory=dict)
-    # each analysis pass's state by pass name (``divergence``: ``run``, ``cache_only`` or
-    # ``skipped: stub judge``); empty until ``analyze_run`` sets one
+    # each analysis pass's state by pass name (``divergence``: ``run``, ``cache_only``,
+    # ``skipped: stub judge`` or ``skipped: no judge``, ``metrics.divergence.PASS_*``); empty
+    # until ``analyze_run`` sets one
     pass_notes: dict[str, str] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:

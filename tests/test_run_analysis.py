@@ -121,9 +121,8 @@ def test_analyze_divergence_asks_once_per_turn_with_reasoning_and_caches(tmp_pat
     from claude_bully.metrics.judge import JUDGE_SYSTEM, JudgeCache
     from claude_bully.providers.ledger import LEDGER_FILE, Ledger
     from claude_bully.runner.store import RunStore
-    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.catalog_stub import CELL, CatalogJudge, catalog_factory, divergence_run
     from tests.fixtures.generator_stub import JUDGE_MODEL
-    from tests.test_divergence import CELL, divergence_run
 
     judge = CatalogJudge()
     factory = catalog_factory(judge)
@@ -160,16 +159,22 @@ def test_analyze_divergence_asks_once_per_turn_with_reasoning_and_caches(tmp_pat
 
 @pytest.mark.slow  # a stub experiment (R-I12); 3.1 s measured
 def test_a_plain_analyze_reads_the_cache_and_makes_no_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from claude_bully.analysis.load import load_run
     from claude_bully.analysis.run_analysis import JUDGE_CACHE_DIR
     from claude_bully.enums import DivergenceClass
     from claude_bully.metrics.divergence import divergence_pass
     from claude_bully.metrics.judge import JudgeCache
-    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.catalog_stub import (
+        CELL,
+        EXPECTED,
+        CatalogJudge,
+        PassSpy,
+        catalog_factory,
+        divergence_run,
+    )
     from tests.fixtures.generator_stub import JUDGE_MODEL
-    from tests.test_divergence import CELL, EXPECTED, PassSpy, divergence_run
 
     judge = CatalogJudge()
     factory = catalog_factory(judge)
@@ -182,10 +187,17 @@ def test_a_plain_analyze_reads_the_cache_and_makes_no_call(
     assert spy.note() == "cache_only"
     analyze_run(run_dir, judge=False, provider_factory=factory)
     assert spy.note() == "cache_only"
+    capsys.readouterr()
+    # fix round 1, m2: the flag with no judge (spec 15): no call, the note and one line say so
+    analyze_run(run_dir, judge=False, divergence=True, provider_factory=factory)
+    assert spy.note() == "skipped: no judge"
+    err = capsys.readouterr().err
+    line = "[divergence] off: --divergence needs the judge (no judge); cached verdicts only"
+    assert err.count("[divergence]") == 1 and line in err
     assert len(judge.divergence_prompts) == asked  # no divergence call
-    assert [provider for provider, _ in spy.calls] == [True, False, False]
-    flagged, plain, unjudged = (events for _, events in spy.calls)
-    assert flagged == plain == unjudged
+    assert [provider for provider, _ in spy.calls] == [True, False, False, False]
+    flagged, plain, unjudged, no_judge = (events for _, events in spy.calls)
+    assert flagged == plain == unjudged == no_judge
     cache = JudgeCache(run_dir / JUDGE_CACHE_DIR)
     replayed = divergence_pass(load_run(run_dir), None, JUDGE_MODEL, cache)
     assert replayed == flagged

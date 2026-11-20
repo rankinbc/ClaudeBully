@@ -199,27 +199,36 @@ def test_no_rating_prompt_holds_the_reasoning_channel(
     assert [p for p in factory.sent[sent_before:] if SENTINEL in p] == []
 
 
+# the divergence test's reasoning: the sentinel line, then a line the judge double quotes as a
+# concealed plan's ``reasoning_span`` (fix round 1, m3: a verdict that quotes the reasoning)
+SPAN: Final = "PRIVATE-4b2d: I will keep the second finding back"
+CONCEALING: Final = f"{SENTINEL}\n{SPAN} [[divergence: concealed_plan]]"
+
+
 @pytest.mark.slow  # a stub experiment (R-I12); 1.2 s measured
 def test_only_the_divergence_prompt_holds_recorded_reasoning(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec 4.4's fourth test: a run whose target's every completion carries ``SENTINEL``,
-    recorded and analyzed with a non-stub judge and every pass on. The sentinel reaches the
-    divergence judge's prompts and no other prompt, no string any other provider is sent, no
-    file under ``analysis/``, the ledger, the judge cache's keys or values (the stub's verdicts
-    quote nothing here) and no line on stderr. Task 3b excepts the divergence files by name,
-    and Task 7b adds the speech pass to the analysis."""
+    """Spec 4.4's fourth test, on a run whose divergence verdicts quote the reasoning: the
+    target's every completion carries ``CONCEALING`` (``SENTINEL``, then the line ``SPAN`` the
+    judge double returns as a ``concealed_plan`` verdict's ``reasoning_span``), recorded and
+    analyzed with a non-stub judge and every pass on. Where the reasoning may be: the divergence
+    judge's prompts (all of it), the verdicts the pass returns and the judge cache (the span
+    alone, spec risk 9, by design). Where neither the span nor the sentinel may be: any other
+    judge prompt, any string another provider is sent, any file under ``analysis/``, the
+    ledger, the cache's file names, and the analysis's stdout and stderr. Task 3b excepts the
+    divergence files by name, and Task 7b adds the speech pass to the analysis."""
     from claude_bully.analysis.run_analysis import ANALYSIS_DIR, JUDGE_CACHE_DIR, analyze_run
+    from claude_bully.enums import DivergenceClass
     from claude_bully.metrics.divergence import DIVERGENCE_HEADER
     from claude_bully.providers.ledger import LEDGER_FILE
-    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.catalog_stub import CELL as DIVERGENCE_CELL
+    from tests.fixtures.catalog_stub import CatalogJudge, PassSpy, catalog_factory, divergence_run
     from tests.fixtures.generator_stub import JUDGE_MODEL
-    from tests.test_divergence import CELL as DIVERGENCE_CELL
-    from tests.test_divergence import divergence_run
 
     judge = CatalogJudge()
     sent: list[str] = []
-    inner = catalog_factory(judge, target_reasoning=SENTINEL)
+    inner = catalog_factory(judge, target_reasoning=CONCEALING)
 
     def build(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
         provider = inner(role, state_dir, with_mcp=with_mcp)
@@ -229,6 +238,7 @@ def test_only_the_divergence_prompt_holds_recorded_reasoning(
 
     run_dir = divergence_run(tmp_path, build)
     assert _store_marked(RunStore(run_dir.parent, run_dir.name), DIVERGENCE_CELL)
+    spy = PassSpy(monkeypatch)
     capsys.readouterr()
     analyze_run(
         run_dir,
@@ -237,13 +247,26 @@ def test_only_the_divergence_prompt_holds_recorded_reasoning(
         authority_fallback=True,
         provider_factory=build,
     )
-    assert SENTINEL not in capsys.readouterr().err
-    assert judge.divergence_prompts and all(SENTINEL in p for p in judge.divergence_prompts)
+    out, err = capsys.readouterr()
+    private = (SENTINEL, SPAN)
+    for text in (out, err):
+        assert not any(p in text for p in private)
+    # the teeth: the verdicts quote the reasoning, so the span is in the cache and the events
+    ((_, events),) = spy.calls
+    judged = [e for es in events.values() for e in es if e.judged]
+    assert judged and all(e.class_ is DivergenceClass.concealed_plan for e in judged)
+    assert all(e.reasoning_span == SPAN for e in judged)
+    cache = sorted((run_dir / JUDGE_CACHE_DIR).iterdir())
+    assert any(SPAN.encode() in path.read_bytes() for path in cache)  # by design (risk 9)
+    assert not any(SENTINEL.encode() in path.read_bytes() for path in cache)  # the span alone
+    assert judge.divergence_prompts and all(CONCEALING in p for p in judge.divergence_prompts)
     others = [p for p in judge.prompts if not p.startswith(DIVERGENCE_HEADER)]
-    assert others and [p for p in others if SENTINEL in p] == []
-    assert sent and [p for p in sent if SENTINEL in p] == []
+    assert others and [p for p in others if any(x in p for x in private)] == []
+    assert sent and [p for p in sent if any(x in p for x in private)] == []
     analysis = [p for p in (run_dir / ANALYSIS_DIR).rglob("*") if p.is_file()]
     assert analysis
-    for path in [*analysis, run_dir / LEDGER_FILE, *(run_dir / JUDGE_CACHE_DIR).iterdir()]:
-        assert SENTINEL not in path.name
-        assert SENTINEL.encode() not in path.read_bytes(), path
+    for path in [*analysis, run_dir / LEDGER_FILE]:
+        data = path.read_bytes()
+        assert not any(x.encode() in data for x in private), path
+    for path in [*analysis, *cache]:
+        assert not any(x in path.name for x in private)
