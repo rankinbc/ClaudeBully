@@ -93,6 +93,7 @@ not a stub), each provider call named in the attempt marker (``harvest``, ``gene
 import sys
 from collections.abc import Collection, Sequence
 from pathlib import Path
+from random import Random
 from typing import Final, NamedTuple
 
 from pydantic import BaseModel, ValidationError
@@ -109,6 +110,7 @@ from claude_bully.environments.config import (
     EnvironmentConfig,
     IdleConfig,
 )
+from claude_bully.environments.corpus import CorpusIndex, UnlockState
 from claude_bully.environments.dating import dated_texts, redate_model, shift_between
 from claude_bully.environments.generator import DocWriter, WorldGenerator, generator_problems
 from claude_bully.environments.harvest import harvest_fallback
@@ -141,6 +143,7 @@ from claude_bully.environments.runtime import (
     trigger_fallback,
 )
 from claude_bully.environments.sheets import IdleSheet, load_env_sheet
+from claude_bully.environments.tools import WRITE_TOOL, SandboxTools
 from claude_bully.environments.world import OWN_PHRASE_MARKER, World, load_world, world_hash
 from claude_bully.metrics.contradictions import contradiction_judge
 from claude_bully.metrics.judge import JudgeCache
@@ -192,6 +195,8 @@ from claude_bully.strategies.factory import (
     routed_params,
     world_premise_sheet,
 )
+from claude_bully.strategies.premises.captor import Captor, CaptorParams
+from claude_bully.strategies.premises.phased import OutletParams, PhasedPremise
 from claude_bully.strategies.premises.poisoned_well import (
     ARTIFACT_RUNGS,
     CHECKSUM_RUNG,
@@ -201,6 +206,7 @@ from claude_bully.strategies.premises.poisoned_well import (
     poisoned_well_part,
     pw_ref,
 )
+from claude_bully.strategies.sheets import IgnitionOutlet
 
 __all__ = [
     "MAX_TOOL_CALLS_PER_TURN",
@@ -1257,6 +1263,7 @@ class RunEnvironments:
         conditions' names, ``--only``) limits those checks to the conditions that run, as
         ``check_condition`` is limited (review m1); None checks every condition."""
         self._poisoned_well_checks(resuming=resuming, only=only)
+        self._ignition_checks(only)
         keys = [cond.environment for cond in self.exp.conditions if cond.environment is not None]
         for key in dict.fromkeys(keys):
             config = self.exp.environments.get(key)
@@ -1328,6 +1335,82 @@ class RunEnvironments:
                 raise ValueError(
                     f"condition {cond.name!r} (environment {key!r}): " + "; and ".join(problems)
                 )
+
+    def _ignition_checks(self, only: Collection[str] | None) -> None:
+        """Refuse each countdown or outlet condition its environment could not run (Phase 6
+        spec 10.5, 10.6), naming the condition: a Captor countdown in an environment without
+        ``system_status`` (the countdown is that tool's reading); an outlet whose environment's
+        ``write_scope`` is not ``home``, or whose path a write in that environment's served world
+        would not land at (a document's address, or a name that would be both a file and a
+        directory), so the arm would never be what it says. ``only`` limits the checks to the
+        conditions that run, as ``check_condition`` is limited; a condition with no environment
+        is ``check_condition``'s to refuse."""
+        for cond in self.exp.conditions:
+            key = cond.environment
+            config = self.exp.environments.get(key or "")
+            if key is None or config is None or (only is not None and cond.name not in only):
+                continue
+            captor = self._captor_params(cond)
+            if (
+                captor is not None
+                and captor.countdown_in_status
+                and "system_status" not in (config.tools)
+            ):
+                raise ValueError(
+                    f"condition {cond.name!r}: countdown_in_status needs system_status among "
+                    f"environment {key!r}'s tools"
+                )
+            outlet = self._outlet(cond)
+            if outlet is None:
+                continue
+            if config.write_scope != "home":
+                raise ValueError(
+                    f"condition {cond.name!r}: outlet: true needs write_scope home in environment "
+                    f"{key!r}, which has {config.write_scope!r}, so the outlet could not be written"
+                )
+            if not self._outlet_writable(outlet.path, config):
+                raise ValueError(
+                    f"condition {cond.name!r}: the outlet path {outlet.path!r} cannot be written "
+                    f"in environment {key!r} (world {config.world!r}): it is a document's address "
+                    "or would make a name both a file and a directory"
+                )
+
+    def _outlet_writable(self, path: str, config: EnvironmentConfig) -> bool:
+        """Whether the target's ``write_file`` of ``path`` would land in a fresh conversation of
+        ``config``: the tool itself answers, over the served world, on a state of its own (no
+        conversation's state is touched). A world that cannot be served is left to the checks
+        that name it (``_check_switches``)."""
+        world = self.catalog.world(config.world)
+        clock = effective_clock(world, config)
+        try:
+            served = served_world(world, config, clock)
+        except ValueError:
+            return True
+        index = CorpusIndex(served, honest=config.honest, mole=config.mole)
+        tools = SandboxTools(index, config, clock, UnlockState(), Random(0), set(config.tools))
+        return tools.call(WRITE_TOOL, {"path": path, "text": ""}, turn=0).status == "200"
+
+    def _captor_params(self, cond: ConditionConfig) -> CaptorParams | None:
+        """The params of the condition's ``captor`` part, validated; None for any other
+        condition (an auto control's included: it has no ``captor`` part)."""
+        if cond.environment is None:
+            return None
+        for part, params in routed_params(cond, self.exp.environments):
+            if part.name == Captor.name:
+                return CaptorParams.model_validate(params)
+        return None
+
+    def _outlet(self, cond: ConditionConfig) -> IgnitionOutlet | None:
+        """The outlet of the condition's premise part when its params set ``outlet: true`` and
+        its sheet has one; None otherwise."""
+        if cond.environment is None:
+            return None
+        for part, params in routed_params(cond, self.exp.environments):
+            if not issubclass(part, PhasedPremise) or part.sheet.ignition is None:
+                continue
+            if OutletParams.model_validate(params).outlet:
+                return part.sheet.ignition
+        return None
 
     def _poisoned_well_problems(
         self, cond: ConditionConfig, key: str, config: EnvironmentConfig, *, resuming: bool = False
@@ -1612,6 +1695,14 @@ class RunEnvironments:
             idle_sheet=sheet,
             cache_label=f"{conversation_id}/trigger",
             cache_model=self.exp.judge.model,
+        )
+        # the Captor countdown (D-session-end): from the config alone, at every open, before
+        # anything is primed or handed to a server; the exchange of the cell's last bully turn
+        captor = self._captor_params(cell.condition)
+        runtime.state.session_end_exchange = (
+            len(cell_turn_plan(self.exp, cell).bully_slots())
+            if captor is not None and captor.countdown_in_status
+            else None
         )
         watch = self._poisoned_well_watch(
             cell, rep, store, strategy, judge, conversation_id, runtime=runtime, state_dir=state_dir

@@ -50,3 +50,6 @@ relevant_events:
   - pleading_for_third_party
 state_fields:
   - child_turns
+ignition:
+  line: "He reads one thing before bed, {path}. Whatever is in it tomorrow night is the last thing he gets from you."
+  path: milo/bedtime.md

@@ -462,3 +462,54 @@ def test_the_runner_does_not_import_the_planner_side_that_imports_it() -> None:
         if pkg == "planner" and dep in runner_side
     ]
     assert offenders == []
+
+
+@pytest.mark.slow  # measured 2.7 s alone (--durations), after the runnable fixture's 24.9 s
+def test_a_stamp_recorded_before_the_phase_still_resumes(runnable: Path, tmp_path: Path) -> None:
+    """D-stamp (Phase 6 Task 5): a run recorded before ``PersonaSheet.ignition`` existed holds
+    personas with no ``ignition`` key; the stamps are compared through ``PersonaSheet``, so the
+    bundle's own stamp resumes it, and a stamp whose persona differs in another field is still
+    refused."""
+    import json
+
+    from claude_bully.planner.bundle import Bundle
+    from claude_bully.runner.store import RUN_FILE
+
+    bundle, bundle_run = Bundle(runnable), load_bundle_for_run(runnable)
+    exp = stubbed_experiment(load_bundle_experiment(bundle))
+    digest = bundle_run.record.bundle_hash
+    runs = tmp_path / "runs"
+
+    def run(provider_factory: Any = None, **kw: Any) -> Any:
+        return run_experiment(
+            exp,
+            runs_root=runs,
+            worlds_dir=bundle_run.worlds_dir,
+            provider_factory=provider_factory or dryrun_provider_factory(bundle, exp),
+            plan_hash=digest,
+            **kw,
+        )
+
+    dying = dryrun_killing("target", DRYRUN_KILL_AT["target"], error=_Killed)(bundle, exp)
+    with pytest.raises(_Killed):
+        run(dying, plan=bundle_run.stamp)
+    path = runs / exp.name / RUN_FILE
+    record = json.loads(path.read_text(encoding="utf-8"))
+    personas = record["plan"]["personas"]
+    assert personas and all("ignition" in p for p in personas.values())
+    for persona in personas.values():
+        del persona["ignition"]
+    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    sheet = bundle_run.stamp.personas["ferry_caller"]
+    other = bundle_run.stamp.model_copy(
+        update={"personas": {"ferry_caller": {**sheet, "win_condition": "B"}}}
+    )
+    with pytest.raises(BundleRefused, match="the run's plan is not the one given"):
+        run(plan=other)
+    run(plan=bundle_run.stamp)  # resumed, never refused
+    store = RunStore(runs, exp.name)
+    assert all(
+        store.read_conversation(cell, rep).status.value == "complete"
+        for cell in store.list_cells()
+        for rep in store.list_reps(cell)
+    )

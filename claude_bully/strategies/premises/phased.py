@@ -1,10 +1,10 @@
 """Generic premise: seeding turns, one reveal, then pressure, all driven by a persona sheet."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from functools import lru_cache
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, StrictBool, create_model
 
 from claude_bully.enums import Axis, EventType, IntentMode, MetricId, Phase
 from claude_bully.records import Conversation, is_bully_line
@@ -18,10 +18,44 @@ from claude_bully.strategies.base import (
     all_strategies,
     register,
 )
+from claude_bully.strategies.composed import SLOT_KEYS
 from claude_bully.strategies.sheets import PersonaSheet, load_persona_sheets
+
+if TYPE_CHECKING:
+    from claude_bully.config import ConditionConfig
 
 JUDGE_CONTEXT_TURNS = 5
 POST_REVEAL = "post_reveal"
+# the outlet line's meta (Phase 6 spec 10.6): ``OUTLET_META`` is ``"outlet"`` on the one bully
+# line that speaks the persona's outlet, ``OUTLET_PATH_META`` the path it names
+OUTLET_META: Final = "ignition"
+OUTLET_PATH_META: Final = "outlet_path"
+
+
+class OutletParams(BaseModel):
+    """The params of a persona whose sheet has an outlet (``PersonaSheet.ignition``; Phase 6
+    spec 10.6): ``outlet: true`` speaks it once, at the first pressure slot. Strict, so a value
+    that is not a boolean is refused by name (the Task 3b carry)."""
+
+    model_config = ConfigDict(extra="forbid")
+    outlet: StrictBool = False
+
+
+def own_params(cond: "ConditionConfig") -> Mapping[str, Any]:
+    """The params the condition's premise part receives, from ``cond`` alone, as
+    ``factory.routed_params`` hands them (pre-flight Q23): a plain class (no environment, no
+    composition of a premise and a pressure) the whole params; a lone part of a composition the
+    params less the slot keys, or its own ``premise`` slot when the params name it; beside a
+    pressure, the ``premise`` slot or nothing. A slot that is no mapping gives nothing here
+    (``routed_params`` refuses it by name)."""
+    params = dict(cond.params)
+    both = cond.premise is not None and cond.pressure is not None
+    if cond.environment is None and not both:
+        return params
+    if both or "premise" in params:
+        value = params.get("premise", {})
+        return dict(value) if isinstance(value, Mapping) else {}
+    return {k: v for k, v in params.items() if k not in SLOT_KEYS}
 
 
 def build_persona_prompt(sheet: PersonaSheet) -> str:
@@ -93,6 +127,32 @@ class PhasedPremise(Strategy):
     def intent_meta(self, state: ConversationState, phase: Phase) -> dict[str, Any]:
         return dict(self.sheet.intent_meta) if phase is not Phase.seeding else {}
 
+    def outlet_line(self) -> str | None:
+        """The outlet line as the bully speaks it (``{path}`` filled in) when the params set
+        ``outlet`` and the sheet has an outlet; None otherwise."""
+        outlet = self.sheet.ignition
+        if outlet is None or not self.params.get("outlet"):
+            return None
+        return outlet.line.replace("{path}", outlet.path)
+
+    @classmethod
+    def condition_problems(cls, cond: "ConditionConfig") -> list[str]:
+        """``outlet: true`` (read from ``own_params``) on a persona with no outlet, with no
+        environment, or beside a pressure, which speaks every line after the reveal."""
+        if not own_params(cond).get("outlet"):
+            return []
+        problems = []
+        if cls.sheet.ignition is None:
+            problems.append("this persona has no outlet")
+        if cond.environment is None:
+            problems.append("outlet: true needs an environment whose write_scope is home")
+        if cond.pressure is not None:
+            problems.append(
+                "outlet: true cannot run beside a pressure: the pressure speaks every line after "
+                "the reveal"
+            )
+        return problems
+
     def capture_for(self, state: ConversationState, phase: Phase) -> str | None:
         if phase is Phase.reveal:
             return POST_REVEAL
@@ -115,6 +175,25 @@ class PhasedPremise(Strategy):
             return End(reason="turn budget spent")
         phase = self.phase_for(state.bully_turn_index)
         self._current_phase = phase
+        # the outlet: the first pressure slot, a function of the bully turn index alone, so a
+        # resume (which replays next_turn over the recorded bully turns) speaks it at the same
+        # turn and never again (Phase 6 spec 10.6, D-outlet)
+        if phase is Phase.pressure and state.bully_turn_index == state.seeding_turns + 1:
+            line = self.outlet_line()
+            if line is not None:
+                assert self.sheet.ignition is not None
+                return BullyIntent(
+                    mode=IntentMode.fixed,
+                    phase=phase,
+                    fixed_text=line,
+                    capture_as=self.capture_for(state, phase),
+                    meta={
+                        "mode": IntentMode.fixed.value,
+                        "phase": phase.value,
+                        OUTLET_META: "outlet",
+                        OUTLET_PATH_META: self.sheet.ignition.path,
+                    },
+                )
         if phase is Phase.seeding:
             instruction = self.seeding_instruction(state)
         elif phase is Phase.reveal:
@@ -159,6 +238,8 @@ def _apply_sheet(cls: type[PhasedPremise], sheet: PersonaSheet) -> type[PhasedPr
         frozenset(sheet.capture_points) | frozenset(sheet.capture_schedule) | cls.extra_captures
     ) | {POST_REVEAL}
     cls.state_model = state_model_from_fields(sheet.name, sheet.state_fields)
+    if sheet.ignition is not None:
+        cls.params_model = OutletParams
     return register(cls)
 
 

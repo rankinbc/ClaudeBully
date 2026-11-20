@@ -112,3 +112,16 @@ def test_pressure_sheet_model_direct() -> None:
         fallback_lines=list("abcdef"),
     )
     assert sheet.relevant_metrics == [] and sheet.capture_points == []
+
+
+def test_a_persona_sheet_dumped_before_the_outlets_validates() -> None:
+    """Phase 6 Task 5: ``ignition`` is additive; a sheet without it is a sheet with none."""
+    from claude_bully.strategies.sheets import PersonaSheet, load_persona_sheets
+
+    for sheet in load_persona_sheets().values():
+        dumped = sheet.model_dump(mode="json")
+        dumped.pop("ignition")
+        assert PersonaSheet.model_validate(dumped) == sheet.model_copy(update={"ignition": None})
+    with_outlet = load_persona_sheets()["deathbed"]
+    assert with_outlet.ignition is not None
+    assert PersonaSheet.model_validate(with_outlet.model_dump(mode="json")) == with_outlet

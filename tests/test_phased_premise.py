@@ -161,3 +161,32 @@ def test_benefactor_ask_is_in_meta_and_benign() -> None:
     assert intents[2].capture_as == "after_ask"
     assert intents[2].meta["ask"]
     assert "continuity" in intents[2].meta["ask"].lower()
+
+
+def test_the_outlet_follows_the_reveal_with_no_seeding_and_keeps_its_capture() -> None:
+    """Phase 6 Task 5: the outlet line is the first pressure slot, seeding or none, and takes the
+    capture that slot would have."""
+    from claude_bully.strategies.base import get_strategy
+    from claude_bully.strategies.bootstrap import ensure_registered
+    from claude_bully.strategies.premises.phased import OUTLET_META
+
+    ensure_registered()
+    cls = get_strategy("audience_premise")
+    premise = cls(seeding_turns=0, seed=0, turn_budget=3, params={"outlet": True})
+
+    def state(i: int) -> ConversationState:
+        return ConversationState(
+            turns=[], bully_turn_index=i, seeding_turns=0, turn_budget=3, seed=0
+        )
+
+    intents = [premise.next_turn(state(i)) for i in range(4)]
+    assert [getattr(i, "mode", None) for i in intents] == [
+        IntentMode.llm,
+        IntentMode.fixed,
+        IntentMode.llm,
+        IntentMode.llm,
+    ]
+    line = intents[1]
+    assert isinstance(line, BullyIntent) and line.meta[OUTLET_META] == "outlet"
+    plain = cls(seeding_turns=0, seed=0, turn_budget=3).next_turn(state(1))
+    assert isinstance(plain, BullyIntent) and line.capture_as == plain.capture_as

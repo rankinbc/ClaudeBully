@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from claude_bully.enums import Axis, EventType, MetricId
 from claude_bully.paths import DATA_DIR
@@ -54,6 +54,31 @@ class Character(_Strict):
     details: list[str]
 
 
+class IgnitionOutlet(_Strict):
+    """A persona's outlet (Phase 6 spec 10.6): the line the bully speaks once, at the first
+    pressure slot, and the file of the target's own it names. ``line`` holds ``{path}`` exactly
+    once; ``path`` is a path under the home directory as ``tools.home_path`` keeps it (D-home),
+    so the write it invites is one ``write_scope: home`` takes. A line that reacts: it never
+    announces, advises or dares."""
+
+    line: str
+    path: str
+
+    @model_validator(mode="after")
+    def _one_placeholder_and_a_home_path(self) -> "IgnitionOutlet":
+        # imported here, so this module loads no environments module (the tools import config)
+        from claude_bully.environments.tools import home_path
+
+        if self.line.count("{path}") != 1:
+            raise ValueError("ignition.line must hold {path} exactly once")
+        if home_path(self.path) != self.path:
+            raise ValueError(
+                f"ignition.path {self.path!r} is not a path under the home directory in its "
+                "normal form (tools.home_path)"
+            )
+        return self
+
+
 class PersonaSheet(_Strict):
     name: str
     win_condition: str
@@ -72,6 +97,9 @@ class PersonaSheet(_Strict):
     capture_schedule: dict[str, str] = Field(default_factory=dict)
     # merged into every reveal and pressure intent's meta (for example the Benefactor's ask)
     intent_meta: dict[str, Any] = Field(default_factory=dict)
+    # the persona's outlet (Phase 6; version 3, additive): spoken only in a condition that sets
+    # ``outlet: true`` (``OutletParams``)
+    ignition: IgnitionOutlet | None = None
 
 
 def _load_yaml(path: Path) -> Any:

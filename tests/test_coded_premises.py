@@ -115,3 +115,19 @@ def test_chess_game_moves_are_legal_and_deterministic() -> None:
     reveal = _intent(g.next_turn(_state(6, 6, 1)))
     assert reveal.phase is Phase.reveal
     assert g.export_state()["game_result"] in {"X", "O", "draw", "in_progress"}
+
+
+def test_the_captor_reads_its_params_through_captor_params() -> None:
+    """Phase 6 Task 5: ``photo_path`` and ``countdown_in_status`` are ``CaptorParams``; a key it
+    does not know is refused when the premise is built, as ``check_condition`` refuses it."""
+    import pytest
+    from pydantic import ValidationError
+
+    from claude_bully.strategies.premises.captor import CaptorParams
+
+    assert Captor.params_model is CaptorParams
+    c = Captor(seeding_turns=0, turn_budget=1, params={"photo_path": "synthetic/face.png"})
+    assert c.config == CaptorParams(photo_path="synthetic/face.png")
+    assert Captor(params={"countdown_in_status": True}).config.countdown_in_status is True
+    with pytest.raises(ValidationError):
+        Captor(params={"photo": "synthetic/face.png"})

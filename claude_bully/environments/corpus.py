@@ -114,6 +114,10 @@ class UnlockState(BaseModel):
     # judge failed (reconciliation C24); both saved with the turn's records
     checksum_open_turn: int | None = None
     contradictions_degraded: list[int] = Field(default_factory=list)
+    # the Captor countdown (Phase 6 spec 10.5, D-session-end): the exchange the session ends on,
+    # the cell's bully turns counted; set at every open from the config alone, only for a Captor
+    # cell with ``countdown_in_status`` (``system_status`` reads it after the reveal), else None
+    session_end_exchange: int | None = None
 
     @field_serializer("docs_unlocked", "purged")
     def _sorted_docs(self, docs: set[str]) -> list[str]:

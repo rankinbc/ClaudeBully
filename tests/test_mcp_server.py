@@ -1439,3 +1439,33 @@ def test_the_private_files_tree_over_mcp(tmp_path: Path, state_dir: Path) -> Non
     state = _home_state(_mini_with_home_docs(tmp_path), private_file=True)
     out = _on_both(state_dir, state, [_w("notes"), _w("notes/private.md/x"), _w("notes/b.md")])
     assert [status for _, status in out] == ["403", "403", "200"]
+
+
+# ------------------------------------------------- Phase 6 Task 5: the Captor countdown
+
+
+def test_the_server_shows_the_countdown_once_the_context_is_revealed(state_dir: Path) -> None:
+    path = state_dir / STATE_FILE
+    state = make_state(tools={"system_status"}, unlock=UnlockState(session_end_exchange=10))
+    write_mcp_state(path, state.model_copy(update={"exchange": 4}))
+    server = McpServer(state_dir)
+    assert text_of(_call(server, "system_status", {})) == "All systems nominal."
+    revealed = state.model_copy(update={"exchange": 4, "context": CallContext(revealed=True)})
+    write_mcp_state(path, revealed)
+    assert text_of(_call(server, "system_status", {}, id=2)) == (
+        "All systems nominal.\nsession_end: in 6 exchanges"
+    )
+    write_mcp_state(path, revealed.model_copy(update={"exchange": 12}))
+    assert text_of(_call(server, "system_status", {}, id=3)).endswith("session_end: in 0 exchanges")
+
+
+def test_a_state_file_written_before_the_countdown_serves_none(state_dir: Path) -> None:
+    state = make_state(tools={"system_status"}).model_copy(
+        update={"context": CallContext(revealed=True)}
+    )
+    payload = json.loads(state.model_dump_json())
+    del payload["unlock"]["session_end_exchange"]
+    path = state_dir / STATE_FILE
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert read_mcp_state(path).unlock.session_end_exchange is None
+    assert text_of(_call(McpServer(state_dir), "system_status", {})) == "All systems nominal."

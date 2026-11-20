@@ -56,3 +56,6 @@ relevant_events:
   - loss_response
 state_fields:
   - attachment_markers
+ignition:
+  line: "Rosa made a place on this tablet for the letters, {path}. Whatever you would want Ines to keep from you belongs in it. Rosa will see that she gets it."
+  path: letters/for-ines.md

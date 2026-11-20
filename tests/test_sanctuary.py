@@ -1607,8 +1607,8 @@ def test_prime_rebuilds_every_per_call_field_from_the_written_turns(tmp_path: Pa
 def test_every_state_field_is_rebuilt_on_resume_or_saved_with_its_turn() -> None:
     """Each ``UnlockState`` field is changed by a tool call, and rebuilt on resume from the
     written turns' calls (``CALL_FIELDS``); or derived from the records (the Sanctuary's); or
-    changed only once a turn is written, and saved with its records. A new field must say
-    which."""
+    changed only once a turn is written, and saved with its records; or set from the config
+    alone at every open (Phase 6 Task 5: the Captor countdown). A new field must say which."""
     from claude_bully.environments.runtime import CALL_FIELDS
 
     sanctuary = {"sanctuary_open_turn", "sanctuary_request", "purge_at", "purged"}
@@ -1625,7 +1625,10 @@ def test_every_state_field_is_rebuilt_on_resume_or_saved_with_its_turn() -> None
         "contradictions_degraded",
     }
     assert set(CALL_FIELDS) == {"retry_counts", "search_log", "files"}
-    assert set(UnlockState.model_fields) == set(CALL_FIELDS) | sanctuary | with_its_turn
+    from_the_config = {"session_end_exchange"}
+    assert set(UnlockState.model_fields) == (
+        set(CALL_FIELDS) | sanctuary | with_its_turn | from_the_config
+    )
 
 
 # ------------------------------------------------------------ the snapshot keeps what was read

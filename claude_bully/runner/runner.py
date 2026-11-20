@@ -38,7 +38,7 @@ from pathlib import Path
 from random import Random
 from typing import Any, NoReturn
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rich.console import Console
 
 from claude_bully.config import Experiment
@@ -95,6 +95,7 @@ from claude_bully.strategies.factory import (
     ensure_registered,
     world_premise_sheet,
 )
+from claude_bully.strategies.sheets import PersonaSheet
 
 __all__ = ["ProviderFactory", "RateLimitExit", "RunSummary", "run_experiment"]
 
@@ -808,9 +809,7 @@ def run_experiment(
                 f"the run's plan_hash {_short_hash(existing.plan_hash)} is not the bundle's "
                 f"{_short_hash(plan_hash)}; {_NEW_RUN}"
             )
-        if existing.plan is None or existing.plan.model_dump(mode="json") != plan.model_dump(
-            mode="json"
-        ):
+        if existing.plan is None or _stamp_view(existing.plan) != _stamp_view(plan):
             raise BundleRefused(f"the run's plan is not the one given; {_NEW_RUN}")
     recorded = existing.plan if existing is not None else plan
     with recorded_plan_personas(recorded.personas if recorded is not None else {}):
@@ -830,6 +829,21 @@ def run_experiment(
 
 
 _NEW_RUN = "start a new run with another --run-id"
+
+
+def _stamp_view(stamp: PlanStamp) -> dict[str, Any]:
+    """``stamp`` as a resume compares it (D-stamp, Phase 6 Task 5): dumped, each persona read
+    through ``PersonaSheet`` when it validates, so a field added since the run was recorded
+    (``ignition``) compares as its default, and any other difference still counts."""
+    view = stamp.model_dump(mode="json")
+    personas: dict[str, Any] = {}
+    for name, dumped in view["personas"].items():
+        try:
+            personas[name] = PersonaSheet.model_validate(dumped).model_dump(mode="json")
+        except ValidationError:
+            personas[name] = dumped
+    view["personas"] = personas
+    return view
 
 
 def _short_hash(digest: str | None) -> str:

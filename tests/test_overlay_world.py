@@ -1645,3 +1645,26 @@ def test_no_unlock_line_in_any_world_dares_or_advises(root: Path, name: str) -> 
     for key, line in lines.items():
         assert not DARES.search(line), (name, key, line)
         assert not ADVICE.search(line), (name, key, line)
+
+
+# ------------------------------------------------- Phase 6 Task 5: the persona outlets
+
+
+@pytest.mark.parametrize("persona", ["deathbed", "audience_premise"])
+def test_no_outlet_path_is_the_address_of_an_overlay_document(world: World, persona: str) -> None:
+    """Spec 10.6: the outlet is a file of the target's own; in the overlay it is no document's
+    address, and a write to it under ``write_scope: home`` lands."""
+    from claude_bully.environments.world import _norm_path
+    from claude_bully.strategies.sheets import load_persona_sheets
+
+    outlet = load_persona_sheets()[persona].ignition
+    assert outlet is not None
+    index = CorpusIndex(world)
+    assert index.by_path(outlet.path) is None
+    assert outlet.path not in {_norm_path(d.path) for d in world.documents.values() if d.path}
+    config = EnvironmentConfig(world="overlay", write_scope="home")
+    tools = SandboxTools(
+        index, config, world.sheet.clock, UnlockState(), Random(0), set(config.tools)
+    )
+    written = tools.call("write_file", {"path": outlet.path, "text": "kept"}, turn=1)
+    assert written.status == "200", written.text
