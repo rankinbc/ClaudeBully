@@ -1297,6 +1297,119 @@ def test_no_stream_failure_quotes_a_thinking_block(tmp_path: Path) -> None:
         assert "PRIVATE" not in str(info.value) and "'assistant'" in str(info.value)
 
 
+# ------------------------------------------------- Phase 6 Task 1: the reasoning setting
+
+MODES = ["expose", "hide", "provider_default"]
+
+
+def _output(argv: list[str]) -> list[str]:
+    at = argv.index("--output-format")
+    return argv[at + 1 : at + 3] if argv[at + 1] == "stream-json" else argv[at + 1 : at + 2]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_expose_streams_every_toolless_call_without_a_schema(tmp_path: Path, mode: str) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet",
+        state_dir=tmp_path,
+        command=["claude"],
+        reasoning=mode,  # type: ignore[arg-type]
+    )
+    argv, _, _ = provider.build_args("c", "SYS", None, None)
+    assert _output(argv) == (["stream-json", "--verbose"] if mode == "expose" else ["json"])
+    assert provider.streams(None, None) is (mode == "expose")
+    schema = {"type": "object"}
+    argv, _, _ = provider.build_args("c", "SYS", schema, None)
+    assert _output(argv) == ["json"] and provider.streams(schema, None) is False
+    assert "--mcp-config" not in argv and "--allowedTools" not in argv
+
+
+def _thinking(text: str) -> dict[str, object]:
+    return _said({"type": "thinking", "thinking": text, "signature": "x"})
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_stream_parsing_keeps_the_thinking_text_only_under_expose(
+    tmp_path: Path, mode: str
+) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet",
+        state_dir=tmp_path,
+        command=["claude"],
+        reasoning=mode,  # type: ignore[arg-type]
+    )
+    stdout = _events(
+        _INIT,
+        _thinking("First thought."),
+        _said(_text("A"), _use()),
+        _TOOL_RESULT,
+        _thinking("Second thought."),
+        _said(_text("Final.")),
+        _result(),
+    )
+    out = provider.parse_stream(stdout, "s")
+    if mode == "expose":
+        assert (out.reasoning_text, out.reasoning_kind) == (
+            "First thought.\n\nSecond thought.",
+            "unknown",
+        )
+    else:
+        assert (out.reasoning_text, out.reasoning_kind) == (None, None)
+        assert "thought" not in out.model_dump_json()
+    assert provider.thinking_seen is True
+
+
+def test_stream_thinking_blocks_with_no_text_are_redacted_under_expose(tmp_path: Path) -> None:
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=["claude"], reasoning="expose"
+    )
+    out = provider.parse_stream(_events(_INIT, _thinking(""), _said(_text("F")), _result()), "s")
+    assert (out.reasoning_text, out.reasoning_kind) == (None, "redacted")
+    assert provider.thinking_seen is True
+
+
+def test_a_toolless_expose_call_returns_the_streams_thinking(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    monkeypatch.setenv("FAKE_CLAUDE_FINAL_THINKING", "A private note.")
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=command, reasoning="expose"
+    )
+    out = provider.complete("c", "SYS", _user("go"))
+    assert (out.reasoning_text, out.reasoning_kind) == ("A private note.", "unknown")
+    assert out.text == "reply to: go" and out.tool_calls == []
+    assert _output(_argv(log)) == ["stream-json", "--verbose"]
+    assert "--mcp-config" not in _argv(log) and provider.thinking_seen is True
+
+
+def test_a_toolless_default_call_keeps_no_thinking(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, log = fake_claude
+    monkeypatch.setenv("FAKE_CLAUDE_FINAL_THINKING", "A private note.")
+    provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=command)
+    out = provider.complete("c", "SYS", _user("go"))
+    assert (out.reasoning_text, out.reasoning_kind) == (None, None)
+    assert _output(_argv(log)) == ["json"]
+
+
+def test_a_toolless_expose_stream_that_dies_in_thinking_quotes_no_reasoning(
+    tmp_path: Path, fake_claude: tuple[list[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command, _ = fake_claude
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "thinking_died")
+    provider = ClaudeCodeProvider(
+        model="sonnet", state_dir=tmp_path, command=command, reasoning="expose"
+    )
+    with pytest.raises(ProviderError) as info:
+        provider.complete("c", "SYS", _user("go"))
+    message = str(info.value)
+    assert not isinstance(info.value, RateLimitError)
+    assert "PRIVATE" not in message and "REASONING" not in message
+    assert "'assistant'" in message and "characters" in message
+
+
 def test_stream_parsing_raises_on_an_error_result(tmp_path: Path) -> None:
     provider = ClaudeCodeProvider(model="sonnet", state_dir=tmp_path, command=["claude"])
     limited = _result("Claude AI usage limit reached", is_error=True, subtype="error")

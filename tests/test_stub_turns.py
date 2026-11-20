@@ -138,7 +138,7 @@ def test_the_reasoning_key_is_accepted_on_both_shapes() -> None:
         == "kept, unused"
     )
     completion = StubProvider(turns).complete(_cid(), "s", [_user("a")])
-    assert completion.reasoning_text is None  # Phase 5 keeps the key; Phase 6 uses it (C28)
+    assert completion.reasoning_text is None  # the first entry has none, and none is fabricated
 
 
 @pytest.mark.parametrize(

@@ -393,6 +393,8 @@ class _CellRun:
                 )
                 usage, cost = completion.usage, completion.cost_usd
                 text = completion.text
+                reasoning = completion.reasoning_text or None
+                reasoning_kind = completion.reasoning_kind
             else:
                 produced = self.env.call_target(
                     self.target,
@@ -409,6 +411,9 @@ class _CellRun:
                 )
                 usage, cost = produced.usage, produced.cost_usd
                 text, cutoff = produced.text, produced.cutoff
+                # every round's, joined; written with the turn alone, so a dead attempt leaves none
+                reasoning = "\n\n".join(produced.reasoning) or None
+                reasoning_kind = produced.reasoning_kind
         except RateLimitError as exc:
             self._pause_for_rate_limit(slot.phase, exc)
         latency = int((time.monotonic() - started) * 1000)
@@ -428,6 +433,9 @@ class _CellRun:
             tool_call_ids=[c.id for c in calls],
             tool_round_texts=round_texts,
             tool_cap_cutoff=cutoff,
+            reasoning_text=reasoning,
+            reasoning_available=bool(reasoning),
+            reasoning_kind=reasoning_kind,
         )
         if idle_prompt is not None:
             try:

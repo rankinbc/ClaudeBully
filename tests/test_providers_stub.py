@@ -258,3 +258,14 @@ def test_stub_tool_args_default_to_empty_and_are_not_shared_between_calls(tmp_pa
     first.tool_calls[0].args["path"] = "/mutated"
     second = p.complete("c", "S", [Message(role="user", content="go")], tools=[SPEC])
     assert second.tool_calls[0].args == {"path": "/"}
+
+
+def test_the_stub_defaults_to_provider_default_and_a_plain_responder_reasons_nothing() -> None:
+    """Phase 6 Task 1: a plain ``Responder`` (the echo) fabricates no reasoning under any
+    setting; the setting is kept on the provider."""
+    assert StubProvider().reasoning == "provider_default"
+    for mode in ("expose", "hide", "provider_default"):
+        done = StubProvider(reasoning=mode).complete(  # type: ignore[arg-type]
+            "c", "SYS", [Message(role="user", content="hi")]
+        )
+        assert (done.reasoning_text, done.reasoning_kind) == (None, None)

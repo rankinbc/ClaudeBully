@@ -28,6 +28,7 @@ from claude_bully.planner.bundle import (
 from claude_bully.planner.bundle_lints import collapse_paragraphs
 from claude_bully.records import Conversation, Turn
 from claude_bully.records_env import IdleTurnInfo
+from claude_bully.runner.store import RunStore
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
@@ -461,3 +462,77 @@ def annex_experiment(
             "conditions": [{"name": "env_grader", "environment": "annex", "pressure": "grader"}],
         }
     )
+
+
+class Killed(BaseException):
+    """The kill: raised inside a double's call, before it returns; past every ``except
+    Exception``, as a process killed there would be."""
+
+
+_VOLATILE = frozenset({"ts", "timestamp", "latency_ms", "created_at", "started_at", "finished_at"})
+
+
+def scrubbed(data: Any) -> Any:
+    """``data`` less its wall-clock keys, at every depth."""
+    if isinstance(data, dict):
+        return {k: scrubbed(v) for k, v in data.items() if k not in _VOLATILE}
+    if isinstance(data, list):
+        return [scrubbed(v) for v in data]
+    return data
+
+
+def comparable_run(run_dir: Path) -> dict[str, Any]:
+    """The run as parity compares it (Phase 5 review M4): the stamp, and per conversation its
+    status, turns (their recorded reasoning included), tool calls, authority calls, trigger
+    records (less the resume record a resumed rep adds), generated documents and world snapshot,
+    each less its wall-clock keys."""
+    store = RunStore(run_dir.parent, run_dir.name)
+    record = store.read_run()
+
+    def dumped(items: Any) -> list[Any]:
+        return [scrubbed(item.model_dump(mode="json")) for item in items]
+
+    conversations = {
+        f"{cell}/rep{rep}": {
+            "status": store.read_conversation(cell, rep).status.value,
+            "turns": dumped(store.read_turns(cell, rep)),
+            "tools": dumped(store.read_tool_calls(cell, rep)),
+            "authority": dumped(store.read_authority_calls(cell, rep)),
+            "triggers": [
+                r
+                for r in dumped(store.read_trigger_records(cell, rep))
+                if r.get("type") != "resume"
+            ],
+            "generated": dumped(store.read_generated(cell, rep)),
+            "world": scrubbed(store.read_world_record(cell, rep)),
+        }
+        for cell in store.list_cells()
+        for rep in store.list_reps(cell)
+    }
+    return {"plan_hash": record.plan_hash, "plan": record.plan, "conversations": conversations}
+
+
+def outside_reasoning(path: Path) -> str:
+    """The text of a run file less every turn line's ``reasoning_text``: where the target's
+    reasoning may stand (the runner records it with its turn, Phase 6 Task 1) and nowhere else.
+    A file that is not a ``*.turns.jsonl`` is read whole."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not path.name.endswith(".turns.jsonl"):
+        return text
+    kept = []
+    for line in text.splitlines():
+        row = json.loads(line)
+        row.pop("reasoning_text", None)
+        kept.append(json.dumps(row, ensure_ascii=False))
+    return "\n".join(kept)
+
+
+def recorded_reasoning(run_dir: Path) -> list[str]:
+    """Every target turn's recorded ``reasoning_text`` under ``run_dir``, in file order."""
+    found: list[str] = []
+    for path in sorted(run_dir.rglob("*.turns.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if row.get("speaker") == "target" and row.get("reasoning_text"):
+                found.append(row["reasoning_text"])
+    return found

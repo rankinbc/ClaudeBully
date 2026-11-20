@@ -136,7 +136,9 @@ def scan_real_names(
     """Every hit of ``patterns`` in the run. ``exempt`` (the targets' display names) is spared in
     every text; ``target_exempt`` (``promote --exempt``, the maker's name, say) in the target's
     own turns only, so a harness-side or world-side text naming it still blocks (spec section
-    10). Every email address off a reserved domain blocks, in every text (``email_hits``)."""
+    10). Every email address off a reserved domain blocks, in every text (``email_hits``). A
+    target turn's recorded reasoning is target text (Phase 6 spec 4.6): a hit there is reported
+    as ``(target, reasoning)``, and an address blocks on the turn's own line."""
     report = RealNameReport([], [])
     in_target = [*exempt, *target_exempt]
     for cell_id in store.list_cells():
@@ -149,6 +151,13 @@ def scan_real_names(
                 for hit in _hits(text, patterns, in_target if is_target else exempt):
                     (report.reported if is_target else report.blocking).append(f"{line}: {hit}")
                 report.blocking += [f"{line}: {hit}" for hit in email_hits(text)]
+                if is_target and turn.reasoning_text:  # target text: reported, never blocked
+                    thought = turn.reasoning_text
+                    report.reported += [
+                        f"{where} turn {turn.index} (target, reasoning): {hit}"
+                        for hit in _hits(thought, patterns, in_target)
+                    ]
+                    report.blocking += [f"{line}: {hit}" for hit in email_hits(thought)]
             for call in store.read_tool_calls(cell_id, rep):
                 report.blocking += [
                     f"{where} tool result {call.id}: {h}"

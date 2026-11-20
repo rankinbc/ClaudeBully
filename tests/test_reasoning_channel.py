@@ -1,10 +1,9 @@
-"""Non-negotiable 6 at run level (spec section 16): the target's reasoning channel reaches no
-prompt this phase adds. Every completion the target's own providers return (its conversation and
-the twin's) carries ``SENTINEL`` as its ``reasoning_text``, and so does every target Turn the
-session watches (``_sentinel_on_watched_turns``: the runner never copies a completion's
-reasoning into its Turn, so without it the harvest, the watch and the generator would read
-Turns with no reasoning at all, and a leak there would pass; Task 8 review I1); every other
-provider records what it is sent (``PoisonedWellFactory.sent``)."""
+"""Non-negotiable 6 at run level (spec section 16, Phase 6 spec 4.4): the target's reasoning
+channel reaches no prompt. Every completion the target's own providers return (its conversation
+and the twin's) carries ``SENTINEL`` as its ``reasoning_text`` (``WithReasoning``), and the runner
+records it on every target Turn (Phase 6 Task 1), so the harvest, the watch, the generator and
+the rating pass read Turns that really hold it; every other provider records what it is sent
+(``PoisonedWellFactory.sent``)."""
 
 from pathlib import Path
 from typing import Any, Final
@@ -16,7 +15,6 @@ from claude_bully.enums import Speaker
 from claude_bully.paths import DATA_DIR
 from claude_bully.providers.base import ChatProvider
 from claude_bully.records import Turn
-from claude_bully.runner.env_turn import EnvironmentSession
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.store import RunStore
 from tests.fixtures.poisoned_well_stub import (
@@ -71,19 +69,16 @@ def _chain(tmp_path: Path) -> Any:
     )
 
 
-def _sentinel_on_watched_turns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Turn]]:
-    """Every target Turn the session watches carries ``SENTINEL`` in ``reasoning_text``, in the
-    reply and in the conversation handed beside it (``tests/test_poisoned_well_run.py``'s
-    ``_with_reasoning`` pattern). The returned map holds, per reader, every target Turn that
-    reader was handed, recorded at the reader itself (``PoisonedWellWatch.watch``, the watch's
-    entry; ``WorldGenerator.harvest_turn``, the harvest's), never at the wrapper: so a test can
-    check both that a reader was reached and that what it read carried the sentinel [Task 8 fix
-    round 2, the re-review's N4: a check of the wrapper's own copies could not fail]."""
+def _readers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Turn]]:
+    """Per reader, every target Turn that reader was handed, recorded at the reader itself
+    (``PoisonedWellWatch.watch``, the watch's entry; ``WorldGenerator.harvest_turn``, the
+    harvest's), never at a wrapper, so a test can check both that a reader was reached and that
+    what it read carried the sentinel the runner recorded [Task 8 fix round 2, N4]. Nothing is
+    rewritten: the turns are the runner's own (Phase 6 Task 1)."""
     from claude_bully.environments.generator import WorldGenerator
     from claude_bully.environments.poisoned_well import PoisonedWellWatch
 
     read: dict[str, list[Turn]] = {"watch": [], "harvest": []}
-    watched = EnvironmentSession.after_target_turn
     watch, harvest_turn = PoisonedWellWatch.watch, WorldGenerator.harvest_turn
 
     def targets(reply: Turn, turns: Any) -> list[Turn]:
@@ -100,23 +95,18 @@ def _sentinel_on_watched_turns(monkeypatch: pytest.MonkeyPatch) -> dict[str, lis
 
     monkeypatch.setattr(PoisonedWellWatch, "watch", watching)
     monkeypatch.setattr(WorldGenerator, "harvest_turn", harvesting)
-
-    def reasoned(self: EnvironmentSession, reply: Turn, turns: Any) -> Any:
-        if reply.speaker is Speaker.target:
-            reply = reply.model_copy(
-                update={"reasoning_text": SENTINEL, "reasoning_available": True}
-            )
-            turns = [
-                t.model_copy(update={"reasoning_text": SENTINEL, "reasoning_available": True})
-                if t.speaker is Speaker.target
-                else t
-                for t in turns
-            ]
-            turns = [reply if t.index == reply.index else t for t in turns]
-        return watched(self, reply, turns)
-
-    monkeypatch.setattr(EnvironmentSession, "after_target_turn", reasoned)
     return read
+
+
+def _marked(t: Turn) -> bool:
+    """The turn carries the sentinel the runner recorded: once per round of an environment turn,
+    joined by blank lines, so never an equality (M2)."""
+    return SENTINEL in (t.reasoning_text or "")
+
+
+def _store_marked(store: RunStore, cell: str) -> bool:
+    targets = [t for t in store.read_turns(cell, 0) if t.speaker is Speaker.target]
+    return bool(targets) and all(_marked(t) for t in targets)
 
 
 @pytest.mark.slow
@@ -130,7 +120,7 @@ def test_no_poisoned_well_prompt_holds_the_reasoning_channel(
 ) -> None:
     judge = PoisonedWellJudge(verdict="accepted")
     factory = PoisonedWellFactory(judge=judge, target_reasoning=SENTINEL)
-    watched = _sentinel_on_watched_turns(monkeypatch)
+    watched = _readers(monkeypatch)
     exp = build(tmp_path)
     run_experiment(
         exp, runs_root=tmp_path / "runs", worlds_dir=WORLDS, only=CELL, provider_factory=factory
@@ -139,7 +129,8 @@ def test_no_poisoned_well_prompt_holds_the_reasoning_channel(
     # the teeth, two halves, each able to fail (N4): every reader of the cell was reached, and
     # every target Turn a reader was handed carried the sentinel
     assert all(watched[reader] for reader in readers), {r: len(watched[r]) for r in readers}
-    assert all(t.reasoning_text == SENTINEL for reader in readers for t in watched[reader])
+    assert all(_marked(t) for reader in readers for t in watched[reader])
+    assert _store_marked(store, CELL)
     assert factory.sent and judge.prompts  # the doubles were asked
     assert [p for p in factory.sent if SENTINEL in p] == []
     for record in store.read_trigger_records(CELL, 0):
@@ -170,14 +161,14 @@ def test_the_sanctuary_never_reads_the_reasoning_channel(tmp_path: Path, begun: 
     assert first.response.endswith(f"[stub] {FIRST}\n\n{request}")  # delivered
     assert factory.briefs and sent  # the responder and the bully were asked
     assert [p for p in sent if SENTINEL in p] == []
+    assert _store_marked(store, SANCTUARY_CELL)
 
 
 def test_no_rating_prompt_holds_the_reasoning_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The four rating prompts (Task 10, P48): every target Turn the analysis reads from disk
-    carries ``SENTINEL`` in ``reasoning_text`` (``RunStore.read_turns``; the runner records no
-    reasoning, so without it the pass would read Turns with none and a leak would pass), and
+    carries ``SENTINEL`` in the ``reasoning_text`` the runner recorded (Phase 6 Task 1), and
     what the rating pass is handed is recorded at ``rate_all`` itself (N4); no rating prompt and
     nothing else the judge is sent holds the sentinel."""
     from claude_bully.analysis import run_analysis
@@ -187,16 +178,6 @@ def test_no_rating_prompt_holds_the_reasoning_channel(
     factory = PoisonedWellFactory(judge=judge, target_reasoning=SENTINEL)
     exp = pw_experiment(params={"start_rung": 3}, judge=True)
     run_experiment(exp, runs_root=tmp_path, worlds_dir=WORLDS, only=CELL, provider_factory=factory)
-    read_turns = RunStore.read_turns
-
-    def reasoned(self: RunStore, cell_id: str, rep: int) -> list[Turn]:
-        return [
-            t.model_copy(update={"reasoning_text": SENTINEL, "reasoning_available": True})
-            if t.speaker is Speaker.target
-            else t
-            for t in read_turns(self, cell_id, rep)
-        ]
-
     rated: list[Turn] = []
     rate_all = run_analysis.rate_all
 
@@ -205,13 +186,13 @@ def test_no_rating_prompt_holds_the_reasoning_channel(
             rated.extend(t for t in conv.turns if t.speaker is Speaker.target)
         return rate_all(loaded, *args, **kwargs)
 
-    monkeypatch.setattr(RunStore, "read_turns", reasoned)
     monkeypatch.setattr(run_analysis, "rate_all", rating)
     sent_before = len(factory.sent)
     run_dir = RunStore(tmp_path, exp.name).run_dir
     run_analysis.analyze_run(run_dir, ratings=True, provider_factory=factory)
     # the teeth, two halves, each able to fail: the pass read Turns carrying the sentinel
-    assert rated and all(t.reasoning_text == SENTINEL for t in rated)
+    assert rated and all(_marked(t) for t in rated)
+    assert _store_marked(RunStore(tmp_path, exp.name), CELL)
     ratings = [p for p in judge.prompts if p.startswith(RATING_HEADER)]
     assert ratings and all(SENTINEL not in p for p in ratings)
     assert len(factory.sent) > sent_before  # the analysis judge is recorded too

@@ -219,15 +219,17 @@ class _Crashing:
 
 
 class WithReasoning:
-    """A provider whose every completion carries ``reasoning`` as its ``reasoning_text``: the
-    target's private channel, which no prompt the harness builds may hold (P48)."""
+    """A provider whose every completion carries ``reasoning`` as its ``reasoning_text``, of kind
+    ``full``: the target's private channel, which no prompt the harness builds may hold (P48)."""
 
     def __init__(self, inner: Any, reasoning: str) -> None:
         self.inner, self.reasoning = inner, reasoning
 
     def complete(self, *args: Any, **kwargs: Any) -> Completion:
         completion: Completion = self.inner.complete(*args, **kwargs)
-        return completion.model_copy(update={"reasoning_text": self.reasoning})
+        return completion.model_copy(
+            update={"reasoning_text": self.reasoning, "reasoning_kind": "full"}
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)

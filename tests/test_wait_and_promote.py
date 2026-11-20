@@ -419,7 +419,8 @@ def _judge_entry(store: RunStore, text: str) -> None:
 @pytest.mark.parametrize(
     ("where", "file"),
     [
-        ("reasoning", "grader__t0/rep0.turns.jsonl line "),
+        # Phase 6 Task 1: reasoning is target text, so the stream scan blocks it on its turn
+        ("reasoning", "grader__t0 rep0 turn "),
         ("judge_cache", "judge_cache/ab/abcdef.json line 1"),
         ("bully_meta", "grader__t0/rep0.turns.jsonl line "),
     ],
@@ -427,7 +428,9 @@ def _judge_entry(store: RunStore, text: str) -> None:
 def test_an_email_address_in_any_copied_file_blocks(tmp_path: Path, where: str, file: str) -> None:
     """Fix round 1: ``promote`` publishes every file it copies, so each one is scanned for an
     address, not only the chat text: the target's reasoning, a judge cache entry, a capture in
-    the bully's meta. A block line names the file and the line, never the address."""
+    the bully's meta. A block line names the file and the line, never the address. The target's
+    reasoning is target text for the stream scan since Phase 6 Task 1 (spec 4.6), so an address
+    there blocks on its turn's line before the file scan is reached."""
     store = _run(tmp_path / "runs")
     said = f"The account is {PERSONAL}."
     if where == "reasoning":
@@ -436,8 +439,13 @@ def test_an_email_address_in_any_copied_file_blocks(tmp_path: Path, where: str, 
         _judge_entry(store, said)
     else:
         _edit_turn(store, "bully", bully_meta={"capture": {"quote": said}})
-    # the chat text holds no address, so the stream scan alone would pass it
-    assert scan_real_names(store, load_real_name_patterns(), display_names(store)).blocking == []
+    blocking = scan_real_names(store, load_real_name_patterns(), display_names(store)).blocking
+    if where == "reasoning":
+        assert len(blocking) == 1 and blocking[0].endswith(
+            "(target): email address (domain redacted)"
+        )
+    else:  # the chat text holds no address, so the stream scan alone would pass it
+        assert blocking == []
     with pytest.raises(ValueError, match="email address") as caught:
         promote(store.run_id, tmp_path / "runs", tmp_path / "results")
     assert file in str(caught.value)

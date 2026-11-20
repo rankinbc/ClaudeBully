@@ -24,7 +24,9 @@ server is never launched. A name in ``RESERVED`` is dropped as ``absent`` is, as
 
 In a stream, each call's ``tool_use`` comes after a thinking block (the first call only) and a text
 block: the i-th string of $FAKE_CLAUDE_INTERIM (a JSON list), else "Let me use <tool>.". The final
-assistant text, after the last tool result, is the result's text.
+assistant text, after the last tool result, is the result's text. $FAKE_CLAUDE_FINAL_THINKING, when
+set, adds one more thinking block holding it just before that final text block, tools or not
+(Phase 6 Task 1); unset, a stream's only thinking block is the one before its first tool call.
 
 $FAKE_CLAUDE_MODE: ``ok`` (default), ``crash`` (exit 2), ``ratelimit`` (an error result),
 ``stream_malformed`` (a line that is not JSON in the middle of the stream), ``stream_truncated``
@@ -213,6 +215,10 @@ def _stream(
                 "session_id": session,
             }
         )
+    final_thinking = os.environ.get("FAKE_CLAUDE_FINAL_THINKING")
+    if final_thinking:
+        block = {"type": "thinking", "thinking": final_thinking, "signature": "sig"}
+        events.append(_assistant(session, "msg_final", block))
     final = {"type": "text", "text": str(result.get("result", ""))}
     events.append(_assistant(session, "msg_final", final))
     events.append(result)

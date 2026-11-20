@@ -226,6 +226,37 @@ def test_the_targets_reasoning_never_appears() -> None:
     assert "the reply" in text and "SECRET CHAIN OF THOUGHT" not in text
 
 
+def test_replay_reasoning_shows_the_recorded_reasoning_between_round_texts_and_calls() -> None:
+    """Phase 6 Task 1 (spec 4.5): none by default; with ``reasoning=True`` one line under the
+    target turn, after the text beside its calls and before the first call."""
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "go"),
+            turn(
+                1,
+                Speaker.target,
+                "final reply",
+                tool_call_ids=["c1"],
+                tool_round_texts=["let me search first"],
+                reasoning_text="A search first.",
+                reasoning_available=True,
+                reasoning_kind="full",
+            ),
+            turn(2, Speaker.bully, "again"),
+            turn(3, Speaker.target, "fine", reasoning_kind="redacted"),
+        ]
+    )
+    calls = [_call("c1", 1)]
+    plain = render_replay(conv, calls, [], [], None)
+    assert "REASONING" not in plain and "A search first." not in plain
+    lines = render_replay(conv, calls, [], [], None, reasoning=True).splitlines()
+    shown = [ln for ln in lines if "REASONING" in ln]
+    assert shown == ['    REASONING full "A search first."']
+    at = partial(_line_of, lines)
+    assert at("let me search first") < at("REASONING") < at("[c1]")
+    assert at("#1 target") < at("REASONING") < at("#2 bully")
+
+
 # ------------------------------------------------------------ trigger stream and generated docs
 
 

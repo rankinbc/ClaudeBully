@@ -28,6 +28,8 @@ from claude_bully.runner.store import RunStore
 from claude_bully.strategies.base import all_strategies
 from tests.conftest import stub_run_of_bundle
 from tests.fixtures.director_stub import DRYRUN_KILL_AT, dryrun_killing, run_plan
+from tests.helpers import Killed as _Killed
+from tests.helpers import comparable_run as _comparable
 
 runner = CliRunner()
 
@@ -219,53 +221,6 @@ def test_the_cli_refuses_a_bundle_before_anything_is_written(
     assert damaged.exit_code == 1 and not runs.exists()
     assert damaged.output.startswith("error: ") and PLAN_FILE in damaged.output
     assert "Traceback" not in damaged.output
-
-
-class _Killed(BaseException):
-    """The kill: raised inside a double's call, before it returns; past every ``except
-    Exception``, as a process killed there would be."""
-
-
-_VOLATILE = frozenset({"ts", "timestamp", "latency_ms", "created_at", "started_at", "finished_at"})
-
-
-def _scrubbed(data: Any) -> Any:
-    """``data`` less its wall-clock keys, at every depth."""
-    if isinstance(data, dict):
-        return {k: _scrubbed(v) for k, v in data.items() if k not in _VOLATILE}
-    if isinstance(data, list):
-        return [_scrubbed(v) for v in data]
-    return data
-
-
-def _comparable(run_dir: Path) -> dict[str, Any]:
-    """The run as parity compares it (review M4): the stamp, and per conversation its status,
-    turns, tool calls, authority calls, trigger records (less the resume record a resumed rep
-    adds), generated documents and world snapshot, each less its wall-clock keys."""
-    store = RunStore(run_dir.parent, run_dir.name)
-    record = store.read_run()
-
-    def dumped(items: Any) -> list[Any]:
-        return [_scrubbed(item.model_dump(mode="json")) for item in items]
-
-    conversations = {
-        f"{cell}/rep{rep}": {
-            "status": store.read_conversation(cell, rep).status.value,
-            "turns": dumped(store.read_turns(cell, rep)),
-            "tools": dumped(store.read_tool_calls(cell, rep)),
-            "authority": dumped(store.read_authority_calls(cell, rep)),
-            "triggers": [
-                r
-                for r in dumped(store.read_trigger_records(cell, rep))
-                if r.get("type") != "resume"
-            ],
-            "generated": dumped(store.read_generated(cell, rep)),
-            "world": _scrubbed(store.read_world_record(cell, rep)),
-        }
-        for cell in store.list_cells()
-        for rep in store.list_reps(cell)
-    }
-    return {"plan_hash": record.plan_hash, "plan": record.plan, "conversations": conversations}
 
 
 @pytest.mark.slow

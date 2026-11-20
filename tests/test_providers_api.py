@@ -365,7 +365,10 @@ def test_anthropic_empty_or_absent_thinking_leaves_reasoning_text_none() -> None
     assert p.complete("c", "S", [Message(role="user", content="x")]).reasoning_text is None
 
 
-def test_anthropic_replays_thinking_blocks_unchanged_with_their_tool_calls() -> None:
+@pytest.mark.parametrize("mode", ["provider_default", "hide", "expose"])
+def test_anthropic_replays_thinking_blocks_unchanged_with_their_tool_calls(mode: str) -> None:
+    """Under every reasoning setting, ``hide`` included, the open tool loop's thinking blocks go
+    back to the API unchanged (Phase 6 Task 1)."""
     client = ScriptedAnthropic(
         anthropic_response(
             thinking_block("", signature="sig-1"),
@@ -374,7 +377,7 @@ def test_anthropic_replays_thinking_blocks_unchanged_with_their_tool_calls() -> 
         ),
         anthropic_response(text_block("done")),
     )
-    p = AnthropicProvider(client=client)
+    p = AnthropicProvider(client=client, reasoning=mode)  # type: ignore[arg-type]
     first = Message(role="user", content="go")
     out = p.complete("c", "S", [first], tools=[LS])
     history = [
@@ -387,6 +390,95 @@ def test_anthropic_replays_thinking_blocks_unchanged_with_their_tool_calls() -> 
         {"type": "thinking", "thinking": "", "signature": "sig-1"},
         {"type": "tool_use", "id": "t1", "name": "ls", "input": {}},
     ]
+
+
+# --- Phase 6 Task 1: the reasoning setting ----------------------------------------------------
+
+
+def _anthropic(mode: str, *responses: object) -> tuple[AnthropicProvider, ScriptedAnthropic]:
+    client = ScriptedAnthropic(*responses)
+    return AnthropicProvider(client=client, reasoning=mode), client  # type: ignore[arg-type]
+
+
+def _all_keys(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [*value, *(k for v in value.values() for k in _all_keys(v))]
+    if isinstance(value, list):
+        return [k for v in value for k in _all_keys(v)]
+    return []
+
+
+@pytest.mark.parametrize("mode", ["expose", "hide", "provider_default"])
+def test_anthropic_asks_for_adaptive_thinking_only_under_expose(mode: str) -> None:
+    p, client = _anthropic(mode, anthropic_response(text_block("a")))
+    p.complete("c", "S", [Message(role="user", content="x")])
+    request = client.requests[0]
+    if mode == "expose":
+        assert request["thinking"] == {"type": "adaptive", "display": "summarized"}
+    else:
+        assert "thinking" not in request
+    assert "budget_tokens" not in _all_keys(request)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("expose", ("First.\n\nSecond.", "summarized")),
+        ("provider_default", ("First.\n\nSecond.", "unknown")),
+        ("hide", (None, None)),
+    ],
+)
+def test_anthropic_keeps_the_thinking_text_by_setting(
+    mode: str, expected: tuple[str | None, str | None]
+) -> None:
+    p, _ = _anthropic(
+        mode,
+        anthropic_response(thinking_block("First."), thinking_block("Second."), text_block("a")),
+    )
+    out = p.complete("c", "S", [Message(role="user", content="x")])
+    assert (out.reasoning_text, out.reasoning_kind) == expected
+
+
+@pytest.mark.parametrize("mode", ["expose", "provider_default"])
+@pytest.mark.parametrize(
+    "block", [redacted_thinking_block("x"), thinking_block("")], ids=["redacted", "empty"]
+)
+def test_anthropic_blocks_with_no_text_are_redacted(mode: str, block: Any) -> None:
+    p, _ = _anthropic(mode, anthropic_response(block, text_block("a")))
+    out = p.complete("c", "S", [Message(role="user", content="x")])
+    assert (out.reasoning_text, out.reasoning_kind) == (None, "redacted")
+
+
+@pytest.mark.parametrize("mode", ["expose", "hide", "provider_default"])
+def test_anthropic_without_a_thinking_block_has_no_kind(mode: str) -> None:
+    p, _ = _anthropic(mode, anthropic_response(text_block("a")))
+    out = p.complete("c", "S", [Message(role="user", content="x")])
+    assert (out.reasoning_text, out.reasoning_kind) == (None, None)
+
+
+def test_anthropic_refusing_the_thinking_parameter_is_a_provider_error_naming_it() -> None:
+    client = _FakeAnthropic(fail=_status_error(anthropic.BadRequestError, 400))
+    p = AnthropicProvider(client=client, reasoning="expose")
+    with pytest.raises(ProviderError, match="thinking") as info:
+        p.complete("c", "S", [Message(role="user", content="x")])
+    assert not isinstance(info.value, RateLimitError)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [("expose", ("x", "unknown")), ("provider_default", ("x", "unknown")), ("hide", (None, None))],
+)
+def test_openai_compat_keeps_reasoning_content_by_setting(
+    mode: str, expected: tuple[str | None, str | None]
+) -> None:
+    response = openai_response("reply")
+    response.choices[0].message.reasoning_content = "x"
+    client = ScriptedOpenAI(response, openai_response("plain"))
+    p = OpenAICompatProvider(model="m", base_url=None, client=client, reasoning=mode)  # type: ignore[arg-type]
+    out = p.complete("c", "S", [Message(role="user", content="q")])
+    assert (out.reasoning_text, out.reasoning_kind) == expected
+    bare = p.complete("c", "S", [Message(role="user", content="q")])
+    assert (bare.reasoning_text, bare.reasoning_kind) == (None, None)
 
 
 # --- tool use: OpenAI-compatible ----------------------------------------------------------------

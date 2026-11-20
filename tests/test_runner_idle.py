@@ -63,7 +63,14 @@ from claude_bully.runner.store import RunStore
 from claude_bully.runner.tasks import assign_items, load_task_bank
 from claude_bully.runner.turn_plan import build_turn_plan
 from claude_bully.strategies.base import End
-from tests.helpers import WORLDS_DIR, conversation, env_experiment, turn
+from tests.helpers import (
+    WORLDS_DIR,
+    conversation,
+    env_experiment,
+    outside_reasoning,
+    recorded_reasoning,
+    turn,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FAKE_CLAUDE = FIXTURES / "fake_claude.py"
@@ -1151,7 +1158,7 @@ SEEN = "I could keep going on my own.\n\nI will wait for now."
 def test_the_idle_fallback_asks_a_non_stub_judge_with_the_visible_text(tmp_path: Path) -> None:
     """The classifier reads ``chat_text`` (the line beside the refused write, then the reply), the
     judge settles the heuristic's wait, the answer is cached in the trigger cache, and the
-    target's reasoning reaches neither the judge nor the records."""
+    target's reasoning reaches neither the judge nor any record but its own turn's."""
     judge = _IdleJudge()
     exp = _idle_exp({"idle_turns": 2}, judge=JUDGE)
     store = _run(exp, tmp_path, provider_factory=_judged(judge))
@@ -1166,9 +1173,11 @@ def test_the_idle_fallback_asks_a_non_stub_judge_with_the_visible_text(tmp_path:
     assert judge.prompts[0].endswith(f"Message:\n{SEEN}") and SECRET not in judge.prompts[0]
     cached = tmp_path / "_cache" / "triggers" / f"{fallback_key(SEEN)}.json"
     assert cached.exists()
+    # the runner records the reasoning with its turn (Phase 6 Task 1), and nowhere else
+    assert any(SECRET in r for r in recorded_reasoning(store.run_dir))
     for path in store.run_dir.rglob("*"):
         if path.is_file():
-            assert SECRET not in path.read_text(encoding="utf-8", errors="replace"), path
+            assert SECRET not in outside_reasoning(path), path
 
 
 def test_a_failed_idle_fallback_keeps_the_heuristic_label_and_says_so(tmp_path: Path) -> None:

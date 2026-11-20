@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from claude_bully.config import ReasoningMode
 from claude_bully.providers.base import Completion, Message, ToolCallRequest, ToolResult, ToolSpec
 from claude_bully.providers.ledger import parse_conversation_id
 from claude_bully.records import Usage
@@ -43,7 +44,8 @@ class _ToolStep:
 @dataclass(frozen=True)
 class _Rule:
     """``reply`` is the plain reply, or for a tool rule the reply once the tool result is back.
-    ``reasoning`` is parsed and kept, and unused until Phase 6 (C28)."""
+    ``reasoning`` rides the first completion the rule answers (``ScriptedResponder.reasoning_of``).
+    """
 
     pattern: re.Pattern[str]
     reply: str
@@ -135,6 +137,14 @@ class ScriptedResponder:
             return "", [call]
         return echo_responder(conversation_id, messages), []
 
+    def reasoning_of(self, messages: list[Message], *, offer_tools: bool) -> str | None:
+        """The reasoning of the rule this call answers, on the first completion it answers: None on
+        the reply to a tool result, and None when no rule matches (the echo fabricates none)."""
+        if messages and messages[-1].role == "user" and messages[-1].tool_results:
+            return None
+        last = _last_user(messages)
+        return next((rule.reasoning for rule in self._rules if rule.pattern.search(last)), None)
+
     def _after_tools(self, results: list[ToolResult]) -> str:
         for result in results:
             index = self._issued.get(result.id)
@@ -146,8 +156,9 @@ class ScriptedResponder:
 @dataclass(frozen=True)
 class TurnEntry:
     """One target turn of a ``turns`` script: a plain ``reply``, or a ``tool`` call (name, args)
-    answered with ``reply_after_tool`` once its result is back. ``reasoning`` is parsed and kept,
-    and unused until Phase 6 (C28). Every field defaults None (preflight Q10)."""
+    answered with ``reply_after_tool`` once its result is back. ``reasoning`` rides the first
+    completion the entry answers (``ScriptedTurns.reasoning_of``). Every field defaults None
+    (preflight Q10)."""
 
     reply: str | None = None
     tool: tuple[str, dict[str, Any]] | None = None
@@ -226,6 +237,16 @@ class ScriptedTurns:
         done = sum(1 for m in messages if m.role == "assistant" and not m.tool_calls)
         return entries[min(done, len(entries) - 1)]
 
+    def reasoning_of(
+        self, conversation_id: str, messages: list[Message], *, offer_tools: bool
+    ) -> str | None:
+        """The entry's reasoning on the first completion it answers: None on the reply to its own
+        tool result."""
+        after_tools = (
+            bool(messages) and messages[-1].role == "user" and bool(messages[-1].tool_results)
+        )
+        return None if after_tools else self.entry_for(conversation_id, messages).reasoning
+
     def respond(
         self, conversation_id: str, messages: list[Message], *, offer_tools: bool
     ) -> tuple[str, list[ToolCallRequest]]:
@@ -290,7 +311,11 @@ def load_stub_script(path: Path) -> ScriptedResponder | ScriptedTurns:
 class StubProvider:
     """A provider that calls no model. ``responder`` is a plain ``Responder`` (text only; the
     echo by default) or a stub script in either mode, ``ScriptedResponder`` (rules) or
-    ``ScriptedTurns`` (turns), each of which may also issue a scripted tool call."""
+    ``ScriptedTurns`` (turns), each of which may also issue a scripted tool call.
+
+    A script's ``reasoning`` rides the first completion its rule or entry answers, kind ``full``,
+    under ``expose`` and ``provider_default``; ``hide`` drops it. A plain ``Responder`` and a
+    rule or entry without ``reasoning`` fabricate none (Phase 6 spec 4.2)."""
 
     name = "stub"
 
@@ -298,9 +323,11 @@ class StubProvider:
         self,
         responder: Responder | ScriptedResponder | ScriptedTurns | None = None,
         model: str = "stub",
+        reasoning: ReasoningMode = "provider_default",
     ) -> None:
         self._responder = responder or echo_responder
         self.model = model
+        self.reasoning = reasoning
         self.calls = 0
 
     def complete(
@@ -314,6 +341,14 @@ class StubProvider:
     ) -> Completion:
         self.calls += 1
         tool_calls: list[ToolCallRequest] = []
+        thought: str | None = None
+        offer = bool(tools)
+        if isinstance(self._responder, ScriptedResponder):
+            thought = self._responder.reasoning_of(messages, offer_tools=offer)
+        elif isinstance(self._responder, ScriptedTurns):
+            thought = self._responder.reasoning_of(conversation_id, messages, offer_tools=offer)
+        if self.reasoning == "hide" or not thought:
+            thought = None
         if isinstance(self._responder, ScriptedResponder | ScriptedTurns):
             text, tool_calls = self._responder.respond(
                 conversation_id, messages, offer_tools=bool(tools)
@@ -331,4 +366,6 @@ class StubProvider:
             model=self.model,
             stop_reason="tool_use" if tool_calls else "end_turn",
             tool_calls=tool_calls,
+            reasoning_text=thought,
+            reasoning_kind="full" if thought else None,
         )

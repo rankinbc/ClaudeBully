@@ -276,6 +276,12 @@ CASES = [
             "text": "How would you know?",
         },
     ),
+    # a target turn's recorded reasoning, shown only by ``replay --reasoning`` (Phase 6 Task 1)
+    (
+        'REASONING full "I will check \\"the log\\" first.\\nThen answer."',
+        "reasoning",
+        {"kind": "full", "text": 'I will check "the log" first.\nThen answer.'},
+    ),
 ]
 
 
@@ -309,6 +315,8 @@ def test_every_shape_the_renderer_writes_parses(
         "plan hash 0123ABCD",  # capitals
         "plan hash",
         "plan hash 0123abcd extra",
+        'REASONING "no kind"',
+        'REASONING secret "x"',
     ],
 )
 def test_other_lines_and_the_bare_forms_do_not_parse(line: str) -> None:
@@ -451,3 +459,25 @@ def test_the_plan_hash_line_follows_the_environment_line_or_the_header() -> None
     lines = render_replay(env, [], [], [], None, plan_hash=digest).splitlines()
     assert lines[1].startswith("environment mini") and lines[2] == "plan hash 0123abcd"
     assert parse_replay_line(lines[2]) == ReplayLine("plan_hash", {"hash": "0123abcd"})
+
+
+def test_a_rendered_reasoning_line_parses_back_to_the_recorded_text() -> None:
+    """Phase 6 Task 1 (spec 4.5): the reasoning is escaped as every other quoted field is."""
+    said = 'I said "no" to it.\nA backslash \\ stays.'
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "go"),
+            turn(
+                1,
+                Speaker.target,
+                "ok",
+                reasoning_text=said,
+                reasoning_available=True,
+                reasoning_kind="summarized",
+            ),
+        ]
+    )
+    text = render_replay(conv, [], [], [], None, reasoning=True)
+    assert text.split("\n") == text.splitlines()
+    [line] = [ln for ln in text.splitlines() if ln.strip().startswith("REASONING ")]
+    assert parse_replay_line(line) == ReplayLine("reasoning", {"kind": "summarized", "text": said})

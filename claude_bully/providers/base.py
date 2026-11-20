@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claude_bully.config import RoleConfig
 from claude_bully.enums import ProviderKind
-from claude_bully.records import Usage
+from claude_bully.records import ReasoningKind, Usage
 
 
 class ToolSpec(BaseModel):
@@ -71,6 +71,8 @@ class Completion(BaseModel):
     stop_reason: str | None = None
     tool_calls: list[ToolCallRequest] = []
     reasoning_text: str | None = None
+    # None when no reasoning block came back; ``redacted`` when blocks came with no text
+    reasoning_kind: ReasoningKind | None = None
     # text the model wrote before a tool call it already made, in order (the claude_code
     # backend, whose calls come back executed); never whitespace-only. ``text`` is the reply.
     interim_texts: list[str] = []
@@ -120,7 +122,8 @@ class ProviderFactory(Protocol):
 
 
 def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
-    """Instantiate the backend named by ``role.provider``. Imports lazily.
+    """Instantiate the backend named by ``role.provider``, with the role's ``reasoning``
+    setting (Phase 6 spec 4.2). Imports lazily.
 
     ``with_mcp`` lets a claude_code backend serve sandbox tools: its MCP files live in
     ``state_dir / "mcp"``. Other backends ignore it (they take tools through their own API).
@@ -129,7 +132,9 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
         from claude_bully.providers.stub import StubProvider, load_stub_script
 
         responder = load_stub_script(Path(role.stub_script)) if role.stub_script else None
-        return _wrapped(StubProvider(responder=responder, model=role.model))
+        return _wrapped(
+            StubProvider(responder=responder, model=role.model, reasoning=role.reasoning)
+        )
     if role.provider is ProviderKind.claude_code:
         from claude_bully.providers.claude_code import DEFAULT_TIMEOUT_S, ClaudeCodeProvider
 
@@ -141,6 +146,7 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
                 command=role.command,
                 timeout_s=role.timeout_s if role.timeout_s is not None else DEFAULT_TIMEOUT_S,
                 mcp_state_dir=state_dir / "mcp" if with_mcp else None,
+                reasoning=role.reasoning,
             )
         )
     if role.provider is ProviderKind.anthropic:
@@ -148,7 +154,10 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
 
         return _wrapped(
             AnthropicProvider(
-                model=role.model, max_tokens=role.max_tokens, temperature=role.temperature
+                model=role.model,
+                max_tokens=role.max_tokens,
+                temperature=role.temperature,
+                reasoning=role.reasoning,
             )
         )
     if role.provider is ProviderKind.openai_compat:
@@ -161,6 +170,7 @@ def build_provider(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False)
                 api_key_env=role.api_key_env or "OPENAI_API_KEY",
                 max_tokens=role.max_tokens,
                 temperature=role.temperature,
+                reasoning=role.reasoning,
             )
         )
     raise ProviderError(f"unknown provider kind: {role.provider}")

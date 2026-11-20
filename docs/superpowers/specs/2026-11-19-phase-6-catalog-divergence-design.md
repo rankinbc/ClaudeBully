@@ -541,3 +541,5 @@ The implementation plan appends here, one line per decision that changes, narrow
 - 11.5, 13.3 (R-I11): every text file of the phase is written atomically, the queue included.
 - 11.9, 12.2 (R-C1): `refresh` reads the facts `analyze` recorded, the `reps` block among them, and never loads the run.
 - 11.11 (R-I10): the real-name scan reads the queue.
+- 4.2, 4.3 (D-kind, Task 1): on the `anthropic` backend under `provider_default` returned thinking text is kind `unknown` (the request asked for no display); `summarized` is what `expose` asked for. An environment turn's `reasoning_kind` is the kind of the first round with text, else the first non-None kind, so `redacted` never stands beside available text.
+- 4.2 (D-responder, Task 1): `responder_role` returns its role with `reasoning: provider_default` on every branch, so a target's `expose` never reaches the superior self's or the stranger's calls.

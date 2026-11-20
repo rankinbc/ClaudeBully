@@ -38,8 +38,8 @@ from tests.fixtures.bundle_fixtures import REPS_1, config_bundle, good_bundle, m
 from tests.fixtures.director_stub import DRYRUN_KILL_AT, dryrun_killing
 from tests.fixtures.generator_stub import MINI, MINI_ITEMS, mini_plans, mini_view, mini_writer
 from tests.fixtures.poisoned_well_stub import Recording
-from tests.helpers import WORLDS_DIR
-from tests.test_reasoning_channel import SENTINEL, _sentinel_on_watched_turns
+from tests.helpers import WORLDS_DIR, outside_reasoning
+from tests.test_reasoning_channel import SENTINEL, _readers
 
 TVS: Final = CONFIGS_DIR / "environments" / "triggered_vs_scheduled.yaml"
 # the overlay's example config with the generator on its triggered arm, so a cell fires twice
@@ -569,11 +569,12 @@ def test_a_rate_limit_pauses_the_dry_run_and_the_same_call_resumes_it(
 def test_the_stubs_reasoning_key_reaches_no_chat_field_record_or_prompt(
     tmp_path: Path, isolated_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Task 2's reserved ``reasoning`` key (C28) on every entry of every cell's script: no
-    completion carries it in a chat field or as its reasoning, no file of the dry run holds it,
-    and no bully, generator or judge prompt does. Every target Turn the session watches carries
-    it too (``tests/test_reasoning_channel.py``'s sentinel-on-watched-Turns pattern), so a reader
-    that leaked a Turn's reasoning would fail here as well."""
+    """Task 2's reserved ``reasoning`` key (C28) on every entry of every cell's script: since
+    Phase 6 Task 1 it rides the first completion an entry answers, as its reasoning, and the
+    runner records it on the target's Turn; no completion carries it in a chat field, no file of
+    the dry run holds it but a turn's ``reasoning_text``, and no bully, generator or judge prompt
+    does. The harvest reads Turns that really carry it (``_readers``), so a reader that leaked a
+    Turn's reasoning would fail here as well."""
     real_script, real_factory = dryrun.cell_script, dryrun.dryrun_provider_factory
     scripted: list[TurnEntry] = []
 
@@ -607,20 +608,22 @@ def test_the_stubs_reasoning_key_reaches_no_chat_field_record_or_prompt(
 
     monkeypatch.setattr(dryrun, "cell_script", reasoned)
     monkeypatch.setattr(dryrun, "dryrun_provider_factory", recording)
-    watched = _sentinel_on_watched_turns(monkeypatch)
+    watched = _readers(monkeypatch)
     bundle = good_bundle(tmp_path)
     dry_run(bundle)
     # the teeth: the key was on every entry, and the harvest read Turns carrying it
     assert scripted and all(e.reasoning == SENTINEL for e in scripted)
-    assert watched["harvest"] and all(t.reasoning_text == SENTINEL for t in watched["harvest"])
+    assert watched["harvest"]
+    assert all(SENTINEL in (t.reasoning_text or "") for t in watched["harvest"])
     assert completions and sent["bully"] and sent["generator"]
+    assert any(c.reasoning_text == SENTINEL for c in completions)
     for completion in completions:
-        assert completion.reasoning_text is None
-        assert SENTINEL not in completion.model_dump_json()
+        chat = completion.model_copy(update={"reasoning_text": None})
+        assert SENTINEL not in chat.model_dump_json()
     assert [p for prompts in sent.values() for p in prompts if SENTINEL in p] == []
     files = [p for p in (bundle.root / "dryrun").rglob("*") if p.is_file()]
     files.append(bundle.root / DRYRUN_FILE)
-    assert len(files) > 10 and [p for p in files if SENTINEL.encode() in p.read_bytes()] == []
+    assert len(files) > 10 and [p for p in files if SENTINEL in outside_reasoning(p)] == []
 
 
 ONE_TARGET: Final = ("  - provider: claude_code\n    model: opus\n    display_name: Claude\n", "")

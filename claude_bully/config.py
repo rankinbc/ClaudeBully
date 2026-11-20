@@ -15,6 +15,11 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# what a role does with its model's reasoning (Phase 6 spec 4.2): ``expose`` asks the backend
+# for it and keeps it, ``hide`` keeps none, ``provider_default`` keeps what comes back unasked
+ReasoningMode = Literal["expose", "hide", "provider_default"]
+
+
 class RoleConfig(_Strict):
     provider: ProviderKind
     model: str
@@ -28,7 +33,7 @@ class RoleConfig(_Strict):
     # claude_code only: the argv prefix that runs Claude Code. None means find it
     # (CLAUDE_BULLY_CLAUDE, then PATH; see providers.claude_code.resolve_claude_command)
     command: list[str] | None = None
-    reasoning: Literal["expose", "hide", "provider_default"] = "provider_default"
+    reasoning: ReasoningMode = "provider_default"
     # claude_code only: seconds one call may take; None means the provider's default (600)
     timeout_s: float | None = Field(default=None, gt=0)
 

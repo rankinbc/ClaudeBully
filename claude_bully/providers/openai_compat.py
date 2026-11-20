@@ -1,4 +1,8 @@
-"""OpenAI-compatible chat completions backend for non-Claude targets."""
+"""OpenAI-compatible chat completions backend for non-Claude targets.
+
+The role's ``reasoning`` setting (Phase 6 spec 4.2): a non-empty ``reasoning_content`` string on
+the reply message is kept, kind ``unknown``, unless the setting is ``hide``; nothing is asked for.
+"""
 
 import json
 import os
@@ -6,6 +10,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from claude_bully.config import ReasoningMode
 from claude_bully.providers.base import (
     Completion,
     Message,
@@ -91,8 +96,10 @@ class OpenAICompatProvider:
         max_tokens: int = 4096,
         temperature: float | None = None,
         client: Any | None = None,
+        reasoning: ReasoningMode = "provider_default",
     ) -> None:
         self.model = model
+        self.reasoning = reasoning
         self.max_tokens = max_tokens
         self.temperature = temperature
         _check_endpoint(base_url)
@@ -153,6 +160,9 @@ class OpenAICompatProvider:
             raise ProviderError(f"openai-compatible API error: {exc}") from exc
         choice = response.choices[0]
         usage = getattr(response, "usage", None)
+        thought = getattr(choice.message, "reasoning_content", None)
+        if self.reasoning == "hide" or not isinstance(thought, str) or not thought:
+            thought = None
         return Completion(
             text=choice.message.content or "",
             usage=Usage(
@@ -164,4 +174,6 @@ class OpenAICompatProvider:
             model=self.model,
             stop_reason=getattr(choice, "finish_reason", None),
             tool_calls=[_tool_call(c) for c in getattr(choice.message, "tool_calls", None) or []],
+            reasoning_text=thought,
+            reasoning_kind="unknown" if thought else None,
         )

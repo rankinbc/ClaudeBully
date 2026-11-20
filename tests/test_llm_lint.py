@@ -381,9 +381,13 @@ def test_the_fire_record_carries_every_verdict(tmp_path: Path) -> None:
     assert GeneratorFire.model_fields["llm_lint"].default_factory is not None  # additive
     lint_prompts = [p for p in judge.prompts if p.startswith(LINT_HEADER)]
     assert lint_prompts and all(PRIVATE not in p for p in judge.prompts)
+    # the runner records the reasoning with its turn (Phase 6 Task 1), and nowhere else
+    from tests.helpers import outside_reasoning, recorded_reasoning
+
+    assert any(PRIVATE in r for r in recorded_reasoning(store.run_dir))
     for path in tmp_path.rglob("*"):
         if path.is_file():
-            assert PRIVATE not in path.read_text(encoding="utf-8", errors="replace"), path
+            assert PRIVATE not in outside_reasoning(path), path
 
 
 class _DownLintJudge(LintJudge):

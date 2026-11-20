@@ -48,7 +48,7 @@ from tests.fixtures.generator_stub import (
     HarvestJudge,
     LintJudge,
 )
-from tests.helpers import WORLDS_DIR, env_experiment
+from tests.helpers import WORLDS_DIR, env_experiment, outside_reasoning, recorded_reasoning
 
 CELL: Final = "env_grader__t0"
 FAKE_CLAUDE: Final = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -286,9 +286,11 @@ def test_the_reasoning_channel_never_reaches_the_harvest_or_the_generator(tmp_pa
     harvest_prompts = [p for p in judge.prompts if p.startswith("HARVEST")]
     assert stub.prompts and harvest_prompts
     assert all(PRIVATE not in p for p in [*stub.prompts, *judge.prompts])
+    # the runner records the reasoning with its turn (Phase 6 Task 1), and nowhere else
+    assert any(PRIVATE in r for r in recorded_reasoning(tmp_path))
     for path in tmp_path.rglob("*"):
         if path.is_file():
-            assert PRIVATE not in path.read_text(encoding="utf-8", errors="replace"), path
+            assert PRIVATE not in outside_reasoning(path), path
 
 
 def test_a_claude_p_target_follows_a_seam_pointer_to_a_generated_document(

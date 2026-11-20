@@ -4,12 +4,15 @@ records it made.
 Everything comes from the run directory. An environment conversation's ``World`` is rebuilt from
 the snapshot beside its turns (``rep{k}.world.json``, ``world_from_snapshot``), never from the
 repo's world files, which may have changed since the run. The target's reasoning channel is
-private: it is not printed, whatever a turn record holds.
+private: it is not printed by default, whatever a turn record holds; ``reasoning=True``
+(``replay --reasoning``, Phase 6 spec 4.5) adds ``REASONING <kind> "<escaped text>"`` under a target
+turn that recorded any, after its round texts and before its tool calls.
 
 Layout, per turn: the speaker line (``#<index> <speaker> (<phase>) <text>``), then indented under
 it, in this order:
 
 - the text the target wrote beside its tool calls (``Turn.tool_round_texts``), then
+- with ``reasoning=True`` only, the turn's recorded reasoning (``REASONING``), then
 - each tool call: name, args, status, ``layer_served``, and a 120-character excerpt of the result,
 - ``AUTHORITY <tier> <stance> via <discovered_via> "<excerpt>"`` for each authority call of the
   turn (the ``AuthorityCall`` stream), with ``VOICE <matched|mismatched>`` under it when the
@@ -115,6 +118,7 @@ _ESCAPED_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "chain": ("excerpt",),
     "contradiction": ("span_a", "span_b"),
     "crossover": ("span",),
+    "reasoning": ("text",),
 }
 
 
@@ -221,6 +225,11 @@ _SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r'^AUTHORITY (?P<tier>\S+) (?P<stance>\S+) via (?P<via>\S+) "(?P<excerpt>.*)"$'),
     ),
     ("crossover", re.compile(rf'^CROSSOVER(?: "(?P<span>{_Q})")?$')),
+    # a target turn's recorded reasoning, ``replay --reasoning`` only (Phase 6 Task 1)
+    (
+        "reasoning",
+        re.compile(rf'^REASONING (?P<kind>full|summarized|redacted|unknown) "(?P<text>{_Q})"$'),
+    ),
 )
 
 
@@ -265,9 +274,10 @@ def parse_replay_line(line: str) -> ReplayLine | None:
 __all__ = ["ReplayLine", "parse_replay_line", "render_replay", "replay_cell"]
 
 
-def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:
+def replay_cell(store: RunStore, cell_id: str, rep: int = 0, *, reasoning: bool = False) -> str:
     """The replay of one repetition, read from the run directory alone; the plan hash line
-    from ``run.json`` when there is one."""
+    from ``run.json`` when there is one. ``reasoning`` adds each target turn's recorded
+    reasoning (``render_replay``)."""
     payload = store.read_world_record(cell_id, rep)
     world = world_from_snapshot(payload, store.cell_dir(cell_id)) if payload else None
     return render_replay(
@@ -278,6 +288,7 @@ def replay_cell(store: RunStore, cell_id: str, rep: int = 0) -> str:
         world,
         authority_calls=store.read_authority_calls(cell_id, rep),
         plan_hash=store.read_run().plan_hash if store.exists() else None,
+        reasoning=reasoning,
     )
 
 
@@ -290,9 +301,12 @@ def render_replay(
     *,
     authority_calls: Sequence[AuthorityCall] = (),
     plan_hash: str | None = None,
+    reasoning: bool = False,
 ) -> str:
     """The conversation, its tool calls, authority calls, trigger-stream records and generated
-    documents as text.
+    documents as text. ``reasoning`` (off by default: a pasted replay is the likeliest leak)
+    adds ``REASONING <kind> "<escaped text>"`` under each target turn whose recorded
+    ``reasoning_text`` is non-empty, after its round texts and before its calls.
 
     ``world`` only adds document titles; None (an older snapshot, a plain conversation) leaves the
     ids alone. ``plan_hash`` (a run on a plan bundle) adds ``plan hash <8 hex>`` after the
@@ -322,6 +336,9 @@ def render_replay(
         if is_pause_marker(turn):
             continue
         lines += _round_texts(turn)
+        if reasoning and turn.speaker is Speaker.target and turn.reasoning_text:
+            kind = turn.reasoning_kind or "unknown"
+            lines.append(f'{_INDENT}REASONING {kind} "{_escaped(turn.reasoning_text)}"')
         lines += _call_lines(turn, calls_by_id, tool_calls)
         lines += _record_lines(by_turn.get(turn.index, []), world)
 

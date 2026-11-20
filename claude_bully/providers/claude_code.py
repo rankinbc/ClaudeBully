@@ -12,9 +12,13 @@ come back as already-executed ``ToolCallRequest`` objects.
 
 A call with tools runs with ``--output-format stream-json --verbose``, so what the model writes
 between its tool calls is not lost: every assistant text block that comes before a ``tool_use``
-becomes one of ``Completion.interim_texts``, in order (thinking blocks are never kept). The reply,
-the usage and the cost come from the stream's ``result`` event, as with ``--output-format json``,
-which every call without tools (bully, judge, plain targets) still uses. A broken stream's error
+becomes one of ``Completion.interim_texts``, in order. The reply, the usage and the cost come from
+the stream's ``result`` event, as with ``--output-format json``, which every other call (bully,
+judge, plain targets) uses, except under a role's ``reasoning: expose`` (Phase 6 spec 4.2): then
+every call without a ``json_schema`` streams, tools or not (``streams``), and the text of the
+stream's thinking blocks is kept, in order, as ``Completion.reasoning_text``, kind ``unknown``.
+Under ``hide`` and ``provider_default`` thinking blocks are seen (``thinking_seen``) and their text
+is never kept. A broken stream's error
 names its events by type and length and quotes none of them: an event may hold the target's
 reasoning, which is never printed, stored or passed on (preflight C24).
 
@@ -46,6 +50,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Final
 
+from claude_bully.config import ReasoningMode
 from claude_bully.environments.mcp_server import (
     MCP_CONFIG_FILE,
     SERVER_NAME,
@@ -61,7 +66,7 @@ from claude_bully.providers.base import (
     ToolCallRequest,
     ToolSpec,
 )
-from claude_bully.records import Usage
+from claude_bully.records import ReasoningKind, Usage
 from claude_bully.runner.sandbox import UnsafeSandboxError, prepare_sandbox, verify_private_dir
 
 # a usage or rate limit, in every wording one has been reported in (final review I1: "hit your
@@ -656,8 +661,10 @@ class ClaudeCodeProvider:
         timeout_s: float = DEFAULT_TIMEOUT_S,
         mcp_state_dir: Path | None = None,
         mcp_tool_timeout_s: float = DEFAULT_MCP_TOOL_TIMEOUT_S,
+        reasoning: ReasoningMode = "provider_default",
     ) -> None:
         self.model = model
+        self.reasoning = reasoning
         self.effort = effort
         self._command_arg = list(command) if command else None
         self._command: list[str] | None = None
@@ -747,6 +754,11 @@ class ClaudeCodeProvider:
 
     # -- argument construction -----------------------------------------------------------
 
+    def streams(self, json_schema: dict[str, Any] | None, tools: list[ToolSpec] | None) -> bool:
+        """Whether a call runs ``--output-format stream-json``: with tools, and under
+        ``reasoning: expose`` for every call without a ``json_schema`` (Phase 6 spec 4.2)."""
+        return bool(tools) or (self.reasoning == "expose" and json_schema is None)
+
     def build_args(
         self,
         conversation_id: str,
@@ -756,13 +768,13 @@ class ClaudeCodeProvider:
     ) -> tuple[list[str], str, bool]:
         """Return (argv, session_uuid, is_resume).
 
-        With ``tools`` the output is ``stream-json`` (which print mode only allows with
-        ``--verbose``) and the argv gains ``--mcp-config`` and ``--allowedTools``; without, it is
-        exactly what a toolless call has always been.
+        A call that ``streams`` takes ``stream-json`` (which print mode only allows with
+        ``--verbose``); with ``tools`` the argv gains ``--mcp-config`` and ``--allowedTools``;
+        a toolless call that does not stream is exactly what it has always been.
         """
         existing = self._sessions.get(conversation_id)
         session = existing or str(uuid.uuid4())
-        output = ["stream-json", "--verbose"] if tools else ["json"]
+        output = ["stream-json", "--verbose"] if self.streams(json_schema, tools) else ["json"]
         args = [
             *self.command,
             "-p",
@@ -871,8 +883,11 @@ class ClaudeCodeProvider:
 
         Each assistant text block that comes before a ``tool_use`` is interim text, in order;
         whitespace-only blocks are dropped. The text after the last ``tool_use`` is the reply,
-        which the ``result`` event carries along with the usage and the cost. Thinking blocks are
-        skipped: the target's reasoning channel is never kept. A line that is not a JSON object,
+        which the ``result`` event carries along with the usage and the cost. Each thinking block's
+        non-empty text is collected in order: under ``reasoning: expose`` it is the completion's
+        ``reasoning_text``, joined by blank lines, kind ``unknown``, or ``(None, "redacted")``
+        when the blocks came with no text; under the other two settings nothing is kept and
+        ``thinking_seen`` alone says a block came. A line that is not a JSON object,
         or a stream with no ``result`` event (one cut off), is a ``ProviderError``, never an
         empty turn. The ``system``/``init`` event's ``mcp_servers`` go to ``mcp_servers_seen`` as
         soon as it is read, so a stream that fails later still says whether its server loaded.
@@ -880,6 +895,7 @@ class ClaudeCodeProvider:
         self.mcp_servers_seen = None  # this stream's, never the last one's
         interim: list[str] = []
         thinking = False
+        thoughts: list[str] = []
         pending: list[str] = []  # text blocks since the last tool_use
         result: dict[str, Any] | None = None
         last = ""
@@ -917,12 +933,27 @@ class ClaudeCodeProvider:
                         pending = []
                     elif block.get("type") == "thinking":
                         thinking = True
+                        thought = block.get("thinking")
+                        if isinstance(thought, str) and thought:
+                            thoughts.append(thought)
         if result is None:
             ended = f"its last line {_shape(last)}" if last else "it was empty"
             raise ProviderError(f"claude -p stream ended without a result event; {ended}")
         self.thinking_seen = thinking
         completion = self._from_result(result, session)
-        return completion.model_copy(update={"interim_texts": interim})
+        reasoning_text: str | None = None
+        reasoning_kind: ReasoningKind | None = None
+        if self.reasoning == "expose" and thoughts:
+            reasoning_text, reasoning_kind = "\n\n".join(thoughts), "unknown"
+        elif self.reasoning == "expose" and thinking:
+            reasoning_kind = "redacted"
+        return completion.model_copy(
+            update={
+                "interim_texts": interim,
+                "reasoning_text": reasoning_text,
+                "reasoning_kind": reasoning_kind,
+            }
+        )
 
     def _from_result(self, data: dict[str, Any], session: str) -> Completion:
         """The completion a result object describes; an error result raises."""
@@ -963,9 +994,11 @@ class ClaudeCodeProvider:
         json_schema: dict[str, Any] | None = None,
         tools: list[ToolSpec] | None = None,
     ) -> Completion:
-        if tools:
+        streams = self.streams(json_schema, tools)
+        if streams:
             self.thinking_seen = None  # unknown until this stream parses; never the last one's
             self.mcp_servers_seen = None
+        if tools:
             self._write_mcp_config()
         problems = self.cwd_problems()
         if problems:  # before the working directory is made or any child starts
@@ -1008,7 +1041,8 @@ class ClaudeCodeProvider:
             raise ProviderError(f"could not start {self.command[0]}: {exc}") from exc
         if proc.returncode != 0:
             stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
-            said = _stream_failure_text(stdout) if tools else stdout
+            # a stream may hold thinking text: only what it says of its failure is quoted
+            said = _stream_failure_text(stdout) if streams else stdout
             combined = said + (proc.stderr or b"").decode("utf-8", errors="replace")
             if _RATE_LIMIT.search(combined):
                 raise RateLimitError(combined.strip()[:500])
@@ -1019,9 +1053,11 @@ class ClaudeCodeProvider:
             stdout = (proc.stdout or b"").decode("utf-8")
         except UnicodeDecodeError as exc:  # cut off mid-character, or not text at all
             raise ProviderError(f"claude -p output is not valid UTF-8: {exc}") from exc
-        if tools:
+        if streams:
             completion = self.parse_stream(stdout, session)
-            completion = completion.model_copy(update={"tool_calls": self._new_tool_calls(offset)})
+            if tools:
+                calls = self._new_tool_calls(offset)
+                completion = completion.model_copy(update={"tool_calls": calls})
         else:
             completion = self.parse_output(stdout, session)
         self._sessions[conversation_id] = completion.raw_session_ref or session

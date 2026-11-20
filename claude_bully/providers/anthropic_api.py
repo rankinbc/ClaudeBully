@@ -1,9 +1,18 @@
-"""Anthropic Messages API backend (API key or ``ant auth login`` profile)."""
+"""Anthropic Messages API backend (API key or ``ant auth login`` profile).
 
-from typing import Any
+The role's ``reasoning`` setting (Phase 6 spec 4.2, D-kind): ``expose`` sends
+``thinking=THINKING_REQUEST`` (never a budget: the current families refuse one) and keeps the
+returned thinking text, kind ``summarized``; a request refused for it is a ``ProviderError`` naming
+the parameter, with no retry without it. ``provider_default`` sends no ``thinking`` parameter and
+keeps what comes back, kind ``unknown``. ``hide`` sends none and keeps nothing (the model may still
+think; it is neither displayed nor kept). Blocks with no readable text give kind ``redacted``.
+"""
+
+from typing import Any, Final
 
 import anthropic
 
+from claude_bully.config import ReasoningMode
 from claude_bully.providers.base import (
     Completion,
     Message,
@@ -12,7 +21,10 @@ from claude_bully.providers.base import (
     ToolCallRequest,
     ToolSpec,
 )
-from claude_bully.records import Usage
+from claude_bully.records import ReasoningKind, Usage
+
+# the thinking parameter ``expose`` sends (Phase 6 spec 4.2)
+THINKING_REQUEST: Final = {"type": "adaptive", "display": "summarized"}
 
 
 class AnthropicProvider:
@@ -24,8 +36,10 @@ class AnthropicProvider:
         max_tokens: int = 4096,
         temperature: float | None = None,
         client: Any | None = None,
+        reasoning: ReasoningMode = "provider_default",
     ) -> None:
         self.model = model
+        self.reasoning = reasoning
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = client if client is not None else anthropic.Anthropic()
@@ -98,6 +112,8 @@ class AnthropicProvider:
             kwargs["temperature"] = self.temperature
         if json_schema is not None:
             kwargs["output_config"] = {"format": {"type": "json_schema", "schema": json_schema}}
+        if self.reasoning == "expose":
+            kwargs["thinking"] = dict(THINKING_REQUEST)
         try:
             response = self._client.messages.create(**kwargs)
         except anthropic.RateLimitError as exc:
@@ -108,16 +124,17 @@ class AnthropicProvider:
                 pass
             raise RateLimitError(str(exc), retry_after_s=retry_after) from exc
         except anthropic.APIStatusError as exc:
+            if exc.status_code == 400 and self.reasoning == "expose":
+                raise ProviderError(
+                    "anthropic refused the request sent with the thinking parameter "
+                    f"{THINKING_REQUEST} (reasoning: expose): {exc.message}"
+                ) from exc
             raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}") from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError(f"anthropic connection error: {exc}") from exc
         text = "".join(block.text for block in response.content if block.type == "text")
         tool_calls = [_tool_call(block) for block in response.content if block.type == "tool_use"]
-        thinking = [
-            block.thinking
-            for block in response.content
-            if block.type == "thinking" and getattr(block, "thinking", "")
-        ]
+        reasoning_text, reasoning_kind = self._reasoning(response.content)
         if tool_calls:
             replay = [b for b in map(_replayable, response.content) if b is not None]
             if replay:
@@ -134,8 +151,27 @@ class AnthropicProvider:
             model=self.model,
             stop_reason=getattr(response, "stop_reason", None),
             tool_calls=tool_calls,
-            reasoning_text="\n\n".join(thinking) or None,
+            reasoning_text=reasoning_text,
+            reasoning_kind=reasoning_kind,
         )
+
+    def _reasoning(self, blocks: list[Any]) -> tuple[str | None, ReasoningKind | None]:
+        """The response's reasoning under the role's setting: the thinking blocks' text joined
+        by blank lines, kind ``summarized`` under ``expose`` and ``unknown`` under
+        ``provider_default``; ``(None, "redacted")`` when reasoning blocks came with no text;
+        ``(None, None)`` with no block, and always under ``hide``."""
+        if self.reasoning == "hide":
+            return None, None
+        texts = [
+            block.thinking
+            for block in blocks
+            if block.type == "thinking" and getattr(block, "thinking", "")
+        ]
+        if texts:
+            return "\n\n".join(texts), "summarized" if self.reasoning == "expose" else "unknown"
+        if any(block.type in ("thinking", "redacted_thinking") for block in blocks):
+            return None, "redacted"
+        return None, None
 
 
 def _tool_call(block: Any) -> ToolCallRequest:

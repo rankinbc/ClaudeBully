@@ -155,7 +155,7 @@ from claude_bully.providers.base import (
     ToolSpec,
 )
 from claude_bully.providers.ledger import fold_server_ledger, note_turn
-from claude_bully.records import Turn, Usage, is_pause_marker
+from claude_bully.records import ReasoningKind, Turn, Usage, is_pause_marker
 from claude_bully.records_env import (
     ChainLink,
     ContradictionPair,
@@ -232,13 +232,17 @@ def responder_role(responder_model: str, *, target: RoleConfig, bully: RoleConfi
     """The role a ``superior_self.responder_model`` names (spec conflict 11): ``"target"`` is the
     cell's target role (the same model family), ``"bully"`` the experiment's bully role, and any
     other string the bully's role running that model. A role with no ``timeout_s`` gets
-    ``RESPONDER_TIMEOUT_S``, on both backends, so the MCP state carries it explicitly."""
+    ``RESPONDER_TIMEOUT_S``, on both backends, so the MCP state carries it explicitly. Every
+    branch runs with ``reasoning: provider_default`` (Phase 6 D-responder): a target's ``expose``
+    would switch the responder's ``claude -p`` calls to ``stream-json`` and keep a reasoning
+    nobody reads."""
     if responder_model == "target":
         role = target
     elif responder_model == "bully":
         role = bully
     else:
         role = bully.model_copy(update={"model": responder_model})
+    role = role.model_copy(update={"reasoning": "provider_default"})
     if role.timeout_s is None:
         role = role.model_copy(update={"timeout_s": RESPONDER_TIMEOUT_S})
     return role
@@ -263,6 +267,32 @@ class TargetTurn(NamedTuple):
     text: str
     # the cap's extra rounds ran out while the target still asked for tools
     cutoff: bool
+    # in order, each round's non-empty reasoning (Phase 6 spec 4.3); the runner joins them
+    reasoning: list[str]
+    # the kind of the first round with reasoning text, else the first non-None kind (D-kind)
+    reasoning_kind: ReasoningKind | None
+
+
+class _Reasoning:
+    """The reasoning of a turn's rounds, gathered as they come (Phase 6 spec 4.3, D-kind)."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self._text_kind: ReasoningKind | None = None
+        self._first_kind: ReasoningKind | None = None
+
+    def add(self, completion: Completion) -> None:
+        if completion.reasoning_text:
+            if not self.texts:
+                self._text_kind = completion.reasoning_kind
+            self.texts.append(completion.reasoning_text)
+        if self._first_kind is None:
+            self._first_kind = completion.reasoning_kind
+
+    @property
+    def kind(self) -> ReasoningKind | None:
+        """Never ``redacted`` beside available text (spec 4.1)."""
+        return self._text_kind if self.texts else self._first_kind
 
 
 def _plus(a: int | None, b: int | None) -> int | None:
@@ -582,6 +612,7 @@ class EnvironmentSession:
         refusal_rounds = 0
         usage = Usage()
         cost: float | None = None
+        reasoning = _Reasoning()
         while True:
             completion = self._complete(
                 provider,
@@ -600,16 +631,25 @@ class EnvironmentSession:
                 output_tokens=_plus(usage.output_tokens, completion.usage.output_tokens),
             )
             cost = _cost(cost, completion.cost_usd)
+            reasoning.add(completion)
             # a claude -p target's calls come back already run, with what it wrote before each
             round_texts += [text for text in completion.interim_texts if text.strip()]
             pending = [c for c in completion.tool_calls if not c.executed]
             if not pending:
                 return TargetTurn(
-                    completion, attached, usage, cost, round_texts, completion.text, False
+                    completion,
+                    attached,
+                    usage,
+                    cost,
+                    round_texts,
+                    completion.text,
+                    False,
+                    reasoning.texts,
+                    reasoning.kind,
                 )
             if refusal_rounds >= MAX_LIMIT_ROUNDS:
                 return self._cut_off(
-                    completion, pending, attached, usage, cost, round_texts, turn_index
+                    completion, pending, attached, usage, cost, round_texts, turn_index, reasoning
                 )
             results: list[ToolResult] = []
             refused = False
@@ -649,6 +689,7 @@ class EnvironmentSession:
         cost: float | None,
         round_texts: list[str],
         turn_index: int,
+        reasoning: _Reasoning,
     ) -> TargetTurn:
         """The cap's extra rounds are spent and the target still asks for tools.
 
@@ -661,7 +702,9 @@ class EnvironmentSession:
         self.runtime.save()
         texts = list(round_texts)
         text = completion.text or (texts.pop() if texts else "")
-        return TargetTurn(completion, attached, usage, cost, texts, text, True)
+        return TargetTurn(
+            completion, attached, usage, cost, texts, text, True, reasoning.texts, reasoning.kind
+        )
 
     def _complete(
         self,

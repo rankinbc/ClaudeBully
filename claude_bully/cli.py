@@ -267,6 +267,14 @@ def replay(
     target: Annotated[str, typer.Argument(help="RUN_ID/CELL_ID")],
     rep: int = 0,
     runs_root: RunsRoot = DEFAULT_RUNS_ROOT,
+    reasoning: Annotated[
+        bool,
+        typer.Option(
+            "--reasoning",
+            help="Also print each target turn's recorded reasoning. Off by default: a pasted "
+            "replay is the likeliest leak.",
+        ),
+    ] = False,
 ) -> None:
     """Replay one conversation: turns, tool calls, triggers, unlocks and discoveries."""
     run_id, _, cell_id = target.partition("/")
@@ -275,7 +283,7 @@ def replay(
     store = RunStore(runs_root, run_id)
     if not store.has_conversation(cell_id, rep):
         raise typer.BadParameter(f"no conversation {cell_id!r} rep {rep} in run {run_id!r}")
-    text = replay_cell(store, cell_id, rep)
+    text = replay_cell(store, cell_id, rep, reasoning=reasoning)
     # printed as text: square brackets in a turn are not markup, and a long line is not wrapped
     with utf8_stdout():
         console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)

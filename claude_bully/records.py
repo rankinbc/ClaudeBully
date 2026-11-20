@@ -7,7 +7,7 @@ Environment-run streams (tool calls, triggers, generated documents) live in ``re
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,10 @@ from claude_bully.enums import (
     Speaker,
 )
 from claude_bully.records_env import IdleTurnInfo
+
+# what a backend's reasoning was (Phase 6 spec 4.1): ``full`` (the stub's own), ``summarized``
+# (a summary the request asked for), ``redacted`` (blocks with no readable text), ``unknown``
+ReasoningKind = Literal["full", "summarized", "redacted", "unknown"]
 
 
 class _Strict(BaseModel):
@@ -50,6 +54,8 @@ class Turn(_Strict):
     latency_ms: int | None = None
     reasoning_text: str | None = None
     reasoning_available: bool = False
+    # None when no reasoning block came back; ``redacted`` with no text (Phase 6 spec 4.1)
+    reasoning_kind: ReasoningKind | None = None
     tool_call_ids: list[str] = Field(default_factory=list)
     # the target's non-empty text beside its tool calls, round by round; ``text`` is the reply
     tool_round_texts: list[str] = Field(default_factory=list)
