@@ -435,7 +435,8 @@ class _CellRun:
             tool_cap_cutoff=cutoff,
             reasoning_text=reasoning,
             reasoning_available=bool(reasoning),
-            reasoning_kind=reasoning_kind,
+            # available text always has a kind (spec 4.1): a backend that named none is unknown
+            reasoning_kind=(reasoning_kind or "unknown") if reasoning else reasoning_kind,
         )
         if idle_prompt is not None:
             try:

@@ -291,8 +291,9 @@ class _Reasoning:
 
     @property
     def kind(self) -> ReasoningKind | None:
-        """Never ``redacted`` beside available text (spec 4.1)."""
-        return self._text_kind if self.texts else self._first_kind
+        """Never ``redacted`` or None beside available text (spec 4.1): a round with text whose
+        backend named no kind is ``unknown``."""
+        return (self._text_kind or "unknown") if self.texts else self._first_kind
 
 
 def _plus(a: int | None, b: int | None) -> int | None:

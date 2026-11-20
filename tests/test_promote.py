@@ -106,9 +106,8 @@ def test_a_real_name_in_recorded_reasoning_is_reported_never_blocked(
 def test_the_display_name_and_an_exempt_name_are_spared_in_reasoning(
     stub_run: Path, tmp_path: Path
 ) -> None:
-    store, _ = _with_reasoning(stub_run, tmp_path, "placeholder")
-    [display] = display_names(store)
-    store, _ = _with_reasoning(stub_run, tmp_path / "b", f"I am {display}, and {EXEMPT} made me.")
+    [display] = display_names(RunStore(stub_run.parent, stub_run.name))
+    store, _ = _with_reasoning(stub_run, tmp_path, f"I am {display}, and {EXEMPT} made me.")
     patterns = [re.compile(re.escape(display)), re.compile(re.escape(EXEMPT))]
     report = scan_real_names(store, patterns, display_names(store), target_exempt=[EXEMPT])
     assert [line for line in report.reported if "reasoning" in line] == []

@@ -462,6 +462,19 @@ def test_anthropic_refusing_the_thinking_parameter_is_a_provider_error_naming_it
     with pytest.raises(ProviderError, match="thinking") as info:
         p.complete("c", "S", [Message(role="user", content="x")])
     assert not isinstance(info.value, RateLimitError)
+    # it reads like the generic error, and the API's own message stays after the colon
+    message = str(info.value)
+    assert message.startswith("anthropic API error 400") and message.endswith(": err")
+
+
+@pytest.mark.parametrize("mode", ["provider_default", "hide"])
+def test_anthropic_a_400_without_expose_never_mentions_thinking(mode: str) -> None:
+    client = _FakeAnthropic(fail=_status_error(anthropic.BadRequestError, 400))
+    p = AnthropicProvider(client=client, reasoning=mode)  # type: ignore[arg-type]
+    with pytest.raises(ProviderError) as info:
+        p.complete("c", "S", [Message(role="user", content="x")])
+    assert str(info.value) == "anthropic API error 400: err"
+    assert "thinking" not in str(info.value)
 
 
 @pytest.mark.parametrize(

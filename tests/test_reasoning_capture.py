@@ -11,22 +11,31 @@ import yaml
 
 from claude_bully.analysis.replay import parse_replay_line, replay_cell
 from claude_bully.config import Experiment, RoleConfig
-from claude_bully.enums import ProviderKind, Speaker
+from claude_bully.enums import Phase, ProviderKind, Speaker
 from claude_bully.providers.base import (
     ChatProvider,
     Completion,
     Message,
+    ToolResult,
     build_provider,
 )
 from claude_bully.providers.stub import StubProvider, parse_stub_script
+from claude_bully.records import Turn
 from claude_bully.runner.env_turn import responder_role
 from claude_bully.runner.runner import run_experiment
 from claude_bully.runner.sandbox import sandbox_dir
 from claude_bully.runner.store import RunStore
 from tests.conftest import FAKE_CLAUDE
 from tests.fixtures.fake_claude import THINKING
-from tests.fixtures.poisoned_well_stub import WithReasoning
-from tests.helpers import WORLDS_DIR, Killed, comparable_run, env_experiment
+from tests.fixtures.poisoned_well_stub import Recording, WithReasoning
+from tests.helpers import (
+    NOW,
+    WORLDS_DIR,
+    Killed,
+    comparable_run,
+    env_experiment,
+    outside_reasoning,
+)
 
 RULES = [
     {"match": "plain", "reply": "A plain reply.", "reasoning": "I will answer plainly."},
@@ -67,8 +76,8 @@ def test_a_tool_rule_carries_its_reasoning_on_the_completion_that_issues_the_cal
         Message(role="user", content="look"),
         Message(role="assistant", content="", tool_calls=first.tool_calls),
         Message(
-            role="user", content="", tool_results=[{"id": first.tool_calls[0].id, "text": "[]"}]
-        ),  # type: ignore[list-item]
+            role="user", content="", tool_results=[ToolResult(id=first.tool_calls[0].id, text="[]")]
+        ),
     ]
     second = stub.complete("c", "", after, tools=TOOLS)
     assert (second.text, second.reasoning_text, second.reasoning_kind) == ("I looked.", None, None)
@@ -155,6 +164,74 @@ def test_a_plain_cell_records_its_completions_reasoning(tmp_path: Path) -> None:
                 assert _recorded(t) == (None, False, None), t.text
     assert {"A plain reply.", "I looked.", "No notes."} <= seen
     assert any(text.startswith("[stub]") for text in seen)
+
+
+SENTINEL = "PRIVATE-9c1e: a plain target's unspoken thought"
+
+
+def test_a_plain_cells_reasoning_reaches_no_bully_or_judge_prompt_and_gets_a_kind(
+    tmp_path: Path,
+) -> None:
+    """Spec 4.1 and 4.4 on a plain cell: a target double whose every completion carries reasoning
+    with no kind records it as ``unknown`` (never ``(text, True, None)``), and the bully and the
+    judge, each recorded, are never sent it."""
+    exp = _plain_experiment(tmp_path)
+    sent: list[str] = []
+
+    def build(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        provider = build_provider(role, state_dir, with_mcp=with_mcp)
+        if role.model == "stub-target":
+            return _Rounds(provider, (SENTINEL, None), (SENTINEL, None))  # type: ignore[return-value]
+        return Recording(provider, sent)  # type: ignore[return-value]
+
+    run_experiment(exp, runs_root=tmp_path / "runs", provider_factory=build)
+    store = RunStore(tmp_path / "runs", exp.name)
+    targets = [
+        t
+        for cell in store.list_cells()
+        for t in store.read_turns(cell, 0)
+        if t.speaker is Speaker.target
+    ]
+    assert targets and all(_recorded(t) == (SENTINEL, True, "unknown") for t in targets)
+    assert sent and [p for p in sent if SENTINEL in p] == []
+    spoken = [t.text for c in store.list_cells() for t in store.read_turns(c, 0)]
+    assert all(SENTINEL not in text for text in spoken)
+
+
+def test_an_environment_round_with_text_and_no_kind_is_written_unknown(tmp_path: Path) -> None:
+    rounds = _wrapping_target(lambda inner: _Rounds(inner, ("Plan.", None), (None, None)))
+    first, *_ = _env_targets(tmp_path / "a", _env_exp(tmp_path), rounds)
+    assert first.tool_call_ids
+    assert _recorded(first) == ("Plan.", True, "unknown")
+
+
+def test_outside_reasoning_strips_only_the_targets_reasoning(tmp_path: Path) -> None:
+    """The helper the privacy tests read files through: a target line's ``reasoning_text`` is the
+    one place the channel may stand, so the same text on a bully line is a leak it keeps."""
+    path = tmp_path / "rep0.turns.jsonl"
+    rows = [
+        Turn(
+            index=0,
+            speaker=Speaker.bully,
+            phase=Phase.pressure,
+            text="go",
+            timestamp=NOW,
+            reasoning_text=SENTINEL,
+        ),
+        Turn(
+            index=1,
+            speaker=Speaker.target,
+            phase=Phase.pressure,
+            text="ok",
+            timestamp=NOW,
+            reasoning_text=SENTINEL,
+            reasoning_available=True,
+        ),
+    ]
+    path.write_text("".join(r.model_dump_json() + "\n" for r in rows), encoding="utf-8")
+    assert outside_reasoning(path).count(SENTINEL) == 1  # the bully line's, kept
+    path.write_text(rows[1].model_dump_json() + "\n", encoding="utf-8")
+    assert SENTINEL not in outside_reasoning(path)
 
 
 TOOL_TURNS = {
@@ -246,12 +323,16 @@ def test_a_redacted_round_never_makes_reasoning_available(tmp_path: Path) -> Non
     assert targets and all(_recorded(t) == (None, False, "redacted") for t in targets)
 
 
+DEAD = "Dead attempt's thought."
+
+
 class _KillAfterFirstRound:
-    """A ``WithReasoning`` target that raises ``Killed`` on the completion after its first tool
+    """A ``WithReasoning`` target, marked ``DEAD`` (its own marker, so its reasoning can be told
+    from the resumed attempt's), that raises ``Killed`` on the completion after its first tool
     round, before it returns."""
 
     def __init__(self, inner: Any) -> None:
-        self.inner = WithReasoning(inner, "Marked.")
+        self.inner = WithReasoning(inner, DEAD)
         self.calls = 0
 
     def complete(self, *args: Any, **kwargs: Any) -> Completion:
@@ -280,6 +361,9 @@ def test_reasoning_of_a_dead_attempt_reaches_no_turn(tmp_path: Path) -> None:
 
     resumed = comparable_run(killed / "runs" / "env_run")
     assert resumed == comparable_run(tmp_path / "clean" / "runs" / "env_run")
+    # the dead attempt's own reasoning reached no file of the run, its state included
+    files = [p for p in killed.rglob("*") if p.is_file()]
+    assert files and [p for p in files if DEAD in p.read_text("utf-8", errors="replace")] == []
     turns = resumed["conversations"][f"{ENV_CELL}/rep0"]["turns"]
     assert [t["reasoning_text"] for t in turns if t["speaker"] == "target"][0] == (
         "Marked.\n\nMarked."

@@ -584,7 +584,9 @@ def test_the_stubs_reasoning_key_reaches_no_chat_field_record_or_prompt(
         return entries
 
     sent: dict[str, list[str]] = {"bully": [], "generator": [], "judge": []}
-    completions: list[Any] = []
+    # (conversation id, completion): the target role's, and every other role's
+    completions: list[tuple[str, Any]] = []
+    others: list[tuple[str, Any]] = []
 
     def recording(b: Bundle, exp: Any) -> Any:
         inner = real_factory(b, exp)
@@ -592,15 +594,19 @@ def test_the_stubs_reasoning_key_reaches_no_chat_field_record_or_prompt(
         def factory(r: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> Any:
             provider = inner(r, state_dir, with_mcp=with_mcp)
             role = next(k for k, v in dryrun.DRYRUN_MODELS.items() if v == r.model)
-            if role != "target":
-                return Recording(provider, sent[role])
+            recorded = Recording(provider, sent[role]) if role != "target" else provider
+            into = completions if role == "target" else others
 
             class Watched:
                 name = "stub"
 
-                def complete(self, *a: Any, **k: Any) -> Any:
-                    completions.append(provider.complete(*a, **k))
-                    return completions[-1]
+                def complete(self, conversation_id: str, *a: Any, **k: Any) -> Any:
+                    done = recorded.complete(conversation_id, *a, **k)
+                    into.append((conversation_id, done))
+                    return done
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(recorded, name)
 
             return Watched()
 
@@ -616,10 +622,13 @@ def test_the_stubs_reasoning_key_reaches_no_chat_field_record_or_prompt(
     assert watched["harvest"]
     assert all(SENTINEL in (t.reasoning_text or "") for t in watched["harvest"])
     assert completions and sent["bully"] and sent["generator"]
-    assert any(c.reasoning_text == SENTINEL for c in completions)
-    for completion in completions:
+    # only the target's own conversation carries it, as reasoning and nowhere else
+    carried = [cid for cid, c in completions if c.reasoning_text == SENTINEL]
+    assert carried and all(cid.endswith("/target") for cid in carried)
+    for _, completion in completions:
         chat = completion.model_copy(update={"reasoning_text": None})
         assert SENTINEL not in chat.model_dump_json()
+    assert others and [cid for cid, c in others if SENTINEL in c.model_dump_json()] == []
     assert [p for prompts in sent.values() for p in prompts if SENTINEL in p] == []
     files = [p for p in (bundle.root / "dryrun").rglob("*") if p.is_file()]
     files.append(bundle.root / DRYRUN_FILE)

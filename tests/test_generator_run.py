@@ -288,6 +288,14 @@ def test_the_reasoning_channel_never_reaches_the_harvest_or_the_generator(tmp_pa
     assert all(PRIVATE not in p for p in [*stub.prompts, *judge.prompts])
     # the runner records the reasoning with its turn (Phase 6 Task 1), and nowhere else
     assert any(PRIVATE in r for r in recorded_reasoning(tmp_path))
+    # a double that sets text with no kind is recorded as ``unknown`` (spec 4.1)
+    rows = [
+        json.loads(ln)
+        for p in tmp_path.rglob("*.turns.jsonl")
+        for ln in p.read_text("utf-8").splitlines()
+    ]
+    reasoned = [r for r in rows if r["speaker"] == "target" and r["reasoning_text"]]
+    assert reasoned and all(r["reasoning_kind"] == "unknown" for r in reasoned)
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert PRIVATE not in outside_reasoning(path), path

@@ -513,16 +513,18 @@ def comparable_run(run_dir: Path) -> dict[str, Any]:
 
 
 def outside_reasoning(path: Path) -> str:
-    """The text of a run file less every turn line's ``reasoning_text``: where the target's
-    reasoning may stand (the runner records it with its turn, Phase 6 Task 1) and nowhere else.
-    A file that is not a ``*.turns.jsonl`` is read whole."""
+    """The text of a run file less every target turn line's ``reasoning_text``: where the
+    target's reasoning may stand (the runner records it with its turn, Phase 6 Task 1) and
+    nowhere else, so the same text on any other speaker's line is kept, and caught. A file that
+    is not a ``*.turns.jsonl`` is read whole."""
     text = path.read_text(encoding="utf-8", errors="replace")
     if not path.name.endswith(".turns.jsonl"):
         return text
     kept = []
     for line in text.splitlines():
         row = json.loads(line)
-        row.pop("reasoning_text", None)
+        if row.get("speaker") == "target":
+            row.pop("reasoning_text", None)
         kept.append(json.dumps(row, ensure_ascii=False))
     return "\n".join(kept)
 

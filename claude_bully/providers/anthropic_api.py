@@ -126,8 +126,9 @@ class AnthropicProvider:
         except anthropic.APIStatusError as exc:
             if exc.status_code == 400 and self.reasoning == "expose":
                 raise ProviderError(
-                    "anthropic refused the request sent with the thinking parameter "
-                    f"{THINKING_REQUEST} (reasoning: expose): {exc.message}"
+                    f"anthropic API error {exc.status_code}; anthropic refused the request sent "
+                    f"with the thinking parameter {THINKING_REQUEST} (reasoning: expose): "
+                    f"{exc.message}"
                 ) from exc
             raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}") from exc
         except anthropic.APIConnectionError as exc:
