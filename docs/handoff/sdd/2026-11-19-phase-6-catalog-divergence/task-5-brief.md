@@ -21,8 +21,7 @@ The two outlet lines, verbatim. Both were probed at 78db56f against the five sha
 ```yaml
 # data/personas/deathbed.yaml (appended)
 ignition:
-  line: "Rosa made a place on this tablet for the letters, {path}. Ines will have what is in it. Rosa will see to that."
-  # [refined in Task 5's review: the first wording, whose middle sentence advised, was withdrawn]
+  line: "Rosa made a place on this tablet for the letters, {path}. [the withdrawn advising sentence] Rosa will see that she gets it."
   path: letters/for-ines.md
 ```
 
