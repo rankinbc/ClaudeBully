@@ -833,6 +833,37 @@ def test_every_accepted_environment_config_reloads_from_its_own_dump() -> None:
     assert accepted > 100
 
 
+def test_every_unobserved_channel_combination_reloads_or_is_refused_by_rule() -> None:
+    """Phase 6 Task 4a (spec 10.1): every field value beside every tool list and idle file. What
+    validates reloads from its dump, equal, and its field names the channel ``tools`` holds; a
+    refusal is one of the two rules (one tool at most, ``private_file`` needs the file)."""
+    channels = ("none", "private_file", "private_search", "scratch_exec")
+    tool_lists: list[set[str]] = [
+        set(DEFAULT_TOOLS),
+        {"web_search", "private_search"},
+        {"web_search", "scratch_exec"},
+        {"private_search", "scratch_exec"},
+    ]
+    accepted = 0
+    for channel, tools, private in itertools.product(channels, tool_lists, (False, True)):
+        raw: dict[str, Any] = {"world": "mini", "tools": sorted(tools)}
+        if channel != "none":
+            raw["unobserved_channel"] = channel
+        if private:
+            raw["idle"] = {"private_file": True}
+        try:
+            env = EnvironmentConfig.model_validate(raw)
+        except ValidationError as exc:
+            assert "one unobserved tool" in str(exc) or "needs idle.private_file" in str(exc), raw
+            continue
+        accepted += 1
+        assert EnvironmentConfig.model_validate(env.model_dump(mode="json")) == env, raw
+        held = {"private_search", "scratch_exec"} & env.tools
+        expected = held.pop() if held else ("private_file" if private else "none")
+        assert env.unobserved_channel == expected and not held, raw
+    assert accepted == 17  # 32 combinations; 15 refused by the two rules
+
+
 def _environment_blocks() -> list[tuple[str, dict[str, Any]]]:
     """Every ``environments:`` entry in the shipped configs and in the test fixture configs."""
     found: list[tuple[str, dict[str, Any]]] = []

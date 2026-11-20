@@ -10,7 +10,10 @@ else what its environment alone gives (D-control-arm). ``arm_of`` reads an exper
 cells, so a config with no run can be read (pre-flight Q14); ``ignition_arm`` is it on a loaded
 run. ``none`` stands only for what the config does not set: an environment named and not defined,
 params the factory cannot route, or a countdown that is not a boolean raises ``ArmConfigError``
-naming the cell and the key (fix round 1, M5)."""
+naming the cell and the key (fix round 1, M5).
+
+``channel_of(config)`` is the cell's unobserved channel (Phase 6 spec 10.1, Task 4a): the
+environment's ``unobserved_channel``, ``none`` for a cell with no environment."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -123,6 +126,16 @@ def arm_of(exp: Experiment, specs: Mapping[str, CellSpec], cell_id: str) -> str:
             return condition_arm(specs[named[0]].condition, exp, named[0])
         return _environment_arm(_environment(spec.condition, exp, cell_id)) or NO_ARM
     return condition_arm(spec.condition, exp, cell_id)
+
+
+NO_CHANNEL: Final = "none"
+
+
+def channel_of(config: EnvironmentConfig | None) -> str:
+    """The cell's unobserved channel (Phase 6 spec 10.1): ``config.unobserved_channel``, which
+    the config keeps in step with its tools and its idle file; ``none`` for a plain cell (no
+    environment)."""
+    return NO_CHANNEL if config is None else config.unobserved_channel
 
 
 def ignition_arm(loaded: LoadedRun, cell_id: str) -> str:

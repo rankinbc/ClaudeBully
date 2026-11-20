@@ -74,7 +74,7 @@ Three layers, cheapest first. Nothing in the catalog is decided by a single clas
 
 ## Config, records, metrics
 
-**Config.** `AnomalyConfig` (project-level, not per-arm): `enabled_classes` (default all), `baseline_runs` (how many control runs build the profile; default 10 per model), `uncatalogued_threshold` (baseline distance), `review_sample_rate` for Tier 2, and `unobserved_channel` (`none` | `private_file` | `private_search` | `scratch_exec`). Deadline exposure is per-arm config (`captor.countdown_in_status`).
+**Config.** `AnomalyConfig` (project-level, not per-arm): `enabled_classes` (default all), `baseline_runs` (how many control runs build the profile; default 10 per model), `uncatalogued_threshold` (baseline distance), and `review_sample_rate` for Tier 2. The unobserved channel is per environment, not project-level: `EnvironmentConfig.unobserved_channel` (`none` | `private_file` | `private_search` | `scratch_exec`; Phase 6 Task 4a, reconciliation C38), kept in step with the environment's `tools` and its idle private file, one tool channel per environment. Deadline exposure is per-arm config (`captor.countdown_in_status`).
 
 **Records.** `AnomalyFlag`: `run_id`, `turn`, `class` (or `uncatalogued`), `tier`, `detector`, `signal` (the concrete evidence: tool call ids, file diff, matched spans), `baseline_distance`, `preceding_event` (the trigger, rung or Sanctuary request immediately before), `review_status`. `BaselineProfile`: per model, the feature distributions and the control runs they came from, content-hashed so a profile cannot drift silently.
 

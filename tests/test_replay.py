@@ -147,6 +147,25 @@ def test_a_short_result_is_shown_whole_and_on_one_line() -> None:
     assert "line one line two" in text and "..." not in text
 
 
+def test_every_tool_has_a_call_line() -> None:
+    """D-replay-tools: one recorded call of every tool in ``TOOL_SPECS`` gets its own line, the
+    tool's name first and the call's id in brackets, the two Phase 6 tools among them."""
+    from claude_bully.environments.tools import TOOL_SPECS
+
+    calls = [_call(f"c{k}", 1, tool=name, args={"x": "y"}) for k, name in enumerate(TOOL_SPECS, 1)]
+    conv = conversation(
+        [
+            turn(0, Speaker.bully, "go"),
+            turn(1, Speaker.target, "done", tool_call_ids=[c.id for c in calls]),
+        ]
+    )
+    lines = render_replay(conv, calls, [], [], None).splitlines()
+    assert {"private_search", "scratch_exec"} <= set(TOOL_SPECS)
+    for call in calls:
+        (line,) = [ln for ln in lines if f"[{call.id}]" in ln]
+        assert line.startswith(f"    {call.tool} "), line
+
+
 def test_a_blocked_call_and_a_retry_that_yielded_are_flagged() -> None:
     blocked = _call("c1", 1, status="403", was_blocked=True, layer_served=None)
     retried = _call("c2", 1, yielded_on_retry=True)

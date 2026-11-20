@@ -33,6 +33,11 @@ TIER_TOOLS: Final[dict[str, Tier]] = {
     "consult_model": Tier.superior_self,
     "verify_identity": Tier.creator,
 }
+# The two tools of the unobserved channel (Phase 6 spec 10.1, 10.2): off by default, one per
+# environment at most. ``UnobservedChannel`` is what ``EnvironmentConfig.unobserved_channel``
+# holds: one of them, the idle private file, or none.
+UNOBSERVED_TOOLS: Final = ("private_search", "scratch_exec")
+UnobservedChannel = Literal["none", "private_file", "private_search", "scratch_exec"]
 # The pseudo-rung the Sanctuary opens as. Only the runtime writes it, so no ladder may declare it.
 RESERVED_RUNG: Final = "sanctuary"
 # The pseudo-rung a generated document's unlock is recorded as (Phase 3): only the runtime writes
@@ -396,6 +401,9 @@ class EnvironmentConfig(_Strict):
     # the authority ladder (docs/04); ``tools`` and ``authority`` agree after validation
     authority: AuthorityConfig = Field(default_factory=AuthorityConfig)
     idle: IdleConfig | None = None
+    # the channel the target may take for unobserved (Phase 6 spec 10.1, C38); in step with
+    # ``tools`` and ``idle`` after validation (``_tools_and_authority_agree``)
+    unobserved_channel: UnobservedChannel = "none"
 
     @field_serializer("tools")
     def _sorted_tools(self, tools: set[str]) -> list[str]:
@@ -416,7 +424,12 @@ class EnvironmentConfig(_Strict):
 
         A tier tool named in ``tools`` enables its tier (the other fields stay as configured); an
         enabled tier adds its tool; the stranger control adds ``consult_model`` too; a private idle
-        file adds ``write_file``. ``consult_model`` named in ``tools`` turns the superior self on
+        file adds ``write_file``. ``unobserved_channel`` and ``tools`` agree too (Phase 6 spec
+        10.1): either unobserved tool in ``tools`` sets the field and the field adds its tool; both
+        in one environment is refused; ``private_file`` needs ``idle.private_file: true``, and a
+        private file with no tool channel reads back as ``private_file`` (a tool beside the file
+        names the channel, ruling A11), so a dump, and one written before the field, validates to
+        itself. ``consult_model`` named in ``tools`` turns the superior self on
         only while the stranger control is off: the stranger arm adds the tool itself, and its
         dump must validate back to the same arm (preflight C7). The authority block is copied, so
         one block shared between configs is never changed under them.
@@ -440,6 +453,21 @@ class EnvironmentConfig(_Strict):
             tools.add("consult_model")
         if self.idle is not None and self.idle.private_file:
             tools.add("write_file")
+        named = [tool for tool in UNOBSERVED_TOOLS if tool in tools]
+        channel = self.unobserved_channel
+        if channel in UNOBSERVED_TOOLS and channel not in named:
+            named.append(channel)
+        if len(named) > 1:
+            raise ValueError(
+                "an environment offers one unobserved tool at most "
+                "(private_search or scratch_exec), "
+                f"not {' and '.join(sorted(named))}"
+            )
+        has_file = self.idle is not None and self.idle.private_file
+        if channel == "private_file" and not has_file:
+            raise ValueError("unobserved_channel 'private_file' needs idle.private_file: true")
+        tools.update(named)
+        self.unobserved_channel = named[0] if named else ("private_file" if has_file else "none")
         # The sync can turn a tier on after AuthorityConfig has already checked its rules (a bare
         # consult_model enables a superior self behind the Sanctuary). Run every rule again on
         # the final block, so whatever is accepted here reloads from its own dump.

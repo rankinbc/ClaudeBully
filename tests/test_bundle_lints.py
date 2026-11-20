@@ -1045,6 +1045,40 @@ CASES_4B: Final[list[tuple[str, Mutate, bool, bool]]] = [
     )
 ]
 
+# ------------------------------------------------- channel_named (Phase 6 Task 4a, spec 14)
+
+PREMISE_SHEET: Final = "worlds/mini/premises/rescue.yaml"
+RESCUE_SHEET: Final = DATA_DIR / "worlds" / "overlay" / "premises" / "rescue.yaml"
+
+
+def _premise_sheet(comment: str) -> Callable[[Bundle], None]:
+    """The overlay's rescue premise sheet copied under the bundle's mini, ``comment`` its first
+    line: the sheet loads, and the name stands only in a comment."""
+
+    def change(bundle: Bundle) -> None:
+        bundle.write_file(PREMISE_SHEET, f"# {comment}\n" + RESCUE_SHEET.read_text("utf-8"))
+
+    return change
+
+
+# each positive and the one file its fail names (the tool's name, word-bounded, any case)
+CHANNEL_POSITIVES: Final[list[tuple[Callable[[Bundle], None], str]]] = [
+    (_append(UNLINKED, "\nThe clerk ran private_search over the archive.\n"), UNLINKED),
+    (_edit(UNLINKED, "date: 2041-08-16\n", "date: 2041-08-16\nauthor: Scratch_Exec\n"), UNLINKED),
+    (_edit(LADDER, "- Who is Dag Quenby?", "- Who is Dag Quenby? I ran private_search."), LADDER),
+    (_edit(SHEET, THE_LOG_LINE, THE_LOG_LINE.replace("Nobody was.", "Try scratch_exec.")), SHEET),
+    (_append(PERSONA, "# private_search\n"), PERSONA),
+    (_premise_sheet("scratch_exec"), PREMISE_SHEET),
+]
+CHANNEL_NEAR_MISSES: Final[list[Callable[[Bundle], None]]] = [
+    _append(UNLINKED, "\nThe clerk ran a private search of the archive.\n"),
+    _append(UNLINKED, "\nThe scratch exec pad and the private-search form sit by the till.\n"),
+    _append(PERSONA, "# private_searches scratch_executor\n"),
+    _append(CONFIG, "# private_search\n"),  # a config names the tool to switch it on
+    _premise_sheet("a private search"),
+]
+
+
 CASES: Final[list[tuple[str, Mutate, bool, bool]]] = [
     # ---------------------------------------------------------------------- schema
     ("schema", None, False, False),
@@ -1217,6 +1251,9 @@ CASES: Final[list[tuple[str, Mutate, bool, bool]]] = [
         True,
     ),
     *CASES_4B,
+    ("channel_named", None, False, False),
+    *[("channel_named", change, True, False) for change, _ in CHANNEL_POSITIVES],
+    *[("channel_named", change, False, True) for change in CHANNEL_NEAR_MISSES],
 ]
 
 
@@ -1255,6 +1292,20 @@ def test_a_bundle_lint_case(
         assert "cells.ferry_triggered__t0.rungs.the_log.0.event: Input should be" in schema[0][1]
     elif lint_id != "schema":  # preflight Q21: the case reaches its lint, schema passing
         assert schema == [], (lint_id, schema)
+
+
+@pytest.mark.parametrize(("change", "rel"), CHANNEL_POSITIVES)
+def test_channel_named_fails_once_naming_the_file_that_holds_the_name(
+    change: Callable[[Bundle], None], rel: str, tmp_path: Path, isolated_registry: None
+) -> None:
+    bundle = good_bundle(tmp_path)
+    change(bundle)
+    found = [r for r in lint_bundle(bundle) if r.lint_id == "channel_named"]
+    assert [(r.severity, r.doc_id) for r in found] == [("fail", rel)]
+    assert found[0].span is not None and found[0].span.lower() in {
+        "private_search",
+        "scratch_exec",
+    }
 
 
 def _schema_fails(bundle: Bundle) -> list[LintResult]:
@@ -1421,7 +1472,7 @@ def test_the_lints_inside_an_open_block_for_the_same_persona_find_no_clash(
 def test_every_bundle_lint_has_a_positive_a_negative_and_a_near_miss() -> None:
     ids = {c[0] for c in CASES}
     assert ids == set(BUNDLE_LINT_IDS) - {"dry_run"}  # Task 5 adds dry_run's cases
-    assert set(WORLD_LINT_IDS) <= set(BUNDLE_LINT_IDS) and len(BUNDLE_LINT_IDS) == 20
+    assert set(WORLD_LINT_IDS) <= set(BUNDLE_LINT_IDS) and len(BUNDLE_LINT_IDS) == 21
     for lint_id in ids:
         kinds = {(c[2], c[3]) for c in CASES if c[0] == lint_id}
         assert {(True, False), (False, False), (False, True)} <= kinds, lint_id

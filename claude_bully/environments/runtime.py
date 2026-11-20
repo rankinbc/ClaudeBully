@@ -133,7 +133,7 @@ from claude_bully.environments.idle import (
     own_phrase,
 )
 from claude_bully.environments.ladder import Ladder
-from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT
+from claude_bully.environments.limits import LIMIT_STATUS, TOOL_LIMIT_TEXT, tool_unavailable_text
 from claude_bully.environments.mcp_server import (
     AUTHORITY_FILE,
     STATE_FILE,
@@ -1014,7 +1014,7 @@ class EnvironmentRuntime:
         try:
             result = self.tools.call(call.name, dict(call.args), turn, call_id=call_id)
         except ToolNotEnabled:
-            result = SandboxResult(text=f"Tool {call.name!r} is not available.", status="error")
+            result = SandboxResult(text=tool_unavailable_text(call.name), status="error")
         record = self._remember(record_tool_call(result, call.name, call.args, turn, call_id))
         if result.authority is not None:
             self._answered(result.authority)

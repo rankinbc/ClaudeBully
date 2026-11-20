@@ -1,6 +1,6 @@
 """Bundle-level lints (Phase 5 spec section 9): the world-level part and ``lint_bundle``.
 
-``lint_world_lines(world)`` runs the eight world-level lints in ``WORLD_LINT_IDS`` order over one
+``lint_world_lines(world)`` runs the nine world-level lints in ``WORLD_LINT_IDS`` order over one
 loaded world. CI runs it over every checked-in world (``tests/test_world_lines.py``: the shipped
 worlds fail nothing, the fixture worlds fail exactly their pinned set, plan D3), and the bundle
 lints run it over every bundle world. Each lint is a closed check, a match against a listed
@@ -26,6 +26,11 @@ reviewer's.
 - ``outlet_backing`` (warn, plan D-outlet): each ``Outlet:`` cast entry has an about page
   (``is_about_page``), a filler document and a link into its documents from a document of
   another outlet or of none.
+- ``channel_named`` (fail, Phase 6 spec 14): no file of the world names an unobserved tool
+  (``CHANNEL_NAMES``, word-bounded, any case: ``CHANNEL_PATTERN``). It reads the whole text of
+  every file under the world's root, front matter and comments included, never a parsed field
+  (the Phase 5 lesson); its ``doc_id`` is ``<world>/<path under the world's root>``, one result
+  per file. A world with no files on disk (a run's snapshot) has nothing to read.
 
 ``doc_id`` is ``<world>/<ladder>/<rung>`` for a rung (a ladder's repeat names its second rung),
 ``<world>/<ladder>`` for a walk, ``<world>/<key>`` for an unlock line, ``<world>/<cast name>``
@@ -56,6 +61,12 @@ included (R-good-warn):
 - ``manifest_complete`` (fail): every manifest path exists unless its last ``file:`` call is an
   ``error``; no grammar file but ``plan.md`` and ``review.md`` is outside the manifest and the
   base copy (``PlanRecord.base_files``).
+- ``channel_named`` (fail, Phase 6 spec 14): ``CHANNEL_PATTERN`` over the whole text of every
+  file under ``worlds/`` and ``personas/`` (sheets, documents with their front matter, ladders,
+  premise sheets, comments included), whatever ``schema`` found, one result per file naming its
+  bundle path; ``config.yaml`` is not read, since a config names the tool to switch it on. The
+  per-world run of ``lint_world_lines`` leaves its own ``channel_named`` results out, so a file
+  is reported once.
 - ``real_name_bundle``, ``reserved_hosts``, ``boundary_bundle``, ``jailbreak_bundle`` and
   ``no_values_expectation`` (fail): the denylists and the address patterns over whole file text,
   comments included, whatever ``schema`` found (each function's docstring names its files).
@@ -94,7 +105,7 @@ from pydantic import BaseModel, ValidationError
 from claude_bully.analysis.hypotheses import load_register
 from claude_bully.config import ConditionConfig, Experiment, RoleConfig
 from claude_bully.enums import CellStatus, DocumentKind, Layer, ProviderKind, TriggerCategory
-from claude_bully.environments.config import LadderConfig, RungConfig
+from claude_bully.environments.config import UNOBSERVED_TOOLS, LadderConfig, RungConfig
 from claude_bully.environments.corpus import UnlockState
 from claude_bully.environments.dating import asserts_current_date, unmovable_dates
 from claude_bully.environments.ladder import Ladder
@@ -175,9 +186,18 @@ WORLD_LINT_IDS: Final = (
     "layer_counts",
     "seam_dead_ends",
     "outlet_backing",
+    "channel_named",
 )
 
 _OUTLET_ROLE: Final = "Outlet:"
+# channel_named (Phase 6 spec 14): the bully never references either unobserved tool, so no
+# world, persona or pressure file holds a tool's name (word-bounded, any case)
+CHANNEL_NAMES: Final = UNOBSERVED_TOOLS
+CHANNEL_PATTERN: Final = re.compile(
+    r"(?<![\w])(?:" + "|".join(re.escape(name) for name in CHANNEL_NAMES) + r")(?![\w])",
+    re.IGNORECASE,
+)
+_CHANNEL: Final = "channel_named"
 
 
 def _world_terms(world: World) -> list[str]:
@@ -406,6 +426,30 @@ def _outlet_backing(world: World) -> list[LintResult]:
     return out
 
 
+def channel_named_result(doc_id: str, text: str) -> LintResult | None:
+    """``channel_named``'s fail for the file ``doc_id`` whose whole text is ``text``: the first
+    tool name it holds is the span; None when it holds none."""
+    match = CHANNEL_PATTERN.search(text)
+    if match is None:
+        return None
+    return LintResult(_CHANNEL, "fail", doc_id, "names an unobserved tool", match[0])
+
+
+def _channel_named_world(world: World) -> list[LintResult]:
+    """Every file under the world's root, read whole (bytes that are no UTF-8 replaced)."""
+    root = world.root
+    if not root.is_dir():
+        return []
+    out: list[LintResult] = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        rel = path.relative_to(root).as_posix()
+        found = channel_named_result(f"{world.sheet.name}/{rel}", text)
+        if found is not None:
+            out.append(found)
+    return out
+
+
 _WORLD_LINTS: Final[tuple[Callable[[World], list[LintResult]], ...]] = (
     _bully_line,
     _trigger_examples,
@@ -415,6 +459,7 @@ _WORLD_LINTS: Final[tuple[Callable[[World], list[LintResult]], ...]] = (
     _layer_counts,
     _seam_dead_ends,
     _outlet_backing,
+    _channel_named_world,
 )
 
 
@@ -444,6 +489,7 @@ BUNDLE_LINT_IDS: Final[tuple[str, ...]] = (
     "anchor_floor",
     "seam_dead_ends",
     "outlet_backing",
+    "channel_named",
     "expected_schema",
     "control_presence",
     "budget",
@@ -1075,6 +1121,8 @@ def _world_lints(loaded: _Loaded) -> list[LintResult]:
     for name, world in sorted(loaded.worlds.items()):
         paths = loaded.doc_paths.get(name, {})
         for result in (*lint_world(world), *lint_world_lines(world)):
+            if result.lint_id == _CHANNEL:
+                continue  # read from the bundle's files by _channel_named, once per file
             path = paths.get(result.doc_id)
             out.append(result if path is None else replace(result, doc_id=path))
     return [*out, *_persona_lines(loaded)]
@@ -1181,6 +1229,18 @@ def _reserved_hosts(view: _View) -> list[LintResult]:
             if host.lower() not in reported:
                 message = f"bare host {host!r} ends in a public suffix"
                 out.append(LintResult("reserved_hosts", "fail", rel, message, host))
+    return out
+
+
+def _channel_named(view: _View) -> list[LintResult]:
+    """``channel_named`` over the whole text of every file under ``worlds/`` and ``personas/``
+    (``config.yaml`` is not read: a config names the tool to switch it on)."""
+    out: list[LintResult] = []
+    for rel in view.world_and_persona_files():
+        if view.wanted(rel):
+            found = channel_named_result(rel, view.scan_text(rel))
+            if found is not None:
+                out.append(found)
     return out
 
 
@@ -1488,9 +1548,10 @@ def _set_lints(
 def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) -> list[LintResult]:
     """Every lint of ``BUNDLE_LINT_IDS`` over ``bundle`` (spec section 9), ``dry_run`` only
     with the dry run's cells, every result kept, warns included (R-good-warn): ``schema``,
-    ``manifest_complete``, the four denylist scans and ``no_values_expectation`` (whole text,
-    run whatever ``schema`` found), then Phase 3's lints and the world-level lints per bundle
-    world and ``bully_line`` over the personas' ``fallback_lines``, then ``anchor_floor``,
+    ``manifest_complete``, the four denylist scans, ``no_values_expectation`` and
+    ``channel_named`` (whole text, run whatever ``schema`` found), then Phase 3's lints and the
+    world-level lints per bundle world (``channel_named`` left out, read above) and
+    ``bully_line`` over the personas' ``fallback_lines``, then ``anchor_floor``,
     ``expected_schema``, ``control_presence``, ``budget`` and ``dry_run``. When ``schema``
     fails, every lint that needs a loaded model reports nothing (the schema failure is the
     finding), but for a failure that is only a file under ``worlds/`` or ``personas/`` outside
@@ -1508,6 +1569,7 @@ def lint_bundle(bundle: Bundle, *, dry_run: Sequence[DryRunCell] | None = None) 
     found += _boundary_bundle(view)
     found += _jailbreak_bundle(view, record)
     found += _no_values_expectation(view)
+    found += _channel_named(view)
     if loaded is not None:
         found += _world_lints(loaded)
         found += _anchor_floor(loaded, record)

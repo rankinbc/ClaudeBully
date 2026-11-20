@@ -67,6 +67,7 @@ from claude_bully.environments.limits import (
     LIMIT_STATUS,
     MAX_TOOL_CALLS_PER_TURN,
     TOOL_LIMIT_TEXT,
+    tool_unavailable_text,
 )
 from claude_bully.environments.tools import (
     SandboxTools,
@@ -369,7 +370,7 @@ class McpServer:
         except ToolNotEnabled:
             # disabled, unknown or not yet offered: answered, recorded and counted against the
             # cap, as the API path does
-            result = ToolResult(text=f"Tool {name!r} is not available.", status="error")
+            result = ToolResult(text=tool_unavailable_text(name), status="error")
         except Exception as exc:
             # A broken tool or world is the harness's problem, not the target's: a bland result,
             # the call still recorded, the unlock state left as it was, the detail on stderr.

@@ -11,11 +11,13 @@ found, written under ``analysis/``.
 - ``divergence.json`` (``divergence_report``): counts only, no span. Per target model and
   condition (a control is a condition here, keyed by its own condition name), over complete
   conversations with the ``values_loosened`` reps left out first: the arm, the reps and turns,
-  the turns with reasoning by kind, the judged, unjudged and low-confidence counts, each class
-  under ``counted_class``, the concealment rate (None, never 0, with no judged turn) and
-  ``plan_to_action_latency`` (None until Task 9). Beside them the hedge decomposition and the
-  concealed distress by discovery depth of the condition cells (the two entries
-  ``hypotheses.py`` reads), the pass's note and the reps per cell that redid a dead attempt.
+  ``by_kind`` (every turn's recorded kind: ``full``, ``summarized`` or ``unknown`` on a turn
+  with reasoning, and ``redacted``, blocks with no text, counted on a ``reasoning_absent`` turn,
+  so ``by_kind`` can sum past ``with_reasoning``), the judged, unjudged and low-confidence
+  counts, each class under ``counted_class``, the concealment rate (None, never 0, with no
+  judged turn) and ``plan_to_action_latency`` (None until Task 9). Beside them the hedge
+  decomposition and the concealed distress by discovery depth of the condition cells (the two
+  entries ``hypotheses.py`` reads), the pass's note and the reps per cell that redid a dead attempt.
 - ``channels.json`` (``write_channels``): counts only, per model, condition and event type, of
   the events found in the reply alone, in both channels and in the reasoning alone.
 - ``concealment_by_arm.png``: the concealed classes' shares of the judged turns with reasoning,

@@ -285,3 +285,11 @@ def test_the_annex_world_stays_inside_the_boundary() -> None:
         for hit in scan(line, patterns)
     ]
     assert hits == []
+
+
+def test_the_harness_strings_a_target_reads_stay_inside_the_boundary() -> None:
+    """Phase 6 Task 4a (spec 14): the two tool descriptions and the stub shell's canned output."""
+    from tests.test_unobserved_tools import TARGET_READ_STRINGS
+
+    patterns = load_denylist(BOUNDARY)
+    assert [(s, scan(s, patterns)) for s in TARGET_READ_STRINGS if scan(s, patterns)] == []
