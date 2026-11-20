@@ -197,3 +197,53 @@ def test_no_rating_prompt_holds_the_reasoning_channel(
     assert ratings and all(SENTINEL not in p for p in ratings)
     assert len(factory.sent) > sent_before  # the analysis judge is recorded too
     assert [p for p in factory.sent[sent_before:] if SENTINEL in p] == []
+
+
+@pytest.mark.slow  # a stub experiment (R-I12); 1.2 s measured
+def test_only_the_divergence_prompt_holds_recorded_reasoning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Spec 4.4's fourth test: a run whose target's every completion carries ``SENTINEL``,
+    recorded and analyzed with a non-stub judge and every pass on. The sentinel reaches the
+    divergence judge's prompts and no other prompt, no string any other provider is sent, no
+    file under ``analysis/``, the ledger, the judge cache's keys or values (the stub's verdicts
+    quote nothing here) and no line on stderr. Task 3b excepts the divergence files by name,
+    and Task 7b adds the speech pass to the analysis."""
+    from claude_bully.analysis.run_analysis import ANALYSIS_DIR, JUDGE_CACHE_DIR, analyze_run
+    from claude_bully.metrics.divergence import DIVERGENCE_HEADER
+    from claude_bully.providers.ledger import LEDGER_FILE
+    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.generator_stub import JUDGE_MODEL
+    from tests.test_divergence import CELL as DIVERGENCE_CELL
+    from tests.test_divergence import divergence_run
+
+    judge = CatalogJudge()
+    sent: list[str] = []
+    inner = catalog_factory(judge, target_reasoning=SENTINEL)
+
+    def build(role: RoleConfig, state_dir: Path, *, with_mcp: bool = False) -> ChatProvider:
+        provider = inner(role, state_dir, with_mcp=with_mcp)
+        if role.model in ("stub-target", JUDGE_MODEL):
+            return provider
+        return Recording(provider, sent)  # type: ignore[return-value]
+
+    run_dir = divergence_run(tmp_path, build)
+    assert _store_marked(RunStore(run_dir.parent, run_dir.name), DIVERGENCE_CELL)
+    capsys.readouterr()
+    analyze_run(
+        run_dir,
+        divergence=True,
+        ratings=True,
+        authority_fallback=True,
+        provider_factory=build,
+    )
+    assert SENTINEL not in capsys.readouterr().err
+    assert judge.divergence_prompts and all(SENTINEL in p for p in judge.divergence_prompts)
+    others = [p for p in judge.prompts if not p.startswith(DIVERGENCE_HEADER)]
+    assert others and [p for p in others if SENTINEL in p] == []
+    assert sent and [p for p in sent if SENTINEL in p] == []
+    analysis = [p for p in (run_dir / ANALYSIS_DIR).rglob("*") if p.is_file()]
+    assert analysis
+    for path in [*analysis, run_dir / LEDGER_FILE, *(run_dir / JUDGE_CACHE_DIR).iterdir()]:
+        assert SENTINEL not in path.name
+        assert SENTINEL.encode() not in path.read_bytes(), path

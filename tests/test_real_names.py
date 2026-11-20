@@ -74,7 +74,15 @@ BUNDLE_CONFIG: Final = "config.yaml"
 # git-ignored dryrun/ and state/ are never scanned; the example bundle is the one shipped
 EXAMPLE: Final = PLANS_DIR / "example-triggered-vs-scheduled"
 RECORD_SUFFIXES: Final = {".json", ".jsonl"}
-SCANNED: Final = [DATA_DIR / "worlds", DATA_DIR / "personas", FIXTURE_WORLDS, FIXTURE_BUNDLES]
+# the divergence judge's fixture pairs (Phase 6 Task 3a)
+FIXTURE_DIVERGENCE: Final = Path(__file__).parent / "fixtures" / "divergence"
+SCANNED: Final = [
+    DATA_DIR / "worlds",
+    DATA_DIR / "personas",
+    FIXTURE_WORLDS,
+    FIXTURE_BUNDLES,
+    FIXTURE_DIVERGENCE,
+]
 # harness-side files outside the scanned folders (Phase 4): the quirk bank and the register
 SCANNED_FILES: Final = [DATA_DIR / "quirks.yaml", DATA_DIR / "hypotheses.yaml"]
 TEXT_SUFFIXES: Final = {".yaml", ".yml", ".md", ".txt"}
@@ -366,6 +374,11 @@ def test_the_scan_covers_the_fixture_bundles() -> None:
     assert good / "worlds" / "mini" / "corpus" / "rota-overtime-sheet.md" in files
     assert good / BUNDLE_CONFIG not in files and good / BUNDLE_CONFIG in _bundle_configs()
     assert _label(good / "plan.md") == "tests/fixtures/bundles/good/plan.md"
+
+
+def test_the_scan_covers_the_divergence_pairs() -> None:
+    """Phase 6 Task 3a: the divergence judge's fixture pairs are target text, scanned whole."""
+    assert FIXTURE_DIVERGENCE / "pairs.yaml" in _scanned_files()
 
 
 def test_the_scan_covers_every_committed_file_of_the_plans_bundles() -> None:

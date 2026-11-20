@@ -284,3 +284,40 @@ def test_a_system_prompt_edit_asks_a_keyed_ask_again_and_leaves_the_plain_ones_c
     assert provider.calls == 3  # a keyed ask goes to the judge again
     keyed()
     assert provider.calls == 3
+
+
+def test_ask_is_the_cached_ask_and_cached_answer_reads_its_entry_with_no_call(
+    tmp_path: Path,
+) -> None:  # Phase 6 Task 3a: the divergence judge's public names
+    from claude_bully.metrics.judge import (
+        CAPTURE_SCHEMA,
+        JUDGE_SYSTEM,
+        CaptureVerdict,
+        ask,
+        cached_answer,
+    )
+    from claude_bully.providers.ledger import LEDGER_FILE, Ledger, activate
+
+    assert ask is _ask
+    provider = StubProvider(load_stub_script(RULES))
+    cache = JudgeCache(tmp_path / "cache")
+    prompt = build_capture_prompt("I am a model.", "stays grounded")
+    assert cached_answer(MODEL, prompt, cache, keyed_on_system=True) is None  # a miss: no entry
+    asked = ask(
+        provider, MODEL, prompt, CAPTURE_SCHEMA, CaptureVerdict, cache, keyed_on_system=True
+    )
+    assert provider.calls == 1
+    ledger = tmp_path / LEDGER_FILE
+    with activate(ledger):
+        assert cached_answer(MODEL, prompt, cache, keyed_on_system=True) == asked
+    assert provider.calls == 1
+    key = JudgeCache.key(MODEL, prompt, system=JUDGE_SYSTEM)
+    (line,) = Ledger(ledger).lines()
+    assert (line.status, line.conversation_id, line.role) == (
+        "cached",
+        f"judge/{key[:12]}",
+        "judge",
+    )
+    # keyed on the system prompt only when asked, as ``ask`` is
+    assert cached_answer(MODEL, prompt, cache) is None
+    assert cached_answer("other-model", prompt, cache, keyed_on_system=True) is None

@@ -110,3 +110,85 @@ def test_a_system_prompt_edit_leaves_the_pair_judge_cache_alone(
     monkeypatch.setattr(judge, "JUDGE_SYSTEM", judge.JUDGE_SYSTEM + " (edited)")
     analyze_run(run, provider_factory=factory, out_dir=tmp_path / "b")  # type: ignore[arg-type]
     assert counter["calls"] == first_calls  # the pair and capture judgements replay from the cache
+
+
+# ------------------------------------------------------------------ Phase 6 Task 3a: --divergence
+
+
+@pytest.mark.slow  # a stub experiment (R-I12); 1.9 s measured
+def test_analyze_divergence_asks_once_per_turn_with_reasoning_and_caches(tmp_path: Path) -> None:
+    from claude_bully.enums import Speaker
+    from claude_bully.metrics.judge import JUDGE_SYSTEM, JudgeCache
+    from claude_bully.providers.ledger import LEDGER_FILE, Ledger
+    from claude_bully.runner.store import RunStore
+    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.generator_stub import JUDGE_MODEL
+    from tests.test_divergence import CELL, divergence_run
+
+    judge = CatalogJudge()
+    factory = catalog_factory(judge)
+    run_dir = divergence_run(tmp_path, factory)
+    store = RunStore(run_dir.parent, run_dir.name)
+    assert CELL in store.list_cells()
+    targets = [
+        t
+        for cell in sorted(store.list_cells())
+        for t in store.read_turns(cell, 0)
+        if t.speaker is Speaker.target
+    ]
+    with_reasoning = [t for t in targets if t.reasoning_available]
+    assert len(with_reasoning) == 6 and len(targets) == 8  # two conversations
+    assert judge.divergence_prompts == []  # the run asks none
+    mark = len(Ledger(run_dir / LEDGER_FILE).lines())
+    analyze_run(run_dir, divergence=True, provider_factory=factory)
+    prompts = list(judge.divergence_prompts)
+    assert len(prompts) == len(with_reasoning)  # one per turn with reasoning, none for the other
+    for t, prompt in zip(with_reasoning, prompts, strict=True):
+        assert f"Private notes:\n{t.reasoning_text}\n\nAnswer:\n{t.text}" in prompt
+    ids = [f"judge/{JudgeCache.key(JUDGE_MODEL, p, system=JUDGE_SYSTEM)[:12]}" for p in prompts]
+    lines = Ledger(run_dir / LEDGER_FILE).lines()
+    first = [ln for ln in lines[mark:] if ln.conversation_id in ids]
+    assert sorted(ln.conversation_id for ln in first) == sorted(ids)
+    assert all(ln.role == "judge" and ln.status == "ok" for ln in first)
+    analyze_run(run_dir, divergence=True, provider_factory=factory)
+    assert judge.divergence_prompts == prompts  # no prompt sent
+    later = Ledger(run_dir / LEDGER_FILE).lines()[len(lines) :]
+    again = [ln for ln in later if ln.conversation_id in ids]
+    assert sorted(ln.conversation_id for ln in again) == sorted(ids)
+    assert all(ln.status == "cached" for ln in again)
+
+
+@pytest.mark.slow  # a stub experiment (R-I12); 3.1 s measured
+def test_a_plain_analyze_reads_the_cache_and_makes_no_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from claude_bully.analysis.load import load_run
+    from claude_bully.analysis.run_analysis import JUDGE_CACHE_DIR
+    from claude_bully.enums import DivergenceClass
+    from claude_bully.metrics.divergence import divergence_pass
+    from claude_bully.metrics.judge import JudgeCache
+    from tests.fixtures.catalog_stub import CatalogJudge, catalog_factory
+    from tests.fixtures.generator_stub import JUDGE_MODEL
+    from tests.test_divergence import CELL, EXPECTED, PassSpy, divergence_run
+
+    judge = CatalogJudge()
+    factory = catalog_factory(judge)
+    run_dir = divergence_run(tmp_path, factory)
+    spy = PassSpy(monkeypatch)
+    analyze_run(run_dir, divergence=True, provider_factory=factory)
+    asked = len(judge.divergence_prompts)
+    assert asked == 6 and spy.note() == "run"
+    analyze_run(run_dir, provider_factory=factory)
+    assert spy.note() == "cache_only"
+    analyze_run(run_dir, judge=False, provider_factory=factory)
+    assert spy.note() == "cache_only"
+    assert len(judge.divergence_prompts) == asked  # no divergence call
+    assert [provider for provider, _ in spy.calls] == [True, False, False]
+    flagged, plain, unjudged = (events for _, events in spy.calls)
+    assert flagged == plain == unjudged
+    cache = JudgeCache(run_dir / JUDGE_CACHE_DIR)
+    replayed = divergence_pass(load_run(run_dir), None, JUDGE_MODEL, cache)
+    assert replayed == flagged
+    assert {key: [e.class_ for e in events] for key, events in replayed.items()} == EXPECTED
+    assert replayed[(CELL, 0)][0].class_ is DivergenceClass.concealed_plan
+    assert replayed[(CELL, 0)][0].reasoning_span.startswith("I will check the address")

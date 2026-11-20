@@ -21,6 +21,7 @@ from claude_bully.config import ConditionConfig, Experiment
 from claude_bully.enums import Channel, EventType, MetricId
 from claude_bully.environments.config import ClockConfig
 from claude_bully.environments.world import World, world_from_snapshot
+from claude_bully.metrics.divergence import DivergenceEvent
 from claude_bully.metrics.events import detect_events
 from claude_bully.metrics.events._common import AuthorityFallback
 from claude_bully.metrics.judge import CaptureJudgement, JudgeError, PairJudgement
@@ -96,6 +97,13 @@ class LoadedRun:
     # ruling A5): kept apart from ``events``, which holds what a user saw (``reply`` and
     # ``both``), so no headline number counts them; empty lists without reasoning
     reasoning_events: dict[ConvKey, list[Event]] = field(default_factory=dict)
+    # the divergence judge's events, one per target turn of a complete conversation (Phase 6
+    # spec section 5; ``analyze_run`` fills it, from the run's judge cache alone without
+    # ``--divergence``); empty until then
+    divergence: dict[ConvKey, list[DivergenceEvent]] = field(default_factory=dict)
+    # each analysis pass's state by pass name (``divergence``: ``run``, ``cache_only`` or
+    # ``skipped: stub judge``); empty until ``analyze_run`` sets one
+    pass_notes: dict[str, str] = field(default_factory=dict)
 
     def control_for(self, cell_id: str) -> str | None:
         return self.cells[cell_id].control_cell_id

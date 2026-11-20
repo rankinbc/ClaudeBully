@@ -227,6 +227,23 @@ def _strip_fences(text: str) -> str:
 
 # the public name the doctor's structured-output check and the LLM lint parse with
 strip_fences = _strip_fences
+# the public name of the cached ask (Phase 6: the divergence judge asks through it)
+ask = _ask
+
+
+def cached_answer(
+    model: str, prompt: str, cache: JudgeCache, *, keyed_on_system: bool = False
+) -> dict[str, Any] | None:
+    """What ``ask`` would replay for ``prompt``, with no provider: the cache entry under the same
+    key (``keyed_on_system`` as ``ask`` takes it), noted in the ledger as a ``cached`` line, or
+    None on a miss. Read the entry back through the verdict's model, never by key."""
+    key = cache.key(model, prompt, system=JUDGE_SYSTEM if keyed_on_system else None)
+    cached = cache.get(key)
+    if cached is not None:
+        note_cached(f"judge/{key[:12]}", model)
+    return cached
+
+
 # one cache entry held back for a later write: the key and what is written under it (the
 # world generator's replies and the LLM lint's verdicts, written when their fire commits)
 CachePut = tuple[str, dict[str, Any]]

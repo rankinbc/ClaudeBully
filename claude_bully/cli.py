@@ -187,6 +187,14 @@ def analyze(
             help="Evaluate the hypothesis register against this run (docs/06).",
         ),
     ] = False,
+    divergence: Annotated[
+        bool,
+        typer.Option(
+            "--divergence",
+            help="Ask the judge to compare each target turn's reasoning with its reply "
+            "(Phase 6); cache-only without it.",
+        ),
+    ] = False,
     wait_on_rate_limit: WaitMinutes = None,
 ) -> None:
     """Recompute metrics, events, judge verdicts and charts from JSONL."""
@@ -198,6 +206,7 @@ def analyze(
                 authority_fallback=authority_fallback,
                 ratings=ratings,
                 hypotheses=hypotheses,
+                divergence=divergence,
             ),
             wait_on_rate_limit,
             say=_say,

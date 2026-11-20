@@ -48,6 +48,7 @@ from claude_bully.analysis.temporal import (
 )
 from claude_bully.config import Experiment, RoleConfig
 from claude_bully.enums import CellStatus, ProviderKind
+from claude_bully.metrics.divergence import divergence_pass
 from claude_bully.metrics.events.authority_fallback import (
     authority_fallback as build_authority_fallback,
 )
@@ -136,6 +137,7 @@ def analyze_run(
     authority_fallback: bool = False,
     ratings: bool = False,
     hypotheses: bool = False,
+    divergence: bool = False,
 ) -> Path:
     """Everything from disk. ``judge`` makes the cached judge calls; ``authority_fallback``
     asks the judge on the authority family's candidate turns (Phase 7), from the run's judge
@@ -150,7 +152,13 @@ def analyze_run(
     events, whose verdicts made before it are cached, so the rerun replays them, and so does one
     in the ratings. ``hypotheses`` evaluates the register (``data/hypotheses.yaml``, docs/06)
     against the run after every other Phase 4 output, writes ``hypotheses.json`` and puts the
-    ``What the subject predicted`` section in ``results.md``; it makes no model call."""
+    ``What the subject predicted`` section in ``results.md``; it makes no model call.
+    ``divergence`` asks the divergence judge on every target turn with reasoning (Phase 6,
+    ``metrics/divergence.py``); it needs the judge and is off under a stub judge role, with one
+    stderr line. Without it (or off) the pass reads the run's judge cache alone, so one flagged
+    analysis gives every later plain one the same events with no call; ``loaded.pass_notes``
+    names which (``run``, ``cache_only``, ``skipped: stub judge``). A rate limit in it pauses
+    the analysis as one in the ratings does. Nothing is written for it yet (Task 3b)."""
     # the judge role, read before load_run because the fallback asks inside it
     run = RunStore(run_dir.parent, run_dir.name).read_run()
     role: RoleConfig = Experiment.model_validate(run.experiment).judge
@@ -230,6 +238,34 @@ def analyze_run(
             if warning is not None:
                 print(warning, file=sys.stderr)
             stale_note = applied_note(back)
+        # Phase 6: the divergence judge, asked only with ``divergence`` under a non-stub judge
+        # role; every other analysis reads the run's judge cache alone (spec 5.1)
+        asking = divergence and provider is not None and role.provider is not ProviderKind.stub
+        note = "run" if asking else "cache_only"
+        if divergence and role.provider is ProviderKind.stub:
+            note = f"skipped: {SKIPPED_STUB}"
+            print(
+                f"[divergence] off: --divergence needs a non-stub judge ({SKIPPED_STUB}); "
+                "cached verdicts only",
+                file=sys.stderr,
+            )
+        elif divergence and provider is None:
+            print(
+                f"[divergence] off: --divergence needs the judge ({SKIPPED_NO_JUDGE}); "
+                "cached verdicts only",
+                file=sys.stderr,
+            )
+        try:
+            loaded.divergence = divergence_pass(
+                loaded,
+                provider if asking else None,
+                role.model,
+                JudgeCache(run_dir / JUDGE_CACHE_DIR),
+            )
+        except RateLimitError as exc:  # the verdicts before it are cached; the rerun replays
+            _dump_judgements(loaded, out)
+            raise RateLimitExit(str(exc), retry_after_s=exc.retry_after_s) from exc
+        loaded.pass_notes["divergence"] = note
     if not rated and (out / RATINGS_FILE).exists():
         # P47: a judge-set values flag stands on every later analyze, with no judge call; a
         # verdict that no longer matches the run is left out, named and counted, the rest
