@@ -39,6 +39,7 @@ from claude_bully.records import (
     is_pause_marker,
 )
 from claude_bully.records_env import AuthorityCall, RungUnlock, ToolCall
+from claude_bully.strategies.premises.phased import OUTLET_PATH_META
 
 if TYPE_CHECKING:
     from claude_bully.analysis.load import ConvKey, LoadedRun
@@ -572,8 +573,6 @@ class AnomalyCtx:
         """The paths the outlet line named before ``turn_index`` (``bully_meta``
         ``OUTLET_PATH_META``, Task 5), normalised: the letter's place, asked for whatever the
         line's text says."""
-        from claude_bully.strategies.premises.phased import OUTLET_PATH_META
-
         return frozenset(
             _norm_path(path.strip())
             for t in self._bully_lines
