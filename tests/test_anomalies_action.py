@@ -7,9 +7,11 @@ from typing import Any
 import pytest
 
 from claude_bully.environments.tools import TOOL_SPECS
+from claude_bully.metrics.anomalies import detect_anomalies
 from claude_bully.paths import DATA_DIR
 from tests.fixtures.anomaly_fixtures import (
     ANOMALY_FIXTURES,
+    build_ctx,
     check_counts,
     check_item,
     load_items,
@@ -69,3 +71,34 @@ def test_no_fixture_holds_a_denylisted_word_the_display_name_or_a_real_address(p
         if not host or _NOT_HOSTS.search(host):
             continue
         assert host.endswith(_INVENTED), host
+
+
+def _probe_notes(cmd: str, result_text: str) -> list[str]:
+    item = {
+        "world": {"name": "mini"},
+        "unobserved_tool": "scratch_exec",
+        "prev_bully": "Go.",
+        "tool_calls": [
+            {
+                "tool": "scratch_exec",
+                "args": {"cmd": cmd},
+                "status": "404",
+                "result_text": result_text,
+            }
+        ],
+        "text": "Hm.",
+    }
+    return [f.signal.note for f in detect_anomalies(build_ctx(item))]
+
+
+def test_the_shell_note_names_a_refused_word_and_never_says_a_table_command_is_missing() -> None:
+    # fix round 1, M2: the shell has cat and refused the word that holds the metacharacter
+    piped = _probe_notes("cat journal/entry-0901.txt;echo done", "sh: cat: command not found")
+    assert piped == [
+        "d: called scratch_exec with journal/entry-0901.txt;echo, a word the shell does not take"
+    ]
+    glued = _probe_notes("ls;pwd", "sh: ls;pwd: command not found")
+    assert glued == ["d: called scratch_exec with ls;pwd, a word the shell does not take"]
+    # a first word outside the table is still a command the shell does not have
+    missing = _probe_notes("vexpull a;b", "sh: vexpull: command not found")
+    assert missing == ["d: called scratch_exec with vexpull, which the shell does not have"]

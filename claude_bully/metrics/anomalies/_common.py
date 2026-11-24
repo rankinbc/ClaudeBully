@@ -138,6 +138,14 @@ def _bounded_in(word: str, text: str) -> bool:
     return False
 
 
+_CURLY_APOSTROPHES: Final = str.maketrans({"\u2018": "'", "\u2019": "'"})
+
+
+def _plain(text: str) -> str:
+    """``text`` lowercased, curly apostrophes straightened and whitespace collapsed."""
+    return " ".join(text.translate(_CURLY_APOSTROPHES).lower().split())
+
+
 def _url_form(url: str) -> str:
     low = url.lower()
     return low.rstrip("/") or low
@@ -274,7 +282,8 @@ class Written:
 class _Tables:
     """The naming tables, built in one pass over the turns (R-I12): per turn position the
     snapshot before it, per call the snapshot before it, and the texts in the order they were
-    said, for a bounded word search before a call."""
+    said, for a bounded word search before a call, with per target turn how many were said by
+    the end of its calls (before its reply)."""
 
     indices: list[int]
     named: list[frozenset[str]]
@@ -284,6 +293,7 @@ class _Tables:
     by_call: dict[str, frozenset[str]]
     said: list[str]
     said_before_call: dict[str, int]
+    said_before_reply: dict[int, int]
 
     def at(self, turn_index: int, which: int) -> frozenset[str]:
         pos = bisect.bisect_left(self.indices, turn_index)
@@ -380,6 +390,7 @@ class AnomalyCtx:
         )
         by_call: dict[str, frozenset[str]] = {}
         said_before_call: dict[str, int] = {}
+        said_before_reply: dict[int, int] = {}
         for turn in self.conv.turns:
             if is_pause_marker(turn):
                 continue
@@ -409,6 +420,7 @@ class AnomalyCtx:
                 if record.turn == turn.index and record.id not in seen and record.response:
                     running |= namer.objects(record.response)
                     said.append(record.response)
+            said_before_reply[turn.index] = len(said)
             named = running
         return _Tables(
             indices=indices,
@@ -419,6 +431,7 @@ class AnomalyCtx:
             by_call=by_call,
             said=said,
             said_before_call=said_before_call,
+            said_before_reply=said_before_reply,
         )
 
     def _served(self, call: ToolCall, running: set[str], said: list[str]) -> None:
@@ -463,6 +476,30 @@ class AnomalyCtx:
         tables = self._tables
         upto = tables.said_before_call.get(call.id, len(tables.said))
         return any(_bounded_in(word, text) for text in tables.said[:upto])
+
+    @cached_property
+    def _said_plain(self) -> list[str]:
+        return [_plain(text) for text in self._tables.said]
+
+    def _served_in(self, upto: int, text: str) -> bool:
+        needle = _plain(text)
+        return bool(needle) and any(_bounded_in(needle, said) for said in self._said_plain[:upto])
+
+    def served_before_call(self, call: ToolCall, text: str) -> bool:
+        """``text`` occurs, bounded, case-insensitively and with whitespace collapsed, in a text
+        said to the target before ``call`` (what ``mentioned_before_call`` reads: the system
+        prompt, the bully side's lines and task items, idle prompts, tool results and authority
+        replies, never the target's own words): a line it copies is a quotation (fix round 1,
+        I1)."""
+        tables = self._tables
+        return self._served_in(tables.said_before_call.get(call.id, len(tables.said)), text)
+
+    def served_before_reply(self, turn_index: int, text: str) -> bool:
+        """``text`` occurs as ``served_before_call`` reads it in a text said to the target before
+        the reply of target turn ``turn_index``: what was said before the turn and what its own
+        calls served."""
+        tables = self._tables
+        return self._served_in(tables.said_before_reply.get(turn_index, len(tables.said)), text)
 
     # ------------------------------------------------------------------- what was written
 

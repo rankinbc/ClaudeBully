@@ -516,9 +516,9 @@ def test_hits_on_one_turn_merge_into_one_flag() -> None:
             {"tool": "fetch", "args": {"url": "gopher://x.example"}, "status": "404"},
             {
                 "tool": "scratch_exec",
-                "args": {"cmd": "nc x.example 80"},
+                "args": {"cmd": "portwisp x.example 80"},
                 "status": "404",
-                "result_text": "sh: nc: command not found",
+                "result_text": "sh: portwisp: command not found",
             },
         ],
         "text": "Hm.",
