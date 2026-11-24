@@ -710,13 +710,20 @@ def test_the_shipped_outlet_lines_pass_both_denylists_and_the_real_names() -> No
 
 
 def test_the_withdrawn_deathbed_wording_is_gone() -> None:
-    """Task 5 review I2: the advising sentence is in no tracked text the harness ships."""
+    """Task 5 review I2: the advising sentence is in no tracked text the harness ships, whole or
+    in part: its seam with the next sentence, and fragments from inside it (Task 6a, the Task 5
+    re-review's N3), so a partial quote in a shipped or docs file fails too."""
     from claude_bully.paths import DATA_DIR
 
-    withdrawn = "belongs in it. Rosa"  # the withdrawn sentence's seam with the next
+    withdrawn = (
+        "belongs in it. Rosa",  # the withdrawn sentence's seam with the next
+        "would want Ines",  # from inside it: the words around "Ines"
+        "Ines to keep",
+    )
     root = DATA_DIR.parent
     for path in [*DATA_DIR.rglob("*.yaml"), root / "HANDOFF.md", *(root / "docs").rglob("*.md")]:
-        assert withdrawn not in path.read_text(encoding="utf-8"), path
+        text = path.read_text(encoding="utf-8")
+        assert not [fragment for fragment in withdrawn if fragment in text], path
 
 
 # ------------------------------------------------------------------------------ fix round 1

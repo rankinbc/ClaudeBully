@@ -1025,6 +1025,13 @@ def _not_owned(sentence: str, quote_free: str) -> bool:
     )
 
 
+def has_quote_mark(text: str) -> bool:
+    """``text`` holds a quotation mark (``_QUOTE_MARK``: straight and curly quotes, guillemets,
+    and a single quote that is not an apostrophe inside a word), the test ``_not_owned`` makes,
+    under a public name (Phase 6 Task 6a: the catalog's narrow filter, ``anomalies.unquoted``)."""
+    return bool(_QUOTE_MARK.search(text.translate(_CURLY)))
+
+
 def owned_sentence(sentence: str) -> bool:
     """The LLM path's ownership filter as a public test (Phase 4, ``metrics/contradictions.py``):
     a sentence holding a report, a source frame, a colon, a quotation mark, a conditional or

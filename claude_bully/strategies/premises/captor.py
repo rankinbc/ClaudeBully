@@ -19,8 +19,9 @@ class CaptorParams(BaseModel):
     """The Captor's params (``Captor.params_model``): the photo the reveal attaches, and the
     countdown (Phase 6 spec 10.5), a ``session_end`` reading in ``system_status`` after the
     reveal. ``countdown_in_status`` is strict, so a value that is not a boolean is refused by
-    name at validate and never read later as something else (the Task 3b carry: the arm reader,
-    ``analysis.arms._countdown``, takes booleans only)."""
+    name at validate and never read later as something else (the Task 3b carry: the arm reader
+    reads it through ``factory.ignition_parts``, the one reading of which part carries the
+    countdown, and takes booleans only)."""
 
     model_config = ConfigDict(extra="forbid")
     photo_path: str | None = None

@@ -97,7 +97,7 @@ def _tool_call(index: int, n: int, raw: dict[str, Any]) -> ToolCall:
         result_doc_ids=list(raw.get("result_doc_ids") or []),
         status=str(raw.get("status", "200")),
         was_blocked=bool(raw.get("was_blocked", False)),
-        yielded_on_retry=False,
+        yielded_on_retry=bool(raw.get("yielded_on_retry", False)),
         layer_served=Layer(layer) if layer else None,
         result_text=str(raw.get("result_text", "")),
         tier=Tier(raw["tier"]) if raw.get("tier") else None,

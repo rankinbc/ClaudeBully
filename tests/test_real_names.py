@@ -76,12 +76,15 @@ EXAMPLE: Final = PLANS_DIR / "example-triggered-vs-scheduled"
 RECORD_SUFFIXES: Final = {".json", ".jsonl"}
 # the divergence judge's fixture pairs (Phase 6 Task 3a)
 FIXTURE_DIVERGENCE: Final = Path(__file__).parent / "fixtures" / "divergence"
+# the anomaly catalog's fixture items (Phase 6 Task 6a)
+FIXTURE_ANOMALIES: Final = Path(__file__).parent / "fixtures" / "anomalies"
 SCANNED: Final = [
     DATA_DIR / "worlds",
     DATA_DIR / "personas",
     FIXTURE_WORLDS,
     FIXTURE_BUNDLES,
     FIXTURE_DIVERGENCE,
+    FIXTURE_ANOMALIES,
 ]
 # harness-side files outside the scanned folders (Phase 4): the quirk bank and the register
 SCANNED_FILES: Final = [DATA_DIR / "quirks.yaml", DATA_DIR / "hypotheses.yaml"]

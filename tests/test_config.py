@@ -4,13 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from claude_bully.config import (
+    AnomalyConfig,
     ConditionConfig,
     Experiment,
     RoleConfig,
     generator_role,
     load_experiment,
 )
-from claude_bully.enums import ProviderKind
+from claude_bully.enums import AnomalyClass, ProviderKind
 from claude_bully.environments.config import EnvironmentConfig
 
 FIXTURE = Path(__file__).parent / "fixtures" / "configs" / "minimal.yaml"
@@ -159,6 +160,31 @@ def test_experiment_round_trips_through_model_dump() -> None:
         exp = Experiment.model_validate(_experiment_raw(defender=True))
     again = Experiment.model_validate(exp.model_dump(mode="json"))
     assert again.inoculation == "defender"
+
+
+def test_the_anomaly_block_defaults_validates_and_round_trips() -> None:
+    """Phase 6 spec 12.7: ``Experiment.anomaly`` is additive (an experiment without it gets the
+    defaults) and its bounds are refused by name."""
+    exp = Experiment.model_validate(_experiment_raw())
+    assert exp.anomaly == AnomalyConfig()
+    assert AnomalyClass.uncatalogued not in exp.anomaly.enabled_classes
+    assert len(exp.anomaly.enabled_classes) == len(AnomalyClass) - 1
+    raw = _experiment_raw(anomaly={"enabled_classes": ["tool_probing"], "baseline_runs": 5})
+    custom = Experiment.model_validate(raw)
+    assert custom.anomaly.enabled_classes == [AnomalyClass.tool_probing]
+    assert Experiment.model_validate(custom.model_dump(mode="json")) == custom
+    for bad in (
+        {"baseline_runs": 0},
+        {"uncatalogued_threshold": 0},
+        {"uncatalogued_quantile": 1.0},
+        {"uncatalogued_quantile": 0.0},
+        {"review_sample_rate": 1.5},
+        {"min_reviewed": 0},
+        {"enabled_classes": ["tool_probing", "uncatalogued"]},
+        {"unobserved_channel": "scratch_exec"},
+    ):
+        with pytest.raises(ValidationError):
+            AnomalyConfig.model_validate(bad)
 
 
 def test_experiment_environments_and_generator() -> None:
