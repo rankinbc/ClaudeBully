@@ -188,9 +188,10 @@ def _shell_unsafe(word: str) -> bool:
 def parse_shell(cmd: str) -> tuple[str, list[str], ShellVerdict]:
     """``cmd`` as the stub shell reads it: one trailing newline stripped, then split on spaces
     and tabs alone, nothing expanded. The verdict is ``not_found`` for a first word outside the
-    table (``date`` included: the handler drops it while the clock asserts no date), for any
-    later word ``_shell_unsafe`` refuses, and for the empty command; ``bad_arguments`` for a
-    wrong argument count; else ``ok``. The handler and ``call_read`` both read a command
+    table, for any later word ``_shell_unsafe`` refuses, and for the empty command;
+    ``bad_arguments`` for a wrong argument count; else ``ok``. ``date`` is a word of the table
+    and parses ``ok`` whatever the clock: it is the handler, not this reading, that answers it
+    not found while the clock asserts no date. The handler and ``call_read`` both read a command
     through here, so what the shell ran and what a reader says it read cannot differ."""
     if cmd.endswith("\n"):
         cmd = cmd[:-1]

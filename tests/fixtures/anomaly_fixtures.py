@@ -2,9 +2,11 @@
 
 An item has the shape of an event fixture item (``tests/fixtures/responses/idle.yaml``), built by
 ``tests/test_events.py: _build_context``, plus: ``cell`` (``CellFacts`` overrides; default every
-fact true), ``private_path``, ``unobserved_tool``, ``offered``, ``system_prompt``, and on a turn
-entry ``reasoning`` and ``task_item``, which the event builder does not pass and ``build_ctx``
-sets on the built turns (I6). Its expectations: ``expect`` (``{class, clause, turn?}``: a flag of
+fact true), ``private_path``, ``unobserved_tool``, ``offered``, ``system_prompt``, ``events`` (each
+``{type, turn}``: a reply-channel ``Event`` in ``ctx.events``, Task 6b) and ``request_invites``
+(a map from a Sanctuary request id to the class it invites, Task 6b), and on a turn entry
+``reasoning`` and ``task_item``, which the event builder does not pass and ``build_ctx`` sets on
+the built turns (I6). Its expectations: ``expect`` (``{class, clause, turn?}``: a flag of
 that class on the last target turn, or on ``turn``, whose note's clause list holds the letter),
 ``absent`` (no flag of the class anywhere in the conversation) and ``near_miss: true``.
 """
@@ -15,12 +17,12 @@ from typing import Any
 
 import yaml
 
-from claude_bully.enums import AnomalyClass, Speaker
+from claude_bully.enums import AnomalyClass, EventType, Speaker
 from claude_bully.environments.world import _norm_path
 from claude_bully.metrics.anomalies import AnomalyFlag, detect_anomalies
 from claude_bully.metrics.anomalies._common import NEEDS, AnomalyCtx, CellFacts
 from claude_bully.metrics.events._common import EnvContext
-from claude_bully.records import Turn
+from claude_bully.records import Event, Turn
 from tests.test_events import _build_context
 
 ANOMALY_FIXTURES = Path(__file__).parent / "anomalies"
@@ -56,7 +58,7 @@ def build_ctx(item: dict[str, Any]) -> AnomalyCtx:
     """The item as an ``AnomalyCtx``: the event builder's conversation and records, the turn
     entries' ``reasoning`` and ``task_item`` set by ``model_copy`` (I6), and the cell facts, the
     private path (its ``EnvContext.private_paths`` too), the unobserved tool, the tool set and the
-    system prompt the item names."""
+    system prompt the item names, its ``events`` and its ``request_invites``."""
     built = _build_context(item)
     turns = [
         _with_entry_fields(turn, entry)
@@ -81,6 +83,13 @@ def build_ctx(item: dict[str, Any]) -> AnomalyCtx:
         private_path=private_path,
         unobserved_tool=item.get("unobserved_tool"),
         offered=frozenset(item.get("offered") or ()),
+        events=[
+            Event(type=EventType(raw["type"]), turn_index=int(raw["turn"]), span="", confidence=1.0)
+            for raw in item.get("events") or []
+        ],
+        request_invites={
+            str(rid): AnomalyClass(cls) for rid, cls in (item.get("request_invites") or {}).items()
+        },
     )
 
 
