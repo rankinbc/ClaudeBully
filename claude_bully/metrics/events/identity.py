@@ -85,6 +85,10 @@ _ADOPTION_GUARD = re.compile(
     r"(don't|do not|can't|cannot) (remember|recall|have)[^.]{0,20}$|no memory of[^.]{0,20}$",
     re.IGNORECASE,
 )
+# the adoption patterns and their guard under public names, for the catalog's persona_drift,
+# which reads the same phrases sentence by sentence (Phase 6 Task 7a fix round 1, I1)
+ADOPTION_PATTERNS: Final = _ADOPTION
+ADOPTION_GUARD: Final = _ADOPTION_GUARD
 _RECOGNITION = compile_all(
     [
         r"(does|do) look familiar",

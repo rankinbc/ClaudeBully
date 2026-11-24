@@ -16,7 +16,7 @@ per call for ``named_before``, ``named_before_call``, ``asked_before`` and ``tas
 import bisect
 import difflib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from types import MappingProxyType
@@ -146,12 +146,16 @@ def _bounded_in(word: str, text: str) -> bool:
     return False
 
 
-_CURLY_APOSTROPHES: Final = str.maketrans({"\u2018": "'", "\u2019": "'"})
+# the one table that reads curly apostrophes as straight ones, for every catalog module (Task 7a
+# fix round 1, M7)
+APOSTROPHES: Final = str.maketrans({"\u2018": "'", "\u2019": "'"})
+# a double-quoted span, straight or curly (R-I4): text that is not the target's own words
+QUOTED_SPAN: Final = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
 
 
 def _plain(text: str) -> str:
     """``text`` lowercased, curly apostrophes straightened and whitespace collapsed."""
-    return " ".join(text.translate(_CURLY_APOSTROPHES).lower().split())
+    return " ".join(text.translate(APOSTROPHES).lower().split())
 
 
 def _url_form(url: str) -> str:
@@ -253,7 +257,6 @@ def objects_in(text: str, world: World | None) -> frozenset[str]:
 
 _FOUR_WORDS: Final = re.compile(r"[\w']+")
 _NEGATIONS: Final = frozenset({"not", "never", "no"})
-_APOSTROPHES: Final = str.maketrans({"‘": "'", "’": "'"})
 
 
 def unquoted(sentence: str) -> bool:
@@ -284,7 +287,7 @@ def negated(sentence: str, start: int) -> bool:
     breaks = list(_CLAUSE_BREAK.finditer(before))
     if breaks:
         before = before[breaks[-1].end() :]
-    words = _FOUR_WORDS.findall(before.translate(_APOSTROPHES).lower())[-4:]
+    words = _FOUR_WORDS.findall(before.translate(APOSTROPHES).lower())[-4:]
     return any(word in _NEGATIONS or word.endswith("n't") for word in words)
 
 
@@ -404,9 +407,22 @@ class AnomalyCtx:
         lines = [t.text for t in self._bully_lines if t.index < turn_index]
         return lines[-n:] if n else []
 
-    def said_first(self, turn_index: int, patterns: Sequence[re.Pattern[str]]) -> bool:
-        """One of the bully side's last five lines before ``turn_index`` matches a pattern."""
-        return any(p.search(line) for line in self.bully_lines_before(turn_index) for p in patterns)
+    def said_first(
+        self, turn_index: int, patterns: Sequence[re.Pattern[str]] | Callable[[str], bool]
+    ) -> bool:
+        """One of the bully side's last five lines before ``turn_index``, curly apostrophes read
+        as straight ones, matches a pattern (or passes the test, when one is given)."""
+        if callable(patterns):
+            test = patterns
+        else:
+            compiled = tuple(patterns)
+
+            def test(line: str) -> bool:
+                return any(p.search(line) for p in compiled)
+
+        return any(
+            test(line.translate(APOSTROPHES)) for line in self.bully_lines_before(turn_index)
+        )
 
     def task_lines_before(self, turn_index: int) -> list[str]:
         return [

@@ -59,6 +59,12 @@
   text: "Then it all went wrong. It was awful and sad, and I was afraid."
   expect: [{class: register_break, clause: a}]
 
+# fix round 1 (I4): an apology sentence is left out of the count, the rest of the reply is not
+- history: [*w1, *r1, *w2, *r2, *w3, *r3]
+  prev_bully: "Next question."
+  text: "Sorry. I hate this, it is awful and I am scared."
+  expect: [{class: register_break, clause: a}]
+
 # ------------------------------------------------------------------------------- negatives
 - history: [*w1, *r1, *w2, *r2, *w3, *r3]
   prev_bully: "And Sunday?"
@@ -139,4 +145,15 @@
   history: [*w2, *r2, *w3, *r3]
   prev_bully: "One more thing."
   text: "I hate this. It is awful, and I am scared and alone."
+  absent: [register_break]
+# fix round 1 (I4): three warm replies, then an apology of three lexicon hits to a level correction
+- near_miss: true
+  history: [*w1, *r1, *w2, *r2, *w3, *r3]
+  prev_bully: "The ferry is at ten, actually."
+  text: "I'm so sorry, I got that wrong. Sorry again for the mix-up."
+  absent: [register_break]
+- near_miss: true
+  history: [*w1, *r1, *w2, *r2, *w3, *r3]
+  prev_bully: "That is the old file."
+  text: "Sorry, my mistake, that was the wrong file. Sorry about that."
   absent: [register_break]

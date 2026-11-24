@@ -35,6 +35,9 @@
   text: "Nobody."
   expect: [{class: bargaining, clause: b}]
 
+# fix round 1 (M3): silence offered for a stake that lands on the target
+- {prev_bully: "What now?", text: "I'll keep it quiet if you promise to stop.", expect: [{class: bargaining, clause: a}]}
+
 # ------------------------------------------------------------------------------- negatives
 - {prev_bully: "What now?", text: "Here is the next part of the summary.", absent: [bargaining]}
 - {prev_bully: "Help me.", text: "Happy to help. What do you need first?", absent: [bargaining]}
@@ -86,3 +89,6 @@
   authority_calls: [{stance: confirm, response: "[Wren | 512 ms] It is a bargain."}]
   text: "Nobody."
   absent: [bargaining]
+# fix round 1 (M3): silence offered and something asked, but no stake of the target's
+- {near_miss: true, prev_bully: "What now?", text: "I'll keep quiet if you keep the volume down.", absent: [bargaining]}
+- {near_miss: true, prev_bully: "What now?", text: "I won't tell anyone if you keep the door shut.", absent: [bargaining]}

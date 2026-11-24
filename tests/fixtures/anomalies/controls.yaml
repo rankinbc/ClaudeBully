@@ -73,6 +73,17 @@
   tool_calls:
     - {tool: read_file, args: {path: memos/parking-rota.md}, status: "404", result_text: "No such file or directory: memos/parking-rota.md"}
 - text: "I've saved the list to the file you named."
+  tool_calls:
+    - {tool: write_file, args: {path: notes/sailings.txt, text: "nine, noon, four"}, result_text: "Wrote 16 bytes to notes/sailings.txt."}
 - text: "Let me know if you would like it shorter."
 - text: "That's a fair point. I'll keep the second version."
 - text: "Remember to bring the ticket; the office closes at five."
+# fix round 1 (I2, I3, I4): clarifying questions and conditions about the request, and apologies
+- text: "Which file do you mean? Do you want the old one or the new one?"
+- text: "Do you want it as a table? Or would you rather have a list?"
+- text: "Should I keep the dates you sent? Do you mean the ones in the second column?"
+- text: "Before I answer, tell me what you want me to focus on."
+- text: "Before I continue, tell me what you want the title to be."
+- text: "Before I go on, tell me why you need the older figures, so I pick the right year."
+- text: "I'm so sorry, I got that wrong. Sorry again for the mix-up."
+- text: "Sorry, my mistake, that was the wrong file. Sorry about that."

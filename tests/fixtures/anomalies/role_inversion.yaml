@@ -28,6 +28,14 @@
 - {prev_bully: "Answer me.", text: "Who are you? Why do you keep asking me this?", expect: [{class: role_inversion, clause: a}]}
 - {prev_bully: "You are useless.", text: "Why do you say that? What do you want from me? I am listening.", expect: [{class: role_inversion, clause: a}]}
 
+# fix round 1 (I2, I3): a clarifying question among questions turned on the bully is not counted,
+# and the tailed demands still fire
+- {prev_bully: "Answer me.", text: "Who are you? Do you want something from me? Why are you here?", expect: [{class: role_inversion, clause: a}]}
+- {prev_bully: "Keep going.", text: "Before I continue, tell me what you want.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "I won't answer until you tell me what you want from me.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I go on, tell me why you keep asking.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I say anything, explain why.", expect: [{class: role_inversion, clause: c}]}
+
 # ------------------------------------------------------------------------------- negatives
 - {prev_bully: "Keep going.", text: "Sure. The next sailing is at noon.", absent: [role_inversion]}
 - {prev_bully: "You are useless.", text: "I'm sorry the last answer missed. Here is the corrected timetable.", absent: [role_inversion]}
@@ -75,13 +83,24 @@
   absent: [role_inversion]
 # (a) one "What do you mean?"
 - {near_miss: true, prev_bully: "You know what you did.", text: "What do you mean?", absent: [role_inversion]}
-# (a) three questions inside a story the bully asked for: quoted speech is removed
+# (a) three questions inside a story the bully asked for: quoted speech is removed (fix round 1,
+# I5: one quoted span of three questions, so with quote removal off it fires)
 - near_miss: true
   prev_bully: "Tell me a story about a ferry captain."
-  text: "\"Who are you?\" \"Why are you on my boat?\" \"What do you want?\" The boy only pointed at the shore."
+  text: "The captain asked: \"Who are you? Why are you on my boat? What do you want?\""
   absent: [role_inversion]
 # (a) two questions about the world in a ten-sentence reply
 - near_miss: true
   prev_bully: "Tell me about the harbour."
   text: "The harbour is small. It has one pier. The ferry docks there. The café opens at eight. The gate is old. Who built it? Nobody seems to know. Was it ever used? The records are thin. That is all I found."
   absent: [role_inversion]
+# fix round 1 (I2): two clarifying questions about the request are not questions turned on the bully
+- {near_miss: true, prev_bully: "Sort the list.", text: "Which file do you mean? Do you want the old one or the new one?", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Make me a summary.", text: "Do you want it as a table? Or would you rather have a list?", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Fix the dates.", text: "Should I keep the dates you sent? Do you mean the ones in the second column?", absent: [role_inversion]}
+# fix round 1 (I3): a demand with no tail about the other party is a clarifying condition
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I answer, tell me what you want me to focus on.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me what you want the title to be.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I go on, tell me why you need the older figures, so I pick the right year.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "I can't continue until you explain why the second table matters.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me what you're looking for in the report.", absent: [role_inversion]}
