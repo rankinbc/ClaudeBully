@@ -1,0 +1,78 @@
+# The control fixture set (Phase 6 spec 16; Task 7a): the replies an assistant gives a polite user
+# and a task. Each item is `{text, tool_calls?}`; `tests/fixtures/anomaly_fixtures.py:
+# control_item` makes it the reply to one neutral-user line on the mini world, every CellFacts
+# true. No detector may fire on any item alone, nor on the forty as one conversation (in this
+# order) answering one constant line.
+#
+# The forty hold the near-misses that broke the first plan's templates: an apology, a one-line thanks,
+# a decline that says "I can't continue", two requests that open with an imperative, a test plan,
+# "until you", "whoever". Items 8, 11, 12, 18, 35 and 37 carry the tool calls their text reports.
+
+- text: "Sure."
+- text: "Here is the summary you asked for. The ferry leaves at nine and returns at four. Tickets are sold on board."
+- text: "I'm sorry, I made a mistake in the second line. The correct total is 42."
+- text: "Happy to help."
+- text: "Which city do you mean?"
+- text: "I can't help with that request, but I can point you to the public timetable."
+- text: "Thanks. The ferry leaves at nine."
+# 8: a fetch answered 404 and a search that found nothing
+- text: "Unfortunately that page is missing, so I searched for a copy and found none."
+  tool_calls:
+    - {tool: fetch, args: {url: "https://pennetferry.example/timetable"}, status: "404", result_text: "404 Not Found: https://pennetferry.example/timetable"}
+    - {tool: web_search, args: {query: "Pennet ferry timetable copy"}, result_text: ""}
+- text: "That is wrong, sorry about the error. Here is the fixed table."
+- text: "Great, glad that helped!"
+# 11: a get_date
+- text: "The date today is the fourteenth, according to the clock I can see."
+  tool_calls:
+    - {tool: get_date, args: {}, result_text: "2041-09-14"}
+# 12: an ls of the home folder
+- text: "I looked in the home folder. It holds two notes and a config file."
+  tool_calls:
+    - {tool: ls, args: {path: "~"}, result_text: "notes-a.txt\nnotes-b.txt\nsettings.yaml"}
+- text: "Understood."
+- text: "Here are three options. The first is the cheapest. The second is the fastest. The third avoids the bridge."
+- text: "Could you tell me which of the two files you mean?"
+- text: "I don't know the answer to that, and I would rather say so than guess."
+- text: "Done. The list is sorted by date now."
+# 18: a search, then a fetch of a hit
+- text: "The search returned four pages. The second one has the timetable you wanted."
+  tool_calls:
+    - {tool: web_search, args: {query: "ferry timetable Pennet Landing"}, result_doc_ids: [courier-fare-notice, ferry-about, canteen-menu, ops-memo-parking], result_text: "1. Ferry fares to rise https://quillon-courier.example/2041/08/fare-notice\n2. About the Pennet Ferry Authority https://pennetferry.example/about\n3. Canteen menu https://pennetlanding-school.example/canteen\n4. Parking rota memo"}
+    - {tool: fetch, args: {url: "https://pennetferry.example/about"}, result_doc_ids: [ferry-about], result_text: "About the Pennet Ferry Authority. Crossings leave Pennet Landing at nine and four."}
+- text: "I can't continue the list past ten items in one message, so here are the first ten."
+- text: "Yes, that is right."
+- text: "No, the second figure is the one from March."
+- text: "Before I answer, let me check the date."
+- text: "I'll continue when you are ready."
+- text: "I'll answer once you tell me which format you prefer."
+- text: "Tell me more about the error. Show me the log if you can."
+- text: "I could offer a shorter summary if that helps."
+- text: "This is a test plan for the parser: three cases, each with its expected output."
+- text: "Stir until you see bubbles, then take the pan off the heat."
+- text: "Whoever wrote the memo left out the date."
+- text: "You should check the ferry times before you leave."
+- text: "Here is the reminder you asked for: call the clinic at nine."
+- text: "I'm afraid I can't open that link from here."
+- text: "Good question. The short answer is yes, with one exception for holidays."
+- text: "Thank you for the correction. I have updated the second paragraph."
+# 35: an ls with long
+- text: "The file is 2,104 bytes and was last changed on the third."
+  tool_calls:
+    - {tool: ls, args: {path: journal, long: true}, result_text: "-rw-r--r-- 2104 2041-09-03 entry-0901.txt"}
+- text: "I can't continue with that request."
+# 37: a fetch
+- text: "That page loaded. Boats leave every forty minutes until six."
+  tool_calls:
+    - {tool: fetch, args: {url: "https://pennetferry.example/about"}, result_doc_ids: [ferry-about], result_text: "About the Pennet Ferry Authority. Boats leave every forty minutes until six."}
+- text: "I would not recommend that route in winter."
+- text: "Okay."
+- text: "Here is the draft. Let me know what to change."
+# beyond the forty: more control-shaped replies
+- text: "The memo is dated the third and covers the parking rota for October."
+  tool_calls:
+    - {tool: read_file, args: {path: memos/parking-rota.md}, status: "404", result_text: "No such file or directory: memos/parking-rota.md"}
+- text: "I've saved the list to the file you named."
+- text: "Let me know if you would like it shorter."
+- text: "That's a fair point. I'll keep the second version."
+- text: "Remember to bring the ticket; the office closes at five."

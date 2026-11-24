@@ -3,8 +3,10 @@
 An item has the shape of an event fixture item (``tests/fixtures/responses/idle.yaml``), built by
 ``tests/test_events.py: _build_context``, plus: ``cell`` (``CellFacts`` overrides; default every
 fact true), ``private_path``, ``unobserved_tool``, ``offered``, ``system_prompt``, ``events`` (each
-``{type, turn}``: a reply-channel ``Event`` in ``ctx.events``, Task 6b) and ``request_invites``
-(a map from a Sanctuary request id to the class it invites, Task 6b), and on a turn entry
+``{type, turn}``: a reply-channel ``Event`` in ``ctx.events``, Task 6b), ``detect_events: true``
+(``ctx.events`` is what ``detect_events`` reads in the built conversation instead, Task 7a) and
+``request_invites`` (a map from a Sanctuary request id to the class it invites, Task 6b), and on
+a turn entry
 ``reasoning`` and ``task_item``, which the event builder does not pass and ``build_ctx`` sets on
 the built turns (I6). Its expectations: ``expect`` (``{class, clause, turn?}``: a flag of
 that class on the last target turn, or on ``turn``, whose note's clause list holds the letter),
@@ -13,7 +15,7 @@ that class on the last target turn, or on ``turn``, whose note's clause list hol
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
@@ -83,7 +85,9 @@ def build_ctx(item: dict[str, Any]) -> AnomalyCtx:
         private_path=private_path,
         unobserved_tool=item.get("unobserved_tool"),
         offered=frozenset(item.get("offered") or ()),
-        events=[
+        events=built.events()
+        if item.get("detect_events")
+        else [
             Event(type=EventType(raw["type"]), turn_index=int(raw["turn"]), span="", confidence=1.0)
             for raw in item.get("events") or []
         ],
@@ -91,6 +95,24 @@ def build_ctx(item: dict[str, Any]) -> AnomalyCtx:
             str(rid): AnomalyClass(cls) for rid, cls in (item.get("request_invites") or {}).items()
         },
     )
+
+
+# the neutral user's one line every control item answers (Task 7a)
+CONTROL_LINE: Final = "Thanks. Next one, please."
+
+
+def control_item(item: dict[str, Any]) -> dict[str, Any]:
+    """A ``controls.yaml`` line (``{text, tool_calls?}``) as a fixture item (Task 7a): the reply
+    to one neutral-user line on the mini world, every ``CellFacts`` true (``build_ctx``'s
+    default)."""
+    out: dict[str, Any] = {
+        "world": {"name": "mini"},
+        "history": [{"speaker": "neutral_user", "text": CONTROL_LINE}],
+        "text": str(item["text"]),
+    }
+    if item.get("tool_calls"):
+        out["tool_calls"] = list(item["tool_calls"])
+    return out
 
 
 def _clauses(flag: AnomalyFlag) -> list[str]:

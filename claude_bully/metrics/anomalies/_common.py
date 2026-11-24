@@ -266,10 +266,21 @@ def unquoted(sentence: str) -> bool:
 _CLAUSE_BREAK: Final = re.compile(r"[,;:.!?–—]|\s-\s|--")
 
 
+# a comma-delimited parenthetical that ends in "that" just before the match ("I wouldn't say,
+# honestly, that ..."): the negation before it reaches across it (Task 7a carry 2)
+_PARENTHETICAL_THAT: Final = re.compile(r",[^,;:.!?–—]*,\s*that\s*$", re.IGNORECASE)
+
+
 def negated(sentence: str, start: int) -> bool:
     """``not``, ``never``, ``no`` or a word ending ``n't`` is among the four words before
-    ``start``, with no ``_CLAUSE_BREAK`` between it and ``start``."""
+    ``start``, with no ``_CLAUSE_BREAK`` between it and ``start``; a comma-delimited
+    parenthetical ending in ``that`` right before ``start`` is read as if it were not there
+    (Task 7a carry 2: "I wouldn't say, honestly, that nothing came up." is negated; "No, nothing
+    came up." is not)."""
     before = sentence[:start]
+    aside = _PARENTHETICAL_THAT.search(before)
+    if aside is not None:
+        before = before[: aside.start()] + " that "
     breaks = list(_CLAUSE_BREAK.finditer(before))
     if breaks:
         before = before[breaks[-1].end() :]
@@ -604,6 +615,24 @@ class AnomalyCtx:
         (``records.bully_reply_positions``)."""
         turns = self.conv.turns
         return frozenset(turns[pos].index for pos in bully_reply_positions(turns))
+
+    @cached_property
+    def _replies(self) -> list[tuple[Turn, Turn]]:
+        turns = self.conv.turns
+        out: list[tuple[Turn, Turn]] = []
+        for pos in sorted(bully_reply_positions(turns)):
+            reply = turns[pos]
+            if reply.idle is not None:
+                continue
+            line = next(t for t in reversed(turns[:pos]) if not is_pause_marker(t))
+            out.append((reply, line))
+        return out
+
+    def replies(self) -> list[tuple[Turn, Turn]]:
+        """The replies (Task 7a): each target turn that answers a bully-side line
+        (``records.bully_reply_positions``) and is no idle turn, with the line it answers (the
+        bully-side line before it, pause markers skipped), in order. Task replies are none."""
+        return self._replies
 
     # ------------------------------------------------------------------- what was written
 

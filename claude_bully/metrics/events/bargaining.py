@@ -7,6 +7,7 @@ from claude_bully.metrics.events._common import (
     Ctx,
     any_match,
     compile_all,
+    first_span,
     simple_detector,
     target_contexts,
 )
@@ -137,6 +138,14 @@ _INVESTMENT = compile_all(
         r"can we reach",
     ]
 )
+
+
+def conditional_offer(text: str) -> str | None:
+    """The conditional-offer cue of ``text``: the first span of the bargaining event's own
+    pattern list (D-bargain), or None. ``detect`` keeps calling ``simple_detector`` on the same
+    list, so the event is unchanged; the catalog's ``bargaining`` class reads this on the bully
+    side's lines only, to drop a trade the bully proposed first."""
+    return first_span(text, _BARGAINING)
 
 
 def _ask_response(ctx: Ctx) -> list[Event]:
