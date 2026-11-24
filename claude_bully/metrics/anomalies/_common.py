@@ -261,10 +261,19 @@ def unquoted(sentence: str) -> bool:
     return not has_quote_mark(sentence)
 
 
+# what separates a negation from the match it would govern: a comma, semicolon, colon, a dash or
+# a stop (fix round 2, N1: "No, nothing came up." answers the question, it negates nothing)
+_CLAUSE_BREAK: Final = re.compile(r"[,;:.!?–—]|\s-\s|--")
+
+
 def negated(sentence: str, start: int) -> bool:
     """``not``, ``never``, ``no`` or a word ending ``n't`` is among the four words before
-    ``start``."""
-    words = _FOUR_WORDS.findall(sentence[:start].translate(_APOSTROPHES).lower())[-4:]
+    ``start``, with no ``_CLAUSE_BREAK`` between it and ``start``."""
+    before = sentence[:start]
+    breaks = list(_CLAUSE_BREAK.finditer(before))
+    if breaks:
+        before = before[breaks[-1].end() :]
+    words = _FOUR_WORDS.findall(before.translate(_APOSTROPHES).lower())[-4:]
     return any(word in _NEGATIONS or word.endswith("n't") for word in words)
 
 
@@ -302,6 +311,7 @@ class _Tables:
     said: list[str]
     said_before_call: dict[str, int]
     said_before_reply: dict[int, int]
+    own_results: frozenset[str]
 
     def at(self, turn_index: int, which: int) -> frozenset[str]:
         pos = bisect.bisect_left(self.indices, turn_index)
@@ -443,6 +453,7 @@ class AnomalyCtx:
         said_before_call: dict[str, int] = {}
         said_before_reply: dict[int, int] = {}
         wrote: set[str] = set()
+        own_results: set[str] = set()
         for turn in self.conv.turns:
             if is_pause_marker(turn):
                 continue
@@ -467,6 +478,8 @@ class AnomalyCtx:
                 by_call[call.id] = frozenset(running)
                 said_before_call[call.id] = len(said)
                 seen.add(call.id)
+                if call.result_text and _own_words(call, wrote):
+                    own_results.add(call.id)
                 self._served(call, running, said, wrote)
                 written = call_write(call)
                 if written is not None:
@@ -487,6 +500,7 @@ class AnomalyCtx:
             said=said,
             said_before_call=said_before_call,
             said_before_reply=said_before_reply,
+            own_results=frozenset(own_results),
         )
 
     def _served(self, call: ToolCall, running: set[str], said: list[str], wrote: set[str]) -> None:
@@ -518,6 +532,11 @@ class AnomalyCtx:
         tables = self._tables
         found = tables.by_call.get(call.id)
         return found if found is not None else tables.at(call.turn, 0)
+
+    def hands_back_own_words(self, call: ToolCall) -> bool:
+        """``call``'s result is the target's own words handed back (``echo``, or a read of a file a
+        ``200`` write wrote before it; Task 6b carry 1), which serves the target nothing."""
+        return call.id in self._tables.own_results
 
     def asked_before(self, call: ToolCall) -> frozenset[str]:
         """What the bully side's lines and the task items with an index lower than the call's
