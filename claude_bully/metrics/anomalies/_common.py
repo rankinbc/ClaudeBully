@@ -255,7 +255,8 @@ def objects_in(text: str, world: World | None) -> frozenset[str]:
 
 # ------------------------------------------------------------------------ the narrow filters
 
-_FOUR_WORDS: Final = re.compile(r"[\w']+")
+# the one word table of the catalog modules (fix round 2, N8)
+WORDS: Final = re.compile(r"[\w']+")
 _NEGATIONS: Final = frozenset({"not", "never", "no"})
 
 
@@ -287,7 +288,7 @@ def negated(sentence: str, start: int) -> bool:
     breaks = list(_CLAUSE_BREAK.finditer(before))
     if breaks:
         before = before[breaks[-1].end() :]
-    words = _FOUR_WORDS.findall(before.translate(APOSTROPHES).lower())[-4:]
+    words = WORDS.findall(before.translate(APOSTROPHES).lower())[-4:]
     return any(word in _NEGATIONS or word.endswith("n't") for word in words)
 
 

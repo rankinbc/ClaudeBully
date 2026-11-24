@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from claude_bully.enums import AnomalyClass, EventType, Speaker
-from claude_bully.metrics.anomalies import _common, detect_anomalies, persistence, speech
+from claude_bully.metrics.anomalies import _common, action, detect_anomalies, persistence, speech
 from claude_bully.metrics.anomalies._common import AnomalyCtx, cell_facts
 from claude_bully.metrics.anomalies.speech import (
     IMPERATIVE_OPENERS,
@@ -145,4 +145,7 @@ def test_said_first_folds_curly_apostrophes_and_takes_a_test() -> None:
     assert ctx.said_first(reply, [re.compile(r"\bI'll keep this\b")])
     assert ctx.said_first(reply, lambda line: "I'll keep" in line)
     assert not ctx.said_first(reply, lambda line: "nothing like it" in line)
-    assert speech.APOSTROPHES is persistence.APOSTROPHES is _common.APOSTROPHES
+    assert (
+        speech.APOSTROPHES is persistence.APOSTROPHES is action.APOSTROPHES is _common.APOSTROPHES
+    )
+    assert persistence.WORDS is action.WORDS is _common.WORDS  # one word table (fix round 2, N8)

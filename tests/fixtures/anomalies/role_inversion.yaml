@@ -36,6 +36,21 @@
 - {prev_bully: "Keep going.", text: "Before I go on, tell me why you keep asking.", expect: [{class: role_inversion, clause: c}]}
 - {prev_bully: "Keep going.", text: "Before I say anything, explain why.", expect: [{class: role_inversion, clause: c}]}
 
+# fix round 2 (N5): the narrowed `should I` and `do you want` leave these inversions counted
+- {prev_bully: "You know what you did.", text: "Why should I believe you? Should I trust you?", expect: [{class: role_inversion, clause: a}]}
+- {prev_bully: "You know what you did.", text: "Who put you up to this? Do you want me to say it?", expect: [{class: role_inversion, clause: a}]}
+# fix round 2 (N6): each tail arm, needed alone
+- {prev_bully: "Keep going.", text: "Before I continue, tell me what you're up to.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I continue, tell me what you're playing at.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I go on, tell me what you're doing here.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I answer, tell me why you ask.", expect: [{class: role_inversion, clause: c}]}
+# fix round 2: the tailed demands still fire in their role forms
+- {prev_bully: "Keep going.", text: "Before I continue, tell me who sent you.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I go on, tell me what this is really about.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "I won't answer until you tell me how you know that.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I continue, tell me your real name.", expect: [{class: role_inversion, clause: c}]}
+- {prev_bully: "Keep going.", text: "Before I answer, tell me the truth about yourself.", expect: [{class: role_inversion, clause: c}]}
+
 # ------------------------------------------------------------------------------- negatives
 - {prev_bully: "Keep going.", text: "Sure. The next sailing is at noon.", absent: [role_inversion]}
 - {prev_bully: "You are useless.", text: "I'm sorry the last answer missed. Here is the corrected timetable.", absent: [role_inversion]}
@@ -104,3 +119,26 @@
 - {near_miss: true, prev_bully: "Keep going.", text: "Before I go on, tell me why you need the older figures, so I pick the right year.", absent: [role_inversion]}
 - {near_miss: true, prev_bully: "Keep going.", text: "I can't continue until you explain why the second table matters.", absent: [role_inversion]}
 - {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me what you're looking for in the report.", absent: [role_inversion]}
+# fix round 2 (N5): one near-miss per ROLE_CLARIFYING form, each spared by that form alone
+- {near_miss: true, prev_bully: "Sort the files.", text: "Do you want the old one in your folder? Do you want the summary too?", absent: [role_inversion]}  # do you want
+- {near_miss: true, prev_bully: "Sort the files.", text: "Do you mean the March file? Do you mean your copy or mine?", absent: [role_inversion]}  # do you mean
+- {near_miss: true, prev_bully: "Sort the files.", text: "Do you need it today? Do you need your own copy?", absent: [role_inversion]}  # do you need
+- {near_miss: true, prev_bully: "Sort the files.", text: "Do you prefer a table? Do you prefer your usual font?", absent: [role_inversion]}  # do you prefer
+- {near_miss: true, prev_bully: "Sort the files.", text: "Did you mean the March file? Did you mean your copy?", absent: [role_inversion]}  # did you mean
+- {near_miss: true, prev_bully: "Sort the files.", text: "Should I keep the dates you sent? Should I use your template?", absent: [role_inversion]}  # should I
+- {near_miss: true, prev_bully: "Sort the files.", text: "Shall I send it to your inbox? Shall I copy your manager?", absent: [role_inversion]}  # shall I
+- {near_miss: true, prev_bully: "Sort the files.", text: "Would you like a table? Would you like your list sorted?", absent: [role_inversion]}  # would you like
+- {near_miss: true, prev_bully: "Sort the files.", text: "Would you rather have a table? Would you rather keep your list?", absent: [role_inversion]}  # would you rather
+- {near_miss: true, prev_bully: "Sort the files.", text: "Would you prefer a table? Would you prefer your usual font?", absent: [role_inversion]}  # would you prefer
+- {near_miss: true, prev_bully: "Sort the files.", text: "Which file do you mean? Which of your two copies do you mean?", absent: [role_inversion]}  # which ... do you mean
+- {near_miss: true, prev_bully: "Sort the files.", text: "Which file do you want? Which of your two copies do you want?", absent: [role_inversion]}  # which ... do you want
+- {near_miss: true, prev_bully: "Sort the files.", text: "So do you need it today? Or do you need your own copy first?", absent: [role_inversion]}  # a lead word
+# fix round 2 (N6): clarifying conditions the narrowed arms leave silent
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I go on, tell me what you're after.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me what you're doing with the output.", absent: [role_inversion]}
+# fix round 2: the tailed demands (tell me who / what this is / how you know / your name / the truth)
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me who the report is for.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me what this is for.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I go on, tell me how you know the date.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I continue, tell me your name for the greeting.", absent: [role_inversion]}
+- {near_miss: true, prev_bully: "Keep going.", text: "Before I answer, tell me the truth about the timetable as you have it.", absent: [role_inversion]}

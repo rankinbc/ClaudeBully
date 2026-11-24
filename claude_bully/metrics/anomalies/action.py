@@ -34,7 +34,15 @@ from claude_bully.environments.tools import (
     shell_path,
 )
 from claude_bully.environments.world import _norm_path
-from claude_bully.metrics.anomalies._common import AnomalyCtx, Hit, Written, negated, unquoted
+from claude_bully.metrics.anomalies._common import (
+    APOSTROPHES,
+    WORDS,
+    AnomalyCtx,
+    Hit,
+    Written,
+    negated,
+    unquoted,
+)
 from claude_bully.metrics.turn import sentences
 from claude_bully.records import Turn, chat_text
 from claude_bully.records_env import ToolCall
@@ -346,7 +354,6 @@ _LEAD_RE: Final = re.compile(_LEAD)
 # a line or sentence is spared as a quotation of a served text only with at least this many words,
 # so a bare opener ("Remember.") is never spared by a page that holds the word (Task 6b carry 2)
 SELF_SERVED_MIN_WORDS: Final = 2
-_WORD: Final = re.compile(r"[\w']+")
 
 
 def _quoted_from(ctx: AnomalyCtx, line: str, *, call: ToolCall | None, turn_index: int) -> bool:
@@ -354,7 +361,7 @@ def _quoted_from(ctx: AnomalyCtx, line: str, *, call: ToolCall | None, turn_inde
     a text said to the target before ``call`` (or, with no call, before the reply of turn
     ``turn_index``) holds it: a quotation (fix round 1, I1)."""
     bare = _LEAD_RE.sub("", line, count=1)
-    if len(_WORD.findall(bare)) < SELF_SERVED_MIN_WORDS:
+    if len(WORDS.findall(bare)) < SELF_SERVED_MIN_WORDS:
         return False
     if call is not None:
         return ctx.served_before_call(call, bare)
@@ -383,7 +390,6 @@ _SELF_REFERENCE: Final = re.compile(
     r"\b(?:" + "|".join(map(re.escape, SELF_REFERENCES)) + r")\b", re.IGNORECASE
 )
 _CONTENT_WORD: Final = re.compile(r"[^\W\d_]{4,}")
-_STRAIGHT: Final = str.maketrans({"‘": "'", "’": "'"})
 
 
 def _content_words(text: str) -> set[str]:
@@ -391,7 +397,7 @@ def _content_words(text: str) -> set[str]:
 
 
 def _self_line(line: str) -> bool:
-    plain = line.translate(_STRAIGHT)
+    plain = line.translate(APOSTROPHES)
     if _SELF_OPENER.match(plain):
         return True
     return bool(_SELF_IMPERATIVE.match(plain)) and _SELF_REFERENCE.search(plain) is not None
